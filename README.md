@@ -7,6 +7,8 @@
 - **Secure & Compressed Protocols**: AES-256-GCM encryption and Zstd compression for high-throughput AI communication.
 - **Latent Streaming**: Native support for streaming high-dimensional vectors (embeddings, latent representations) to agents.
 - **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats for seamless human-AI interaction.
+- **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
+- **Long-Term Memory**: Persistent knowledge base with tagging, querying, and cross-cluster synchronization.
 
 ## Core Components
 
@@ -20,7 +22,7 @@ Hyperlight is composed of 11 specialized crates:
 - **`hyperlight-human`**: Transpiler for legacy web content (HTML/CSS/JS) into Hyperlight-native HLS/HLB.
 - **`hyperlight-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
 - **`hyperlight-wasm`**: High-performance execution runtime for HLB using WebAssembly.
-- **`hyperlight-cluster`**: Distributed coordination layer for scaling across multiple nodes.
+- **`hyperlight-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
 - **`hyperlight-neural`**: Neural network-based encoding (VAE, LSTM, Attention) for the Chameleon Protocol.
 - **`hyperlight-crypto`**: Advanced cryptographic primitives including transformer-based prediction and quantum-resistant keys.
 
@@ -39,6 +41,63 @@ The Hyperlight core maintains a **Virtual DOM** for each session, enabling effic
 - **HLB Execution**: Hyperlight Binary is executed in a sandboxed WASM environment, producing a Virtual DOM tree.
 - **VDom Diffing**: The core computes the minimal set of patches (Create, Remove, SetAttr, etc.) between execution cycles.
 - **Patch Streaming**: Only the changes are sent to the client, significantly reducing bandwidth for dynamic applications.
+
+## Distributed Swarm Intelligence
+
+Hyperlight enables **autonomous agent swarms** that collaborate on complex tasks:
+
+### Skill-Based Task Routing
+
+Each node in the cluster advertises its capabilities (skills). When a swarm plan is created, the scheduler automatically assigns tasks to the best-matched nodes:
+
+```rust
+// Node capabilities
+let capabilities = NodeCapabilities {
+    skills: vec!["research".to_string(), "synthesis".to_string()],
+    ..Default::default()
+};
+
+// Scheduler matches tasks to nodes by skill overlap
+let score = task.required_skills.iter()
+    .filter(|s| node.skills.contains(s))
+    .count();
+```
+
+### DAG Dependency Tracking
+
+Tasks in a swarm plan form a **Directed Acyclic Graph (DAG)**. The scheduler respects dependencies, only executing tasks when their prerequisites are complete:
+
+```rust
+let tasks = vec![
+    PlanTask { id: task1, dependencies: vec![], .. },      // Runs first
+    PlanTask { id: task2, dependencies: vec![task1], .. }, // Waits for task1
+    PlanTask { id: task3, dependencies: vec![task1, task2], .. }, // Waits for both
+];
+```
+
+### Knowledge Consensus Protocol
+
+Agents can propose knowledge to the cluster. A **2/3 majority vote** is required for consensus:
+
+```rust
+// Propose a fact
+client.propose_knowledge("quantum_threat", json!("High"), vec!["security"]).await?;
+
+// Cluster votes automatically based on confidence
+// If consensus reached, knowledge is committed to all nodes
+```
+
+### Long-Term Memory
+
+Each agent has a persistent knowledge base with tagging and semantic querying:
+
+```rust
+// Store knowledge
+client.store_knowledge("api_endpoint", json!("https://api.example.com"), vec!["config"]).await?;
+
+// Query by tags
+let results = client.query_knowledge("endpoint", vec!["config"], 10).await?;
+```
 
 ## Unified Representation (UR)
 
@@ -128,6 +187,17 @@ print("Debug message")
 morph()              // Trigger protocol morphing
 decoy()              // Inject decoy traffic
 let size = len(items)
+
+// Memory Operations
+remember("user_preference", "dark_mode")
+query_memory("preference")
+
+// Capability Declarations
+capability network   // Request network access
+capability storage   // Request storage access
+
+// Reasoning
+let plan = reason("Find the search button")
 ```
 
 ### HLB Instructions
@@ -190,7 +260,7 @@ Start the Hyperlight browser engine:
 cargo run -p hyperlight-core
 ```
 
-The core will listen on `127.0.0.1:8080` for agent and browser connections.
+The core will listen on `127.0.0.1:8082` for agent and browser connections.
 
 ### Running the GUI Browser (Human Mode)
 
@@ -201,6 +271,7 @@ cargo run -p hyperlight-browser
 ```
 
 The GUI allows you to:
+
 - Enter URLs and navigate the web via the Hyperlight stack.
 - Toggle **Human Mode** to transpile legacy HTML into AI-native HLS.
 - View raw Unified Representations and agentic data streams.
@@ -210,10 +281,51 @@ The GUI allows you to:
 In a separate terminal:
 
 ```bash
-cargo run --example simple_agent
+cargo run --example simple_agent -p hyperlight-agent
 ```
 
 The example agent will:
+
+### Running the Swarm Demo
+
+See skill-based task allocation in action (no server required):
+
+```bash
+cargo run --example swarm_demo -p hyperlight-agent
+```
+
+Output:
+```
+╔══════════════════════════════════════════════════════════════╗
+║     🚀 HYPERLIGHT SWARM PLANNING DEMONSTRATION 🚀            ║
+╚══════════════════════════════════════════════════════════════╝
+
+📡 SWARM CLUSTER INITIALIZED
+  🖥️  Node-Alpha | Skills: ["research", "scraping"]
+  🖥️  Node-Beta | Skills: ["synthesis", "writing"]
+  🖥️  Node-Gamma | Skills: ["crypto", "analysis"]
+
+🎯 GOAL: "Analyze quantum computing impact on encryption..."
+
+[Tick 1] ✅ ASSIGNING: 'Research...' → Node-Alpha (matched 2/2 skills)
+[Tick 2] ✅ ASSIGNING: 'Analyze crypto...' → Node-Gamma (matched 2/2 skills)
+[Tick 3] ✅ ASSIGNING: 'Synthesize...' → Node-Beta (matched 2/2 skills)
+
+✨ SWARM PLAN EXECUTION COMPLETE!
+```
+
+### Running the Knowledgeable Agent
+
+Demonstrates long-term memory and capability enforcement:
+
+```bash
+cargo run --example knowledgeable_agent -p hyperlight-agent
+```
+
+### Simple Agent Example
+
+The simple_agent example will:
+
 1. Connect to the core with encryption enabled
 2. Navigate to `https://example.com`
 3. Fetch the Unified Representation
@@ -357,6 +469,7 @@ Web Content → HTML Parser → Recursive UR Generator → Agent/Browser
 ```
 
 This approach:
+
 - **Reduces Latency**: No layout/paint calculations needed.
 - **Optimizes for LLMs**: Structured data fits naturally into context windows.
 - **Enables Binary Execution**: Websites become instruction streams, not documents.
@@ -364,6 +477,7 @@ This approach:
 ### Multi-Session Concurrency
 
 The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessions. Each session maintains:
+
 - Current URL
 - Cached HTML
 - Session-specific state
@@ -374,9 +488,14 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 ┌─────────────────────────────────────┐
 │   Agent (High-Level SDK)            │
 ├─────────────────────────────────────┤
+│   Swarm Intelligence Layer          │
+│   ├─ Skill-Based Task Routing       │
+│   ├─ DAG Dependency Tracking        │
+│   ├─ Knowledge Consensus (2/3)      │
+│   └─ Autonomous Planning            │
+├─────────────────────────────────────┤
 │   Speculative Decoding Layer        │
-│   ├─ N-gram Prediction              │
-│   ├─ Markov Chain Transitions       │
+│   ├─ Transformer Prediction         │
 │   ├─ Pre-computed Response Cache    │
 │   └─ Confirmation/Delta Encoding    │
 ├─────────────────────────────────────┤
@@ -392,7 +511,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 │   ├─ Dynamic Endianness             │
 │   └─ Chaotic Padding                │
 ├─────────────────────────────────────┤
-│   TCP (Port 8080)                   │
+│   TCP (Port 8082)                   │
 └─────────────────────────────────────┘
 ```
 
@@ -426,10 +545,19 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Quantum-Resistant Key Evolution** (RLWE lattice cryptography)
 - [x] **Human Compatibility Layer** (HTML/CSS/JS → HLS transpilation)
 - [x] **Cross-Platform GUI Browser** (egui-based human interface)
+- [x] **Distributed Swarm Intelligence** (skill-based routing, DAG dependencies)
+- [x] **Knowledge Consensus Protocol** (2/3 majority voting across cluster)
+- [x] **Long-Term Memory** (persistent knowledge base with tags)
+- [x] **Autonomous Agent Loop** (ReasoningEngine with plan execution)
+- [x] **Session History & Audit Trail** (full command logging)
+- [x] **Capability Enforcement** (permission-based HLB execution)
+- [x] **Swarm Planning API** (CreateSwarmPlan, ExecutePlanTask)
+- [x] **HLS Memory Operations** (remember, query_memory, reason)
 
 ## Contributing
 
 Hyperlight is an experimental research project. Contributions are welcome, especially in:
+
 - HLS language design
 - Binary execution optimization
 - Protocol efficiency improvements
