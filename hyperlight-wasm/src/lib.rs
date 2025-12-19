@@ -42,6 +42,9 @@ pub struct WasmExecutionResult {
 pub enum WasmAction {
     Navigate(String),
     Search(String),
+    StoreKnowledge { key: String, value: serde_json::Value, tags: Vec<String> },
+    QueryKnowledge { query: String, tags: Vec<String>, limit: usize },
+    Reason(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -503,6 +506,36 @@ impl HlbToWatCompiler {
                 }
                 Instruction::SearchFromStack => {
                     wat.push_str("    (call $search_from_stack)\n");
+                }
+                Instruction::StoreKnowledgeFromStack { tags } => {
+                    let tags_json = serde_json::json!(tags).to_string();
+                    if !string_offsets.contains_key(&tags_json) {
+                        let len = tags_json.len() as u32;
+                        string_offsets.insert(tags_json.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(&tags_json)
+                        ));
+                        data_offset += len + 1;
+                    }
+                    let (offset, len) = string_offsets.get(&tags_json).unwrap();
+                    wat.push_str(&format!("    (call $store_knowledge_from_stack (i32.const {}) (i32.const {}))\n", offset, len));
+                }
+                Instruction::QueryKnowledgeFromStack { tags, limit } => {
+                    let tags_json = serde_json::json!(tags).to_string();
+                    if !string_offsets.contains_key(&tags_json) {
+                        let len = tags_json.len() as u32;
+                        string_offsets.insert(tags_json.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(&tags_json)
+                        ));
+                        data_offset += len + 1;
+                    }
+                    let (offset, len) = string_offsets.get(&tags_json).unwrap();
+                    wat.push_str(&format!("    (call $query_knowledge_from_stack (i32.const {}) (i32.const {}) (i32.const {}))\n", offset, len, limit));
                 }
             }
         }
@@ -972,6 +1005,43 @@ impl WasmRuntime {
                 }
             },
         )?;
+
+        // store_knowledge_from_stack(tags_ptr: i32, tags_len: i32)
+        linker.func_wrap(
+            "env",
+            "store_knowledge_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, tags_ptr: i32, tags_len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; tags_len as usize];
+                memory.read(&caller, tags_ptr as usize, &mut buf).expect("read");
+                let tags_str = String::from_utf8_lossy(&buf).to_string();
+                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+                
+                let mut state = caller.data().lock().unwrap();
+                let value = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                let key = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                
+                state.actions.push(WasmAction::StoreKnowledge { key, value, tags });
+            },
+        )?;
+
+        // query_knowledge_from_stack(tags_ptr: i32, tags_len: i32, limit: i32)
+        linker.func_wrap(
+            "env",
+            "query_knowledge_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, tags_ptr: i32, tags_len: i32, limit: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; tags_len as usize];
+                memory.read(&caller, tags_ptr as usize, &mut buf).expect("read");
+                let tags_str = String::from_utf8_lossy(&buf).to_string();
+                let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+                
+                let mut state = caller.data().lock().unwrap();
+                let query = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                
+                state.actions.push(WasmAction::QueryKnowledge { query, tags, limit: limit as usize });
+            },
+        )?;
         
         // call_func(name_ptr: i32, name_len: i32, num_args: i32)
         linker.func_wrap(
@@ -1046,6 +1116,22 @@ impl WasmRuntime {
                         let payload = if num_args > 1 { state.value_stack.pop().unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null };
                         let event_name = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
                         state.events.push(WasmEvent { name: event_name, payload });
+                        serde_json::Value::Null
+                    }
+                    "reason" => {
+                        let query = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                        state.actions.push(WasmAction::Reason(query));
+                        serde_json::Value::Null
+                    }
+                    "remember" => {
+                        let value = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        let key = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                        state.actions.push(WasmAction::StoreKnowledge { key, value, tags: vec!["hls".to_string()] });
+                        serde_json::Value::Null
+                    }
+                    "query_memory" => {
+                        let query = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                        state.actions.push(WasmAction::QueryKnowledge { query, tags: vec![], limit: 5 });
                         serde_json::Value::Null
                     }
                     _ => serde_json::Value::Null,

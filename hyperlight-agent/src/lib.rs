@@ -296,4 +296,141 @@ where
         
         Ok(patches)
     }
+
+    pub async fn store_knowledge(&mut self, key: &str, value: serde_json::Value, tags: Vec<String>) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::StoreKnowledge { 
+            key: key.to_string(), 
+            value, 
+            tags 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn query_knowledge(&mut self, query: &str, tags: Vec<String>, limit: usize) -> anyhow::Result<Vec<serde_json::Value>> {
+        let res = self.send_request(BrowserCommand::QueryKnowledge { 
+            query: query.to_string(), 
+            tags, 
+            limit 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        let results = res.result.unwrap()["results"].as_array().cloned().unwrap_or_default();
+        Ok(results)
+    }
+
+    pub async fn delete_knowledge(&mut self, key: &str) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::DeleteKnowledge { key: key.to_string() }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn get_history(&mut self) -> anyhow::Result<Vec<BrowserCommand>> {
+        let res = self.send_request(BrowserCommand::GetSessionHistory).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        let history: Vec<BrowserCommand> = serde_json::from_value(res.result.unwrap()["history"].clone())?;
+        Ok(history)
+    }
+
+    pub async fn ping(&mut self) -> anyhow::Result<u64> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as u64;
+        
+        self.handler.send_message(&Message::Ping { timestamp: now }).await?;
+        
+        loop {
+            match self.handler.receive_message().await? {
+                Message::Pong { timestamp } => {
+                    let end = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)?
+                        .as_millis() as u64;
+                    return Ok(end - timestamp);
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    pub async fn get_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
+        let res = self.send_request(BrowserCommand::GetCapabilities).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        let capabilities: Vec<String> = serde_json::from_value(res.result.unwrap()["capabilities"].clone())?;
+        Ok(capabilities)
+    }
+
+    pub async fn set_autonomous_mode(&mut self, enabled: bool) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::SetAutonomousMode { enabled }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn swarm_search(&mut self, query: &str, depth: usize) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::SwarmSearch { 
+            query: query.to_string(), 
+            depth 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn delegate_task(&mut self, task: &str, target_agent_id: Option<uuid::Uuid>) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::DelegateTask { 
+            task: task.to_string(), 
+            target_agent_id 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn propose_knowledge(&mut self, key: &str, value: serde_json::Value, tags: Vec<String>) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::ProposeKnowledge { 
+            key: key.to_string(), 
+            value, 
+            tags 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn create_swarm_plan(&mut self, goal: &str) -> anyhow::Result<uuid::Uuid> {
+        let res = self.send_request(BrowserCommand::CreateSwarmPlan { 
+            goal: goal.to_string() 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        let plan_id = res.result
+            .and_then(|v| v.get("plan_id").and_then(|id| id.as_str()).map(|s| uuid::Uuid::parse_str(s).unwrap()))
+            .ok_or_else(|| anyhow::anyhow!("Missing plan_id in response"))?;
+        Ok(plan_id)
+    }
+
+    pub async fn execute_plan_task(&mut self, plan_id: uuid::Uuid, task_id: uuid::Uuid) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::ExecutePlanTask { 
+            plan_id, 
+            task_id 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
 }

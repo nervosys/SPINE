@@ -40,6 +40,8 @@ pub struct CompilerContext {
     pub exported_functions: HashMap<String, usize>,
     /// Main render entry point
     pub render_start: usize,
+    /// Required capabilities
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,10 +106,16 @@ pub enum HlsStatement {
     Navigate(HlsExpr),
     /// Search for query
     Search(HlsExpr),
+    /// Store knowledge: remember(key, value)
+    Remember { key: HlsExpr, value: HlsExpr, tags: Vec<String> },
+    /// Query knowledge: query_memory(query)
+    QueryMemory { query: HlsExpr, tags: Vec<String>, limit: usize },
     /// Return statement
     Return(Option<HlsExpr>),
     /// Comment (ignored in codegen)
     Comment(String),
+    /// Capability declaration: capability name
+    Capability(String),
 }
 
 #[derive(Debug, Clone)]
@@ -134,6 +142,8 @@ pub enum HlsExpr {
     List(Vec<HlsExpr>),
     /// Object literal: { key: value, ... }
     Object(Vec<(String, HlsExpr)>),
+    /// Reason about a query: reason(query)
+    Reason(Box<HlsExpr>),
     /// Ternary: condition ? then : else
     Ternary { condition: Box<HlsExpr>, then_expr: Box<HlsExpr>, else_expr: Box<HlsExpr> },
 }
@@ -185,6 +195,7 @@ impl Compiler {
             data: ctx.string_pool.join("\0").into_bytes(),
             render_start: ctx.render_start,
             exported_functions: ctx.exported_functions,
+            capabilities: ctx.capabilities,
         })
     }
     
@@ -357,6 +368,22 @@ impl Compiler {
                 ctx.instructions.push(Instruction::SearchFromStack);
             }
             
+            HlsStatement::Remember { key, value, tags } => {
+                Self::compile_expr(ctx, key)?;
+                Self::compile_expr(ctx, value)?;
+                ctx.instructions.push(Instruction::StoreKnowledgeFromStack {
+                    tags: tags.clone(),
+                });
+            }
+            
+            HlsStatement::QueryMemory { query, tags, limit } => {
+                Self::compile_expr(ctx, query)?;
+                ctx.instructions.push(Instruction::QueryKnowledgeFromStack {
+                    tags: tags.clone(),
+                    limit: *limit,
+                });
+            }
+            
             HlsStatement::Assign { name, value } => {
                 Self::compile_expr(ctx, value)?;
                 ctx.instructions.push(Instruction::UpdateStateFromStack {
@@ -384,6 +411,10 @@ impl Compiler {
             }
             
             HlsStatement::Comment(_) => {}
+            
+            HlsStatement::Capability(name) => {
+                ctx.capabilities.push(name.clone());
+            }
         }
         Ok(())
     }
@@ -429,6 +460,10 @@ impl Compiler {
                     Self::compile_expr(ctx, val)?;
                 }
                 ctx.instructions.push(Instruction::Call { name: "object".to_string(), num_args: props.len() * 2 });
+            }
+            HlsExpr::Reason(query) => {
+                Self::compile_expr(ctx, query)?;
+                ctx.instructions.push(Instruction::Call { name: "reason".to_string(), num_args: 1 });
             }
             _ => {}
         }
@@ -501,6 +536,7 @@ impl Compiler {
                 }
                 HlsValue::Object(map)
             }
+            HlsExpr::Reason(_) => HlsValue::Null,
             HlsExpr::Call { name, args } => {
                 // Built-in expression functions
                 match name.as_str() {
@@ -719,6 +755,7 @@ impl Compiler {
                 }
             }
             HlsExpr::Ternary { then_expr, .. } => Self::infer_expr_type(ctx, then_expr),
+            HlsExpr::Reason(expr) => Self::infer_expr_type(ctx, expr),
         }
     }
 
@@ -841,6 +878,8 @@ impl Compiler {
                     let _ = Self::infer_expr_type(ctx, e)?;
                 }
             }
+            HlsStatement::Comment(_) => {}
+            HlsStatement::Capability(_) => {}
             _ => {}
         }
         Ok(())
@@ -959,8 +998,19 @@ impl Compiler {
             }],
             HlsStatement::Navigate(url_expr) => vec![HlsStatement::Navigate(Self::optimize_expr(url_expr, functions))],
             HlsStatement::Search(query_expr) => vec![HlsStatement::Search(Self::optimize_expr(query_expr, functions))],
+            HlsStatement::Remember { key, value, tags } => vec![HlsStatement::Remember {
+                key: Self::optimize_expr(key, functions),
+                value: Self::optimize_expr(value, functions),
+                tags,
+            }],
+            HlsStatement::QueryMemory { query, tags, limit } => vec![HlsStatement::QueryMemory {
+                query: Self::optimize_expr(query, functions),
+                tags,
+                limit,
+            }],
             HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(|e| Self::optimize_expr(e, functions)))],
             HlsStatement::Comment(_) => vec![], // Strip comments in optimization
+            HlsStatement::Capability(name) => vec![HlsStatement::Capability(name)],
             _ => vec![stmt],
         }
     }
@@ -1050,6 +1100,7 @@ impl Compiler {
             }
             HlsExpr::List(items) => HlsExpr::List(items.into_iter().map(|i| Self::optimize_expr(i, functions)).collect()),
             HlsExpr::Object(pairs) => HlsExpr::Object(pairs.into_iter().map(|(k, v)| (k, Self::optimize_expr(v, functions))).collect()),
+            HlsExpr::Reason(query) => HlsExpr::Reason(Box::new(Self::optimize_expr(*query, functions))),
             _ => expr,
         }
     }
@@ -1089,7 +1140,18 @@ impl Compiler {
             }],
             HlsStatement::Navigate(url_expr) => vec![HlsStatement::Navigate(Self::substitute_params_expr(url_expr, param_map))],
             HlsStatement::Search(query_expr) => vec![HlsStatement::Search(Self::substitute_params_expr(query_expr, param_map))],
+            HlsStatement::Remember { key, value, tags } => vec![HlsStatement::Remember {
+                key: Self::substitute_params_expr(key, param_map),
+                value: Self::substitute_params_expr(value, param_map),
+                tags,
+            }],
+            HlsStatement::QueryMemory { query, tags, limit } => vec![HlsStatement::QueryMemory {
+                query: Self::substitute_params_expr(query, param_map),
+                tags,
+                limit,
+            }],
             HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(|e| Self::substitute_params_expr(e, param_map)))],
+            HlsStatement::Capability(name) => vec![HlsStatement::Capability(name)],
             _ => vec![stmt],
         }
     }
@@ -1123,6 +1185,7 @@ impl Compiler {
             },
             HlsExpr::List(items) => HlsExpr::List(items.into_iter().map(|i| Self::substitute_params_expr(i, param_map)).collect()),
             HlsExpr::Object(pairs) => HlsExpr::Object(pairs.into_iter().map(|(k, v)| (k, Self::substitute_params_expr(v, param_map))).collect()),
+            HlsExpr::Reason(query) => HlsExpr::Reason(Box::new(Self::substitute_params_expr(*query, param_map))),
             _ => expr,
         }
     }
@@ -1177,9 +1240,42 @@ fn parse_statement(input: &str) -> IResult<&str, HlsStatement> {
         parse_emit_stmt,
         parse_navigate_stmt,
         parse_search_stmt,
+        parse_remember_stmt,
+        parse_query_memory_stmt,
         parse_return_stmt,
         parse_comment,
+        parse_capability_stmt,
     ))(input)
+}
+
+fn parse_remember_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("remember")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('(')(input)?;
+    let (input, key) = parse_expr(input)?;
+    let (input, _) = tuple((multispace0, nom_char(','), multispace0))(input)?;
+    let (input, value) = parse_expr(input)?;
+    let (input, _) = nom_char(')')(input)?;
+    Ok((input, HlsStatement::Remember { key, value, tags: vec!["hls".to_string()] }))
+}
+
+fn parse_query_memory_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("query_memory")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('(')(input)?;
+    let (input, query) = parse_expr(input)?;
+    let (input, _) = nom_char(')')(input)?;
+    Ok((input, HlsStatement::QueryMemory { query, tags: vec![], limit: 5 }))
+}
+
+fn parse_capability_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("capability")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, name) = take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)?;
+    Ok((input, HlsStatement::Capability(name.to_string())))
 }
 
 fn parse_navigate_stmt(input: &str) -> IResult<&str, HlsStatement> {
@@ -1563,9 +1659,19 @@ fn parse_primary_expr(input: &str) -> IResult<&str, HlsExpr> {
         parse_number_expr,
         parse_bool_expr,
         parse_list_expr,
+        parse_reason_expr,
         parse_var_or_call_expr,
         parse_paren_expr,
     ))(input)
+}
+
+fn parse_reason_expr(input: &str) -> IResult<&str, HlsExpr> {
+    let (input, _) = tag("reason")(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('(')(input)?;
+    let (input, query) = parse_expr(input)?;
+    let (input, _) = nom_char(')')(input)?;
+    Ok((input, HlsExpr::Reason(Box::new(query))))
 }
 
 fn parse_string_expr(input: &str) -> IResult<&str, HlsExpr> {

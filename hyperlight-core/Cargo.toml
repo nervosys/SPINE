@@ -12,6 +12,7 @@ hyperlight-agent = { path = "../hyperlight-agent" }
 hyperlight-wasm = { path = "../hyperlight-wasm" }
 hyperlight-compiler = { path = "../hyperlight-compiler" }
 hyperlight-neural = { path = "../hyperlight-neural" }
+hyperlight-human = { path = "../hyperlight-human" }
 hyperlight-cluster = { path = "../hyperlight-cluster" }
 tokio.workspace = true
 serde.workspace = true

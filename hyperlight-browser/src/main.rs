@@ -15,6 +15,11 @@ enum BrowserEvent {
     ElementsUpdated(Vec<WasmElement>),
     PatchesApplied(Vec<VDomPatch>),
     LatentUpdated(Vec<f32>),
+    KnowledgeUpdated(Vec<serde_json::Value>),
+    HistoryUpdated(Vec<hyperlight_protocol::BrowserCommand>),
+    CapabilitiesUpdated(Vec<String>),
+    ReasoningUpdated(Vec<hyperlight_human::AgentAction>),
+    PlansUpdated(Vec<hyperlight_protocol::SwarmPlan>),
     Error(String),
 }
 
@@ -27,6 +32,19 @@ struct HyperlightBrowser {
     status: String,
     elements: Vec<WasmElement>,
     latent_vector: Vec<f32>,
+    knowledge_base: Vec<serde_json::Value>,
+    session_history: Vec<hyperlight_protocol::BrowserCommand>,
+    current_capabilities: Vec<String>,
+    suggested_actions: Vec<hyperlight_human::AgentAction>,
+    new_memory_key: String,
+    new_memory_value: String,
+    target_agent_id: String,
+    task_description: String,
+    proposal_key: String,
+    proposal_value: String,
+    proposal_tags: String,
+    swarm_goal: String,
+    active_plans: Vec<hyperlight_protocol::SwarmPlan>,
     agent: Arc<Mutex<Option<AgentClient<tokio::net::TcpStream>>>>,
     cluster_client: ClusterClient,
     rt: Runtime,
@@ -34,6 +52,13 @@ struct HyperlightBrowser {
     history: Vec<String>,
     show_hls: bool,
     show_latent: bool,
+    show_knowledge: bool,
+    show_history: bool,
+    show_reasoning: bool,
+    show_swarm: bool,
+    show_consensus: bool,
+    show_planning: bool,
+    autonomous_mode: bool,
     event_tx: mpsc::Sender<BrowserEvent>,
     event_rx: mpsc::Receiver<BrowserEvent>,
 }
@@ -50,6 +75,19 @@ impl HyperlightBrowser {
             status: "Disconnected".to_string(),
             elements: Vec::new(),
             latent_vector: Vec::new(),
+            knowledge_base: Vec::new(),
+            session_history: Vec::new(),
+            current_capabilities: Vec::new(),
+            suggested_actions: Vec::new(),
+            new_memory_key: String::new(),
+            new_memory_value: String::new(),
+            target_agent_id: String::new(),
+            task_description: String::new(),
+            proposal_key: String::new(),
+            proposal_value: String::new(),
+            proposal_tags: String::new(),
+            swarm_goal: String::new(),
+            active_plans: Vec::new(),
             agent: Arc::new(Mutex::new(None)),
             cluster_client: ClusterClient::new(vec!["127.0.0.1:8080".parse().unwrap()]),
             rt: Runtime::new().unwrap(),
@@ -57,6 +95,13 @@ impl HyperlightBrowser {
             history: Vec::new(),
             show_hls: true,
             show_latent: false,
+            show_knowledge: false,
+            show_history: false,
+            show_reasoning: true,
+            show_swarm: false,
+            show_consensus: false,
+            show_planning: false,
+            autonomous_mode: false,
             event_tx: tx,
             event_rx: rx,
         }
@@ -137,6 +182,24 @@ impl HyperlightBrowser {
                                                     }
                                                 }
                                             }
+
+                                            // Refresh knowledge and history
+                                            if let Ok(kb) = agent.query_knowledge("*", vec![], 100).await {
+                                                let _ = tx.send(BrowserEvent::KnowledgeUpdated(kb)).await;
+                                            }
+                                            if let Ok(hist) = agent.get_history().await {
+                                                let _ = tx.send(BrowserEvent::HistoryUpdated(hist)).await;
+                                            }
+                                            if let Ok(caps) = agent.get_capabilities().await {
+                                                let _ = tx.send(BrowserEvent::CapabilitiesUpdated(caps)).await;
+                                            }
+
+                                            // Also trigger reasoning in human mode
+                                            if let Ok(ur) = agent.get_ur().await {
+                                                let engine = hyperlight_human::ReasoningEngine::new();
+                                                let actions = engine.suggest_actions(&ur);
+                                                let _ = tx.send(BrowserEvent::ReasoningUpdated(actions)).await;
+                                            }
                                         }
                                         Err(e) => {
                                             let _ = tx.send(BrowserEvent::Error(format!("Transpilation failed: {}", e))).await;
@@ -151,6 +214,11 @@ impl HyperlightBrowser {
                             match agent.get_ur().await {
                                 Ok(ur) => {
                                     let _ = tx.send(BrowserEvent::ContentUpdated(format!("Unified Representation:\n{:#?}", ur))).await;
+                                    
+                                    // Trigger Reasoning Engine
+                                    let engine = hyperlight_human::ReasoningEngine::new();
+                                    let actions = engine.suggest_actions(&ur);
+                                    let _ = tx.send(BrowserEvent::ReasoningUpdated(actions)).await;
                                 }
                                 Err(e) => {
                                     let _ = tx.send(BrowserEvent::Error(format!("Failed to get UR: {}", e))).await;
@@ -183,9 +251,122 @@ impl HyperlightBrowser {
                 Ok(results) => {
                     let _ = tx.send(BrowserEvent::ContentUpdated(format!("Search Results:\n{}", serde_json::to_string_pretty(&results).unwrap()))).await;
                     let _ = tx.send(BrowserEvent::StatusChanged("Search complete".to_string())).await;
+
+                    // Refresh knowledge and history
+                    if let Ok(kb) = agent.query_knowledge("*", vec![], 100).await {
+                        let _ = tx.send(BrowserEvent::KnowledgeUpdated(kb)).await;
+                    }
+                    if let Ok(hist) = agent.get_history().await {
+                        let _ = tx.send(BrowserEvent::HistoryUpdated(hist)).await;
+                    }
+                    if let Ok(caps) = agent.get_capabilities().await {
+                        let _ = tx.send(BrowserEvent::CapabilitiesUpdated(caps)).await;
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(BrowserEvent::Error(format!("Search failed: {}", e))).await;
+                }
+            }
+        });
+    }
+
+    fn swarm_search(&mut self) {
+        let query = self.search_query.clone();
+        let agent_clone = self.agent.clone();
+        let tx = self.event_tx.clone();
+        
+        self.rt.spawn(async move {
+            let mut lock = agent_clone.lock().await;
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Initiating swarm search for '{}'...", query))).await;
+            match agent.swarm_search(&query, 2).await {
+                Ok(_) => {
+                    let _ = tx.send(BrowserEvent::StatusChanged("Swarm search initiated across cluster".to_string())).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowserEvent::Error(format!("Swarm search failed: {}", e))).await;
+                }
+            }
+        });
+    }
+
+    fn delegate_task(&mut self) {
+        let target_id_str = self.target_agent_id.clone();
+        let task = self.task_description.clone();
+        let agent_clone = self.agent.clone();
+        let tx = self.event_tx.clone();
+        
+        self.rt.spawn(async move {
+            let mut lock = agent_clone.lock().await;
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            let target_id = uuid::Uuid::parse_str(&target_id_str).ok();
+            
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Delegating task to {:?}...", target_id))).await;
+            match agent.delegate_task(&task, target_id).await {
+                Ok(_) => {
+                    let _ = tx.send(BrowserEvent::StatusChanged(format!("Task delegated to {:?}", target_id))).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowserEvent::Error(format!("Delegation failed: {}", e))).await;
+                }
+            }
+        });
+    }
+
+    fn propose_knowledge(&mut self) {
+        let key = self.proposal_key.clone();
+        let value_str = self.proposal_value.clone();
+        let value = serde_json::Value::String(value_str);
+        let tags: Vec<String> = self.proposal_tags.split(',').map(|s| s.trim().to_string()).collect();
+        let agent_clone = self.agent.clone();
+        let tx = self.event_tx.clone();
+
+        self.rt.spawn(async move {
+            let mut lock = agent_clone.lock().await;
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Proposing knowledge: {}...", key))).await;
+            match agent.propose_knowledge(&key, value, tags).await {
+                Ok(_) => {
+                    let _ = tx.send(BrowserEvent::StatusChanged("Knowledge proposed to cluster".to_string())).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowserEvent::Error(format!("Proposal failed: {}", e))).await;
+                }
+            }
+        });
+    }
+
+    fn create_swarm_plan(&mut self) {
+        let goal = self.swarm_goal.clone();
+        let agent_clone = self.agent.clone();
+        let tx = self.event_tx.clone();
+
+        self.rt.spawn(async move {
+            let mut lock = agent_clone.lock().await;
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Creating swarm plan for: {}...", goal))).await;
+            match agent.create_swarm_plan(&goal).await {
+                Ok(plan_id) => {
+                    let _ = tx.send(BrowserEvent::StatusChanged(format!("Swarm plan created: {}", plan_id))).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowserEvent::Error(format!("Planning failed: {}", e))).await;
                 }
             }
         });
@@ -207,6 +388,17 @@ impl HyperlightBrowser {
             match agent.transfer_session(target_node).await {
                 Ok(_) => {
                     let _ = tx.send(BrowserEvent::StatusChanged("Transfer initiated".to_string())).await;
+
+                    // Refresh knowledge and history
+                    if let Ok(kb) = agent.query_knowledge("*", vec![], 100).await {
+                        let _ = tx.send(BrowserEvent::KnowledgeUpdated(kb)).await;
+                    }
+                    if let Ok(hist) = agent.get_history().await {
+                        let _ = tx.send(BrowserEvent::HistoryUpdated(hist)).await;
+                    }
+                    if let Ok(caps) = agent.get_capabilities().await {
+                        let _ = tx.send(BrowserEvent::CapabilitiesUpdated(caps)).await;
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(BrowserEvent::Error(format!("Transfer failed: {}", e))).await;
@@ -335,6 +527,11 @@ impl eframe::App for HyperlightBrowser {
                     self.apply_patches(patches);
                 }
                 BrowserEvent::LatentUpdated(l) => self.latent_vector = l,
+                BrowserEvent::KnowledgeUpdated(kb) => self.knowledge_base = kb,
+                BrowserEvent::HistoryUpdated(hist) => self.session_history = hist,
+                BrowserEvent::CapabilitiesUpdated(caps) => self.current_capabilities = caps,
+                BrowserEvent::ReasoningUpdated(actions) => self.suggested_actions = actions,
+                BrowserEvent::PlansUpdated(plans) => self.active_plans = plans,
                 BrowserEvent::Error(e) => {
                     self.status = format!("Error: {}", e);
                     self.content = format!("Error: {}", e);
@@ -367,6 +564,27 @@ impl eframe::App for HyperlightBrowser {
                     self.connect();
                 }
 
+                if ui.button("Ping").clicked() {
+                    let agent_clone = self.agent.clone();
+                    let tx = self.event_tx.clone();
+                    self.rt.spawn(async move {
+                        let mut lock = agent_clone.lock().await;
+                        let agent = match lock.as_mut() {
+                            Some(a) => a,
+                            None => return,
+                        };
+                        
+                        match agent.ping().await {
+                            Ok(latency) => {
+                                let _ = tx.send(BrowserEvent::StatusChanged(format!("Latency: {}ms", latency))).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(BrowserEvent::Error(format!("Ping failed: {}", e))).await;
+                            }
+                        }
+                    });
+                }
+
                 ui.separator();
                 ui.label("Search:");
                 let res = ui.text_edit_singleline(&mut self.search_query);
@@ -375,6 +593,9 @@ impl eframe::App for HyperlightBrowser {
                 }
                 if ui.button("🔍").clicked() {
                     self.search();
+                }
+                if ui.button("🐝 Swarm").clicked() {
+                    self.swarm_search();
                 }
 
                 if ui.button("Transfer").clicked() {
@@ -450,8 +671,31 @@ impl eframe::App for HyperlightBrowser {
                 }
                 
                 ui.checkbox(&mut self.human_mode, "Human Mode");
-                ui.checkbox(&mut self.show_hls, "Show HLS");
-                ui.checkbox(&mut self.show_latent, "Show Latent");
+                ui.checkbox(&mut self.show_hls, "HLS");
+                ui.checkbox(&mut self.show_latent, "Latent");
+                ui.checkbox(&mut self.show_knowledge, "Memory");
+                ui.checkbox(&mut self.show_history, "History");
+                ui.checkbox(&mut self.show_reasoning, "Reasoning");
+                ui.checkbox(&mut self.show_swarm, "Swarm");
+                ui.checkbox(&mut self.show_consensus, "Consensus");
+                ui.checkbox(&mut self.show_planning, "Planning");
+
+                if ui.checkbox(&mut self.autonomous_mode, "Auto").changed() {
+                    let enabled = self.autonomous_mode;
+                    let agent_clone = self.agent.clone();
+                    let tx = self.event_tx.clone();
+                    self.rt.spawn(async move {
+                        let mut lock = agent_clone.lock().await;
+                        let agent = match lock.as_mut() {
+                            Some(a) => a,
+                            None => return,
+                        };
+                        
+                        if let Err(e) = agent.set_autonomous_mode(enabled).await {
+                            let _ = tx.send(BrowserEvent::Error(format!("Failed to set auto mode: {}", e))).await;
+                        }
+                    });
+                }
             });
         });
 
@@ -480,6 +724,18 @@ impl eframe::App for HyperlightBrowser {
                 
                 ui.separator();
                 ui.label(format!("History: {} pages", self.history.len()));
+                ui.separator();
+                ui.label("Capabilities:");
+                for cap in &self.current_capabilities {
+                    let color = match cap.as_str() {
+                        "network" => egui::Color32::from_rgb(100, 100, 255),
+                        "storage" => egui::Color32::from_rgb(100, 255, 100),
+                        "memory" => egui::Color32::from_rgb(255, 255, 100),
+                        "search" => egui::Color32::from_rgb(255, 100, 255),
+                        _ => egui::Color32::GRAY,
+                    };
+                    ui.colored_label(color, format!("[{}]", cap));
+                }
             });
         });
 
@@ -518,6 +774,15 @@ impl eframe::App for HyperlightBrowser {
                                         }
                                         hyperlight_wasm::WasmAction::Search(query) => {
                                             let _ = tx.send(BrowserEvent::StatusChanged(format!("HLS Searching for {}...", query))).await;
+                                        }
+                                        hyperlight_wasm::WasmAction::StoreKnowledge { key, .. } => {
+                                            let _ = tx.send(BrowserEvent::StatusChanged(format!("HLS Storing knowledge: {}...", key))).await;
+                                        }
+                                        hyperlight_wasm::WasmAction::QueryKnowledge { query, .. } => {
+                                            let _ = tx.send(BrowserEvent::StatusChanged(format!("HLS Querying knowledge: {}...", query))).await;
+                                        }
+                                        hyperlight_wasm::WasmAction::Reason(query) => {
+                                            let _ = tx.send(BrowserEvent::StatusChanged(format!("HLS Reasoning about {}...", query))).await;
                                         }
                                     }
                                 }
@@ -563,6 +828,242 @@ impl eframe::App for HyperlightBrowser {
                     ui.separator();
                     ui.label("Protocol Morphology: Active");
                     ui.label("Encryption: Latent-Implicit");
+                }
+            });
+        }
+
+        if self.show_knowledge {
+            egui::SidePanel::left("knowledge_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Knowledge Base");
+                ui.separator();
+                
+                ui.group(|ui| {
+                    ui.label("Add Fact:");
+                    ui.horizontal(|ui| {
+                        ui.label("Key:");
+                        ui.text_edit_singleline(&mut self.new_memory_key);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Val:");
+                        ui.text_edit_singleline(&mut self.new_memory_value);
+                    });
+                    if ui.button("Store").clicked() {
+                        let key = self.new_memory_key.clone();
+                        let val = self.new_memory_value.clone();
+                        let agent_clone = self.agent.clone();
+                        let tx = self.event_tx.clone();
+                        
+                        self.rt.spawn(async move {
+                            let mut lock = agent_clone.lock().await;
+                            let agent = match lock.as_mut() {
+                                Some(a) => a,
+                                None => return,
+                            };
+                            
+                            if let Ok(_) = agent.store_knowledge(&key, serde_json::json!(val), vec!["manual".to_string()]).await {
+                                if let Ok(kb) = agent.query_knowledge("*", vec![], 100).await {
+                                    let _ = tx.send(BrowserEvent::KnowledgeUpdated(kb)).await;
+                                }
+                            }
+                        });
+                        self.new_memory_key.clear();
+                        self.new_memory_value.clear();
+                    }
+                });
+
+                ui.separator();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for item in &self.knowledge_base {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(serde_json::to_string_pretty(item).unwrap_or_default());
+                                if ui.button("🗑").clicked() {
+                                    let key = item["key"].as_str().unwrap_or_default().to_string();
+                                    let agent_clone = self.agent.clone();
+                                    let tx = self.event_tx.clone();
+                                    
+                                    self.rt.spawn(async move {
+                                        let mut lock = agent_clone.lock().await;
+                                        let agent = match lock.as_mut() {
+                                            Some(a) => a,
+                                            None => return,
+                                        };
+                                        
+                                        if let Ok(_) = agent.delete_knowledge(&key).await {
+                                            if let Ok(kb) = agent.query_knowledge("*", vec![], 100).await {
+                                                let _ = tx.send(BrowserEvent::KnowledgeUpdated(kb)).await;
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        }
+
+        if self.show_history {
+            egui::SidePanel::right("history_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Session History");
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for cmd in &self.session_history {
+                        ui.group(|ui| {
+                            match cmd {
+                                hyperlight_protocol::BrowserCommand::Navigate { url } => ui.label(format!("Navigate: {}", url)),
+                                hyperlight_protocol::BrowserCommand::GetUR => ui.label("GetUR"),
+                                hyperlight_protocol::BrowserCommand::ExecuteBinary { .. } => ui.label("Execute Binary"),
+                                hyperlight_protocol::BrowserCommand::StoreKnowledge { key, value, .. } => ui.label(format!("Store: {} = {}", key, value)),
+                                hyperlight_protocol::BrowserCommand::QueryKnowledge { query, .. } => ui.label(format!("Query: {}", query)),
+                                hyperlight_protocol::BrowserCommand::GetSessionHistory => ui.label("Get History"),
+                                _ => ui.label(format!("{:?}", cmd)),
+                            };
+                        });
+                    }
+                });
+            });
+        }
+
+        if self.show_reasoning {
+            egui::SidePanel::right("reasoning_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Agentic Reasoning");
+                ui.separator();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if self.suggested_actions.is_empty() {
+                        ui.label("No actions suggested yet.");
+                    }
+                    for action in &self.suggested_actions {
+                        ui.group(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("Action: {}", action.action_type));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(format!("{:.0}%", action.confidence * 100.0));
+                                });
+                            });
+                            ui.label(format!("Reason: {}", action.reasoning));
+                            if let Some(target) = &action.target_id {
+                                ui.label(format!("Target ID: {}", target));
+                            }
+                            if ui.button("Execute").clicked() {
+                                // In a real implementation, this would trigger the action
+                                self.status = format!("Executing suggested action: {}", action.action_type);
+                            }
+                        });
+                    }
+                });
+            });
+        }
+
+        if self.show_swarm {
+            egui::SidePanel::right("swarm_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Swarm Coordination");
+                ui.separator();
+                
+                ui.group(|ui| {
+                    ui.label("Task Delegation:");
+                    ui.horizontal(|ui| {
+                        ui.label("Target Agent ID:");
+                        ui.text_edit_singleline(&mut self.target_agent_id);
+                    });
+                    ui.label("Task Description:");
+                    ui.add(egui::TextEdit::multiline(&mut self.task_description).desired_rows(3));
+                    
+                    if ui.button("Delegate Task").clicked() {
+                        self.delegate_task();
+                    }
+                });
+
+                ui.separator();
+                ui.heading("Cluster Status");
+                ui.label("Nodes: Active");
+                ui.label("Sync: Real-time");
+                ui.label("Protocol: Chameleon");
+            });
+        }
+
+        if self.show_consensus {
+            egui::SidePanel::right("consensus_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Knowledge Consensus");
+                ui.separator();
+                
+                ui.group(|ui| {
+                    ui.label("Propose Knowledge:");
+                    ui.horizontal(|ui| {
+                        ui.label("Key:");
+                        ui.text_edit_singleline(&mut self.proposal_key);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Value:");
+                        ui.text_edit_singleline(&mut self.proposal_value);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Tags (csv):");
+                        ui.text_edit_singleline(&mut self.proposal_tags);
+                    });
+                    
+                    if ui.button("Propose to Cluster").clicked() {
+                        self.propose_knowledge();
+                    }
+                });
+
+                ui.separator();
+                ui.heading("Active Proposals");
+                ui.label("No active proposals"); // In a real app, this would be dynamic
+
+                ui.separator();
+                ui.heading("Shared Knowledge Base");
+                for entry in &self.knowledge_base {
+                    ui.label(format!("{}: {}", entry["key"], entry["value"]));
+                }
+            });
+        }
+
+        if self.show_planning {
+            egui::SidePanel::right("planning_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Swarm Planning");
+                ui.separator();
+                
+                ui.group(|ui| {
+                    ui.label("Set Swarm Goal:");
+                    ui.add(egui::TextEdit::multiline(&mut self.swarm_goal).desired_rows(2));
+                    
+                    if ui.button("Generate Swarm Plan").clicked() {
+                        self.create_swarm_plan();
+                    }
+                });
+
+                ui.separator();
+                ui.heading("Active Plans");
+                if self.active_plans.is_empty() {
+                    ui.label("No active plans");
+                } else {
+                    for plan in &self.active_plans {
+                        ui.group(|ui| {
+                            ui.label(format!("Goal: {}", plan.goal));
+                            ui.label(format!("Status: {:?}", plan.status));
+                            ui.separator();
+                            for task in &plan.tasks {
+                                ui.horizontal(|ui| {
+                                    let status_color = match task.status {
+                                        hyperlight_protocol::TaskStatus::Pending => egui::Color32::GRAY,
+                                        hyperlight_protocol::TaskStatus::InProgress => egui::Color32::YELLOW,
+                                        hyperlight_protocol::TaskStatus::Completed => egui::Color32::GREEN,
+                                        hyperlight_protocol::TaskStatus::Failed => egui::Color32::RED,
+                                    };
+                                    ui.label(egui::RichText::new("●").color(status_color));
+                                    ui.label(&task.description);
+                                });
+                                if let Some(node_id) = task.assigned_to {
+                                    ui.label(egui::RichText::new(format!("  Assigned to: {}", node_id)).small());
+                                }
+                                if !task.required_skills.is_empty() {
+                                    ui.label(egui::RichText::new(format!("  Skills: {}", task.required_skills.join(", "))).small());
+                                }
+                            }
+                        });
+                    }
                 }
             });
         }

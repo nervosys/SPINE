@@ -519,6 +519,13 @@ impl HlbRuntime {
                 Instruction::SearchFromStack => {
                     self.stack.pop();
                 }
+                Instruction::StoreKnowledgeFromStack { .. } => {
+                    self.stack.pop();
+                    self.stack.pop();
+                }
+                Instruction::QueryKnowledgeFromStack { .. } => {
+                    self.stack.pop();
+                }
             }
             pc += 1;
         }

@@ -75,6 +75,10 @@ Hyperlight is a **headless browser engine** designed exclusively for AI agents. 
 - Route commands to appropriate handlers
 - Fetch live web content via HTTP/HTTPS
 - Coordinate between parser and protocol layers
+- **Long-term Memory (Knowledge Base)**: Persistent fact storage for agents
+- **Session History**: Full audit trail of agent actions
+- **Capability Enforcement**: Permission-based execution for HLS scripts
+- **Automated Persistence**: Periodic disk-sync for sessions and knowledge base
 
 **Technology Stack**:
 

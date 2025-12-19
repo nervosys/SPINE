@@ -2292,6 +2292,7 @@ dependencies = [
  "hyperlight-agent",
  "hyperlight-cluster",
  "hyperlight-compiler",
+ "hyperlight-human",
  "hyperlight-neural",
  "hyperlight-parser",
  "hyperlight-protocol",

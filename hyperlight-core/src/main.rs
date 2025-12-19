@@ -34,10 +34,57 @@ struct Session {
     state: std::collections::HashMap<String, serde_json::Value>,
     /// Current HLB binary for reactivity
     current_binary: Option<hyperlight_protocol::HyperlightBinary>,
+    /// Command history for this session
+    history: Vec<BrowserCommand>,
+    /// Whether the agent is in autonomous mode
+    autonomous_mode: bool,
+}
+
+impl Session {
+    fn new() -> Self {
+        Self {
+            current_url: None,
+            current_html: None,
+            current_vdom: None,
+            last_command: None,
+            needs_morph: false,
+            state: std::collections::HashMap::new(),
+            current_binary: None,
+            history: Vec::new(),
+            autonomous_mode: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct KnowledgeEntry {
+    key: String,
+    value: serde_json::Value,
+    tags: Vec<String>,
+    timestamp_ns: u64,
+}
+
+#[derive(Clone)]
+struct KnowledgeProposal {
+    key: String,
+    value: serde_json::Value,
+    tags: Vec<String>,
+    votes: Vec<KnowledgeVote>,
+    origin_node: hyperlight_cluster::NodeId,
+}
+
+#[derive(Clone)]
+struct KnowledgeVote {
+    voter_id: hyperlight_cluster::NodeId,
+    approved: bool,
+    confidence: f32,
 }
 
 struct BrowserState {
     sessions: DashMap<String, Session>,
+    knowledge_base: DashMap<String, Vec<KnowledgeEntry>>,
+    proposals: DashMap<Uuid, KnowledgeProposal>,
+    plans: DashMap<Uuid, hyperlight_protocol::SwarmPlan>,
     client: reqwest::Client,
     encoder: Mutex<NeuralLatentEncoder>,
     cluster: Mutex<ClusterNode>,
@@ -59,23 +106,49 @@ impl BrowserState {
             let json = serde_json::to_string(session)?;
             std::fs::write(path, json)?;
         }
+
+        // Save knowledge base
+        let kb_dir = std::path::Path::new("knowledge");
+        if !kb_dir.exists() {
+            std::fs::create_dir_all(kb_dir)?;
+        }
+        for entry in self.knowledge_base.iter() {
+            let id = entry.key();
+            let entries = entry.value();
+            let path = kb_dir.join(format!("{}.json", id));
+            let json = serde_json::to_string(entries)?;
+            std::fs::write(path, json)?;
+        }
+
         Ok(())
     }
 
     fn load_sessions(&self) -> anyhow::Result<()> {
         let dir = std::path::Path::new("sessions");
-        if !dir.exists() {
-            return Ok(());
+        if dir.exists() {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    let id = path.file_stem().unwrap().to_str().unwrap().to_string();
+                    let json = std::fs::read_to_string(&path)?;
+                    let session: Session = serde_json::from_str(&json)?;
+                    self.sessions.insert(id, session);
+                }
+            }
         }
-        
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                let id = path.file_stem().unwrap().to_str().unwrap().to_string();
-                let json = std::fs::read_to_string(&path)?;
-                let session: Session = serde_json::from_str(&json)?;
-                self.sessions.insert(id, session);
+
+        let kb_dir = std::path::Path::new("knowledge");
+        if kb_dir.exists() {
+            for entry in std::fs::read_dir(kb_dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    let id = path.file_stem().unwrap().to_str().unwrap().to_string();
+                    let json = std::fs::read_to_string(&path)?;
+                    let entries: Vec<KnowledgeEntry> = serde_json::from_str(&json)?;
+                    self.knowledge_base.insert(id, entries);
+                }
             }
         }
         Ok(())
@@ -112,16 +185,51 @@ async fn handle_command(
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
     
+    // Record command in history
+    if let Some(mut session) = state.sessions.get_mut(session_id) {
+        session.history.push(command.clone());
+        session.last_command = Some(command.clone());
+    }
+    
     let mut latent_to_stream = Vec::new();
     let response = match command {
         BrowserCommand::Navigate { url } => {
             match state.client.get(&url).send().await {
                 Ok(resp) => {
                     let html = resp.text().await.unwrap_or_default();
+                    
+                    // Transpile HTML to HLB for agentic interaction
+                    let hlb = hyperlight_human::HumanTranspiler::transpile(&html, "", "")
+                        .unwrap_or_else(|e| {
+                            warn!("Transpilation failed for {}: {}", url, e);
+                            hyperlight_protocol::HyperlightBinary {
+                                instructions: vec![],
+                                data: vec![],
+                                render_start: 0,
+                                exported_functions: std::collections::HashMap::new(),
+                                capabilities: vec![],
+                            }
+                        });
+
                     if let Some(mut session) = state.sessions.get_mut(session_id) {
                         session.current_url = Some(url);
                         session.current_html = Some(html);
+                        session.current_binary = Some(hlb);
                         session.current_vdom = None; // Reset VDOM on navigation
+                    } else {
+                        // Create new session if it doesn't exist
+                        let session = Session {
+                            current_url: Some(url),
+                            current_html: Some(html),
+                            current_vdom: None,
+                            last_command: None,
+                            needs_morph: false,
+                            state: std::collections::HashMap::new(),
+                            current_binary: Some(hlb),
+                            history: Vec::new(),
+                            autonomous_mode: false,
+                        };
+                        state.sessions.insert(session_id.to_string(), session);
                     }
                     Response {
                         id: request_id,
@@ -139,7 +247,7 @@ async fn handle_command(
         BrowserCommand::GetUR => {
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(html) = &session.current_html {
-                    match parse_html(html) {
+                    match hyperlight_parser::parse_html(html) {
                         Ok(ur) => Response {
                             id: request_id,
                             result: Some(serde_json::to_value(ur).unwrap()),
@@ -190,8 +298,24 @@ async fn handle_command(
             }
         }
         BrowserCommand::ExecuteBinary(bin) => {
-            info!("Executing HLB with {} instructions", bin.instructions.len());
+            info!("Executing HLB with {} instructions and capabilities: {:?}", bin.instructions.len(), bin.capabilities);
             
+            // Capability check
+            for cap in &bin.capabilities {
+                match cap.as_str() {
+                    "network" | "storage" | "memory" | "search" => {
+                        // Allowed by default for now
+                    }
+                    _ => {
+                        return (Response {
+                            id: request_id,
+                            result: None,
+                            error: Some(format!("Unauthorized or unknown capability: {}", cap)),
+                        }, Vec::new());
+                    }
+                }
+            }
+
             // Store binary in session for reactivity
             if let Some(mut session) = state.sessions.get_mut(session_id) {
                 session.current_binary = Some(bin.clone());
@@ -251,6 +375,39 @@ async fn handle_command(
                         info!("WASM requested search for {}", query);
                         let cluster = state.cluster.lock().await;
                         let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                    }
+                    hyperlight_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
+                        info!("WASM requested knowledge storage: {}", key);
+                        if let Some(mut session) = state.sessions.get_mut(session_id) {
+                            // Store in local KB
+                            let entry = KnowledgeEntry {
+                                key: key.clone(),
+                                value: value.clone(),
+                                tags: tags.clone(),
+                                timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                            };
+                            state.knowledge_base.entry(key.clone()).or_default().push(entry);
+                            
+                            let cluster = state.cluster.lock().await;
+                            let _ = cluster.broadcast_knowledge(key.clone(), value.clone(), tags.clone());
+                        }
+                    }
+                    hyperlight_wasm::WasmAction::QueryKnowledge { query, tags, limit } => {
+                        info!("WASM requested knowledge query: {}", query);
+                    }
+                    hyperlight_wasm::WasmAction::Reason(query) => {
+                        info!("WASM requested reasoning: {}", query);
+                        if let Some(mut session) = state.sessions.get_mut(session_id) {
+                            if let Some(html) = &session.current_html {
+                                if let Ok(ur) = hyperlight_parser::parse_html(html) {
+                                    let engine = hyperlight_human::ReasoningEngine::new();
+                                    let plan = engine.create_plan(&query, &ur);
+                                    info!("Reasoning plan: {:?}", plan);
+                                    // Store the plan in session history or state for the agent to see
+                                    session.history.push(BrowserCommand::Navigate { url: format!("reasoning://{}", query) });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -355,7 +512,7 @@ async fn handle_command(
         BrowserCommand::GetLatentUR { dimensions } => {
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(html) = &session.current_html {
-                    match parse_html(html) {
+                    match hyperlight_parser::parse_html(html) {
                         Ok(ur) => {
                             let ur_json = serde_json::to_string(&ur).unwrap_or_default();
                             let mut encoder = state.encoder.lock().await;
@@ -469,6 +626,197 @@ async fn handle_command(
                 }
             }
         }
+        BrowserCommand::StoreKnowledge { key, value, tags } => {
+            let entry = KnowledgeEntry {
+                key: key.clone(),
+                value: value.clone(),
+                tags: tags.clone(),
+                timestamp_ns: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64,
+            };
+            state.knowledge_base.entry(session_id.to_string()).or_default().push(entry);
+            
+            // Broadcast to cluster
+            let cluster = state.cluster.lock().await;
+            let _ = cluster.broadcast_knowledge(key, value, tags);
+
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "knowledge_stored" })),
+                error: None,
+            }
+        }
+        BrowserCommand::QueryKnowledge { query, tags, limit } => {
+            let entries = state.knowledge_base.get(session_id).map(|e| e.clone()).unwrap_or_default();
+            let results: Vec<_> = entries.into_iter()
+                .filter(|e| {
+                    let matches_tags = tags.is_empty() || tags.iter().all(|t| e.tags.contains(t));
+                    let matches_query = query.is_empty() || e.key.contains(&query);
+                    matches_tags && matches_query
+                })
+                .take(limit)
+                .collect();
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "results": results })),
+                error: None,
+            }
+        }
+        BrowserCommand::DeleteKnowledge { key } => {
+            if let Some(mut entries) = state.knowledge_base.get_mut(session_id) {
+                entries.retain(|e| e.key != key);
+            }
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "knowledge_deleted" })),
+                error: None,
+            }
+        }
+        BrowserCommand::GetSessionHistory => {
+            let history = state.sessions.get(session_id).map(|s| s.history.clone()).unwrap_or_default();
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "history": history })),
+                error: None,
+            }
+        }
+        BrowserCommand::GetCapabilities => {
+            let capabilities = state.sessions.get(session_id)
+                .and_then(|s| s.current_binary.as_ref().map(|b| b.capabilities.clone()))
+                .unwrap_or_default();
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "capabilities": capabilities })),
+                error: None,
+            }
+        }
+        BrowserCommand::SetAutonomousMode { enabled } => {
+            if let Some(mut session) = state.sessions.get_mut(session_id) {
+                session.autonomous_mode = enabled;
+                Response {
+                    id: request_id,
+                    result: Some(serde_json::json!({ "status": "autonomous_mode_set", "enabled": enabled })),
+                    error: None,
+                }
+            } else {
+                Response {
+                    id: request_id,
+                    result: None,
+                    error: Some("Session not found".to_string()),
+                }
+            }
+        }
+        BrowserCommand::SwarmSearch { query, depth } => {
+            info!("Initiating swarm search for '{}' with depth {}", query, depth);
+            let cluster = state.cluster.lock().await;
+            let _ = cluster.broadcast_swarm_search(query.clone(), depth, request_id.clone()).await;
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "swarm_search_initiated", "query": query, "depth": depth })),
+                error: None,
+            }
+        }
+        BrowserCommand::DelegateTask { task, target_agent_id } => {
+            info!("Delegating task: '{}' to {:?}", task, target_agent_id);
+            let cluster = state.cluster.lock().await;
+            let _ = cluster.delegate_task(task.clone(), target_agent_id).await;
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "task_delegated", "task": task })),
+                error: None,
+            }
+        }
+        BrowserCommand::ProposeKnowledge { key, value, tags } => {
+            info!("Proposing knowledge: {} = {:?}", key, value);
+            let cluster = state.cluster.lock().await;
+            let _ = cluster.propose_knowledge(key.clone(), value.clone(), tags.clone()).await;
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "knowledge_proposed", "key": key })),
+                error: None,
+            }
+        }
+        BrowserCommand::CreateSwarmPlan { goal } => {
+            info!("Creating swarm plan for goal: '{}'", goal);
+            let plan_id = Uuid::new_v4();
+            
+            // Simulate plan generation (in a real app, this would use an LLM)
+            let tasks = vec![
+                hyperlight_protocol::PlanTask {
+                    id: Uuid::new_v4(),
+                    description: format!("Research: {}", goal),
+                    required_skills: vec!["research".to_string(), "scraping".to_string()],
+                    assigned_to: None,
+                    dependencies: vec![],
+                    status: hyperlight_protocol::TaskStatus::Pending,
+                    result: None,
+                },
+                hyperlight_protocol::PlanTask {
+                    id: Uuid::new_v4(),
+                    description: format!("Synthesize findings for: {}", goal),
+                    required_skills: vec!["synthesis".to_string()],
+                    assigned_to: None,
+                    dependencies: vec![], // Would depend on the first task
+                    status: hyperlight_protocol::TaskStatus::Pending,
+                    result: None,
+                }
+            ];
+            
+            let plan = hyperlight_protocol::SwarmPlan {
+                id: plan_id,
+                goal: goal.clone(),
+                tasks,
+                status: hyperlight_protocol::PlanStatus::Active,
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+            
+            state.plans.insert(plan_id, plan.clone());
+            
+            let cluster = state.cluster.lock().await;
+            let _ = cluster.propose_swarm_plan(plan).await;
+            
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "plan_created", "plan_id": plan_id })),
+                error: None,
+            }
+        }
+        BrowserCommand::ExecutePlanTask { plan_id, task_id } => {
+            info!("Executing plan task {} for plan {}", task_id, plan_id);
+            
+            if let Some(mut plan) = state.plans.get_mut(&plan_id) {
+                if let Some(task) = plan.tasks.iter_mut().find(|t| t.id == task_id) {
+                    task.status = hyperlight_protocol::TaskStatus::InProgress;
+                    
+                    // Broadcast update
+                    let cluster = state.cluster.lock().await;
+                    let _ = cluster.update_plan_task(plan_id, task_id, task.status.clone(), None).await;
+                    
+                    Response {
+                        id: request_id,
+                        result: Some(serde_json::json!({ "status": "task_started", "task_id": task_id })),
+                        error: None,
+                    }
+                } else {
+                    Response {
+                        id: request_id,
+                        result: None,
+                        error: Some("Task not found".to_string()),
+                    }
+                }
+            } else {
+                Response {
+                    id: request_id,
+                    result: None,
+                    error: Some("Plan not found".to_string()),
+                }
+            }
+        }
     };
     
     timer.observe_duration();
@@ -480,20 +828,24 @@ async fn main() -> Result<()> {
     init_telemetry("hyperlight-core")?;
     info!("Starting Hyperlight Agentic Browser...");
 
-    let addr = "127.0.0.1:8080".parse().unwrap();
+    let cluster_addr = "127.0.0.1:8081".parse().unwrap();
     let capabilities = NodeCapabilities {
         supports_wasm: true,
         supports_chameleon: true,
         supports_speculation: true,
         max_sessions: 100,
         region: Some("us-west".to_string()),
+        skills: vec!["research".to_string(), "synthesis".to_string(), "scraping".to_string()],
     };
 
-    let mut cluster_node = ClusterNode::new(addr, capabilities);
+    let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
     cluster_node.start().await?;
 
     let state = Arc::new(BrowserState {
         sessions: DashMap::new(),
+        knowledge_base: DashMap::new(),
+        proposals: DashMap::new(),
+        plans: DashMap::new(),
         client: reqwest::Client::new(),
         encoder: Mutex::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)), // Standard 256-dim latent space
         cluster: Mutex::new(cluster_node),
@@ -606,7 +958,241 @@ async fn main() -> Result<()> {
                     info!("Received search results for {} from node {}", request_id, node_id);
                     // In a real app, we'd push this to the client via a WebSocket or similar
                 }
+                hyperlight_cluster::ClusterEvent::KnowledgeSynced { key, value, tags, origin_node } => {
+                    info!("Knowledge synced from node {}: {} = {}", origin_node, key, value);
+                    // Store in a global/shared knowledge base or specific session if applicable
+                    // For now, we'll store it in a "cluster_shared" session
+                    let entry = KnowledgeEntry {
+                        key,
+                        value,
+                        tags,
+                        timestamp_ns: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64,
+                    };
+                    cluster_state.knowledge_base.entry("cluster_shared".to_string()).or_default().push(entry);
+                }
+                hyperlight_cluster::ClusterEvent::SwarmSearchRequested { query, depth, request_id, origin_node } => {
+                    info!("Swarm search requested: '{}' (depth {}) from node {}", query, depth, origin_node);
+                    // Spawn a "Scout" session to perform the search
+                    let scout_id = format!("scout-{}-{}", origin_node, Uuid::new_v4());
+                    let mut scout_session = Session::new();
+                    scout_session.current_url = Some(format!("https://www.google.com/search?q={}", query));
+                    scout_session.autonomous_mode = true;
+                    cluster_state.sessions.insert(scout_id.clone(), scout_session);
+                    
+                    // In a real implementation, we'd wait for the scout to finish and send results back
+                }
+                hyperlight_cluster::ClusterEvent::TaskDelegated { task, target_agent_id, origin_node } => {
+                    info!("Task delegated from node {}: '{}' (target: {:?})", origin_node, task, target_agent_id);
+                    // Handle task delegation (e.g., assign to an idle autonomous session)
+                }
+                hyperlight_cluster::ClusterEvent::KnowledgeProposed { proposal_id, key, value, tags, origin_node } => {
+                    info!("Knowledge proposal received from node {}: {} = {:?}", origin_node, key, value);
+                    
+                    // Store proposal
+                    cluster_state.proposals.insert(proposal_id, KnowledgeProposal {
+                        key: key.clone(),
+                        value: value.clone(),
+                        tags: tags.clone(),
+                        votes: Vec::new(),
+                        origin_node,
+                    });
+                    
+                    // Auto-vote based on confidence (simulated)
+                    let cluster = cluster_state.cluster.lock().await;
+                    let _ = cluster.vote_on_knowledge(proposal_id, true, 0.9).await;
+                }
+                hyperlight_cluster::ClusterEvent::KnowledgeVoteReceived { proposal_id, voter_id, approved, confidence } => {
+                    info!("Vote received for proposal {}: approved={}, confidence={}", proposal_id, approved, confidence);
+                    
+                    if let Some(mut proposal) = cluster_state.proposals.get_mut(&proposal_id) {
+                        proposal.votes.push(KnowledgeVote {
+                            voter_id,
+                            approved,
+                            confidence,
+                        });
+                        
+                        // Check if consensus reached
+                        let cluster = cluster_state.cluster.lock().await;
+                        let total_nodes = cluster.get_healthy_nodes().len() + 1; // +1 for self
+                        let approved_votes = proposal.votes.iter().filter(|v| v.approved).count();
+                        let threshold = cluster.get_consensus_threshold();
+                        
+                        if (approved_votes as f32 / total_nodes as f32) >= threshold {
+                            info!("Consensus reached for proposal {}. Committing...", proposal_id);
+                            let _ = cluster.commit_knowledge(proposal_id, proposal.key.clone(), proposal.value.clone(), proposal.tags.clone());
+                        }
+                    }
+                }
+                hyperlight_cluster::ClusterEvent::KnowledgeCommitted { proposal_id, key, value, tags } => {
+                    info!("Knowledge proposal {} committed: {} = {:?}", proposal_id, key, value);
+                    
+                    let entry = KnowledgeEntry {
+                        key,
+                        value,
+                        tags,
+                        timestamp_ns: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64,
+                    };
+                    cluster_state.knowledge_base.entry("cluster_consensus".to_string()).or_default().push(entry);
+                    cluster_state.proposals.remove(&proposal_id);
+                }
+                hyperlight_cluster::ClusterEvent::SwarmPlanProposed { plan, origin_node } => {
+                    info!("Swarm plan proposed by node {}: '{}' ({} tasks)", origin_node, plan.goal, plan.tasks.len());
+                    cluster_state.plans.insert(plan.id, plan);
+                }
+                hyperlight_cluster::ClusterEvent::PlanTaskUpdated { plan_id, task_id, status, result, node_id } => {
+                    info!("Plan task {} updated by node {}: status={:?}", task_id, node_id, status);
+                    if let Some(mut plan) = cluster_state.plans.get_mut(&plan_id) {
+                        if let Some(task) = plan.tasks.iter_mut().find(|t| t.id == task_id) {
+                            task.status = status;
+                            task.result = result;
+                        }
+                    }
+                }
                 _ => {}
+            }
+        }
+    });
+
+    // Start autonomous agent loop
+    let agent_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            
+            // 1. Swarm Task Scheduling
+            for mut plan_entry in agent_state.plans.iter_mut() {
+                let plan_id = *plan_entry.key();
+                let plan = plan_entry.value_mut();
+                
+                if plan.status == hyperlight_protocol::PlanStatus::Active {
+                    let completed_tasks: Vec<_> = plan.tasks.iter()
+                        .filter(|t| t.status == hyperlight_protocol::TaskStatus::Completed)
+                        .map(|t| t.id)
+                        .collect();
+
+                    for task in plan.tasks.iter_mut() {
+                        if task.status == hyperlight_protocol::TaskStatus::Pending && task.assigned_to.is_none() {
+                            // Check dependencies
+                            let deps_met = task.dependencies.iter().all(|dep_id| {
+                                completed_tasks.contains(dep_id)
+                            });
+
+                            if !deps_met {
+                                continue;
+                            }
+
+                            // Skill-based Routing
+                            let cluster = agent_state.cluster.lock().await;
+                            let mut best_node = None;
+                            
+                            // Check self first
+                            let my_id = cluster.id;
+                            let my_caps = cluster.get_capabilities();
+                            let my_score = task.required_skills.iter()
+                                .filter(|s| my_caps.skills.contains(s))
+                                .count();
+                            
+                            if my_score > 0 {
+                                best_node = Some((my_id, my_score));
+                            }
+                            
+                            // Check other nodes
+                            for node in cluster.get_healthy_nodes() {
+                                if node.id == my_id { continue; }
+                                let score = task.required_skills.iter()
+                                    .filter(|s| node.capabilities.skills.contains(s))
+                                    .count();
+                                
+                                if score > best_node.map(|(_, s)| s).unwrap_or(0) {
+                                    best_node = Some((node.id, score));
+                                }
+                            }
+
+                            if let Some((node_id, _)) = best_node {
+                                info!("Swarm Scheduler: Assigning task '{}' to node {} (skills matched)", task.description, node_id);
+                                task.assigned_to = Some(node_id);
+                                
+                                if node_id == my_id {
+                                    task.status = hyperlight_protocol::TaskStatus::InProgress;
+                                    // Broadcast assignment
+                                    let _ = cluster.update_plan_task(plan_id, task.id, task.status.clone(), None).await;
+                                    
+                                    // Trigger task execution (simulated)
+                                    let task_desc = task.description.clone();
+                                    let task_id = task.id;
+                                    let task_state = agent_state.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                        info!("Task completed: {}", task_desc);
+                                        if let Some(mut p) = task_state.plans.get_mut(&plan_id) {
+                                            if let Some(t) = p.tasks.iter_mut().find(|t| t.id == task_id) {
+                                                t.status = hyperlight_protocol::TaskStatus::Completed;
+                                                t.result = Some(serde_json::json!({ "status": "success", "data": "Simulated result" }));
+                                                
+                                                let cluster = task_state.cluster.lock().await;
+                                                let _ = cluster.update_plan_task(plan_id, task_id, t.status.clone(), t.result.clone()).await;
+                                            }
+                                        }
+                                    });
+                                } else {
+                                    // Task assigned to another node, they will pick it up in their loop
+                                    let _ = cluster.update_plan_task(plan_id, task.id, task.status.clone(), None).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Autonomous Session Loop
+            for mut entry in agent_state.sessions.iter_mut() {
+                let session_id = entry.key().clone();
+                let session = entry.value_mut();
+                
+                if session.autonomous_mode {
+                    if let Some(html) = &session.current_html {
+                        match hyperlight_parser::parse_html(html) {
+                            Ok(ur) => {
+                                let engine = hyperlight_human::ReasoningEngine::new();
+                                let plan = engine.create_plan("Explore and find search", &ur);
+                                
+                                if let Some(best_action) = plan.steps.first() {
+                                    if plan.estimated_success > 0.7 {
+                                        info!("Autonomous agent in session {} executing plan step: {}", session_id, best_action.action_type);
+                                        
+                                        // Execute the action
+                                        match best_action.action_type.as_str() {
+                                            "Search" | "Authenticate" => {
+                                                if let Some(target_id) = &best_action.target_id {
+                                                    session.history.push(hyperlight_protocol::BrowserCommand::Click { 
+                                                        element_id: target_id.clone() 
+                                                    });
+                                                }
+                                            }
+                                            "InputSearch" => {
+                                                if let Some(target_id) = &best_action.target_id {
+                                                    session.history.push(hyperlight_protocol::BrowserCommand::Type { 
+                                                        element_id: target_id.clone(),
+                                                        text: "Hyperlight Browser".to_string()
+                                                    });
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => warn!("Failed to parse HTML for autonomous session {}: {}", session_id, e),
+                        }
+                    }
+                }
             }
         }
     });
@@ -629,8 +1215,9 @@ async fn main() -> Result<()> {
         }
     });
 
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
-    info!("Listening on 127.0.0.1:8080");
+    let addr = "127.0.0.1:8082";
+    let listener = TcpListener::bind(addr).await?;
+    info!("Listening on {}", addr);
 
     // TLS setup
     let tls_acceptor = if std::env::var("HYPERLIGHT_TLS").unwrap_or_default() == "1" {
@@ -683,6 +1270,9 @@ where
 
     loop {
         match handler.receive_message().await {
+            Ok(Message::Ping { timestamp }) => {
+                let _ = handler.send_message(&Message::Pong { timestamp }).await;
+            }
             Ok(Message::Request(req)) => {
                 let req_span = span!(Level::INFO, "request", request_id = %req.id, command = ?req.command);
                 let _enter = req_span.enter();
@@ -704,15 +1294,7 @@ where
                 } else {
                     let new_id = Uuid::new_v4().to_string();
                     SESSIONS_ACTIVE.inc();
-                    state.sessions.insert(new_id.clone(), Session {
-                        current_url: None,
-                        current_html: None,
-                        current_vdom: None,
-                        last_command: None,
-                        needs_morph: false,
-                        state: std::collections::HashMap::new(),
-                        current_binary: None,
-                    });
+                    state.sessions.insert(new_id.clone(), Session::new());
                     
                     // Register session with cluster
                     let cluster = state.cluster.lock().await;

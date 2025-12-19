@@ -4,6 +4,30 @@ use hyperlight_protocol::HyperlightBinary;
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
 use rand::prelude::*;
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Default)]
+struct SemanticInfo {
+    title: String,
+    page_type: PageType,
+    inferred_state: HashMap<String, String>,
+    intent: String,
+    reasoning: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum PageType {
+    Unknown,
+    Content,
+    Interactive,
+    Navigation,
+}
+
+impl Default for PageType {
+    fn default() -> Self {
+        PageType::Unknown
+    }
+}
 
 /// Simulates human-like interaction patterns for agentic browsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +122,24 @@ impl HumanTranspiler {
         let document = scraper::Html::parse_document(html);
         let mut hls_source = String::new();
         
+        // 1. Semantic Analysis Pass
+        let semantic_info = Self::analyze_semantics(&document);
+        hls_source.push_str(&format!("// Semantic Analysis: {}\n", semantic_info.title));
+        hls_source.push_str(&format!("// Page Type: {:?}\n", semantic_info.page_type));
+        hls_source.push_str(&format!("// Inferred Intent: {}\n", semantic_info.intent));
+        for reason in &semantic_info.reasoning {
+            hls_source.push_str(&format!("// Reasoning: {}\n", reason));
+        }
+        
+        // 2. State Generation
+        for (name, initial) in semantic_info.inferred_state {
+            hls_source.push_str(&format!("state {} = {}\n", name, initial));
+        }
+
+        // 3. Capability Requirements
+        hls_source.push_str("capability network\n");
+        hls_source.push_str("capability storage\n\n");
+
         // Extract global styles from <style> tags
         let style_selector = scraper::Selector::parse("style").unwrap();
         let mut global_css = css.to_string();
@@ -114,31 +156,80 @@ impl HumanTranspiler {
 
         if !global_css.is_empty() {
             hls_source.push_str(&format!("// Global CSS: {} bytes\n", global_css.len()));
-            // In a full implementation, we would parse this CSS and build a style map
         }
         if !global_js.is_empty() {
             hls_source.push_str(&format!("// Global JS: {} bytes\n", global_js.len()));
         }
 
-        hls_source.push_str("element Root {\n");
+        hls_source.push_str("fn render() {\n");
+        hls_source.push_str("  element Root {\n");
         
         // Traverse the body
         let body_selector = scraper::Selector::parse("body").unwrap();
         if let Some(body) = document.select(&body_selector).next() {
             for child in body.children() {
-                Self::convert_node(child, &mut hls_source, 1);
+                Self::convert_node(child, &mut hls_source, 2);
             }
         } else {
             // Fallback to root children if no body
             for child in document.tree.root().children() {
-                Self::convert_node(child, &mut hls_source, 1);
+                Self::convert_node(child, &mut hls_source, 2);
             }
         }
         
+        hls_source.push_str("  }\n");
         hls_source.push_str("}\n");
         
         // Compile the generated HLS to HLB
         Compiler::compile(&hls_source)
+    }
+
+    fn analyze_semantics(doc: &scraper::Html) -> SemanticInfo {
+        let mut info = SemanticInfo::default();
+        
+        // Title extraction
+        let title_selector = scraper::Selector::parse("title").unwrap();
+        if let Some(title) = doc.select(&title_selector).next() {
+            info.title = title.text().collect();
+        }
+
+        // Page type inference
+        let form_selector = scraper::Selector::parse("form").unwrap();
+        let article_selector = scraper::Selector::parse("article").unwrap();
+        let search_selector = scraper::Selector::parse("input[type='search'], input[name='q'], input[name='query']").unwrap();
+        let login_selector = scraper::Selector::parse("input[type='password']").unwrap();
+        
+        if doc.select(&form_selector).next().is_some() {
+            info.page_type = PageType::Interactive;
+            info.reasoning.push("Found form elements, suggesting interactivity.".to_string());
+        } else if doc.select(&article_selector).next().is_some() {
+            info.page_type = PageType::Content;
+            info.reasoning.push("Found article tags, suggesting content-heavy page.".to_string());
+        }
+
+        // Intent inference
+        if doc.select(&search_selector).next().is_some() {
+            info.intent = "Search".to_string();
+            info.reasoning.push("Detected search input field.".to_string());
+        } else if doc.select(&login_selector).next().is_some() {
+            info.intent = "Authentication".to_string();
+            info.reasoning.push("Detected password input field.".to_string());
+        } else if info.page_type == PageType::Content {
+            info.intent = "Information Retrieval".to_string();
+        } else {
+            info.intent = "Exploration".to_string();
+        }
+
+        // Inferred state from inputs
+        let input_selector = scraper::Selector::parse("input[name]").unwrap();
+        for input in doc.select(&input_selector) {
+            if let Some(name) = input.value().attr("name") {
+                let safe_name = name.replace("-", "_").replace(" ", "_");
+                info.inferred_state.insert(safe_name, "\"\"".to_string());
+            }
+        }
+
+        info
     }
 
     fn convert_node(node: ego_tree::NodeRef<scraper::node::Node>, hls: &mut String, indent: usize) {
@@ -243,6 +334,109 @@ impl HumanTranspiler {
         // Map common events to HLS event emitters
         hls.push_str(&format!("{}on_{} -> emit(\"{}\", {{ \"script\": \"{}\" }})\n", 
             indent_str, event_name, event_name, value.replace("\"", "\\\"")));
+    }
+}
+
+/// Reasoning Engine: Analyzes the Unified Representation to suggest agentic actions.
+pub struct ReasoningEngine;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAction {
+    pub action_type: String,
+    pub target_id: Option<String>,
+    pub payload: Option<serde_json::Value>,
+    pub confidence: f32,
+    pub reasoning: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPlan {
+    pub goal: String,
+    pub steps: Vec<AgentAction>,
+    pub estimated_success: f32,
+}
+
+impl ReasoningEngine {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn suggest_actions(&self, ur: &hyperlight_parser::UnifiedRepresentation) -> Vec<AgentAction> {
+        let mut suggestions = Vec::new();
+        use hyperlight_parser::Element;
+
+        for node in &ur.elements {
+            match node {
+                Element::Button { text, action_id } | Element::Link { text, url: action_id } => {
+                    let text_low = text.to_lowercase();
+                    if text_low.contains("search") || text_low.contains("find") {
+                        suggestions.push(AgentAction {
+                            action_type: "Search".to_string(),
+                            target_id: Some(action_id.clone()),
+                            payload: None,
+                            confidence: 0.85,
+                            reasoning: format!("Found search-related element with text '{}'", text),
+                        });
+                    } else if text_low.contains("login") || text_low.contains("sign in") {
+                        suggestions.push(AgentAction {
+                            action_type: "Authenticate".to_string(),
+                            target_id: Some(action_id.clone()),
+                            payload: None,
+                            confidence: 0.9,
+                            reasoning: "Detected authentication entry point.".to_string(),
+                        });
+                    }
+                }
+                Element::Input { label, input_type, id } => {
+                    let label_low = label.to_lowercase();
+                    if label_low.contains("search") || input_type == "search" || id.contains("search") {
+                        suggestions.push(AgentAction {
+                            action_type: "InputSearch".to_string(),
+                            target_id: Some(id.clone()),
+                            payload: Some(serde_json::json!({ "label": label })),
+                            confidence: 0.95,
+                            reasoning: "Identified primary search input field.".to_string(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Sort by confidence
+        suggestions.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+        suggestions
+    }
+
+    pub fn create_plan(&self, goal: &str, ur: &hyperlight_parser::UnifiedRepresentation) -> AgentPlan {
+        let suggestions = self.suggest_actions(ur);
+        let mut steps = Vec::new();
+        let mut confidence_sum = 0.0;
+
+        // Heuristic: If goal contains "search", prioritize search actions
+        if goal.to_lowercase().contains("search") {
+            if let Some(search_input) = suggestions.iter().find(|a| a.action_type == "InputSearch") {
+                steps.push(search_input.clone());
+                confidence_sum += search_input.confidence;
+            }
+            if let Some(search_btn) = suggestions.iter().find(|a| a.action_type == "Search") {
+                steps.push(search_btn.clone());
+                confidence_sum += search_btn.confidence;
+            }
+        } else if goal.to_lowercase().contains("login") || goal.to_lowercase().contains("auth") {
+            if let Some(auth_btn) = suggestions.iter().find(|a| a.action_type == "Authenticate") {
+                steps.push(auth_btn.clone());
+                confidence_sum += auth_btn.confidence;
+            }
+        }
+
+        let estimated_success = if steps.is_empty() { 0.0 } else { confidence_sum / steps.len() as f32 };
+
+        AgentPlan {
+            goal: goal.to_string(),
+            steps,
+            estimated_success,
+        }
     }
 }
 

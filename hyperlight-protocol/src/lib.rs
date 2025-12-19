@@ -395,6 +395,10 @@ pub enum Message {
     PreComputed(PreComputedResponse),
     /// Server-initiated request to morph the protocol
     MorphRequest { seed: u64 },
+    /// Health check to verify connection
+    Ping { timestamp: u64 },
+    /// Response to health check
+    Pong { timestamp: u64 },
 }
 
 /// Pre-computed response that was speculatively prepared
@@ -444,6 +448,7 @@ pub struct HyperlightBinary {
     pub data: Vec<u8>,
     pub render_start: usize,
     pub exported_functions: std::collections::HashMap<String, usize>,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -488,6 +493,8 @@ pub enum Instruction {
     // --- Agentic Operations ---
     NavigateFromStack,
     SearchFromStack,
+    StoreKnowledgeFromStack { tags: Vec<String> },
+    QueryKnowledgeFromStack { tags: Vec<String>, limit: usize },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -525,6 +532,64 @@ pub enum BrowserCommand {
     Search { query: String },
     /// Transfer session to another node
     TransferSession { target_node_id: Uuid },
+    /// Store knowledge in the agent's long-term memory
+    StoreKnowledge { key: String, value: serde_json::Value, tags: Vec<String> },
+    /// Query knowledge from the agent's long-term memory
+    QueryKnowledge { query: String, tags: Vec<String>, limit: usize },
+    /// Delete knowledge from the agent's long-term memory
+    DeleteKnowledge { key: String },
+    /// Get the history of commands in this session
+    GetSessionHistory,
+    /// Get the capabilities of the current agentic binary
+    GetCapabilities,
+    /// Enable or disable autonomous mode for the agent
+    SetAutonomousMode { enabled: bool },
+    /// Perform a swarm search across the cluster
+    SwarmSearch { query: String, depth: usize },
+    /// Delegate a task to another agent in the cluster
+    DelegateTask { task: String, target_agent_id: Option<Uuid> },
+    /// Propose knowledge to the cluster for consensus
+    ProposeKnowledge { key: String, value: serde_json::Value, tags: Vec<String> },
+    /// Create a swarm plan for a high-level goal
+    CreateSwarmPlan { goal: String },
+    /// Execute a specific task within a swarm plan
+    ExecutePlanTask { plan_id: Uuid, task_id: Uuid },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SwarmPlan {
+    pub id: Uuid,
+    pub goal: String,
+    pub tasks: Vec<PlanTask>,
+    pub status: PlanStatus,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PlanTask {
+    pub id: Uuid,
+    pub description: String,
+    pub required_skills: Vec<String>,
+    pub assigned_to: Option<Uuid>, // NodeId or AgentId
+    pub dependencies: Vec<Uuid>, // Task IDs
+    pub status: TaskStatus,
+    pub result: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum PlanStatus {
+    Draft,
+    Active,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub enum TaskStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -687,6 +752,8 @@ where
             Message::PreComputed(_) => MessageType::Response,
             Message::LatentMessage(_) => MessageType::Unknown,
             Message::MorphRequest { .. } => MessageType::Sync,
+            Message::Ping { .. } => MessageType::Sync,
+            Message::Pong { .. } => MessageType::Sync,
         }
     }
 

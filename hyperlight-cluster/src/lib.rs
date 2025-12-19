@@ -66,6 +66,8 @@ pub struct NodeCapabilities {
     pub supports_speculation: bool,
     pub max_sessions: usize,
     pub region: Option<String>,
+    /// List of specific skills/tools available on this node
+    pub skills: Vec<String>,
 }
 
 /// Session location in the cluster
@@ -150,6 +152,11 @@ pub enum ClusterMessage {
         leader_id: NodeId,
         term: u64,
     },
+    /// Update node capabilities/skills
+    UpdateCapabilities {
+        node_id: NodeId,
+        capabilities: NodeCapabilities,
+    },
     /// Node is leaving the cluster
     LeaveNotification {
         node_id: NodeId,
@@ -164,6 +171,61 @@ pub enum ClusterMessage {
     SearchResponse {
         request_id: String,
         results: serde_json::Value,
+        node_id: NodeId,
+    },
+    /// Sync knowledge entry across cluster
+    SyncKnowledge {
+        key: String,
+        value: serde_json::Value,
+        tags: Vec<String>,
+        origin_node: NodeId,
+    },
+    /// Swarm search request
+    SwarmSearchRequest {
+        query: String,
+        depth: usize,
+        request_id: String,
+        origin_node: NodeId,
+    },
+    /// Task delegation request
+    TaskDelegation {
+        task: String,
+        target_agent_id: Option<Uuid>,
+        origin_node: NodeId,
+    },
+    /// Propose a new fact for consensus
+    ProposeKnowledge {
+        proposal_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+        tags: Vec<String>,
+        origin_node: NodeId,
+    },
+    /// Vote on a knowledge proposal
+    KnowledgeVote {
+        proposal_id: Uuid,
+        voter_id: NodeId,
+        approved: bool,
+        confidence: f32,
+    },
+    /// Commit a knowledge proposal after consensus
+    CommitKnowledge {
+        proposal_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+        tags: Vec<String>,
+    },
+    /// Propose a swarm plan
+    ProposeSwarmPlan {
+        plan: hyperlight_protocol::SwarmPlan,
+        origin_node: NodeId,
+    },
+    /// Update a task in a swarm plan
+    UpdatePlanTask {
+        plan_id: Uuid,
+        task_id: Uuid,
+        status: hyperlight_protocol::TaskStatus,
+        result: Option<serde_json::Value>,
         node_id: NodeId,
     },
 }
@@ -185,6 +247,11 @@ pub enum ClusterEvent {
     LeaderChanged {
         new_leader: Option<NodeId>,
     },
+    /// Node capabilities updated
+    CapabilitiesUpdated {
+        node_id: NodeId,
+        capabilities: NodeCapabilities,
+    },
     /// Distributed search request received
     SearchRequested {
         query: String,
@@ -195,6 +262,61 @@ pub enum ClusterEvent {
     SearchResultReceived {
         request_id: String,
         results: serde_json::Value,
+        node_id: NodeId,
+    },
+    /// Knowledge entry synced from another node
+    KnowledgeSynced {
+        key: String,
+        value: serde_json::Value,
+        tags: Vec<String>,
+        origin_node: NodeId,
+    },
+    /// Swarm search request (active web search)
+    SwarmSearchRequested {
+        query: String,
+        depth: usize,
+        request_id: String,
+        origin_node: NodeId,
+    },
+    /// Task delegated to another agent
+    TaskDelegated {
+        task: String,
+        target_agent_id: Option<Uuid>,
+        origin_node: NodeId,
+    },
+    /// Knowledge proposal received
+    KnowledgeProposed {
+        proposal_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+        tags: Vec<String>,
+        origin_node: NodeId,
+    },
+    /// Vote received for a knowledge proposal
+    KnowledgeVoteReceived {
+        proposal_id: Uuid,
+        voter_id: NodeId,
+        approved: bool,
+        confidence: f32,
+    },
+    /// Knowledge proposal committed
+    KnowledgeCommitted {
+        proposal_id: Uuid,
+        key: String,
+        value: serde_json::Value,
+        tags: Vec<String>,
+    },
+    /// Swarm plan proposed
+    SwarmPlanProposed {
+        plan: hyperlight_protocol::SwarmPlan,
+        origin_node: NodeId,
+    },
+    /// Plan task updated
+    PlanTaskUpdated {
+        plan_id: Uuid,
+        task_id: Uuid,
+        status: hyperlight_protocol::TaskStatus,
+        result: Option<serde_json::Value>,
         node_id: NodeId,
     },
 }
@@ -238,6 +360,8 @@ pub struct ClusterNode {
     event_tx: mpsc::UnboundedSender<ClusterEvent>,
     /// Event receiver for application
     event_rx: Arc<Mutex<mpsc::UnboundedReceiver<ClusterEvent>>>,
+    /// Consensus threshold (percentage of nodes required to agree)
+    consensus_threshold: f32,
 }
 
 impl ClusterNode {
@@ -257,12 +381,23 @@ impl ClusterNode {
             capabilities,
             event_tx: tx,
             event_rx: Arc::new(Mutex::new(rx)),
+            consensus_threshold: 0.67, // Default to 2/3 majority
         }
     }
 
     /// Get the event receiver
     pub fn get_event_receiver(&self) -> Arc<Mutex<mpsc::UnboundedReceiver<ClusterEvent>>> {
         self.event_rx.clone()
+    }
+
+    /// Get own capabilities
+    pub fn get_capabilities(&self) -> NodeCapabilities {
+        self.capabilities.clone()
+    }
+
+    /// Get the consensus threshold
+    pub fn get_consensus_threshold(&self) -> f32 {
+        self.consensus_threshold
     }
     
     /// Start the cluster node
@@ -370,6 +505,88 @@ impl ClusterNode {
                                             node_id,
                                         });
                                     }
+                                    ClusterMessage::UpdateCapabilities { node_id, capabilities } => {
+                                        if let Some(mut node) = nodes.get_mut(&node_id) {
+                                            node.capabilities = capabilities.clone();
+                                        }
+                                        let _ = event_tx.send(ClusterEvent::CapabilitiesUpdated {
+                                            node_id,
+                                            capabilities,
+                                        });
+                                    }
+                                    ClusterMessage::SyncKnowledge { key, value, tags, origin_node } => {
+                                        if origin_node != id {
+                                            let _ = event_tx.send(ClusterEvent::KnowledgeSynced {
+                                                key,
+                                                value,
+                                                tags,
+                                                origin_node,
+                                            });
+                                        }
+                                    }
+                                    ClusterMessage::SwarmSearchRequest { query, depth, request_id, origin_node } => {
+                                        if origin_node != id {
+                                            let _ = event_tx.send(ClusterEvent::SwarmSearchRequested {
+                                                query,
+                                                depth,
+                                                request_id,
+                                                origin_node,
+                                            });
+                                        }
+                                    }
+                                    ClusterMessage::TaskDelegation { task, target_agent_id, origin_node } => {
+                                        if origin_node != id {
+                                            let _ = event_tx.send(ClusterEvent::TaskDelegated {
+                                                task,
+                                                target_agent_id,
+                                                origin_node,
+                                            });
+                                        }
+                                    }
+                                    ClusterMessage::ProposeKnowledge { proposal_id, key, value, tags, origin_node } => {
+                                        if origin_node != id {
+                                            let _ = event_tx.send(ClusterEvent::KnowledgeProposed {
+                                                proposal_id,
+                                                key,
+                                                value,
+                                                tags,
+                                                origin_node,
+                                            });
+                                        }
+                                    }
+                                    ClusterMessage::KnowledgeVote { proposal_id, voter_id, approved, confidence } => {
+                                        let _ = event_tx.send(ClusterEvent::KnowledgeVoteReceived {
+                                            proposal_id,
+                                            voter_id,
+                                            approved,
+                                            confidence,
+                                        });
+                                    }
+                                    ClusterMessage::CommitKnowledge { proposal_id, key, value, tags } => {
+                                        let _ = event_tx.send(ClusterEvent::KnowledgeCommitted {
+                                            proposal_id,
+                                            key,
+                                            value,
+                                            tags,
+                                        });
+                                    }
+                                    ClusterMessage::ProposeSwarmPlan { plan, origin_node } => {
+                                        if origin_node != id {
+                                            let _ = event_tx.send(ClusterEvent::SwarmPlanProposed {
+                                                plan,
+                                                origin_node,
+                                            });
+                                        }
+                                    }
+                                    ClusterMessage::UpdatePlanTask { plan_id, task_id, status, result, node_id } => {
+                                        let _ = event_tx.send(ClusterEvent::PlanTaskUpdated {
+                                            plan_id,
+                                            task_id,
+                                            status,
+                                            result,
+                                            node_id,
+                                        });
+                                    }
                                     _ => {}
                                 }
                             }
@@ -403,11 +620,116 @@ impl ClusterNode {
         Ok(())
     }
 
+    /// Propose knowledge for consensus
+    pub async fn propose_knowledge(&self, key: String, value: serde_json::Value, tags: Vec<String>) -> Result<Uuid> {
+        let proposal_id = Uuid::new_v4();
+        let msg = ClusterMessage::ProposeKnowledge {
+            proposal_id,
+            key,
+            value,
+            tags,
+            origin_node: self.id,
+        };
+        self.broadcast_message(msg).await?;
+        Ok(proposal_id)
+    }
+
+    /// Vote on a knowledge proposal
+    pub async fn vote_on_knowledge(&self, proposal_id: Uuid, approved: bool, confidence: f32) -> Result<()> {
+        let msg = ClusterMessage::KnowledgeVote {
+            proposal_id,
+            voter_id: self.id,
+            approved,
+            confidence,
+        };
+        // Send vote to the leader (or broadcast if no leader)
+        self.broadcast_message(msg).await
+    }
+
+    /// Commit knowledge after consensus
+    pub async fn commit_knowledge(&self, proposal_id: Uuid, key: String, value: serde_json::Value, tags: Vec<String>) -> Result<()> {
+        let msg = ClusterMessage::CommitKnowledge {
+            proposal_id,
+            key,
+            value,
+            tags,
+        };
+        self.broadcast_message(msg).await
+    }
+
+    /// Propose a swarm plan to the cluster
+    pub async fn propose_swarm_plan(&self, plan: hyperlight_protocol::SwarmPlan) -> Result<()> {
+        let msg = ClusterMessage::ProposeSwarmPlan {
+            plan,
+            origin_node: self.id,
+        };
+        self.broadcast_message(msg).await
+    }
+
+    /// Update a task in a swarm plan
+    pub async fn update_plan_task(
+        &self,
+        plan_id: Uuid,
+        task_id: Uuid,
+        status: hyperlight_protocol::TaskStatus,
+        result: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let msg = ClusterMessage::UpdatePlanTask {
+            plan_id,
+            task_id,
+            status,
+            result,
+            node_id: self.id,
+        };
+        self.broadcast_message(msg).await
+    }
+
     /// Broadcast a search query to the cluster
     pub async fn broadcast_search(&self, query: String, request_id: String) -> Result<()> {
         let msg = ClusterMessage::SearchRequest {
             query,
             request_id,
+            origin_node: self.id,
+        };
+        self.broadcast_message(msg).await
+    }
+
+    /// Broadcast knowledge entry to all nodes
+    pub async fn broadcast_knowledge(&self, key: String, value: serde_json::Value, tags: Vec<String>) -> Result<()> {
+        let msg = ClusterMessage::SyncKnowledge {
+            key,
+            value,
+            tags,
+            origin_node: self.id,
+        };
+        self.broadcast_message(msg).await
+    }
+
+    /// Broadcast updated capabilities (skills) to the cluster
+    pub async fn broadcast_capabilities(&self, capabilities: NodeCapabilities) -> Result<()> {
+        let msg = ClusterMessage::UpdateCapabilities {
+            node_id: self.id,
+            capabilities,
+        };
+        self.broadcast_message(msg).await
+    }
+
+    /// Broadcast a swarm search request
+    pub async fn broadcast_swarm_search(&self, query: String, depth: usize, request_id: String) -> Result<()> {
+        let msg = ClusterMessage::SwarmSearchRequest {
+            query,
+            depth,
+            request_id,
+            origin_node: self.id,
+        };
+        self.broadcast_message(msg).await
+    }
+
+    /// Delegate a task to the cluster
+    pub async fn delegate_task(&self, task: String, target_agent_id: Option<Uuid>) -> Result<()> {
+        let msg = ClusterMessage::TaskDelegation {
+            task,
+            target_agent_id,
             origin_node: self.id,
         };
         self.broadcast_message(msg).await
