@@ -41,6 +41,30 @@ struct BrowserState {
     client: reqwest::Client,
     encoder: Mutex<NeuralLatentEncoder>,
     cluster: Mutex<ClusterNode>,
+    /// Rate limiter: session_id -> (tokens, last_update)
+    rate_limits: DashMap<String, (f64, std::time::Instant)>,
+}
+
+impl BrowserState {
+    fn check_rate_limit(&self, session_id: &str) -> bool {
+        let max_tokens = 100.0;
+        let refill_rate = 10.0; // tokens per second
+        
+        let mut entry = self.rate_limits.entry(session_id.to_string()).or_insert((max_tokens, std::time::Instant::now()));
+        let (tokens, last_update) = entry.value_mut();
+        
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(*last_update).as_secs_f64();
+        *tokens = (*tokens + elapsed * refill_rate).min(max_tokens);
+        *last_update = now;
+        
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[instrument(skip(state, session_id, request_id))]
@@ -188,7 +212,7 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::HandleEvent { event_name, payload: _payload } => {
+        BrowserCommand::HandleEvent { element_id: _element_id, event_name, payload: _payload } => {
             if let Some(mut session) = state.sessions.get_mut(session_id) {
                 let bin = session.current_binary.clone();
                 if let Some(bin) = bin {
@@ -410,20 +434,42 @@ async fn main() -> Result<()> {
         client: reqwest::Client::new(),
         encoder: Mutex::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)), // Standard 256-dim latent space
         cluster: Mutex::new(cluster_node),
+        rate_limits: DashMap::new(),
     });
 
     // Start metrics server
-    let metrics_app = Router::new().route("/metrics", get(|| async {
-        let encoder = TextEncoder::new();
-        let metric_families = prometheus::gather();
-        let mut buffer = vec![];
-        encoder.encode(&metric_families, &mut buffer).unwrap();
-        String::from_utf8(buffer).unwrap()
-    }));
+    let metrics_state = state.clone();
+    let metrics_app = Router::new()
+        .route("/metrics", get(|| async {
+            let encoder = TextEncoder::new();
+            let metric_families = prometheus::gather();
+            let mut buffer = vec![];
+            encoder.encode(&metric_families, &mut buffer).unwrap();
+            String::from_utf8(buffer).unwrap()
+        }))
+        .route("/dashboard", get(move || {
+            let state = metrics_state.clone();
+            async move {
+                let mut html = String::from("<html><head><title>Hyperlight Dashboard</title>");
+                html.push_str("<style>body{font-family:sans-serif;padding:20px;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} th{background-color:#f2f2f2;}</style>");
+                html.push_str("</head><body><h1>Hyperlight Session Monitor</h1>");
+                html.push_str(&format!("<p>Active Sessions: {}</p>", state.sessions.len()));
+                html.push_str("<table><tr><th>Session ID</th><th>URL</th><th>Last Command</th></tr>");
+                for entry in state.sessions.iter() {
+                    let (id, session) = entry.pair();
+                    html.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{:?}</td></tr>", 
+                        id, 
+                        session.current_url.as_deref().unwrap_or("None"),
+                        session.last_command));
+                }
+                html.push_str("</table></body></html>");
+                axum::response::Html(html)
+            }
+        }));
 
     tokio::spawn(async move {
         let addr = "0.0.0.0:9090".parse().unwrap();
-        info!("Metrics server listening on {}", addr);
+        info!("Metrics & Dashboard server listening on {}", addr);
         axum::Server::bind(&addr)
             .serve(metrics_app.into_make_service())
             .await
@@ -506,8 +552,11 @@ async fn main() -> Result<()> {
     let tls_acceptor = if std::env::var("HYPERLIGHT_TLS").unwrap_or_default() == "1" {
         let cert_path = std::path::Path::new("certs/cert.pem");
         let key_path = std::path::Path::new("certs/key.pem");
+        let ca_path = std::path::Path::new("certs/ca.pem");
+        let ca_opt = if ca_path.exists() { Some(ca_path) } else { None };
+        
         if cert_path.exists() && key_path.exists() {
-            Some(create_tls_acceptor(cert_path, key_path)?)
+            Some(create_tls_acceptor(cert_path, key_path, ca_opt)?)
         } else {
             info!("TLS enabled but certs not found at certs/. Falling back to plain TCP.");
             None
@@ -555,7 +604,17 @@ where
                 let _enter = req_span.enter();
                 info!("Received request: {:?}", req);
                 
-                // Ensure session exists
+                // 1. Check session limit for new sessions
+                if session_id.is_none() && state.sessions.len() >= 1000 {
+                    let _ = handler.send_message(&Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some("Server busy: maximum sessions reached".to_string()),
+                    })).await;
+                    return;
+                }
+
+                // 2. Ensure session exists
                 let id = if let Some(id) = session_id.as_ref() {
                     id.clone()
                 } else {
@@ -578,6 +637,16 @@ where
                     session_id = Some(new_id.clone());
                     new_id
                 };
+
+                // 3. Enforce rate limit
+                if !state.check_rate_limit(&id) {
+                    let _ = handler.send_message(&Message::Response(Response {
+                        id: req.id,
+                        result: None,
+                        error: Some("Rate limit exceeded".to_string()),
+                    })).await;
+                    continue;
+                }
 
                 // Check if session needs a proactive morph
                 if let Some(mut session) = state.sessions.get_mut(&id) {

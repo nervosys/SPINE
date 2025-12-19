@@ -10,10 +10,15 @@ hyperlight-protocol = { path = "../hyperlight-protocol" }
 hyperlight-parser = { path = "../hyperlight-parser" }
 hyperlight-compiler = { path = "../hyperlight-compiler" }
 hyperlight-cluster = { path = "../hyperlight-cluster" }
+hyperlight-human = { path = "../hyperlight-human" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
+rustls-native-certs = "0.6"
 uuid = { version = "1.0", features = ["v4", "serde"] }

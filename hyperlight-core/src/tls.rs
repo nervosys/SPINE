@@ -25,14 +25,26 @@ pub fn load_private_key(path: &Path) -> anyhow::Result<PrivateKey> {
     Ok(PrivateKey(keys[0].clone()))
 }
 
-pub fn create_tls_acceptor(cert_path: &Path, key_path: &Path) -> anyhow::Result<TlsAcceptor> {
+pub fn create_tls_acceptor(cert_path: &Path, key_path: &Path, ca_path: Option<&Path>) -> anyhow::Result<TlsAcceptor> {
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
 
-    let config = ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
+    let builder = ServerConfig::builder()
+        .with_safe_defaults();
+
+    let config = if let Some(ca_path) = ca_path {
+        let ca_certs = load_certs(ca_path)?;
+        let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+        for cert in ca_certs {
+            roots.add(&cert)?;
+        }
+        let client_auth = tokio_rustls::rustls::server::AllowAnyAuthenticatedClient::new(roots);
+        builder.with_client_cert_verifier(Arc::new(client_auth))
+            .with_single_cert(certs, key)?
+    } else {
+        builder.with_no_client_auth()
+            .with_single_cert(certs, key)?
+    };
 
     Ok(TlsAcceptor::from(Arc::new(config)))
 }

@@ -509,6 +509,7 @@ pub enum BrowserCommand {
     ExecuteBinary(HyperlightBinary),
     /// Handle an event in the current session
     HandleEvent {
+        element_id: u32,
         event_name: String,
         payload: serde_json::Value,
     },

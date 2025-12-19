@@ -2216,12 +2216,17 @@ dependencies = [
  "env_logger",
  "hyperlight-cluster",
  "hyperlight-compiler",
+ "hyperlight-human",
  "hyperlight-parser",
  "hyperlight-protocol",
  "log",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "uuid",
 ]
 
@@ -4176,6 +4181,18 @@ dependencies = [
  "ring",
  "rustls-webpki",
  "sct",
+]
+
+[[package]]
+name = "rustls-native-certs"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
+dependencies = [
+ "openssl-probe",
+ "rustls-pemfile",
+ "schannel",
+ "security-framework",
 ]
 
 [[package]]

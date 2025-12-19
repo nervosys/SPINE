@@ -4,6 +4,9 @@ use tokio::sync::mpsc;
 use hyperlight_parser::UnifiedRepresentation;
 use tokio::io::{AsyncRead, AsyncWrite};
 use hyperlight_human::HumanInteractionEngine;
+use std::sync::Arc;
+use tokio_rustls::TlsConnector;
+use rustls::{ClientConfig, RootCertStore, Certificate, PrivateKey};
 
 // Re-export the compiler for convenience
 pub use hyperlight_compiler::Compiler;
@@ -23,6 +26,68 @@ impl AgentClient<TcpStream> {
         let handler = ProtocolHandler::new(stream);
         Ok(Self { 
             handler, 
+            request_counter: 0,
+            latent_tx: None,
+            event_tx: None,
+            human_engine: None,
+        })
+    }
+}
+
+impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
+    /// Connect to a Hyperlight server using TLS (optionally with mTLS)
+    pub async fn connect_tls(
+        addr: &str, 
+        domain: &str,
+        ca_path: Option<&std::path::Path>,
+        client_cert: Option<(&std::path::Path, &std::path::Path)>
+    ) -> anyhow::Result<Self> {
+        let mut root_store = RootCertStore::empty();
+        
+        if let Some(ca) = ca_path {
+            let mut reader = std::io::BufReader::new(std::fs::File::open(ca)?);
+            let certs = rustls_pemfile::certs(&mut reader)?;
+            for cert in certs {
+                root_store.add(&Certificate(cert))?;
+            }
+        } else {
+            // Fallback to system certs if no CA provided
+            let certs = rustls_native_certs::load_native_certs()?;
+            for cert in certs {
+                root_store.add(&Certificate(cert.0))?;
+            }
+        }
+
+        let config = if let Some((cert_path, key_path)) = client_cert {
+            let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
+            let certs = rustls_pemfile::certs(&mut cert_reader)?
+                .into_iter()
+                .map(Certificate)
+                .collect();
+            
+            let mut key_reader = std::io::BufReader::new(std::fs::File::open(key_path)?);
+            let keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?;
+            let key = PrivateKey(keys[0].clone());
+
+            ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_store)
+                .with_client_auth_cert(certs, key)?
+        } else {
+            ClientConfig::builder()
+                .with_safe_defaults()
+                .with_root_certificates(root_store)
+                .with_no_client_auth()
+        };
+
+        let connector = TlsConnector::from(Arc::new(config));
+        let stream = TcpStream::connect(addr).await?;
+        let domain = rustls::ServerName::try_from(domain)?;
+        let tls_stream = connector.connect(domain, stream).await?;
+        
+        let handler = ProtocolHandler::new(tls_stream);
+        Ok(Self {
+            handler,
             request_counter: 0,
             latent_tx: None,
             event_tx: None,

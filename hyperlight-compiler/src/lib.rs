@@ -161,8 +161,11 @@ impl Compiler {
             Self::check_types(&mut type_ctx, stmt)?;
         }
         
+        // Optimization pass
+        let optimized_statements = Self::optimize(statements);
+        
         // Compilation pass
-        for stmt in statements {
+        for stmt in optimized_statements {
             Self::compile_statement(&mut ctx, &stmt)?;
         }
         
@@ -789,6 +792,144 @@ impl Compiler {
             _ => {}
         }
         Ok(())
+    }
+
+    fn optimize(statements: Vec<HlsStatement>) -> Vec<HlsStatement> {
+        let mut optimized = Vec::new();
+        for stmt in statements {
+            optimized.extend(Self::optimize_statement(stmt));
+        }
+        optimized
+    }
+
+    fn optimize_statement(stmt: HlsStatement) -> Vec<HlsStatement> {
+        match stmt {
+            HlsStatement::Let { name, value, type_annotation } => vec![HlsStatement::Let { 
+                name, 
+                value: Self::optimize_expr(value), 
+                type_annotation 
+            }],
+            HlsStatement::State { name, initial, type_annotation } => vec![HlsStatement::State { 
+                name, 
+                initial: Self::optimize_expr(initial), 
+                type_annotation 
+            }],
+            HlsStatement::Assign { name, value } => vec![HlsStatement::Assign { 
+                name, 
+                value: Self::optimize_expr(value) 
+            }],
+            HlsStatement::If { condition, then_branch, else_branch } => {
+                let opt_cond = Self::optimize_expr(condition);
+                match opt_cond {
+                    HlsExpr::BoolLit(true) => Self::optimize(then_branch),
+                    HlsExpr::BoolLit(false) => else_branch.map(Self::optimize).unwrap_or_default(),
+                    _ => vec![HlsStatement::If { 
+                        condition: opt_cond, 
+                        then_branch: Self::optimize(then_branch), 
+                        else_branch: else_branch.map(Self::optimize) 
+                    }]
+                }
+            }
+            HlsStatement::For { item, list, body } => vec![HlsStatement::For { 
+                item, 
+                list: Self::optimize_expr(list), 
+                body: Self::optimize(body) 
+            }],
+            HlsStatement::While { condition, body } => {
+                let opt_cond = Self::optimize_expr(condition);
+                match opt_cond {
+                    HlsExpr::BoolLit(false) => vec![], // While false is dead code
+                    _ => vec![HlsStatement::While { 
+                        condition: opt_cond, 
+                        body: Self::optimize(body) 
+                    }]
+                }
+            }
+            HlsStatement::Element { tag, attributes, children, events } => vec![HlsStatement::Element {
+                tag,
+                attributes: attributes.into_iter().map(|(k, v)| (k, Self::optimize_expr(v))).collect(),
+                children: Self::optimize(children),
+                events: events.into_iter().map(|e| HlsEvent {
+                    event_type: e.event_type,
+                    handler: Self::optimize(e.handler),
+                }).collect(),
+            }],
+            HlsStatement::Call { name, args } => vec![HlsStatement::Call { 
+                name, 
+                args: args.into_iter().map(Self::optimize_expr).collect() 
+            }],
+            HlsStatement::Text(expr) => vec![HlsStatement::Text(Self::optimize_expr(expr))],
+            HlsStatement::Emit { event, payload } => vec![HlsStatement::Emit { 
+                event, 
+                payload: Self::optimize_expr(payload) 
+            }],
+            HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(Self::optimize_expr))],
+            HlsStatement::Comment(_) => vec![], // Strip comments in optimization
+            _ => vec![stmt],
+        }
+    }
+
+    fn optimize_expr(expr: HlsExpr) -> HlsExpr {
+        match expr {
+            HlsExpr::BinOp { left, op, right } => {
+                let l = Self::optimize_expr(*left);
+                let r = Self::optimize_expr(*right);
+                
+                // Constant folding
+                match (l, op, r) {
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Add, HlsExpr::NumberLit(b)) => HlsExpr::NumberLit(a + b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Sub, HlsExpr::NumberLit(b)) => HlsExpr::NumberLit(a - b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Mul, HlsExpr::NumberLit(b)) => HlsExpr::NumberLit(a * b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Div, HlsExpr::NumberLit(b)) => HlsExpr::NumberLit(a / b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Mod, HlsExpr::NumberLit(b)) => HlsExpr::NumberLit(a % b),
+                    
+                    (HlsExpr::BoolLit(a), ProtocolBinOp::And, HlsExpr::BoolLit(b)) => HlsExpr::BoolLit(a && b),
+                    (HlsExpr::BoolLit(a), ProtocolBinOp::Or, HlsExpr::BoolLit(b)) => HlsExpr::BoolLit(a || b),
+                    
+                    (HlsExpr::StringLit(a), ProtocolBinOp::Concat, HlsExpr::StringLit(b)) => HlsExpr::StringLit(format!("{}{}", a, b)),
+                    
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Eq, HlsExpr::NumberLit(b)) => HlsExpr::BoolLit(a == b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Ne, HlsExpr::NumberLit(b)) => HlsExpr::BoolLit(a != b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Lt, HlsExpr::NumberLit(b)) => HlsExpr::BoolLit(a < b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Le, HlsExpr::NumberLit(b)) => HlsExpr::BoolLit(a <= b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Gt, HlsExpr::NumberLit(b)) => HlsExpr::BoolLit(a > b),
+                    (HlsExpr::NumberLit(a), ProtocolBinOp::Ge, HlsExpr::NumberLit(b)) => HlsExpr::BoolLit(a >= b),
+                    
+                    (l, op, r) => HlsExpr::BinOp { 
+                        left: Box::new(l), 
+                        op, 
+                        right: Box::new(r) 
+                    },
+                }
+            }
+            HlsExpr::UnaryOp { op, expr } => {
+                let e = Self::optimize_expr(*expr);
+                match (op, e) {
+                    (ProtocolUnaryOp::Not, HlsExpr::BoolLit(b)) => HlsExpr::BoolLit(!b),
+                    (ProtocolUnaryOp::Neg, HlsExpr::NumberLit(n)) => HlsExpr::NumberLit(-n),
+                    (op, e) => HlsExpr::UnaryOp { op, expr: Box::new(e) },
+                }
+            }
+            HlsExpr::Ternary { condition, then_expr, else_expr } => {
+                let cond = Self::optimize_expr(*condition);
+                match cond {
+                    HlsExpr::BoolLit(true) => Self::optimize_expr(*then_expr),
+                    HlsExpr::BoolLit(false) => Self::optimize_expr(*else_expr),
+                    _ => HlsExpr::Ternary { 
+                        condition: Box::new(cond), 
+                        then_expr: Box::new(Self::optimize_expr(*then_expr)), 
+                        else_expr: Box::new(Self::optimize_expr(*else_expr)) 
+                    },
+                }
+            }
+            HlsExpr::List(items) => HlsExpr::List(items.into_iter().map(Self::optimize_expr).collect()),
+            HlsExpr::Object(props) => HlsExpr::Object(props.into_iter().map(|(k, v)| (k, Self::optimize_expr(v))).collect()),
+            HlsExpr::Call { name, args } => HlsExpr::Call { 
+                name, 
+                args: args.into_iter().map(Self::optimize_expr).collect() 
+            },
+            _ => expr,
+        }
     }
     
     fn expr_to_json(ctx: &CompilerContext, expr: &HlsExpr) -> serde_json::Value {
