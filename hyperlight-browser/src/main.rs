@@ -268,7 +268,7 @@ impl HyperlightBrowser {
                         elem.attributes.get("content").cloned().unwrap_or_else(|| "Button".to_string()));
                     if ui.button(text).clicked() {
                         let agent_clone = self.agent.clone();
-                        let element_id = elem.id.to_string();
+                        let element_id = elem.id;
                         let tx = self.event_tx.clone();
                         
                         self.rt.spawn(async move {
@@ -278,13 +278,14 @@ impl HyperlightBrowser {
                                 None => return,
                             };
                             
-                            let _ = tx.send(BrowserEvent::StatusChanged(format!("Clicking {}...", element_id))).await;
-                            match agent.click(&element_id).await {
-                                Ok(_) => {
-                                    let _ = tx.send(BrowserEvent::StatusChanged("Action successful".to_string())).await;
+                            let _ = tx.send(BrowserEvent::StatusChanged(format!("Triggering event on {}...", element_id))).await;
+                            match agent.handle_event(element_id, "click", serde_json::Value::Null).await {
+                                Ok(patches) => {
+                                    let _ = tx.send(BrowserEvent::PatchesApplied(patches)).await;
+                                    let _ = tx.send(BrowserEvent::StatusChanged("Event handled".to_string())).await;
                                 }
                                 Err(e) => {
-                                    let _ = tx.send(BrowserEvent::Error(format!("Click failed: {}", e))).await;
+                                    let _ = tx.send(BrowserEvent::Error(format!("Event failed: {}", e))).await;
                                 }
                             }
                         });

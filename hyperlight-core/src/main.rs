@@ -31,7 +31,9 @@ struct Session {
     last_command: Option<BrowserCommand>,
     needs_morph: bool,
     /// Reactive state variables
-    state: DashMap<String, serde_json::Value>,
+    state: std::collections::HashMap<String, serde_json::Value>,
+    /// Current HLB binary for reactivity
+    current_binary: Option<hyperlight_protocol::HyperlightBinary>,
 }
 
 struct BrowserState {
@@ -130,6 +132,12 @@ async fn handle_command(
         }
         BrowserCommand::ExecuteBinary(bin) => {
             info!("Executing HLB with {} instructions", bin.instructions.len());
+            
+            // Store binary in session for reactivity
+            if let Some(mut session) = state.sessions.get_mut(session_id) {
+                session.current_binary = Some(bin.clone());
+            }
+
             let wasm_runtime = WasmRuntime::new().expect("Failed to initialize WASM runtime");
             let result = wasm_runtime.execute(&bin).expect("Failed to execute HLB in WASM");
             
@@ -178,6 +186,67 @@ async fn handle_command(
                     "patches": patches,
                 })),
                 error: None,
+            }
+        }
+        BrowserCommand::HandleEvent { event_name, payload: _payload } => {
+            if let Some(mut session) = state.sessions.get_mut(session_id) {
+                let bin = session.current_binary.clone();
+                if let Some(bin) = bin {
+                    if let Some(&pc) = bin.exported_functions.get(&event_name) {
+                        let mut runtime = vdom::HlbRuntime::new();
+                        // Load session state into runtime
+                        for (k, v) in &session.state {
+                            runtime.state.insert(k.clone(), v.clone());
+                        }
+                        
+                        // Execute handler
+                        let _handler_result = runtime.execute(&bin, pc);
+                        
+                        // Update session state from runtime
+                        for (k, v) in &runtime.state {
+                            session.state.insert(k.clone(), v.clone());
+                        }
+                        
+                        // Re-render from render_start
+                        let render_result = runtime.execute(&bin, bin.render_start);
+                        
+                        // Compute patches
+                        let new_vdom = render_result.vdom;
+                        let mut patches = Vec::new();
+                        if let Some(old_vdom) = &session.current_vdom {
+                            patches = new_vdom.diff(old_vdom);
+                        }
+                        session.current_vdom = Some(new_vdom);
+                        
+                        Response {
+                            id: request_id,
+                            result: Some(serde_json::json!({
+                                "status": "event_handled",
+                                "patches": patches,
+                                "events": render_result.events,
+                            })),
+                            error: None,
+                        }
+                    } else {
+                        Response {
+                            id: request_id,
+                            result: None,
+                            error: Some(format!("Handler not found for event: {}", event_name)),
+                        }
+                    }
+                } else {
+                    Response {
+                        id: request_id,
+                        result: None,
+                        error: Some("No binary loaded in session".to_string()),
+                    }
+                }
+            } else {
+                Response {
+                    id: request_id,
+                    result: None,
+                    error: Some("Session not found".to_string()),
+                }
             }
         }
         BrowserCommand::Click { element_id } => {
@@ -384,12 +453,24 @@ async fn main() -> Result<()> {
                 }
                 hyperlight_cluster::ClusterEvent::SearchRequested { query, request_id, origin_node } => {
                     info!("Distributed search requested: '{}' from node {}", query, origin_node);
-                    // Simulate a search across all local sessions
-                    let results = serde_json::json!([
-                        { "text": format!("Found '{}' in a local session", query), "relevance": 0.88 }
-                    ]);
+                    
+                    let mut results = Vec::new();
+                    for session in cluster_state.sessions.iter() {
+                        if let Some(html) = &session.current_html {
+                            if html.to_lowercase().contains(&query.to_lowercase()) {
+                                results.push(serde_json::json!({
+                                    "session_id": session.key(),
+                                    "url": session.current_url,
+                                    "relevance": 0.95,
+                                    "snippet": format!("Found match for '{}' in active session", query)
+                                }));
+                            }
+                        }
+                    }
+                    
+                    let results_json = serde_json::Value::Array(results);
                     let cluster = cluster_state.cluster.lock().await;
-                    let _ = cluster.send_search_results(origin_node, request_id, results);
+                    let _ = cluster.send_search_results(origin_node, request_id, results_json);
                 }
                 hyperlight_cluster::ClusterEvent::SearchResultReceived { request_id, results, node_id } => {
                     info!("Received search results for {} from node {}", request_id, node_id);
@@ -486,7 +567,8 @@ where
                         current_vdom: None,
                         last_command: None,
                         needs_morph: false,
-                        state: DashMap::new(),
+                        state: std::collections::HashMap::new(),
+                        current_binary: None,
                     });
                     
                     // Register session with cluster

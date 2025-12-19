@@ -549,19 +549,19 @@ A moving-target defense protocol that hides communication patterns in latent spa
 
 ### 1. Advanced HLS Features
 
-- [ ] User-defined functions: `fn greet(name) { ... }`
-- [ ] Reactive state with auto-rerender
+- [x] User-defined functions: `fn greet(name) { ... }`
+- [x] Reactive state with auto-rerender
 - [ ] Type system for HLS
 
 ### 2. Observability
 
-- [ ] OpenTelemetry tracing integration
-- [ ] Prometheus metrics for cluster health
+- [x] OpenTelemetry tracing integration
+- [x] Prometheus metrics for cluster health
 - [ ] Real-time session monitoring dashboard
 
 ### 3. Security Hardening
 
-- [ ] TLS 1.3 for transport security
+- [x] TLS 1.3 for transport security
 - [ ] Certificate-based authentication
 - [ ] Rate limiting and DoS protection
 

@@ -2335,6 +2335,7 @@ dependencies = [
  "hyperlight-parser",
  "hyperlight-protocol",
  "log",
+ "rand",
  "scraper",
  "serde",
  "serde_json",

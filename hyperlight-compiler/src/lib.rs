@@ -36,6 +36,10 @@ pub struct CompilerContext {
     pub string_pool: Vec<String>,
     /// Parent element stack for nesting
     pub element_stack: Vec<u32>,
+    /// Exported function entry points
+    pub exported_functions: HashMap<String, usize>,
+    /// Main render entry point
+    pub render_start: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +169,8 @@ impl Compiler {
         Ok(HyperlightBinary {
             instructions: ctx.instructions,
             data: ctx.string_pool.join("\0").into_bytes(),
+            render_start: ctx.render_start,
+            exported_functions: ctx.exported_functions,
         })
     }
     
@@ -232,15 +238,20 @@ impl Compiler {
             }
             
             HlsStatement::FnDef { name, params, body, .. } => {
-                // Register the function for later calls
-                // In a real compiler, we'd compile this to a separate block
-                // For now, we'll just store it in the context
-                ctx.functions.insert(name.clone(), HlsFunction {
-                    name: name.clone(),
-                    params: params.clone(),
-                    body: body.clone(),
-                    return_type: HlsType::Any,
-                });
+                let jump_over_idx = ctx.instructions.len();
+                ctx.instructions.push(Instruction::Jump(0)); // Placeholder
+                
+                let func_start = ctx.instructions.len();
+                ctx.exported_functions.insert(name.clone(), func_start);
+                
+                // Compile body
+                for stmt in body {
+                    Self::compile_statement(ctx, stmt)?;
+                }
+                ctx.instructions.push(Instruction::Return);
+                
+                let end_idx = ctx.instructions.len();
+                ctx.instructions[jump_over_idx] = Instruction::Jump(end_idx);
             }
             
             HlsStatement::If { condition, then_branch, else_branch } => {
@@ -317,7 +328,12 @@ impl Compiler {
                 for arg in args {
                     Self::compile_expr(ctx, arg)?;
                 }
-                ctx.instructions.push(Instruction::Call { name: name.clone(), num_args: args.len() });
+                // Check if it's a local function
+                if let Some(&target) = ctx.exported_functions.get(name) {
+                    ctx.instructions.push(Instruction::CallTarget(target));
+                } else {
+                    ctx.instructions.push(Instruction::Call { name: name.clone(), num_args: args.len() });
+                }
             }
             
             HlsStatement::Return(expr) => {

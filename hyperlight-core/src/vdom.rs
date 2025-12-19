@@ -2,7 +2,7 @@
 // VIRTUAL DOM - Hyperlight Binary Execution Engine
 // =============================================================================
 
-use hyperlight_protocol::{HyperlightBinary, Instruction, VDomPatch};
+use hyperlight_protocol::{HyperlightBinary, Instruction, VDomPatch, ProtocolBinOp, ProtocolUnaryOp};
 use hyperlight_wasm::{WasmExecutionResult, WasmElement};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -224,11 +224,20 @@ impl VirtualDom {
 // HLB RUNTIME - Execute Hyperlight Binary
 // =============================================================================
 
-pub struct HlbRuntime;
+#[derive(Default)]
+pub struct HlbRuntime {
+    pub state: HashMap<String, serde_json::Value>,
+    pub stack: Vec<serde_json::Value>,
+    pub call_stack: Vec<usize>,
+}
 
 impl HlbRuntime {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Execute a Hyperlight Binary and produce a Virtual DOM
-    pub fn execute(binary: &HyperlightBinary) -> ExecutionResult {
+    pub fn execute(&mut self, binary: &HyperlightBinary, start_pc: usize) -> ExecutionResult {
         let start_time = std::time::Instant::now();
         
         let mut vdom = VirtualDom::new();
@@ -238,15 +247,20 @@ impl HlbRuntime {
         let mut latent_streams = Vec::new();
         let mut stats = ExecutionStats::default();
         
-        let mut value_stack: Vec<serde_json::Value> = Vec::new();
-        let mut variables: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+        let mut pc = start_pc;
+        let mut element_stack: Vec<u32> = Vec::new();
         
-        for instruction in &binary.instructions {
+        while pc < binary.instructions.len() {
+            let instruction = &binary.instructions[pc];
             stats.instructions_executed += 1;
             
             match instruction {
                 Instruction::DefineElement { id, tag } => {
                     vdom.add_element(*id, tag);
+                    if let Some(&parent_id) = element_stack.last() {
+                        vdom.add_child(parent_id, *id);
+                    }
+                    element_stack.push(*id);
                     stats.elements_created += 1;
                 }
                 
@@ -293,72 +307,175 @@ impl HlbRuntime {
                 }
 
                 Instruction::DeclareState { name, initial_json } => {
-                    events.push(VEvent {
-                        name: "state_declared".to_string(),
-                        payload: serde_json::json!({ "name": name, "value": initial_json }),
-                        timestamp_ns: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64,
-                    });
+                    self.state.insert(name.clone(), initial_json.clone());
                 }
 
                 Instruction::UpdateState { name, value_json } => {
-                    events.push(VEvent {
-                        name: "state_updated".to_string(),
-                        payload: serde_json::json!({ "name": name, "value": value_json }),
-                        timestamp_ns: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos() as u64,
-                    });
+                    self.state.insert(name.clone(), value_json.clone());
                 }
 
                 // --- Control Flow & Stack Operations ---
                 Instruction::Push(val) => {
-                    value_stack.push(val.clone());
+                    self.stack.push(val.clone());
                 }
                 Instruction::Pop => {
-                    value_stack.pop();
+                    self.stack.pop();
                 }
                 Instruction::Load(name) => {
-                    let val = variables.get(name).cloned().unwrap_or(serde_json::Value::Null);
-                    value_stack.push(val);
+                    let val = self.state.get(name).cloned().unwrap_or(serde_json::Value::Null);
+                    self.stack.push(val);
                 }
                 Instruction::Store(name) => {
-                    if let Some(val) = value_stack.pop() {
-                        variables.insert(name.clone(), val);
+                    if let Some(val) = self.stack.pop() {
+                        self.state.insert(name.clone(), val);
                     }
                 }
-                Instruction::BinOp(_op) => {
-                    // Simple fallback: just pop two and push null
-                    value_stack.pop();
-                    value_stack.pop();
-                    value_stack.push(serde_json::Value::Null);
+                Instruction::BinOp(op) => {
+                    if let (Some(right), Some(left)) = (self.stack.pop(), self.stack.pop()) {
+                        let result = self.eval_binop(left, *op, right);
+                        self.stack.push(result);
+                    }
                 }
-                Instruction::UnaryOp(_op) => {
-                    value_stack.pop();
-                    value_stack.push(serde_json::Value::Null);
+                Instruction::UnaryOp(op) => {
+                    if let Some(val) = self.stack.pop() {
+                        let result = self.eval_unaryop(*op, val);
+                        self.stack.push(result);
+                    }
                 }
-                Instruction::Jump(_) | Instruction::JumpIf(_) | Instruction::JumpIfNot(_) => {
-                    // Fallback interpreter doesn't support jumps yet
+                Instruction::Jump(target) => {
+                    pc = *target;
+                    continue;
                 }
-                Instruction::Call { .. } => {
-                    value_stack.push(serde_json::Value::Null);
+                Instruction::JumpIf(target) => {
+                    if let Some(val) = self.stack.pop() {
+                        if val.as_bool().unwrap_or(false) {
+                            pc = *target;
+                            continue;
+                        }
+                    }
+                }
+                Instruction::JumpIfNot(target) => {
+                    if let Some(val) = self.stack.pop() {
+                        if !val.as_bool().unwrap_or(false) {
+                            pc = *target;
+                            continue;
+                        }
+                    }
+                }
+                Instruction::CallTarget(target) => {
+                    self.call_stack.push(pc + 1);
+                    pc = *target;
+                    continue;
+                }
+                Instruction::Call { name, num_args } => {
+                    match name.as_str() {
+                        "len" => {
+                            let arg = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                            let len = match arg {
+                                serde_json::Value::Array(a) => a.len(),
+                                serde_json::Value::String(s) => s.len(),
+                                serde_json::Value::Object(m) => m.len(),
+                                _ => 0,
+                            };
+                            self.stack.push(serde_json::json!(len));
+                        }
+                        "str" => {
+                            let arg = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                            let s = match arg {
+                                serde_json::Value::String(s) => s,
+                                _ => arg.to_string(),
+                            };
+                            self.stack.push(serde_json::Value::String(s));
+                        }
+                        "num" => {
+                            let arg = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                            let n = match arg {
+                                serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                                serde_json::Value::String(s) => s.parse().unwrap_or(0.0),
+                                serde_json::Value::Bool(b) => if b { 1.0 } else { 0.0 },
+                                _ => 0.0,
+                            };
+                            self.stack.push(serde_json::json!(n));
+                        }
+                        "print" => {
+                            let arg = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                            println!("[HLS PRINT] {}", arg);
+                            self.stack.push(serde_json::Value::Null);
+                        }
+                        "morph" => {
+                            morph_requests.push(MorphRequest { seed: 12345 });
+                            self.stack.push(serde_json::Value::Null);
+                        }
+                        "decoy" => {
+                            decoys.push(DecoyInjection {
+                                noise_dimensions: 3,
+                                entropy_estimate: 0.5,
+                            });
+                            self.stack.push(serde_json::Value::Null);
+                        }
+                        "stream_latent" => {
+                            latent_streams.push(LatentStream {
+                                dimensions: 3,
+                                vector: vec![0.5, 0.5, 0.5],
+                            });
+                            self.stack.push(serde_json::Value::Null);
+                        }
+                        "emit" => {
+                            let payload = if *num_args > 1 { self.stack.pop().unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null };
+                            let event_name = self.stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                            events.push(VEvent {
+                                name: event_name,
+                                payload,
+                                timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                            });
+                            self.stack.push(serde_json::Value::Null);
+                        }
+                        "list" => {
+                            let mut items = Vec::new();
+                            for _ in 0..*num_args {
+                                if let Some(val) = self.stack.pop() {
+                                    items.push(val);
+                                }
+                            }
+                            items.reverse();
+                            self.stack.push(serde_json::Value::Array(items));
+                        }
+                        "object" => {
+                            let mut map = serde_json::Map::new();
+                            for _ in 0..(*num_args / 2) {
+                                let val = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                                let key = self.stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                                map.insert(key, val);
+                            }
+                            self.stack.push(serde_json::Value::Object(map));
+                        }
+                        _ => {
+                            self.stack.push(serde_json::Value::Null);
+                        }
+                    }
                 }
                 Instruction::Return => {
-                    break;
+                    if let Some(return_pc) = self.call_stack.pop() {
+                        pc = return_pc;
+                        continue;
+                    } else {
+                        break;
+                    }
                 }
 
                 // --- Stack-based DOM Operations ---
                 Instruction::DefineElementFromStack { id } => {
-                    let tag = value_stack.pop()
+                    let tag = self.stack.pop()
                         .and_then(|v| v.as_str().map(|s| s.to_string()))
                         .unwrap_or_else(|| "div".to_string());
                     vdom.add_element(*id, &tag);
+                    if let Some(&parent_id) = element_stack.last() {
+                        vdom.add_child(parent_id, *id);
+                    }
+                    element_stack.push(*id);
                 }
                 Instruction::SetAttributeFromStack { id, key } => {
-                    let val = value_stack.pop()
+                    let val = self.stack.pop()
                         .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
                         .unwrap_or_default();
                     vdom.set_attribute(*id, key, &val);
@@ -367,7 +484,7 @@ impl HlbRuntime {
                     vdom.add_child(*parent_id, *child_id);
                 }
                 Instruction::EmitEventFromStack { name } => {
-                    let payload = value_stack.pop().unwrap_or(serde_json::Value::Null);
+                    let payload = self.stack.pop().unwrap_or(serde_json::Value::Null);
                     events.push(VEvent {
                         name: name.clone(),
                         payload,
@@ -378,22 +495,26 @@ impl HlbRuntime {
                     });
                 }
                 Instruction::DefineTextFromStack => {
-                    let text = value_stack.pop()
+                    let text = self.stack.pop()
                         .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
                         .unwrap_or_default();
                     let id = 1000 + stats.instructions_executed as u32;
                     vdom.add_element(id, "text");
                     vdom.set_attribute(id, "content", &text);
+                    if let Some(&parent_id) = element_stack.last() {
+                        vdom.add_child(parent_id, id);
+                    }
                 }
                 Instruction::DeclareStateFromStack { name } => {
-                    let val = value_stack.pop().unwrap_or(serde_json::Value::Null);
-                    variables.insert(name.clone(), val);
+                    let val = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                    self.state.insert(name.clone(), val);
                 }
                 Instruction::UpdateStateFromStack { name } => {
-                    let val = value_stack.pop().unwrap_or(serde_json::Value::Null);
-                    variables.insert(name.clone(), val);
+                    let val = self.stack.pop().unwrap_or(serde_json::Value::Null);
+                    self.state.insert(name.clone(), val);
                 }
             }
+            pc += 1;
         }
         
         // Finalize VDOM (identify root nodes)
@@ -410,7 +531,99 @@ impl HlbRuntime {
             stats,
         }
     }
-    
+
+    fn eval_binop(&self, left: serde_json::Value, op: ProtocolBinOp, right: serde_json::Value) -> serde_json::Value {
+        match op {
+            ProtocolBinOp::Add => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l + r)
+                } else if let (Some(l), Some(r)) = (left.as_str(), right.as_str()) {
+                    serde_json::json!(format!("{}{}", l, r))
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Sub => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l - r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Mul => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l * r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Div => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l / r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Eq => serde_json::json!(left == right),
+            ProtocolBinOp::Ne => serde_json::json!(left != right),
+            ProtocolBinOp::Lt => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l < r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Gt => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l > r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Le => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l <= r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Ge => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l >= r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::Mod => {
+                if let (Some(l), Some(r)) = (left.as_f64(), right.as_f64()) {
+                    serde_json::json!(l % r)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+            ProtocolBinOp::And => serde_json::json!(left.as_bool().unwrap_or(false) && right.as_bool().unwrap_or(false)),
+            ProtocolBinOp::Or => serde_json::json!(left.as_bool().unwrap_or(false) || right.as_bool().unwrap_or(false)),
+            ProtocolBinOp::Concat => {
+                let l_str = if left.is_string() { left.as_str().unwrap().to_string() } else { left.to_string() };
+                let r_str = if right.is_string() { right.as_str().unwrap().to_string() } else { right.to_string() };
+                serde_json::json!(format!("{}{}", l_str, r_str))
+            }
+        }
+    }
+
+    fn eval_unaryop(&self, op: ProtocolUnaryOp, val: serde_json::Value) -> serde_json::Value {
+        match op {
+            ProtocolUnaryOp::Not => serde_json::json!(!val.as_bool().unwrap_or(false)),
+            ProtocolUnaryOp::Neg => {
+                if let Some(n) = val.as_f64() {
+                    serde_json::json!(-n)
+                } else {
+                    serde_json::Value::Null
+                }
+            }
+        }
+    }
+
     /// Estimate Shannon entropy of noise vector
     fn estimate_entropy(noise: &[f32]) -> f64 {
         if noise.is_empty() {

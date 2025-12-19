@@ -17,15 +17,16 @@
 - [x] Expand Agent API: Created high-level AgentClient API and example.
 
 ### Advanced Features
-- [x] HLS Compiler: Full language with variables, state, conditionals, loops, expressions
-- [x] Virtual DOM Runtime: HLB execution with UR generation
+- [x] HLS Compiler: Full language with variables, state, conditionals, loops, expressions, and functions
+- [x] Virtual DOM Runtime: HLB execution with UR generation and reactive re-rendering
 - [x] Chameleon Protocol: Latent-space cryptography with moving-target defense
-- [x] Speculative Decoding: Bidirectional message prediction
-- [x] WebAssembly Runtime: HLB → WASM near-native execution (hyperlight-wasm)
-- [x] Distributed Clustering: Load balancing, session affinity, leader election (hyperlight-cluster)
-- [x] Neural Latent Encoder: VAE, LSTM, Attention for learned projections (hyperlight-neural)
-- [x] Transformer Predictor: Autoregressive byte-level message prediction (hyperlight-crypto)
-- [x] Quantum-Resistant Keys: RLWE lattice cryptography (hyperlight-crypto)
+- [x] Speculative Decoding: Bidirectional message prediction with Transformer models
+- [x] WebAssembly Runtime: HLB → WASM near-native execution with host function interop
+- [x] Distributed Clustering: Load balancing, session affinity, leader election, and distributed search
+- [x] Neural Latent Encoder: VAE, LSTM, Attention for learned projections
+- [x] Transformer Predictor: Autoregressive byte-level message prediction
+- [x] Quantum-Resistant Keys: RLWE lattice cryptography with forward-secure evolution
+- [x] Human Interaction: Realistic mouse paths and typing delays for bot-detection bypass
 
 ### Workspace Structure (9 crates)
 - `hyperlight-core`: Multi-session orchestration engine

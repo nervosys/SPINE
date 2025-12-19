@@ -54,151 +54,77 @@ async fn main() -> Result<()> {
              stats.output_hits, stats.output_accuracy() * 100.0);
     println!("    Bytes saved: {} bytes\n", stats.bytes_saved);
     
-    // 3. Compile and Execute Advanced HLS Program with conditionals, loops, state
+    // 3. Compile and Execute Advanced HLS Program with reactive state
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 3: Advanced HLS Compiler Demo                         │");
+    println!("│ Phase 3: Reactive State & Human Interaction Demo            │");
     println!("└─────────────────────────────────────────────────────────────┘");
-    println!("[5] Compiling advanced HLS program with loops and conditionals...\n");
     
-    // Demonstrate advanced language features
+    // Enable human-like interaction patterns
+    client.enable_human_mode(hyperlight_human::HumanInteractionEngine::default());
+    println!("[✓] Human Interaction Engine enabled (60 WPM, 250ms reaction)\n");
+
+    println!("[5] Compiling reactive HLS program...\n");
+    
+    // Demonstrate reactive state and event handling
     let hls_source = r#"
-        // Hyperlight Source Language - Advanced Features Demo
-        // Variables and State
-        let title = "Dashboard"
-        let count = 3
-        state theme = "dark"
+        state counter = 0
+        let title = "Reactive Counter"
         
-        // Root element with nested children
-        element container {
-            element header {
-                text "Hyperlight Virtual DOM Demo"
+        element App {
+            element Header {
+                text title
             }
             
-            // Conditional rendering based on state
-            if count > 0 {
-                element status {
-                    text "Active Items: 3"
-                }
+            element CounterDisplay {
+                text "Current Count: " ++ str(counter)
             }
             
-            // Loop to create multiple items
-            for item in [1, 2, 3] {
-                element card {
-                    text "Card Content"
-                }
-            }
-            
-            // Nested element structure
-            element footer {
-                element nav {
-                    text "Navigation"
-                }
-                element copyright {
-                    text "Hyperlight 2025"
+            element Controls {
+                element Button {
+                    attribute id "increment-btn"
+                    text "Increment"
+                    on_click -> {
+                        counter = counter + 1
+                        emit("counter_updated", { new_value: counter })
+                    }
                 }
             }
         }
     "#;
     
     let binary = Compiler::compile(hls_source)?;
-    println!("    ✓ Compiled {} instructions from advanced HLS", binary.instructions.len());
+    println!("    ✓ Compilation successful ({} instructions)", binary.instructions.len());
     
-    // Print the instructions for inspection
-    println!("\n    Generated Instructions:");
-    for (i, inst) in binary.instructions.iter().take(10).enumerate() {
-        println!("      [{}] {:?}", i, inst);
-    }
-    if binary.instructions.len() > 10 {
-        println!("      ... and {} more", binary.instructions.len() - 10);
-    }
+    println!("[6] Executing binary on remote browser...");
+    let _ = client.execute_binary(binary).await?;
+    println!("    ✓ Execution complete. Initial VDOM generated.\n");
     
-    println!("\n[6] Executing HLB in Virtual DOM Runtime...");
-    client.handler.send_message(&Message::Request(hyperlight_protocol::Request {
-        id: "exec-1".to_string(),
-        command: BrowserCommand::ExecuteBinary(binary),
-    })).await?;
-
-    if let Message::Response(resp) = client.handler.receive_message().await? {
-        if let Some(result) = &resp.result {
-            println!("\n    ═══════════════════════════════════════════════════════════");
-            println!("    VDOM Execution Result:");
-            println!("    ═══════════════════════════════════════════════════════════");
-            
-            if let Some(stats) = result.get("stats") {
-                println!("    Instructions: {}", stats.get("instructions_executed").unwrap_or(&serde_json::json!(0)));
-                println!("    Elements Created: {}", stats.get("elements_created").unwrap_or(&serde_json::json!(0)));
-                println!("    Attributes Set: {}", stats.get("attributes_set").unwrap_or(&serde_json::json!(0)));
-                println!("    Events Emitted: {}", stats.get("events_emitted").unwrap_or(&serde_json::json!(0)));
-                println!("    Execution Time: {}µs", stats.get("execution_time_us").unwrap_or(&serde_json::json!(0)));
-            }
-            
-            if let Some(ur) = result.get("ur") {
-                println!("\n    Generated Unified Representation:");
-                println!("    ───────────────────────────────────────────────────────────");
-                for line in ur.as_str().unwrap_or("").lines().take(15) {
-                    println!("    {}", line);
-                }
-            }
-        }
-    }
-    
-    // 4. Demonstrate explicit protocol morphing
-    println!("\n┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 4: Protocol Morphing + Decoy Injection                │");
+    // 4. Simulate human interaction triggering reactive updates
+    println!("┌─────────────────────────────────────────────────────────────┐");
+    println!("│ Phase 4: Human-like Interaction & Reactive Updates          │");
     println!("└─────────────────────────────────────────────────────────────┘");
-    println!("[7] Triggering explicit protocol morph...");
-    client.handler.send_message(&Message::Request(hyperlight_protocol::Request {
-        id: "morph-1".to_string(),
-        command: BrowserCommand::Morph,
-    })).await?;
+    
+    println!("[7] Simulating human click on 'Increment' button (ID: 10)...");
+    // In our VM, the button might have ID 10 (increment-btn)
+    let patches = client.handle_event(10, "click", serde_json::Value::Null).await?;
+    
+    println!("    ✓ Event handled. Received {} VDOM patches:", patches.len());
+    for (i, patch) in patches.iter().enumerate() {
+        println!("      [{}] {:?}", i + 1, patch);
+    }
+    
+    println!("\n[8] Simulating human typing in search field...");
+    client.type_text("search-input", "Hyperlight Protocol").await?;
+    println!("    ✓ Typing complete with realistic delays.\n");
 
-    if let Message::Response(resp) = client.handler.receive_message().await? {
-        println!("    ✓ Morph complete: {:?}\n", resp.result);
-    }
-    
-    // 5. Send decoy traffic
-    println!("[8] Injecting decoy traffic...");
-    for i in 0..3 {
-        client.handler.send_decoy().await?;
-        println!("    Decoy {} injected", i + 1);
-    }
-    
-    // 6. Semantic Search
-    println!("\n┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 5: Semantic Search & Distributed Clustering           │");
+    // 5. Distributed Search across the cluster
+    println!("┌─────────────────────────────────────────────────────────────┐");
+    println!("│ Phase 5: Distributed Cluster Search                         │");
     println!("└─────────────────────────────────────────────────────────────┘");
-    println!("[9] Performing semantic search for 'neural latent spaces'...");
-    let search_results = client.search("neural latent spaces").await?;
+    println!("[9] Performing distributed search for 'Protocol'...");
+    let search_results = client.search("Protocol").await?;
     println!("    ✓ Search complete. Results: {}\n", search_results);
-
-    // 7. Session Transfer
-    let target_node = uuid::Uuid::new_v4();
-    println!("[10] Simulating session transfer to node {}...", target_node);
-    client.transfer_session(target_node).await?;
-    println!("    ✓ Transfer request sent to cluster\n");
-
-    // Final stats
-    let final_stats = client.handler.get_speculation_stats();
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║                    Final Statistics                          ║");
-    println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║ Output Predictions: {:<8} | Output Hits: {:<8}         ║", 
-             final_stats.output_predictions, final_stats.output_hits);
-    println!("║ Input Predictions:  {:<8} | Input Hits:  {:<8}         ║",
-             final_stats.input_predictions, final_stats.input_hits);
-    println!("║ Bytes Saved:        {:<8} | Precompute Hits: {:<4}       ║",
-             final_stats.bytes_saved, final_stats.precompute_hits);
-    println!("║ Output Accuracy:    {:<6.1}%  | Input Accuracy:  {:<6.1}%    ║",
-             final_stats.output_accuracy() * 100.0,
-             final_stats.input_accuracy() * 100.0);
-    println!("╚══════════════════════════════════════════════════════════════╝");
     
-    println!("\n[SUMMARY]");
-    println!("  • Latent-space encoding: implicit encryption via projection");
-    println!("  • Moving target: protocol morphs after each exchange");
-    println!("  • Speculative decoding: predict messages, send confirmations");
-    println!("  • Bandwidth savings: skip full payload on prediction hits");
-    println!("  • Pre-computation: prepare responses before requests arrive");
-    
+    println!("[DONE] Hyperlight Agent demonstration complete.");
     Ok(())
 }

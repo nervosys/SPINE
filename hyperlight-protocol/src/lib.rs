@@ -442,6 +442,8 @@ pub struct SyncPayload {
 pub struct HyperlightBinary {
     pub instructions: Vec<Instruction>,
     pub data: Vec<u8>,
+    pub render_start: usize,
+    pub exported_functions: std::collections::HashMap<String, usize>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -471,6 +473,7 @@ pub enum Instruction {
     JumpIf(usize),
     JumpIfNot(usize),
     Call { name: String, num_args: usize },
+    CallTarget(usize),
     Return,
     
     // --- Stack-based DOM Operations ---
@@ -504,6 +507,11 @@ pub enum BrowserCommand {
     Click { element_id: String },
     Type { element_id: String, text: String },
     ExecuteBinary(HyperlightBinary),
+    /// Handle an event in the current session
+    HandleEvent {
+        event_name: String,
+        payload: serde_json::Value,
+    },
     /// Request latent-encoded response
     GetLatentUR { dimensions: usize },
     /// Trigger protocol morphing

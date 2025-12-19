@@ -281,9 +281,7 @@ Emit events from within programs:
 emit("button_clicked", { id: 42 })
 ```
 
-## Future Syntax Extensions
-
-### Functions (Planned)
+### Functions
 
 ```hls
 fn create_button(label, action) {
@@ -299,13 +297,13 @@ element Toolbar {
 }
 ```
 
-### Reactive State (Planned)
+### Reactive State
 
 ```hls
 state counter = 0
 
 element Counter {
-  text "Count: " + str(counter)
+  text "Count: " ++ str(counter)
   
   on_click -> {
     counter = counter + 1
@@ -575,12 +573,12 @@ Common errors:
 - [x] Attribute assignment
 - [x] Text content shorthand
 - [x] Element nesting
-- [ ] Event handlers (partial)
-- [ ] Variables
-- [ ] Conditionals
-- [ ] Loops
-- [ ] Functions
-- [ ] State management
+- [x] Event handlers
+- [x] Variables
+- [x] Conditionals
+- [x] Loops
+- [x] Functions
+- [x] State management
 - [ ] Type checking
 - [ ] Optimization passes
 

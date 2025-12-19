@@ -112,6 +112,7 @@ impl HlbToWatCompiler {
         wat.push_str("  (import \"env\" \"bin_op\" (func $bin_op (param i32)))\n");
         wat.push_str("  (import \"env\" \"unary_op\" (func $unary_op (param i32)))\n");
         wat.push_str("  (import \"env\" \"call_func\" (func $call_func (param i32 i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"call_target\" (func $call_target (param i32)))\n");
         
         // New stack-based DOM host functions
         wat.push_str("  (import \"env\" \"define_element_from_stack\" (func $define_element_from_stack (param i32)))\n");
@@ -452,6 +453,9 @@ impl HlbToWatCompiler {
                 Instruction::Call { name, num_args } => {
                     let (offset, len) = string_offsets.get(name).unwrap();
                     wat.push_str(&format!("    (call $call_func (i32.const {}) (i32.const {}) (i32.const {}))\n", offset, len, num_args));
+                }
+                Instruction::CallTarget(target) => {
+                    wat.push_str(&format!("    (call $call_target (i32.const {}))\n", target));
                 }
                 Instruction::Return => {
                     wat.push_str("    return\n");
@@ -947,15 +951,60 @@ impl WasmRuntime {
                 // Built-in functions
                 let res = match name.as_str() {
                     "len" => {
-                        if let Some(arg) = args.first() {
-                            match arg {
-                                serde_json::Value::Array(a) => serde_json::json!(a.len()),
-                                serde_json::Value::String(s) => serde_json::json!(s.len()),
-                                _ => serde_json::json!(0),
-                            }
-                        } else {
-                            serde_json::json!(0)
+                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        match arg {
+                            serde_json::Value::Array(a) => serde_json::json!(a.len()),
+                            serde_json::Value::String(s) => serde_json::json!(s.len()),
+                            serde_json::Value::Object(m) => serde_json::json!(m.len()),
+                            _ => serde_json::json!(0),
                         }
+                    }
+                    "str" => {
+                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        match arg {
+                            serde_json::Value::String(s) => serde_json::Value::String(s),
+                            _ => serde_json::Value::String(arg.to_string()),
+                        }
+                    }
+                    "num" => {
+                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        let n = match arg {
+                            serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                            serde_json::Value::String(s) => s.parse().unwrap_or(0.0),
+                            serde_json::Value::Bool(b) => if b { 1.0 } else { 0.0 },
+                            _ => 0.0,
+                        };
+                        serde_json::json!(n)
+                    }
+                    "print" => {
+                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        println!("[HLS PRINT] {}", arg);
+                        serde_json::Value::Null
+                    }
+                    "list" => {
+                        let mut items = Vec::new();
+                        for _ in 0..num_args {
+                            if let Some(val) = state.value_stack.pop() {
+                                items.push(val);
+                            }
+                        }
+                        items.reverse();
+                        serde_json::Value::Array(items)
+                    }
+                    "object" => {
+                        let mut map = serde_json::Map::new();
+                        for _ in 0..(num_args / 2) {
+                            let val = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                            let key = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                            map.insert(key, val);
+                        }
+                        serde_json::Value::Object(map)
+                    }
+                    "emit" => {
+                        let payload = if num_args > 1 { state.value_stack.pop().unwrap_or(serde_json::Value::Null) } else { serde_json::Value::Null };
+                        let event_name = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
+                        state.events.push(WasmEvent { name: event_name, payload });
+                        serde_json::Value::Null
                     }
                     _ => serde_json::Value::Null,
                 };
@@ -1008,6 +1057,15 @@ impl WasmRuntime {
             },
         )?;
         
+        // call_target(target: i32)
+        linker.func_wrap(
+            "env",
+            "call_target",
+            |_caller: Caller<'_, Arc<Mutex<HostState>>>, _target: i32| {
+                // Internal calls not yet supported in WASM runtime
+            },
+        )?;
+
         // stream_latent(ptr: i32, len: i32)
         linker.func_wrap(
             "env",

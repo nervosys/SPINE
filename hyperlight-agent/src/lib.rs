@@ -3,6 +3,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use hyperlight_parser::UnifiedRepresentation;
 use tokio::io::{AsyncRead, AsyncWrite};
+use hyperlight_human::HumanInteractionEngine;
 
 // Re-export the compiler for convenience
 pub use hyperlight_compiler::Compiler;
@@ -13,6 +14,7 @@ pub struct AgentClient<S> {
     request_counter: u64,
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,
     event_tx: Option<mpsc::Sender<hyperlight_protocol::Event>>,
+    human_engine: Option<HumanInteractionEngine>,
 }
 
 impl AgentClient<TcpStream> {
@@ -24,6 +26,7 @@ impl AgentClient<TcpStream> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
+            human_engine: None,
         })
     }
 }
@@ -32,6 +35,11 @@ impl<S> AgentClient<S>
 where 
     S: AsyncRead + AsyncWrite + Unpin + Send
 {
+    /// Enable human-like interaction patterns
+    pub fn enable_human_mode(&mut self, engine: HumanInteractionEngine) {
+        self.human_engine = Some(engine);
+    }
+
     pub async fn start_listener(&mut self) -> (mpsc::Receiver<Vec<f32>>, mpsc::Receiver<hyperlight_protocol::Event>) {
         let (latent_tx, latent_rx) = mpsc::channel(100);
         let (event_tx, event_rx) = mpsc::channel(100);
@@ -95,6 +103,17 @@ where
     }
 
     pub async fn click(&mut self, element_id: &str) -> anyhow::Result<()> {
+        if let Some(engine) = &self.human_engine {
+            // Simulate reaction time
+            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
+            
+            // Simulate mouse movement (simplified for now, just a delay)
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            
+            // Simulate click duration
+            tokio::time::sleep(engine.simulate_click_duration()).await;
+        }
+
         let res = self.send_request(BrowserCommand::Click { element_id: element_id.to_string() }).await?;
         if let Some(err) = res.error {
             anyhow::bail!(err);
@@ -103,6 +122,19 @@ where
     }
 
     pub async fn type_text(&mut self, element_id: &str, text: &str) -> anyhow::Result<()> {
+        if let Some(engine) = &self.human_engine {
+            // Simulate reaction time
+            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
+            
+            let delays = engine.generate_typing_delays(text);
+            for (i, c) in text.chars().enumerate() {
+                // In a real implementation, we might send each character individually
+                // but for now we'll just sleep and then send the whole text at the end
+                // or send it character by character if the protocol supports it.
+                tokio::time::sleep(delays[i]).await;
+            }
+        }
+
         let res = self.send_request(BrowserCommand::Type { 
             element_id: element_id.to_string(), 
             text: text.to_string() 
@@ -170,5 +202,23 @@ where
             anyhow::bail!(err);
         }
         Ok(())
+    }
+
+    pub async fn handle_event(&mut self, element_id: u32, event_name: &str, payload: serde_json::Value) -> anyhow::Result<Vec<hyperlight_protocol::VDomPatch>> {
+        let res = self.send_request(BrowserCommand::HandleEvent { 
+            element_id, 
+            event_name: event_name.to_string(), 
+            payload 
+        }).await?;
+        
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        
+        let patches: Vec<hyperlight_protocol::VDomPatch> = serde_json::from_value(
+            res.result.unwrap_or(serde_json::json!({"patches": []}))["patches"].clone()
+        )?;
+        
+        Ok(patches)
     }
 }
