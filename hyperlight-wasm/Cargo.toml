@@ -1,0 +1,17 @@
+[package]
+name = "hyperlight-wasm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "WebAssembly runtime for Hyperlight Binary (HLB) execution"
+
+[dependencies]
+hyperlight-protocol = { path = "../hyperlight-protocol" }
+hyperlight-compiler = { path = "../hyperlight-compiler" }
+wasmtime.workspace = true
+wat.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "hyperlight-crypto"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Advanced cryptographic primitives for Hyperlight including transformer prediction and post-quantum key evolution"
+
+[dependencies]
+hyperlight-neural = { path = "../hyperlight-neural" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+rand.workspace = true
+sha2 = "0.10"

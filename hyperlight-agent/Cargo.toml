@@ -1,0 +1,19 @@
+[package]
+name = "hyperlight-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Agent interface for Hyperlight"
+
+[dependencies]
+hyperlight-protocol = { path = "../hyperlight-protocol" }
+hyperlight-parser = { path = "../hyperlight-parser" }
+hyperlight-compiler = { path = "../hyperlight-compiler" }
+hyperlight-cluster = { path = "../hyperlight-cluster" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+tokio.workspace = true
+uuid = { version = "1.0", features = ["v4", "serde"] }

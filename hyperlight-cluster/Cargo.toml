@@ -1,0 +1,17 @@
+[package]
+name = "hyperlight-cluster"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Distributed agent coordination for Hyperlight"
+
+[dependencies]
+hyperlight-protocol = { path = "../hyperlight-protocol" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+dashmap = "5.5"
+uuid = { version = "1.0", features = ["v4", "serde"] }

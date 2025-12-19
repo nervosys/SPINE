@@ -1,0 +1,23 @@
+[package]
+name = "hyperlight-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Low-latency communication protocols for Hyperlight"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+tokio.workspace = true
+# For high throughput, maybe tonic (gRPC) or a custom binary protocol
+# For now, let's stick to basic networking
+bytes = "1.5"
+zstd = "0.12"
+aes-gcm = "0.10"
+rand = "0.8"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+hyperlight-neural = { path = "../hyperlight-neural" }
+hyperlight-crypto = { path = "../hyperlight-crypto" }

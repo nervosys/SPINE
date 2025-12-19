@@ -1,0 +1,19 @@
+[package]
+name = "hyperlight-human"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+
+[dependencies]
+hyperlight-compiler = { path = "../hyperlight-compiler" }
+hyperlight-parser = { path = "../hyperlight-parser" }
+hyperlight-protocol = { path = "../hyperlight-protocol" }
+scraper = "0.18"
+ego-tree = "0.6"
+cssparser = "0.31"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }

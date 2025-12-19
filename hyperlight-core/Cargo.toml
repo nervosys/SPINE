@@ -1,0 +1,25 @@
+[package]
+name = "hyperlight-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core engine for the Hyperlight agentic browser"
+
+[dependencies]
+hyperlight-parser = { path = "../hyperlight-parser" }
+hyperlight-protocol = { path = "../hyperlight-protocol" }
+hyperlight-agent = { path = "../hyperlight-agent" }
+hyperlight-wasm = { path = "../hyperlight-wasm" }
+hyperlight-compiler = { path = "../hyperlight-compiler" }
+hyperlight-neural = { path = "../hyperlight-neural" }
+hyperlight-cluster = { path = "../hyperlight-cluster" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+reqwest.workspace = true
+dashmap = "5.5"
+uuid = { version = "1.4", features = ["v4"] }
+rand = "0.8"
