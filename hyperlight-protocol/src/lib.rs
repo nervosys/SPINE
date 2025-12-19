@@ -459,6 +459,41 @@ pub enum Instruction {
     DeclareState { name: String, initial_json: serde_json::Value },
     /// Update a reactive state variable
     UpdateState { name: String, value_json: serde_json::Value },
+    
+    // --- Control Flow & Stack Operations ---
+    Push(serde_json::Value),
+    Pop,
+    Load(String),
+    Store(String),
+    BinOp(ProtocolBinOp),
+    UnaryOp(ProtocolUnaryOp),
+    Jump(usize),
+    JumpIf(usize),
+    JumpIfNot(usize),
+    Call { name: String, num_args: usize },
+    Return,
+    
+    // --- Stack-based DOM Operations ---
+    DefineElementFromStack { id: u32 },
+    SetAttributeFromStack { id: u32, key: String },
+    AddChildFromStack { parent_id: u32, child_id: u32 },
+    EmitEventFromStack { name: String },
+    DefineTextFromStack,
+    DeclareStateFromStack { name: String },
+    UpdateStateFromStack { name: String },
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub enum ProtocolBinOp {
+    Add, Sub, Mul, Div, Mod,
+    Eq, Ne, Lt, Le, Gt, Ge,
+    And, Or,
+    Concat,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub enum ProtocolUnaryOp {
+    Not, Neg,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

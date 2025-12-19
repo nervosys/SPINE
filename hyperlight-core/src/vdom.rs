@@ -238,6 +238,9 @@ impl HlbRuntime {
         let mut latent_streams = Vec::new();
         let mut stats = ExecutionStats::default();
         
+        let mut value_stack: Vec<serde_json::Value> = Vec::new();
+        let mut variables: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+        
         for instruction in &binary.instructions {
             stats.instructions_executed += 1;
             
@@ -309,6 +312,86 @@ impl HlbRuntime {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     });
+                }
+
+                // --- Control Flow & Stack Operations ---
+                Instruction::Push(val) => {
+                    value_stack.push(val.clone());
+                }
+                Instruction::Pop => {
+                    value_stack.pop();
+                }
+                Instruction::Load(name) => {
+                    let val = variables.get(name).cloned().unwrap_or(serde_json::Value::Null);
+                    value_stack.push(val);
+                }
+                Instruction::Store(name) => {
+                    if let Some(val) = value_stack.pop() {
+                        variables.insert(name.clone(), val);
+                    }
+                }
+                Instruction::BinOp(_op) => {
+                    // Simple fallback: just pop two and push null
+                    value_stack.pop();
+                    value_stack.pop();
+                    value_stack.push(serde_json::Value::Null);
+                }
+                Instruction::UnaryOp(_op) => {
+                    value_stack.pop();
+                    value_stack.push(serde_json::Value::Null);
+                }
+                Instruction::Jump(_) | Instruction::JumpIf(_) | Instruction::JumpIfNot(_) => {
+                    // Fallback interpreter doesn't support jumps yet
+                }
+                Instruction::Call { .. } => {
+                    value_stack.push(serde_json::Value::Null);
+                }
+                Instruction::Return => {
+                    break;
+                }
+
+                // --- Stack-based DOM Operations ---
+                Instruction::DefineElementFromStack { id } => {
+                    let tag = value_stack.pop()
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "div".to_string());
+                    vdom.add_element(*id, &tag);
+                }
+                Instruction::SetAttributeFromStack { id, key } => {
+                    let val = value_stack.pop()
+                        .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+                        .unwrap_or_default();
+                    vdom.set_attribute(*id, key, &val);
+                }
+                Instruction::AddChildFromStack { parent_id, child_id } => {
+                    vdom.add_child(*parent_id, *child_id);
+                }
+                Instruction::EmitEventFromStack { name } => {
+                    let payload = value_stack.pop().unwrap_or(serde_json::Value::Null);
+                    events.push(VEvent {
+                        name: name.clone(),
+                        payload,
+                        timestamp_ns: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64,
+                    });
+                }
+                Instruction::DefineTextFromStack => {
+                    let text = value_stack.pop()
+                        .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+                        .unwrap_or_default();
+                    let id = 1000 + stats.instructions_executed as u32;
+                    vdom.add_element(id, "text");
+                    vdom.set_attribute(id, "content", &text);
+                }
+                Instruction::DeclareStateFromStack { name } => {
+                    let val = value_stack.pop().unwrap_or(serde_json::Value::Null);
+                    variables.insert(name.clone(), val);
+                }
+                Instruction::UpdateStateFromStack { name } => {
+                    let val = value_stack.pop().unwrap_or(serde_json::Value::Null);
+                    variables.insert(name.clone(), val);
                 }
             }
         }

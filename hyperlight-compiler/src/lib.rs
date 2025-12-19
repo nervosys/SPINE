@@ -7,7 +7,7 @@ use nom::{
     multi::{many0, separated_list0},
     IResult,
 };
-use hyperlight_protocol::{HyperlightBinary, Instruction};
+use hyperlight_protocol::{HyperlightBinary, Instruction, ProtocolBinOp, ProtocolUnaryOp};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -113,9 +113,9 @@ pub enum HlsExpr {
     /// Variable reference
     Var(String),
     /// Binary operation
-    BinOp { left: Box<HlsExpr>, op: BinOperator, right: Box<HlsExpr> },
+    BinOp { left: Box<HlsExpr>, op: ProtocolBinOp, right: Box<HlsExpr> },
     /// Unary operation
-    UnaryOp { op: UnaryOperator, expr: Box<HlsExpr> },
+    UnaryOp { op: ProtocolUnaryOp, expr: Box<HlsExpr> },
     /// Function call expression
     Call { name: String, args: Vec<HlsExpr> },
     /// Property access: obj.prop
@@ -134,19 +134,6 @@ pub enum HlsExpr {
 pub struct HlsEvent {
     pub event_type: String,
     pub handler: Vec<HlsStatement>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum BinOperator {
-    Add, Sub, Mul, Div, Mod,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or,
-    Concat,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum UnaryOperator {
-    Not, Neg,
 }
 
 // =============================================================================
@@ -192,11 +179,10 @@ impl Compiler {
                 
                 // Compile attributes
                 for (key, value) in attributes {
-                    let value_str = Self::eval_expr_to_string(ctx, value);
-                    ctx.instructions.push(Instruction::SetAttribute {
+                    Self::compile_expr(ctx, value)?;
+                    ctx.instructions.push(Instruction::SetAttributeFromStack {
                         id,
                         key: key.clone(),
-                        value: value_str,
                     });
                 }
                 
@@ -218,12 +204,13 @@ impl Compiler {
                 
                 // Compile events
                 for event in events {
+                    // Events are compiled as separate functions or blocks
+                    // For now, we'll just emit them as EmitEventFromStack if they are simple
                     for handler_stmt in &event.handler {
                         if let HlsStatement::Emit { event: evt_name, payload } = handler_stmt {
-                            let payload_json = Self::expr_to_json(ctx, payload);
-                            ctx.instructions.push(Instruction::EmitEvent {
+                            Self::compile_expr(ctx, payload)?;
+                            ctx.instructions.push(Instruction::EmitEventFromStack {
                                 name: evt_name.clone(),
-                                payload: payload_json,
                             });
                         }
                     }
@@ -232,210 +219,166 @@ impl Compiler {
                 ctx.element_stack.pop();
             }
             
-            HlsStatement::Let { name, value, type_annotation } => {
-                let val = Self::eval_expr(ctx, value);
-                let inferred = Self::infer_type(&val);
-                let typ = type_annotation.clone().unwrap_or(inferred);
-                ctx.variables.insert(name.clone(), (typ, val));
+            HlsStatement::Let { name, value, .. } => {
+                Self::compile_expr(ctx, value)?;
+                ctx.instructions.push(Instruction::Store(name.clone()));
             }
             
-            HlsStatement::State { name, initial, type_annotation } => {
-                let val = Self::eval_expr(ctx, initial);
-                let inferred = Self::infer_type(&val);
-                let typ = type_annotation.clone().unwrap_or(inferred);
-                ctx.variables.insert(name.clone(), (typ.clone(), val));
-                // Emit state declaration instruction for reactive updates
-                ctx.instructions.push(Instruction::DeclareState {
+            HlsStatement::State { name, initial, .. } => {
+                Self::compile_expr(ctx, initial)?;
+                ctx.instructions.push(Instruction::DeclareStateFromStack {
                     name: name.clone(),
-                    initial_json: Self::value_to_json(&ctx.variables.get(name).map(|(_, v)| v.clone()).unwrap_or(HlsValue::Null)),
                 });
             }
             
-            HlsStatement::FnDef { name, params, body, return_type } => {
+            HlsStatement::FnDef { name, params, body, .. } => {
                 // Register the function for later calls
+                // In a real compiler, we'd compile this to a separate block
+                // For now, we'll just store it in the context
                 ctx.functions.insert(name.clone(), HlsFunction {
                     name: name.clone(),
                     params: params.clone(),
                     body: body.clone(),
-                    return_type: return_type.clone().unwrap_or(HlsType::Any),
+                    return_type: HlsType::Any,
                 });
             }
             
             HlsStatement::If { condition, then_branch, else_branch } => {
-                let cond_val = Self::eval_expr(ctx, condition);
-                let is_true = match cond_val {
-                    HlsValue::Boolean(b) => b,
-                    HlsValue::Number(n) => n != 0.0,
-                    HlsValue::String(s) => !s.is_empty(),
-                    _ => false,
-                };
+                Self::compile_expr(ctx, condition)?;
                 
-                if is_true {
-                    for stmt in then_branch {
-                        Self::compile_statement(ctx, stmt)?;
-                    }
-                } else if let Some(else_stmts) = else_branch {
+                let jump_if_idx = ctx.instructions.len();
+                ctx.instructions.push(Instruction::JumpIf(0)); // Placeholder
+                
+                // Else branch (if condition is false, we continue here)
+                if let Some(else_stmts) = else_branch {
                     for stmt in else_stmts {
                         Self::compile_statement(ctx, stmt)?;
                     }
                 }
+                
+                let jump_end_idx = ctx.instructions.len();
+                ctx.instructions.push(Instruction::Jump(0)); // Placeholder
+                
+                // Then branch
+                let then_start = ctx.instructions.len();
+                for stmt in then_branch {
+                    Self::compile_statement(ctx, stmt)?;
+                }
+                let end_idx = ctx.instructions.len();
+                
+                // Patch jumps
+                ctx.instructions[jump_if_idx] = Instruction::JumpIf(then_start);
+                ctx.instructions[jump_end_idx] = Instruction::Jump(end_idx);
             }
             
             HlsStatement::For { item, list, body } => {
-                let list_val = Self::eval_expr(ctx, list);
-                if let HlsValue::List(items) = list_val {
-                    for item_val in items {
-                        let typ = Self::infer_type(&item_val);
-                        ctx.variables.insert(item.clone(), (typ, item_val));
-                        for stmt in body {
-                            Self::compile_statement(ctx, stmt)?;
-                        }
-                    }
-                    ctx.variables.remove(item);
-                }
+                // For loops are complex to compile to bytecode without a proper iterator
+                // For now, let's just support static evaluation if possible, or skip
             }
             
             HlsStatement::While { condition, body } => {
-                let mut iterations = 0;
-                const MAX_ITERATIONS: usize = 1000;
+                let start_idx = ctx.instructions.len();
+                Self::compile_expr(ctx, condition)?;
                 
-                loop {
-                    let cond_val = Self::eval_expr(ctx, condition);
-                    let is_true = match cond_val {
-                        HlsValue::Boolean(b) => b,
-                        HlsValue::Number(n) => n != 0.0,
-                        _ => false,
-                    };
-                    
-                    if !is_true || iterations >= MAX_ITERATIONS {
-                        break;
-                    }
-                    
-                    for stmt in body {
-                        Self::compile_statement(ctx, stmt)?;
-                    }
-                    iterations += 1;
+                let jump_out_idx = ctx.instructions.len();
+                ctx.instructions.push(Instruction::JumpIfNot(0)); // Placeholder
+                
+                for stmt in body {
+                    Self::compile_statement(ctx, stmt)?;
                 }
+                
+                ctx.instructions.push(Instruction::Jump(start_idx));
+                let end_idx = ctx.instructions.len();
+                
+                ctx.instructions[jump_out_idx] = Instruction::JumpIfNot(end_idx);
             }
             
             HlsStatement::Text(expr) => {
-                let text = Self::eval_expr_to_string(ctx, expr);
-                let id = next_id();
-                ctx.instructions.push(Instruction::DefineElement {
-                    id,
-                    tag: "text".to_string(),
-                });
-                ctx.instructions.push(Instruction::SetAttribute {
-                    id,
-                    key: "content".to_string(),
-                    value: text,
-                });
-                if let Some(&parent_id) = ctx.element_stack.last() {
-                    ctx.instructions.push(Instruction::AddChild {
-                        parent_id,
-                        child_id: id,
-                    });
-                }
+                Self::compile_expr(ctx, expr)?;
+                ctx.instructions.push(Instruction::DefineTextFromStack);
+                // Note: DefineTextFromStack should handle adding to parent in the VM
             }
             
             HlsStatement::Emit { event, payload } => {
-                let payload_json = Self::expr_to_json(ctx, payload);
-                ctx.instructions.push(Instruction::EmitEvent {
+                Self::compile_expr(ctx, payload)?;
+                ctx.instructions.push(Instruction::EmitEventFromStack {
                     name: event.clone(),
-                    payload: payload_json,
                 });
             }
             
             HlsStatement::Assign { name, value } => {
-                let val = Self::eval_expr(ctx, value);
-                let typ = Self::infer_type(&val);
-                ctx.variables.insert(name.clone(), (typ, val.clone()));
-                
-                // If it's a state variable, emit an update instruction
-                ctx.instructions.push(Instruction::UpdateState {
+                Self::compile_expr(ctx, value)?;
+                ctx.instructions.push(Instruction::UpdateStateFromStack {
                     name: name.clone(),
-                    value_json: Self::value_to_json(&val),
                 });
             }
             
             HlsStatement::Call { name, args } => {
-                // Check for user-defined functions first
-                if let Some(func) = ctx.functions.get(name).cloned() {
-                    // Create a new scope for the function call
-                    let mut call_ctx = CompilerContext {
-                        variables: ctx.variables.clone(),
-                        functions: ctx.functions.clone(),
-                        scope_depth: ctx.scope_depth + 1,
-                        instructions: Vec::new(),
-                        string_pool: ctx.string_pool.clone(),
-                        element_stack: ctx.element_stack.clone(),
-                    };
-                    
-                    // Bind arguments to parameters
-                    for (i, (param_name, _)) in func.params.iter().enumerate() {
-                        if let Some(arg_expr) = args.get(i) {
-                            let arg_val = Self::eval_expr(ctx, arg_expr);
-                            let arg_typ = Self::infer_type(&arg_val);
-                            call_ctx.variables.insert(param_name.clone(), (arg_typ, arg_val));
-                        }
-                    }
-                    
-                    // Execute function body
-                    for stmt in &func.body {
-                        Self::compile_statement(&mut call_ctx, stmt)?;
-                    }
-                    
-                    // Merge instructions back
-                    ctx.instructions.extend(call_ctx.instructions);
-                    return Ok(());
+                for arg in args {
+                    Self::compile_expr(ctx, arg)?;
                 }
-
-                // Built-in functions
-                match name.as_str() {
-                    "print" => {
-                        for arg in args {
-                            let val = Self::eval_expr_to_string(ctx, arg);
-                            println!("[HLS] {}", val);
-                        }
-                    }
-                    "morph" => {
-                        // Trigger protocol morphing
-                        let seed = if let Some(arg) = args.first() {
-                            match Self::eval_expr(ctx, arg) {
-                                HlsValue::Number(n) => n as u64,
-                                _ => 0,
-                            }
-                        } else {
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_nanos() as u64)
-                                .unwrap_or(0)
-                        };
-                        ctx.instructions.push(Instruction::MorphProtocol { seed });
-                    }
-                    "decoy" => {
-                        let noise: Vec<f32> = (0..64).map(|i| (i as f32 * 0.1).sin()).collect();
-                        ctx.instructions.push(Instruction::Decoy { noise });
-                    }
-                    "stream_latent" => {
-                        if let Some(arg) = args.first() {
-                            if let HlsValue::List(items) = Self::eval_expr(ctx, arg) {
-                                let vector: Vec<f32> = items.iter().filter_map(|v| {
-                                    if let HlsValue::Number(n) = v { Some(*n as f32) } else { None }
-                                }).collect();
-                                ctx.instructions.push(Instruction::StreamLatent { vector });
-                            }
-                        }
-                    }
-                    _ => {}
-                }
+                ctx.instructions.push(Instruction::Call { name: name.clone(), num_args: args.len() });
             }
             
-            HlsStatement::Return(_) | HlsStatement::Comment(_) => {}
+            HlsStatement::Return(expr) => {
+                if let Some(e) = expr {
+                    Self::compile_expr(ctx, e)?;
+                }
+                ctx.instructions.push(Instruction::Return);
+            }
+            
+            HlsStatement::Comment(_) => {}
         }
         Ok(())
     }
     
+    fn compile_expr(ctx: &mut CompilerContext, expr: &HlsExpr) -> anyhow::Result<()> {
+        match expr {
+            HlsExpr::StringLit(s) => {
+                ctx.instructions.push(Instruction::Push(serde_json::Value::String(s.clone())));
+            }
+            HlsExpr::NumberLit(n) => {
+                ctx.instructions.push(Instruction::Push(serde_json::json!(n)));
+            }
+            HlsExpr::BoolLit(b) => {
+                ctx.instructions.push(Instruction::Push(serde_json::Value::Bool(*b)));
+            }
+            HlsExpr::Var(name) => {
+                ctx.instructions.push(Instruction::Load(name.clone()));
+            }
+            HlsExpr::BinOp { left, op, right } => {
+                Self::compile_expr(ctx, left)?;
+                Self::compile_expr(ctx, right)?;
+                ctx.instructions.push(Instruction::BinOp(*op));
+            }
+            HlsExpr::UnaryOp { op, expr } => {
+                Self::compile_expr(ctx, expr)?;
+                ctx.instructions.push(Instruction::UnaryOp(*op));
+            }
+            HlsExpr::Call { name, args } => {
+                for arg in args {
+                    Self::compile_expr(ctx, arg)?;
+                }
+                ctx.instructions.push(Instruction::Call { name: name.clone(), num_args: args.len() });
+            }
+            HlsExpr::List(items) => {
+                for item in items {
+                    Self::compile_expr(ctx, item)?;
+                }
+                ctx.instructions.push(Instruction::Call { name: "list".to_string(), num_args: items.len() });
+            }
+            HlsExpr::Object(props) => {
+                for (key, val) in props {
+                    ctx.instructions.push(Instruction::Push(serde_json::Value::String(key.clone())));
+                    Self::compile_expr(ctx, val)?;
+                }
+                ctx.instructions.push(Instruction::Call { name: "object".to_string(), num_args: props.len() * 2 });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn eval_expr(ctx: &CompilerContext, expr: &HlsExpr) -> HlsValue {
         match expr {
             HlsExpr::StringLit(s) => HlsValue::String(s.clone()),
@@ -454,11 +397,11 @@ impl Compiler {
             HlsExpr::UnaryOp { op, expr } => {
                 let v = Self::eval_expr(ctx, expr);
                 match op {
-                    UnaryOperator::Not => match v {
+                    ProtocolUnaryOp::Not => match v {
                         HlsValue::Boolean(b) => HlsValue::Boolean(!b),
                         _ => HlsValue::Boolean(false),
                     },
-                    UnaryOperator::Neg => match v {
+                    ProtocolUnaryOp::Neg => match v {
                         HlsValue::Number(n) => HlsValue::Number(-n),
                         _ => HlsValue::Number(0.0),
                     },
@@ -541,56 +484,56 @@ impl Compiler {
         }
     }
     
-    fn eval_binop(left: HlsValue, op: BinOperator, right: HlsValue) -> HlsValue {
+    fn eval_binop(left: HlsValue, op: ProtocolBinOp, right: HlsValue) -> HlsValue {
         match op {
-            BinOperator::Add => match (left, right) {
+            ProtocolBinOp::Add => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Number(l + r),
                 (HlsValue::String(l), HlsValue::String(r)) => HlsValue::String(format!("{}{}", l, r)),
                 _ => HlsValue::Null,
             },
-            BinOperator::Sub => match (left, right) {
+            ProtocolBinOp::Sub => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Number(l - r),
                 _ => HlsValue::Null,
             },
-            BinOperator::Mul => match (left, right) {
+            ProtocolBinOp::Mul => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Number(l * r),
                 _ => HlsValue::Null,
             },
-            BinOperator::Div => match (left, right) {
+            ProtocolBinOp::Div => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) if r != 0.0 => HlsValue::Number(l / r),
                 _ => HlsValue::Null,
             },
-            BinOperator::Mod => match (left, right) {
+            ProtocolBinOp::Mod => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) if r != 0.0 => HlsValue::Number(l % r),
                 _ => HlsValue::Null,
             },
-            BinOperator::Eq => HlsValue::Boolean(Self::values_equal(&left, &right)),
-            BinOperator::Ne => HlsValue::Boolean(!Self::values_equal(&left, &right)),
-            BinOperator::Lt => match (left, right) {
+            ProtocolBinOp::Eq => HlsValue::Boolean(Self::values_equal(&left, &right)),
+            ProtocolBinOp::Ne => HlsValue::Boolean(!Self::values_equal(&left, &right)),
+            ProtocolBinOp::Lt => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Boolean(l < r),
                 _ => HlsValue::Boolean(false),
             },
-            BinOperator::Le => match (left, right) {
+            ProtocolBinOp::Le => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Boolean(l <= r),
                 _ => HlsValue::Boolean(false),
             },
-            BinOperator::Gt => match (left, right) {
+            ProtocolBinOp::Gt => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Boolean(l > r),
                 _ => HlsValue::Boolean(false),
             },
-            BinOperator::Ge => match (left, right) {
+            ProtocolBinOp::Ge => match (left, right) {
                 (HlsValue::Number(l), HlsValue::Number(r)) => HlsValue::Boolean(l >= r),
                 _ => HlsValue::Boolean(false),
             },
-            BinOperator::And => match (left, right) {
+            ProtocolBinOp::And => match (left, right) {
                 (HlsValue::Boolean(l), HlsValue::Boolean(r)) => HlsValue::Boolean(l && r),
                 _ => HlsValue::Boolean(false),
             },
-            BinOperator::Or => match (left, right) {
+            ProtocolBinOp::Or => match (left, right) {
                 (HlsValue::Boolean(l), HlsValue::Boolean(r)) => HlsValue::Boolean(l || r),
                 _ => HlsValue::Boolean(false),
             },
-            BinOperator::Concat => {
+            ProtocolBinOp::Concat => {
                 let l = Self::value_to_string(&left);
                 let r = Self::value_to_string(&right);
                 HlsValue::String(format!("{}{}", l, r))
@@ -663,27 +606,27 @@ impl Compiler {
                 let lt = Self::infer_expr_type(ctx, left)?;
                 let rt = Self::infer_expr_type(ctx, right)?;
                 match op {
-                    BinOperator::Add | BinOperator::Sub | BinOperator::Mul | BinOperator::Div | BinOperator::Mod => {
+                    ProtocolBinOp::Add | ProtocolBinOp::Sub | ProtocolBinOp::Mul | ProtocolBinOp::Div | ProtocolBinOp::Mod => {
                         if lt == HlsType::Number && rt == HlsType::Number {
                             Ok(HlsType::Number)
                         } else {
                             Err(anyhow::anyhow!("Arithmetic operators require numbers"))
                         }
                     }
-                    BinOperator::Eq | BinOperator::Ne | BinOperator::Lt | BinOperator::Le | BinOperator::Gt | BinOperator::Ge => {
+                    ProtocolBinOp::Eq | ProtocolBinOp::Ne | ProtocolBinOp::Lt | ProtocolBinOp::Le | ProtocolBinOp::Gt | ProtocolBinOp::Ge => {
                         Ok(HlsType::Boolean)
                     }
-                    BinOperator::And | BinOperator::Or => {
+                    ProtocolBinOp::And | ProtocolBinOp::Or => {
                         Ok(HlsType::Boolean)
                     }
-                    BinOperator::Concat => Ok(HlsType::String),
+                    ProtocolBinOp::Concat => Ok(HlsType::String),
                 }
             }
             HlsExpr::UnaryOp { op, expr } => {
                 let t = Self::infer_expr_type(ctx, expr)?;
                 match op {
-                    UnaryOperator::Not => Ok(HlsType::Boolean),
-                    UnaryOperator::Neg => {
+                    ProtocolUnaryOp::Not => Ok(HlsType::Boolean),
+                    ProtocolUnaryOp::Neg => {
                         if t == HlsType::Number { Ok(HlsType::Number) }
                         else { Err(anyhow::anyhow!("Negation requires a number")) }
                     }
@@ -1150,7 +1093,7 @@ fn parse_or_expr(input: &str) -> IResult<&str, HlsExpr> {
     ))(input)?;
     
     Ok((input, rights.into_iter().fold(left, |acc, right| {
-        HlsExpr::BinOp { left: Box::new(acc), op: BinOperator::Or, right: Box::new(right) }
+        HlsExpr::BinOp { left: Box::new(acc), op: ProtocolBinOp::Or, right: Box::new(right) }
     })))
 }
 
@@ -1162,7 +1105,7 @@ fn parse_and_expr(input: &str) -> IResult<&str, HlsExpr> {
     ))(input)?;
     
     Ok((input, rights.into_iter().fold(left, |acc, right| {
-        HlsExpr::BinOp { left: Box::new(acc), op: BinOperator::And, right: Box::new(right) }
+        HlsExpr::BinOp { left: Box::new(acc), op: ProtocolBinOp::And, right: Box::new(right) }
     })))
 }
 
@@ -1171,12 +1114,12 @@ fn parse_comparison_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, op_right) = opt(tuple((
         multispace0,
         alt((
-            value(BinOperator::Eq, tag("==")),
-            value(BinOperator::Ne, tag("!=")),
-            value(BinOperator::Le, tag("<=")),
-            value(BinOperator::Ge, tag(">=")),
-            value(BinOperator::Lt, tag("<")),
-            value(BinOperator::Gt, tag(">")),
+            value(ProtocolBinOp::Eq, tag("==")),
+            value(ProtocolBinOp::Ne, tag("!=")),
+            value(ProtocolBinOp::Le, tag("<=")),
+            value(ProtocolBinOp::Ge, tag(">=")),
+            value(ProtocolBinOp::Lt, tag("<")),
+            value(ProtocolBinOp::Gt, tag(">")),
         )),
         multispace0,
         parse_additive_expr
@@ -1193,9 +1136,9 @@ fn parse_additive_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, rights) = many0(tuple((
         multispace0,
         alt((
-            value(BinOperator::Add, tag("+")),
-            value(BinOperator::Sub, tag("-")),
-            value(BinOperator::Concat, tag("++")),
+            value(ProtocolBinOp::Add, tag("+")),
+            value(ProtocolBinOp::Sub, tag("-")),
+            value(ProtocolBinOp::Concat, tag("++")),
         )),
         multispace0,
         parse_multiplicative_expr
@@ -1211,9 +1154,9 @@ fn parse_multiplicative_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, rights) = many0(tuple((
         multispace0,
         alt((
-            value(BinOperator::Mul, tag("*")),
-            value(BinOperator::Div, tag("/")),
-            value(BinOperator::Mod, tag("%")),
+            value(ProtocolBinOp::Mul, tag("*")),
+            value(ProtocolBinOp::Div, tag("/")),
+            value(ProtocolBinOp::Mod, tag("%")),
         )),
         multispace0,
         parse_unary_expr
@@ -1227,10 +1170,10 @@ fn parse_multiplicative_expr(input: &str) -> IResult<&str, HlsExpr> {
 fn parse_unary_expr(input: &str) -> IResult<&str, HlsExpr> {
     alt((
         map(preceded(tuple((tag("!"), multispace0)), parse_unary_expr), |e| {
-            HlsExpr::UnaryOp { op: UnaryOperator::Not, expr: Box::new(e) }
+            HlsExpr::UnaryOp { op: ProtocolUnaryOp::Not, expr: Box::new(e) }
         }),
         map(preceded(tuple((tag("-"), multispace0)), parse_unary_expr), |e| {
-            HlsExpr::UnaryOp { op: UnaryOperator::Neg, expr: Box::new(e) }
+            HlsExpr::UnaryOp { op: ProtocolUnaryOp::Neg, expr: Box::new(e) }
         }),
         parse_primary_expr
     ))(input)
@@ -1431,7 +1374,7 @@ mod tests {
         
         if let HlsExpr::BinOp { op, .. } = expr {
             // Addition should be at top level (lower precedence)
-            assert!(matches!(op, BinOperator::Add));
+            assert!(matches!(op, ProtocolBinOp::Add));
         } else {
             panic!("Expected binary operation");
         }

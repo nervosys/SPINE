@@ -13,7 +13,7 @@
 // =============================================================================
 
 use anyhow::{Result, Context};
-use hyperlight_protocol::{HyperlightBinary, Instruction};
+use hyperlight_protocol::{HyperlightBinary, Instruction, ProtocolBinOp, ProtocolUnaryOp};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -70,6 +70,11 @@ struct HostState {
     latent_streams: Vec<Vec<f32>>,
     instruction_count: usize,
     current_latent: Vec<f32>,
+    
+    // New stack-based state
+    value_stack: Vec<serde_json::Value>,
+    variables: HashMap<String, serde_json::Value>,
+    element_stack: Vec<u32>,
 }
 
 // =============================================================================
@@ -98,6 +103,23 @@ impl HlbToWatCompiler {
         wat.push_str("  (import \"env\" \"inject_decoy\" (func $inject_decoy (param i32 i32)))\n");
         wat.push_str("  (import \"env\" \"declare_state\" (func $declare_state (param i32 i32 i32 i32)))\n");
         wat.push_str("  (import \"env\" \"update_state\" (func $update_state (param i32 i32 i32 i32)))\n");
+        
+        // New stack-based host functions
+        wat.push_str("  (import \"env\" \"push_value\" (func $push_value (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"pop_value\" (func $pop_value))\n");
+        wat.push_str("  (import \"env\" \"load_var\" (func $load_var (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"store_var\" (func $store_var (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"bin_op\" (func $bin_op (param i32)))\n");
+        wat.push_str("  (import \"env\" \"unary_op\" (func $unary_op (param i32)))\n");
+        wat.push_str("  (import \"env\" \"call_func\" (func $call_func (param i32 i32 i32)))\n");
+        
+        // New stack-based DOM host functions
+        wat.push_str("  (import \"env\" \"define_element_from_stack\" (func $define_element_from_stack (param i32)))\n");
+        wat.push_str("  (import \"env\" \"set_attribute_from_stack\" (func $set_attribute_from_stack (param i32 i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"emit_event_from_stack\" (func $emit_event_from_stack (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"define_text_from_stack\" (func $define_text_from_stack))\n");
+        wat.push_str("  (import \"env\" \"declare_state_from_stack\" (func $declare_state_from_stack (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"update_state_from_stack\" (func $update_state_from_stack (param i32 i32)))\n");
         wat.push_str("\n");
         
         // Memory for string data
@@ -187,6 +209,79 @@ impl HlbToWatCompiler {
                             ));
                             data_offset += len + 1;
                         }
+                    }
+                }
+                Instruction::Push(val) => {
+                    let s = val.to_string();
+                    if !string_offsets.contains_key(&s) {
+                        let len = s.len() as u32;
+                        string_offsets.insert(s.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(&s)
+                        ));
+                        data_offset += len + 1;
+                    }
+                }
+                Instruction::Load(name) | Instruction::Store(name) => {
+                    if !string_offsets.contains_key(name) {
+                        let len = name.len() as u32;
+                        string_offsets.insert(name.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(name)
+                        ));
+                        data_offset += len + 1;
+                    }
+                }
+                Instruction::Call { name, .. } => {
+                    if !string_offsets.contains_key(name) {
+                        let len = name.len() as u32;
+                        string_offsets.insert(name.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(name)
+                        ));
+                        data_offset += len + 1;
+                    }
+                }
+                Instruction::SetAttributeFromStack { key, .. } => {
+                    if !string_offsets.contains_key(key) {
+                        let len = key.len() as u32;
+                        string_offsets.insert(key.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(key)
+                        ));
+                        data_offset += len + 1;
+                    }
+                }
+                Instruction::EmitEventFromStack { name } => {
+                    if !string_offsets.contains_key(name) {
+                        let len = name.len() as u32;
+                        string_offsets.insert(name.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(name)
+                        ));
+                        data_offset += len + 1;
+                    }
+                }
+                Instruction::DeclareStateFromStack { name } | Instruction::UpdateStateFromStack { name } => {
+                    if !string_offsets.contains_key(name) {
+                        let len = name.len() as u32;
+                        string_offsets.insert(name.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(name)
+                        ));
+                        data_offset += len + 1;
                     }
                 }
                 _ => {}
@@ -317,6 +412,76 @@ impl HlbToWatCompiler {
                         "    (call $inject_decoy (i32.const 0) (i32.const {}))\n",
                         noise_len
                     ));
+                }
+                
+                // --- Control Flow & Stack Operations ---
+                Instruction::Push(val) => {
+                    let val_str = val.to_string();
+                    let (offset, len) = string_offsets.get(&val_str).unwrap();
+                    wat.push_str(&format!("    (call $push_value (i32.const {}) (i32.const {}))\n", offset, len));
+                }
+                Instruction::Pop => {
+                    wat.push_str("    (call $pop_value)\n");
+                }
+                Instruction::Load(name) => {
+                    let (offset, len) = string_offsets.get(name).unwrap();
+                    wat.push_str(&format!("    (call $load_var (i32.const {}) (i32.const {}))\n", offset, len));
+                }
+                Instruction::Store(name) => {
+                    let (offset, len) = string_offsets.get(name).unwrap();
+                    wat.push_str(&format!("    (call $store_var (i32.const {}) (i32.const {}))\n", offset, len));
+                }
+                Instruction::BinOp(op) => {
+                    wat.push_str(&format!("    (call $bin_op (i32.const {}))\n", *op as i32));
+                }
+                Instruction::UnaryOp(op) => {
+                    wat.push_str(&format!("    (call $unary_op (i32.const {}))\n", *op as i32));
+                }
+                Instruction::Jump(target) => {
+                    // This is tricky in WAT without labels. 
+                    // For now, we'll just emit a comment. 
+                    // Real jump support requires a more complex WAT structure (block/loop).
+                    wat.push_str(&format!("    ;; Jump to {}\n", target));
+                }
+                Instruction::JumpIf(target) => {
+                    wat.push_str(&format!("    ;; JumpIf to {}\n", target));
+                }
+                Instruction::JumpIfNot(target) => {
+                    wat.push_str(&format!("    ;; JumpIfNot to {}\n", target));
+                }
+                Instruction::Call { name, num_args } => {
+                    let (offset, len) = string_offsets.get(name).unwrap();
+                    wat.push_str(&format!("    (call $call_func (i32.const {}) (i32.const {}) (i32.const {}))\n", offset, len, num_args));
+                }
+                Instruction::Return => {
+                    wat.push_str("    return\n");
+                }
+                
+                // --- Stack-based DOM Operations ---
+                Instruction::DefineElementFromStack { id } => {
+                    wat.push_str(&format!("    (call $define_element_from_stack (i32.const {}))\n", id));
+                }
+                Instruction::SetAttributeFromStack { id, key } => {
+                    let (offset, len) = string_offsets.get(key).unwrap();
+                    wat.push_str(&format!("    (call $set_attribute_from_stack (i32.const {}) (i32.const {}) (i32.const {}))\n", id, offset, len));
+                }
+                Instruction::AddChildFromStack { parent_id, child_id } => {
+                    wat.push_str(&format!("    (call $add_child (i32.const {}) (i32.const {}))\n", parent_id, child_id));
+                }
+                Instruction::EmitEventFromStack { name } => {
+                    let (offset, len) = string_offsets.get(name).unwrap();
+                    wat.push_str(&format!("    (call $emit_event_from_stack (i32.const {}) (i32.const {}))\n", offset, len));
+                }
+                Instruction::DefineTextFromStack => {
+                    wat.push_str("    (call $define_text_from_stack)\n");
+                }
+                Instruction::DeclareStateFromStack { name } => {
+                    let (offset, len) = string_offsets.get(name).unwrap();
+                    wat.push_str(&format!("    (call $declare_state_from_stack (i32.const {}) (i32.const {}))\n", offset, len));
+                }
+                Instruction::UpdateStateFromStack { name } => {
+                    let (offset, len) = string_offsets.get(name).unwrap();
+                    wat.push_str(&format!("    (call $update_state_from_stack (i32.const {}) (i32.const {}))\n", offset, len));
                 }
             }
         }
@@ -523,6 +688,323 @@ impl WasmRuntime {
                 let mut state = caller.data().lock().unwrap();
                 state.events.push(WasmEvent { name, payload });
                 state.instruction_count += 1;
+            },
+        )?;
+        
+        // push_value(ptr: i32, len: i32)
+        linker.func_wrap(
+            "env",
+            "push_value",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; len as usize];
+                memory.read(&caller, ptr as usize, &mut buf).expect("read");
+                let s = String::from_utf8_lossy(&buf).to_string();
+                let val: serde_json::Value = serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s));
+                
+                let mut state = caller.data().lock().unwrap();
+                state.value_stack.push(val);
+            },
+        )?;
+        
+        // pop_value()
+        linker.func_wrap(
+            "env",
+            "pop_value",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>| {
+                let mut state = caller.data().lock().unwrap();
+                state.value_stack.pop();
+            },
+        )?;
+        
+        // load_var(ptr: i32, len: i32)
+        linker.func_wrap(
+            "env",
+            "load_var",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; len as usize];
+                memory.read(&caller, ptr as usize, &mut buf).expect("read");
+                let name = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                let val = state.variables.get(&name).cloned().unwrap_or(serde_json::Value::Null);
+                state.value_stack.push(val);
+            },
+        )?;
+        
+        // store_var(ptr: i32, len: i32)
+        linker.func_wrap(
+            "env",
+            "store_var",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; len as usize];
+                memory.read(&caller, ptr as usize, &mut buf).expect("read");
+                let name = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                if let Some(val) = state.value_stack.pop() {
+                    state.variables.insert(name, val);
+                }
+            },
+        )?;
+        
+        // bin_op(op_code: i32)
+        linker.func_wrap(
+            "env",
+            "bin_op",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, op_code: i32| {
+                let mut state = caller.data().lock().unwrap();
+                let right = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                let left = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                
+                // Simple evaluation for now
+                let res = match op_code {
+                    0 => { // Add
+                        match (left, right) {
+                            (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
+                                serde_json::json!(l.as_f64().unwrap() + r.as_f64().unwrap())
+                            }
+                            (serde_json::Value::String(l), serde_json::Value::String(r)) => {
+                                serde_json::Value::String(format!("{}{}", l, r))
+                            }
+                            _ => serde_json::Value::Null,
+                        }
+                    }
+                    1 => { // Sub
+                        match (left, right) {
+                            (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
+                                serde_json::json!(l.as_f64().unwrap() - r.as_f64().unwrap())
+                            }
+                            _ => serde_json::Value::Null,
+                        }
+                    }
+                    2 => { // Mul
+                        match (left, right) {
+                            (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
+                                serde_json::json!(l.as_f64().unwrap() * r.as_f64().unwrap())
+                            }
+                            _ => serde_json::Value::Null,
+                        }
+                    }
+                    3 => { // Div
+                        match (left, right) {
+                            (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
+                                let r_val = r.as_f64().unwrap();
+                                if r_val != 0.0 {
+                                    serde_json::json!(l.as_f64().unwrap() / r_val)
+                                } else {
+                                    serde_json::Value::Null
+                                }
+                            }
+                            _ => serde_json::Value::Null,
+                        }
+                    }
+                    5 => { // Eq
+                        serde_json::Value::Bool(left == right)
+                    }
+                    6 => { // Ne
+                        serde_json::Value::Bool(left != right)
+                    }
+                    11 => { // And
+                        match (left, right) {
+                            (serde_json::Value::Bool(l), serde_json::Value::Bool(r)) => {
+                                serde_json::Value::Bool(l && r)
+                            }
+                            _ => serde_json::Value::Bool(false),
+                        }
+                    }
+                    12 => { // Or
+                        match (left, right) {
+                            (serde_json::Value::Bool(l), serde_json::Value::Bool(r)) => {
+                                serde_json::Value::Bool(l || r)
+                            }
+                            _ => serde_json::Value::Bool(false),
+                        }
+                    }
+                    13 => { // Concat
+                        serde_json::Value::String(format!("{}{}", left.to_string(), right.to_string()))
+                    }
+                    _ => serde_json::Value::Null,
+                };
+                state.value_stack.push(res);
+            },
+        )?;
+        
+        // define_element_from_stack(id: i32)
+        linker.func_wrap(
+            "env",
+            "define_element_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, id: i32| {
+                let mut state = caller.data().lock().unwrap();
+                let tag = state.value_stack.pop()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "div".to_string());
+                
+                state.elements.push(WasmElement {
+                    id: id as u32,
+                    tag,
+                    attributes: HashMap::new(),
+                    parent_id: None,
+                });
+            },
+        )?;
+        
+        // set_attribute_from_stack(id: i32, key_ptr: i32, key_len: i32)
+        linker.func_wrap(
+            "env",
+            "set_attribute_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, id: i32, key_ptr: i32, key_len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; key_len as usize];
+                memory.read(&caller, key_ptr as usize, &mut buf).expect("read");
+                let key = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                let val = state.value_stack.pop()
+                    .map(|v| v.to_string())
+                    .unwrap_or_default();
+                
+                if let Some(elem) = state.elements.iter_mut().find(|e| e.id == id as u32) {
+                    elem.attributes.insert(key, val);
+                }
+            },
+        )?;
+        
+        // define_text_from_stack()
+        linker.func_wrap(
+            "env",
+            "define_text_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>| {
+                let mut state = caller.data().lock().unwrap();
+                let text = state.value_stack.pop()
+                    .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+                    .unwrap_or_default();
+                
+                // Text elements are special, for now we'll just create a "text" element
+                let id = state.elements.len() as u32 + 1000; // Simple ID generation
+                state.elements.push(WasmElement {
+                    id,
+                    tag: "text".to_string(),
+                    attributes: [("content".to_string(), text)].into_iter().collect(),
+                    parent_id: None,
+                });
+            },
+        )?;
+        
+        // declare_state_from_stack(name_ptr: i32, name_len: i32)
+        linker.func_wrap(
+            "env",
+            "declare_state_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; name_len as usize];
+                memory.read(&caller, name_ptr as usize, &mut buf).expect("read");
+                let name = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                if let Some(val) = state.value_stack.pop() {
+                    state.variables.insert(name, val);
+                }
+            },
+        )?;
+        
+        // update_state_from_stack(name_ptr: i32, name_len: i32)
+        linker.func_wrap(
+            "env",
+            "update_state_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; name_len as usize];
+                memory.read(&caller, name_ptr as usize, &mut buf).expect("read");
+                let name = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                if let Some(val) = state.value_stack.pop() {
+                    state.variables.insert(name, val);
+                }
+            },
+        )?;
+        
+        // call_func(name_ptr: i32, name_len: i32, num_args: i32)
+        linker.func_wrap(
+            "env",
+            "call_func",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32, num_args: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; name_len as usize];
+                memory.read(&caller, name_ptr as usize, &mut buf).expect("read");
+                let name = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                let mut args = Vec::new();
+                for _ in 0..num_args {
+                    args.push(state.value_stack.pop().unwrap_or(serde_json::Value::Null));
+                }
+                args.reverse();
+                
+                // Built-in functions
+                let res = match name.as_str() {
+                    "len" => {
+                        if let Some(arg) = args.first() {
+                            match arg {
+                                serde_json::Value::Array(a) => serde_json::json!(a.len()),
+                                serde_json::Value::String(s) => serde_json::json!(s.len()),
+                                _ => serde_json::json!(0),
+                            }
+                        } else {
+                            serde_json::json!(0)
+                        }
+                    }
+                    _ => serde_json::Value::Null,
+                };
+                state.value_stack.push(res);
+            },
+        )?;
+        
+        // emit_event_from_stack(name_ptr: i32, name_len: i32)
+        linker.func_wrap(
+            "env",
+            "emit_event_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32| {
+                let memory = caller.get_export("memory").and_then(|e| e.into_memory()).expect("memory");
+                let mut buf = vec![0u8; name_len as usize];
+                memory.read(&caller, name_ptr as usize, &mut buf).expect("read");
+                let name = String::from_utf8_lossy(&buf).to_string();
+                
+                let mut state = caller.data().lock().unwrap();
+                let payload = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                state.events.push(WasmEvent { name, payload });
+            },
+        )?;
+        
+        // unary_op(op_code: i32)
+        linker.func_wrap(
+            "env",
+            "unary_op",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, op_code: i32| {
+                let mut state = caller.data().lock().unwrap();
+                let val = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                
+                let res = match op_code {
+                    0 => { // Not
+                        match val {
+                            serde_json::Value::Bool(b) => serde_json::Value::Bool(!b),
+                            _ => serde_json::Value::Bool(false),
+                        }
+                    }
+                    1 => { // Neg
+                        match val {
+                            serde_json::Value::Number(n) => {
+                                serde_json::json!(-n.as_f64().unwrap())
+                            }
+                            _ => serde_json::Value::Null,
+                        }
+                    }
+                    _ => serde_json::Value::Null,
+                };
+                state.value_stack.push(res);
             },
         )?;
         
