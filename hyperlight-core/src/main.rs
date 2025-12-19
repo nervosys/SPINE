@@ -227,6 +227,33 @@ async fn handle_command(
                     }
                 }
             }
+
+            // Handle agentic actions from WASM
+            for action in &result.actions {
+                match action {
+                    hyperlight_wasm::WasmAction::Navigate(url) => {
+                        info!("WASM requested navigation to {}", url);
+                        let state_clone = state.clone();
+                        let url_clone = url.clone();
+                        let sid_clone = session_id.to_string();
+                        tokio::spawn(async move {
+                            if let Ok(resp) = state_clone.client.get(&url_clone).send().await {
+                                if let Ok(html) = resp.text().await {
+                                    if let Some(mut session) = state_clone.sessions.get_mut(&sid_clone) {
+                                        session.current_url = Some(url_clone);
+                                        session.current_html = Some(html);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    hyperlight_wasm::WasmAction::Search(query) => {
+                        info!("WASM requested search for {}", query);
+                        let cluster = state.cluster.lock().await;
+                        let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                    }
+                }
+            }
             
             Response {
                 id: request_id,
@@ -241,6 +268,7 @@ async fn handle_command(
                     },
                     "elements": result.elements,
                     "events": result.events,
+                    "actions": result.actions,
                     "latent_streams_count": result.latent_streams.len(),
                     "patches": patches,
                 })),

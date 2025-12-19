@@ -32,8 +32,16 @@ pub struct WasmExecutionResult {
     pub events: Vec<WasmEvent>,
     /// Latent vectors streamed
     pub latent_streams: Vec<Vec<f32>>,
+    /// Agentic actions requested
+    pub actions: Vec<WasmAction>,
     /// Execution statistics
     pub stats: WasmStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum WasmAction {
+    Navigate(String),
+    Search(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +76,7 @@ struct HostState {
     elements: Vec<WasmElement>,
     events: Vec<WasmEvent>,
     latent_streams: Vec<Vec<f32>>,
+    actions: Vec<WasmAction>,
     instruction_count: usize,
     current_latent: Vec<f32>,
     
@@ -121,6 +130,8 @@ impl HlbToWatCompiler {
         wat.push_str("  (import \"env\" \"define_text_from_stack\" (func $define_text_from_stack))\n");
         wat.push_str("  (import \"env\" \"declare_state_from_stack\" (func $declare_state_from_stack (param i32 i32)))\n");
         wat.push_str("  (import \"env\" \"update_state_from_stack\" (func $update_state_from_stack (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"navigate_from_stack\" (func $navigate_from_stack))\n");
+        wat.push_str("  (import \"env\" \"search_from_stack\" (func $search_from_stack))\n");
         wat.push_str("\n");
         
         // Memory for string data
@@ -487,6 +498,12 @@ impl HlbToWatCompiler {
                     let (offset, len) = string_offsets.get(name).unwrap();
                     wat.push_str(&format!("    (call $update_state_from_stack (i32.const {}) (i32.const {}))\n", offset, len));
                 }
+                Instruction::NavigateFromStack => {
+                    wat.push_str("    (call $navigate_from_stack)\n");
+                }
+                Instruction::SearchFromStack => {
+                    wat.push_str("    (call $search_from_stack)\n");
+                }
             }
         }
         
@@ -591,6 +608,7 @@ impl WasmRuntime {
             elements: state.elements.clone(),
             events: state.events.clone(),
             latent_streams: state.latent_streams.clone(),
+            actions: state.actions.clone(),
             stats: WasmStats {
                 compile_time_us: compile_time.as_micros() as u64,
                 execution_time_us: exec_time.as_micros() as u64,
@@ -927,6 +945,30 @@ impl WasmRuntime {
                 let mut state = caller.data().lock().unwrap();
                 if let Some(val) = state.value_stack.pop() {
                     state.variables.insert(name, val);
+                }
+            },
+        )?;
+
+        // navigate_from_stack()
+        linker.func_wrap(
+            "env",
+            "navigate_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>| {
+                let mut state = caller.data().lock().unwrap();
+                if let Some(url) = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())) {
+                    state.actions.push(WasmAction::Navigate(url));
+                }
+            },
+        )?;
+
+        // search_from_stack()
+        linker.func_wrap(
+            "env",
+            "search_from_stack",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>| {
+                let mut state = caller.data().lock().unwrap();
+                if let Some(query) = state.value_stack.pop().and_then(|v| v.as_str().map(|s| s.to_string())) {
+                    state.actions.push(WasmAction::Search(query));
                 }
             },
         )?;

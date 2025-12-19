@@ -218,6 +218,16 @@ where
         Ok(res.result.unwrap_or(serde_json::Value::Null))
     }
 
+    pub async fn execute_hls(&mut self, script: &str) -> anyhow::Result<hyperlight_wasm::WasmExecutionResult> {
+        let binary = hyperlight_compiler::Compiler::compile(script)?;
+        let res = self.send_request(BrowserCommand::ExecuteBinary(binary)).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        let result: hyperlight_wasm::WasmExecutionResult = serde_json::from_value(res.result.unwrap())?;
+        Ok(result)
+    }
+
     pub async fn get_latent_ur(&mut self, dimensions: usize) -> anyhow::Result<Vec<f32>> {
         let res = self.send_request(BrowserCommand::GetLatentUR { dimensions }).await?;
         if let Some(err) = res.error {

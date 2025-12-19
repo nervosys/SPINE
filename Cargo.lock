@@ -2219,6 +2219,7 @@ dependencies = [
  "hyperlight-human",
  "hyperlight-parser",
  "hyperlight-protocol",
+ "hyperlight-wasm",
  "log",
  "rustls",
  "rustls-native-certs",

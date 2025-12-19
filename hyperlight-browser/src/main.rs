@@ -21,6 +21,7 @@ enum BrowserEvent {
 struct HyperlightBrowser {
     url: String,
     search_query: String,
+    hls_input: String,
     content: String,
     hls_preview: String,
     status: String,
@@ -43,6 +44,7 @@ impl HyperlightBrowser {
         Self {
             url: "https://example.com".to_string(),
             search_query: String::new(),
+            hls_input: "on_mount -> {\n  print(\"Hello from HLS!\");\n}".to_string(),
             content: "Welcome to Hyperlight Browser".to_string(),
             hls_preview: String::new(),
             status: "Disconnected".to_string(),
@@ -481,9 +483,54 @@ impl eframe::App for HyperlightBrowser {
             });
         });
 
-        if self.show_hls && self.human_mode {
+        if self.show_hls {
             egui::SidePanel::right("hls_panel").resizable(true).show(ctx, |ui| {
-                ui.heading("HLS Preview");
+                ui.heading("HLS Script");
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.add(egui::TextEdit::multiline(&mut self.hls_input)
+                        .font(egui::TextStyle::Monospace)
+                        .code_editor());
+                });
+                
+                if ui.button("Execute HLS").clicked() {
+                    let script = self.hls_input.clone();
+                    let agent_clone = self.agent.clone();
+                    let tx = self.event_tx.clone();
+                    self.rt.spawn(async move {
+                        let mut lock = agent_clone.lock().await;
+                        let agent = match lock.as_mut() {
+                            Some(a) => a,
+                            None => return,
+                        };
+                        
+                        let _ = tx.send(BrowserEvent::StatusChanged("Compiling and executing HLS...".to_string())).await;
+                        match agent.execute_hls(&script).await {
+                            Ok(result) => {
+                                let _ = tx.send(BrowserEvent::ElementsUpdated(result.elements)).await;
+                                let _ = tx.send(BrowserEvent::StatusChanged("HLS executed successfully".to_string())).await;
+                                
+                                // Handle autonomous actions
+                                for action in result.actions {
+                                    match action {
+                                        hyperlight_wasm::WasmAction::Navigate(url) => {
+                                            let _ = tx.send(BrowserEvent::StatusChanged(format!("HLS Navigating to {}...", url))).await;
+                                            // In a real browser, we'd trigger a navigation here
+                                        }
+                                        hyperlight_wasm::WasmAction::Search(query) => {
+                                            let _ = tx.send(BrowserEvent::StatusChanged(format!("HLS Searching for {}...", query))).await;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(BrowserEvent::Error(format!("HLS execution failed: {}", e))).await;
+                            }
+                        }
+                    });
+                }
+
+                ui.separator();
+                ui.heading("HLS Preview (Compiled)");
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.add(egui::TextEdit::multiline(&mut self.hls_preview)
                         .font(egui::TextStyle::Monospace)

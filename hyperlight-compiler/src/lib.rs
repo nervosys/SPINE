@@ -100,6 +100,10 @@ pub enum HlsStatement {
     Text(HlsExpr),
     /// Emit event
     Emit { event: String, payload: HlsExpr },
+    /// Navigate to URL
+    Navigate(HlsExpr),
+    /// Search for query
+    Search(HlsExpr),
     /// Return statement
     Return(Option<HlsExpr>),
     /// Comment (ignored in codegen)
@@ -167,6 +171,13 @@ impl Compiler {
         // Compilation pass
         for stmt in optimized_statements {
             Self::compile_statement(&mut ctx, &stmt)?;
+        }
+
+        // Set render_start to 'render' function if it exists, otherwise 0
+        if let Some(&start) = ctx.exported_functions.get("render") {
+            ctx.render_start = start;
+        } else if let Some(&start) = ctx.exported_functions.get("App") {
+            ctx.render_start = start;
         }
         
         Ok(HyperlightBinary {
@@ -334,6 +345,16 @@ impl Compiler {
                 ctx.instructions.push(Instruction::EmitEventFromStack {
                     name: event.clone(),
                 });
+            }
+            
+            HlsStatement::Navigate(url_expr) => {
+                Self::compile_expr(ctx, url_expr)?;
+                ctx.instructions.push(Instruction::NavigateFromStack);
+            }
+            
+            HlsStatement::Search(query_expr) => {
+                Self::compile_expr(ctx, query_expr)?;
+                ctx.instructions.push(Instruction::SearchFromStack);
             }
             
             HlsStatement::Assign { name, value } => {
@@ -800,6 +821,21 @@ impl Compiler {
                     }
                 }
             }
+            HlsStatement::Emit { event: _, payload } => {
+                let _ = Self::infer_expr_type(ctx, payload)?;
+            }
+            HlsStatement::Navigate(url_expr) => {
+                let t = Self::infer_expr_type(ctx, url_expr)?;
+                if t != HlsType::String && t != HlsType::Any {
+                    return Err(anyhow::anyhow!("Navigate requires a string URL"));
+                }
+            }
+            HlsStatement::Search(query_expr) => {
+                let t = Self::infer_expr_type(ctx, query_expr)?;
+                if t != HlsType::String && t != HlsType::Any {
+                    return Err(anyhow::anyhow!("Search requires a string query"));
+                }
+            }
             HlsStatement::Return(expr) => {
                 if let Some(e) = expr {
                     let _ = Self::infer_expr_type(ctx, e)?;
@@ -921,6 +957,8 @@ impl Compiler {
                 event, 
                 payload: Self::optimize_expr(payload, functions) 
             }],
+            HlsStatement::Navigate(url_expr) => vec![HlsStatement::Navigate(Self::optimize_expr(url_expr, functions))],
+            HlsStatement::Search(query_expr) => vec![HlsStatement::Search(Self::optimize_expr(query_expr, functions))],
             HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(|e| Self::optimize_expr(e, functions)))],
             HlsStatement::Comment(_) => vec![], // Strip comments in optimization
             _ => vec![stmt],
@@ -1049,6 +1087,8 @@ impl Compiler {
                 event,
                 payload: Self::substitute_params_expr(payload, param_map),
             }],
+            HlsStatement::Navigate(url_expr) => vec![HlsStatement::Navigate(Self::substitute_params_expr(url_expr, param_map))],
+            HlsStatement::Search(query_expr) => vec![HlsStatement::Search(Self::substitute_params_expr(query_expr, param_map))],
             HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(|e| Self::substitute_params_expr(e, param_map)))],
             _ => vec![stmt],
         }
@@ -1135,9 +1175,27 @@ fn parse_statement(input: &str) -> IResult<&str, HlsStatement> {
         parse_call_stmt,
         parse_text_stmt,
         parse_emit_stmt,
+        parse_navigate_stmt,
+        parse_search_stmt,
         parse_return_stmt,
         parse_comment,
     ))(input)
+}
+
+fn parse_navigate_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("navigate")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, url) = parse_expr(input)?;
+    Ok((input, HlsStatement::Navigate(url)))
+}
+
+fn parse_search_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("search")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, query) = parse_expr(input)?;
+    Ok((input, HlsStatement::Search(query)))
 }
 
 fn parse_return_stmt(input: &str) -> IResult<&str, HlsStatement> {

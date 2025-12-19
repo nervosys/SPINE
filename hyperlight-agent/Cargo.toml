@@ -9,6 +9,7 @@ description = "Agent interface for Hyperlight"
 hyperlight-protocol = { path = "../hyperlight-protocol" }
 hyperlight-parser = { path = "../hyperlight-parser" }
 hyperlight-compiler = { path = "../hyperlight-compiler" }
+hyperlight-wasm = { path = "../hyperlight-wasm" }
 hyperlight-cluster = { path = "../hyperlight-cluster" }
 hyperlight-human = { path = "../hyperlight-human" }
 serde.workspace = true

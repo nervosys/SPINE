@@ -513,6 +513,12 @@ impl HlbRuntime {
                     let val = self.stack.pop().unwrap_or(serde_json::Value::Null);
                     self.state.insert(name.clone(), val);
                 }
+                Instruction::NavigateFromStack => {
+                    self.stack.pop();
+                }
+                Instruction::SearchFromStack => {
+                    self.stack.pop();
+                }
             }
             pc += 1;
         }

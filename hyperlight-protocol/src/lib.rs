@@ -484,6 +484,10 @@ pub enum Instruction {
     DefineTextFromStack,
     DeclareStateFromStack { name: String },
     UpdateStateFromStack { name: String },
+
+    // --- Agentic Operations ---
+    NavigateFromStack,
+    SearchFromStack,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
