@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::{info, error, instrument, span, Level};
+use tracing::{info, error, warn, debug, instrument, span, Level};
 use tokio::net::TcpListener;
 use tokio::io::{AsyncRead, AsyncWrite};
 use hyperlight_protocol::{ProtocolHandler, Message, BrowserCommand, Response, PreComputedResponse};
@@ -46,6 +46,41 @@ struct BrowserState {
 }
 
 impl BrowserState {
+    async fn save_sessions(&self) -> anyhow::Result<()> {
+        let dir = std::path::Path::new("sessions");
+        if !dir.exists() {
+            std::fs::create_dir_all(dir)?;
+        }
+        
+        for entry in self.sessions.iter() {
+            let id = entry.key();
+            let session = entry.value();
+            let path = dir.join(format!("{}.json", id));
+            let json = serde_json::to_string(session)?;
+            std::fs::write(path, json)?;
+        }
+        Ok(())
+    }
+
+    fn load_sessions(&self) -> anyhow::Result<()> {
+        let dir = std::path::Path::new("sessions");
+        if !dir.exists() {
+            return Ok(());
+        }
+        
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                let id = path.file_stem().unwrap().to_str().unwrap().to_string();
+                let json = std::fs::read_to_string(&path)?;
+                let session: Session = serde_json::from_str(&json)?;
+                self.sessions.insert(id, session);
+            }
+        }
+        Ok(())
+    }
+
     fn check_rate_limit(&self, session_id: &str) -> bool {
         let max_tokens = 100.0;
         let refill_rate = 10.0; // tokens per second
@@ -346,7 +381,7 @@ async fn handle_command(
         }
         BrowserCommand::Search { query } => {
             if let Some(session) = state.sessions.get(session_id) {
-                if let Some(html) = &session.current_html {
+                if let Some(_html) = &session.current_html {
                     // Local search
                     let local_results = serde_json::json!([
                         { "text": "Found relevant content locally...", "relevance": 0.92 }
@@ -435,6 +470,27 @@ async fn main() -> Result<()> {
         encoder: Mutex::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)), // Standard 256-dim latent space
         cluster: Mutex::new(cluster_node),
         rate_limits: DashMap::new(),
+    });
+
+    // Load persisted sessions
+    if let Err(e) = state.load_sessions() {
+        warn!("Failed to load persisted sessions: {}", e);
+    } else {
+        info!("Loaded {} persisted sessions", state.sessions.len());
+    }
+
+    // Start session persistence task
+    let persistence_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Err(e) = persistence_state.save_sessions().await {
+                error!("Failed to save sessions: {}", e);
+            } else {
+                debug!("Sessions persisted to disk");
+            }
+        }
     });
 
     // Start metrics server

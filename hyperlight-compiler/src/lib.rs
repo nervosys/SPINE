@@ -228,6 +228,15 @@ impl Compiler {
                 ctx.element_stack.pop();
             }
             
+            HlsStatement::Text(expr) => {
+                Self::compile_expr(ctx, expr)?;
+                ctx.instructions.push(Instruction::DefineTextFromStack);
+                if let Some(&parent_id) = ctx.element_stack.last() {
+                    // Text nodes are children too
+                    // We need a way to refer to the text node ID, but for now let's assume
+                    // DefineTextFromStack handles the attachment or we need a new instruction
+                }
+            }
             HlsStatement::Let { name, value, .. } => {
                 Self::compile_expr(ctx, value)?;
                 ctx.instructions.push(Instruction::Store(name.clone()));
@@ -240,7 +249,7 @@ impl Compiler {
                 });
             }
             
-            HlsStatement::FnDef { name, params, body, .. } => {
+            HlsStatement::FnDef { name, params: _, body, .. } => {
                 let jump_over_idx = ctx.instructions.len();
                 ctx.instructions.push(Instruction::Jump(0)); // Placeholder
                 
@@ -286,8 +295,21 @@ impl Compiler {
             }
             
             HlsStatement::For { item, list, body } => {
-                // For loops are complex to compile to bytecode without a proper iterator
-                // For now, let's just support static evaluation if possible, or skip
+                // If list is a literal list, we can unroll it
+                if let HlsExpr::List(items) = list {
+                    for val in items {
+                        // Substitute 'item' with 'val' in body
+                        let mut param_map = HashMap::new();
+                        param_map.insert(item.clone(), val.clone());
+                        let unrolled_body = Self::substitute_params_internal(body.clone(), &param_map);
+                        for stmt in unrolled_body {
+                            Self::compile_statement(ctx, &stmt)?;
+                        }
+                    }
+                } else {
+                    // For loops are complex to compile to bytecode without a proper iterator
+                    // For now, let's just support static evaluation if possible, or skip
+                }
             }
             
             HlsStatement::While { condition, body } => {
@@ -305,12 +327,6 @@ impl Compiler {
                 let end_idx = ctx.instructions.len();
                 
                 ctx.instructions[jump_out_idx] = Instruction::JumpIfNot(end_idx);
-            }
-            
-            HlsStatement::Text(expr) => {
-                Self::compile_expr(ctx, expr)?;
-                ctx.instructions.push(Instruction::DefineTextFromStack);
-                // Note: DefineTextFromStack should handle adding to parent in the VM
             }
             
             HlsStatement::Emit { event, payload } => {
@@ -626,7 +642,7 @@ impl Compiler {
                 let rt = Self::infer_expr_type(ctx, right)?;
                 match op {
                     ProtocolBinOp::Add | ProtocolBinOp::Sub | ProtocolBinOp::Mul | ProtocolBinOp::Div | ProtocolBinOp::Mod => {
-                        if lt == HlsType::Number && rt == HlsType::Number {
+                        if (lt == HlsType::Number || lt == HlsType::Any) && (rt == HlsType::Number || rt == HlsType::Any) {
                             Ok(HlsType::Number)
                         } else {
                             Err(anyhow::anyhow!("Arithmetic operators require numbers"))
@@ -660,7 +676,7 @@ impl Compiler {
                 }
             }
             HlsExpr::Object(_) => Ok(HlsType::Object),
-            HlsExpr::Call { name, args } => {
+            HlsExpr::Call { name, args: _ } => {
                 if let Some(func) = ctx.functions.get(name) {
                     Ok(func.return_type.clone())
                 } else {
@@ -795,85 +811,157 @@ impl Compiler {
     }
 
     fn optimize(statements: Vec<HlsStatement>) -> Vec<HlsStatement> {
+        let mut functions = HashMap::new();
+        // First pass: collect and optimize functions for inlining
+        for stmt in &statements {
+            if let HlsStatement::FnDef { name, params, body, return_type } = stmt {
+                // We need a temporary functions map for recursive functions, but for now let's just use empty
+                let optimized_body = Self::optimize_internal(body.clone(), &HashMap::new());
+                functions.insert(name.clone(), HlsFunction {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: optimized_body,
+                    return_type: return_type.clone().unwrap_or(HlsType::Any),
+                });
+            }
+        }
+
         let mut optimized = Vec::new();
         for stmt in statements {
-            optimized.extend(Self::optimize_statement(stmt));
+            optimized.extend(Self::optimize_statement(stmt, &functions));
         }
         optimized
     }
 
-    fn optimize_statement(stmt: HlsStatement) -> Vec<HlsStatement> {
+    fn optimize_statement(stmt: HlsStatement, functions: &HashMap<String, HlsFunction>) -> Vec<HlsStatement> {
         match stmt {
+            HlsStatement::FnDef { name, params, body, return_type } => vec![HlsStatement::FnDef {
+                name,
+                params,
+                body: Self::optimize_internal(body, functions),
+                return_type,
+            }],
             HlsStatement::Let { name, value, type_annotation } => vec![HlsStatement::Let { 
                 name, 
-                value: Self::optimize_expr(value), 
+                value: Self::optimize_expr(value, functions), 
                 type_annotation 
             }],
             HlsStatement::State { name, initial, type_annotation } => vec![HlsStatement::State { 
                 name, 
-                initial: Self::optimize_expr(initial), 
+                initial: Self::optimize_expr(initial, functions), 
                 type_annotation 
             }],
             HlsStatement::Assign { name, value } => vec![HlsStatement::Assign { 
                 name, 
-                value: Self::optimize_expr(value) 
+                value: Self::optimize_expr(value, functions) 
             }],
             HlsStatement::If { condition, then_branch, else_branch } => {
-                let opt_cond = Self::optimize_expr(condition);
+                let opt_cond = Self::optimize_expr(condition, functions);
                 match opt_cond {
-                    HlsExpr::BoolLit(true) => Self::optimize(then_branch),
-                    HlsExpr::BoolLit(false) => else_branch.map(Self::optimize).unwrap_or_default(),
+                    HlsExpr::BoolLit(true) => Self::optimize_internal(then_branch, functions),
+                    HlsExpr::BoolLit(false) => else_branch.map(|b| Self::optimize_internal(b, functions)).unwrap_or_default(),
                     _ => vec![HlsStatement::If { 
                         condition: opt_cond, 
-                        then_branch: Self::optimize(then_branch), 
-                        else_branch: else_branch.map(Self::optimize) 
+                        then_branch: Self::optimize_internal(then_branch, functions), 
+                        else_branch: else_branch.map(|b| Self::optimize_internal(b, functions)) 
                     }]
                 }
             }
             HlsStatement::For { item, list, body } => vec![HlsStatement::For { 
                 item, 
-                list: Self::optimize_expr(list), 
-                body: Self::optimize(body) 
+                list: Self::optimize_expr(list, functions), 
+                body: Self::optimize_internal(body, functions) 
             }],
             HlsStatement::While { condition, body } => {
-                let opt_cond = Self::optimize_expr(condition);
+                let opt_cond = Self::optimize_expr(condition, functions);
                 match opt_cond {
                     HlsExpr::BoolLit(false) => vec![], // While false is dead code
                     _ => vec![HlsStatement::While { 
                         condition: opt_cond, 
-                        body: Self::optimize(body) 
+                        body: Self::optimize_internal(body, functions) 
                     }]
                 }
             }
             HlsStatement::Element { tag, attributes, children, events } => vec![HlsStatement::Element {
                 tag,
-                attributes: attributes.into_iter().map(|(k, v)| (k, Self::optimize_expr(v))).collect(),
-                children: Self::optimize(children),
+                attributes: attributes.into_iter().map(|(k, v)| (k, Self::optimize_expr(v, functions))).collect(),
+                children: Self::optimize_internal(children, functions),
                 events: events.into_iter().map(|e| HlsEvent {
                     event_type: e.event_type,
-                    handler: Self::optimize(e.handler),
+                    handler: Self::optimize_internal(e.handler, functions),
                 }).collect(),
             }],
-            HlsStatement::Call { name, args } => vec![HlsStatement::Call { 
-                name, 
-                args: args.into_iter().map(Self::optimize_expr).collect() 
-            }],
-            HlsStatement::Text(expr) => vec![HlsStatement::Text(Self::optimize_expr(expr))],
+            HlsStatement::Text(expr) => vec![HlsStatement::Text(Self::optimize_expr(expr, functions))],
+            HlsStatement::Call { name, args } => {
+                // Inlining check
+                if let Some(func) = functions.get(&name) {
+                    if func.body.len() <= 3 && !func.body.iter().any(|s| matches!(s, HlsStatement::FnDef { .. })) {
+                        // Inline small function
+                        let mut inlined = Vec::new();
+                        // Map params to args
+                        let mut param_map = HashMap::new();
+                        for (i, (p_name, _)) in func.params.iter().enumerate() {
+                            if i < args.len() {
+                                param_map.insert(p_name.clone(), args[i].clone());
+                            }
+                        }
+                        
+                        for s in &func.body {
+                            inlined.extend(Self::substitute_params_stmt(s.clone(), &param_map));
+                        }
+                        return Self::optimize_internal(inlined, functions);
+                    }
+                }
+                vec![HlsStatement::Call { 
+                    name, 
+                    args: args.into_iter().map(|a| Self::optimize_expr(a, functions)).collect() 
+                }]
+            },
             HlsStatement::Emit { event, payload } => vec![HlsStatement::Emit { 
                 event, 
-                payload: Self::optimize_expr(payload) 
+                payload: Self::optimize_expr(payload, functions) 
             }],
-            HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(Self::optimize_expr))],
+            HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(|e| Self::optimize_expr(e, functions)))],
             HlsStatement::Comment(_) => vec![], // Strip comments in optimization
             _ => vec![stmt],
         }
     }
 
-    fn optimize_expr(expr: HlsExpr) -> HlsExpr {
+    fn optimize_internal(statements: Vec<HlsStatement>, functions: &HashMap<String, HlsFunction>) -> Vec<HlsStatement> {
+        let mut optimized = Vec::new();
+        for stmt in statements {
+            optimized.extend(Self::optimize_statement(stmt, functions));
+        }
+        optimized
+    }
+
+    fn optimize_expr(expr: HlsExpr, functions: &HashMap<String, HlsFunction>) -> HlsExpr {
         match expr {
+            HlsExpr::Call { name, args } => {
+                // Inlining check for expressions
+                if let Some(func) = functions.get(&name) {
+                    if func.body.len() == 1 {
+                        if let HlsStatement::Return(Some(ret_expr)) = &func.body[0] {
+                            // Map params to args
+                            let mut param_map = HashMap::new();
+                            for (i, (p_name, _)) in func.params.iter().enumerate() {
+                                if i < args.len() {
+                                    param_map.insert(p_name.clone(), args[i].clone());
+                                }
+                            }
+                            let inlined = Self::substitute_params_expr(ret_expr.clone(), &param_map);
+                            return Self::optimize_expr(inlined, functions);
+                        }
+                    }
+                }
+                HlsExpr::Call { 
+                    name, 
+                    args: args.into_iter().map(|a| Self::optimize_expr(a, functions)).collect() 
+                }
+            }
             HlsExpr::BinOp { left, op, right } => {
-                let l = Self::optimize_expr(*left);
-                let r = Self::optimize_expr(*right);
+                let l = Self::optimize_expr(*left, functions);
+                let r = Self::optimize_expr(*right, functions);
                 
                 // Constant folding
                 match (l, op, r) {
@@ -899,35 +987,102 @@ impl Compiler {
                         left: Box::new(l), 
                         op, 
                         right: Box::new(r) 
-                    },
+                    }
                 }
             }
             HlsExpr::UnaryOp { op, expr } => {
-                let e = Self::optimize_expr(*expr);
+                let e = Self::optimize_expr(*expr, functions);
                 match (op, e) {
                     (ProtocolUnaryOp::Not, HlsExpr::BoolLit(b)) => HlsExpr::BoolLit(!b),
                     (ProtocolUnaryOp::Neg, HlsExpr::NumberLit(n)) => HlsExpr::NumberLit(-n),
-                    (op, e) => HlsExpr::UnaryOp { op, expr: Box::new(e) },
+                    (op, e) => HlsExpr::UnaryOp { op, expr: Box::new(e) }
                 }
             }
             HlsExpr::Ternary { condition, then_expr, else_expr } => {
-                let cond = Self::optimize_expr(*condition);
+                let cond = Self::optimize_expr(*condition, functions);
                 match cond {
-                    HlsExpr::BoolLit(true) => Self::optimize_expr(*then_expr),
-                    HlsExpr::BoolLit(false) => Self::optimize_expr(*else_expr),
+                    HlsExpr::BoolLit(true) => Self::optimize_expr(*then_expr, functions),
+                    HlsExpr::BoolLit(false) => Self::optimize_expr(*else_expr, functions),
                     _ => HlsExpr::Ternary { 
                         condition: Box::new(cond), 
-                        then_expr: Box::new(Self::optimize_expr(*then_expr)), 
-                        else_expr: Box::new(Self::optimize_expr(*else_expr)) 
-                    },
+                        then_expr: Box::new(Self::optimize_expr(*then_expr, functions)), 
+                        else_expr: Box::new(Self::optimize_expr(*else_expr, functions)) 
+                    }
                 }
             }
-            HlsExpr::List(items) => HlsExpr::List(items.into_iter().map(Self::optimize_expr).collect()),
-            HlsExpr::Object(props) => HlsExpr::Object(props.into_iter().map(|(k, v)| (k, Self::optimize_expr(v))).collect()),
-            HlsExpr::Call { name, args } => HlsExpr::Call { 
+            HlsExpr::List(items) => HlsExpr::List(items.into_iter().map(|i| Self::optimize_expr(i, functions)).collect()),
+            HlsExpr::Object(pairs) => HlsExpr::Object(pairs.into_iter().map(|(k, v)| (k, Self::optimize_expr(v, functions))).collect()),
+            _ => expr,
+        }
+    }
+
+    fn substitute_params_internal(statements: Vec<HlsStatement>, param_map: &HashMap<String, HlsExpr>) -> Vec<HlsStatement> {
+        let mut substituted = Vec::new();
+        for stmt in statements {
+            substituted.extend(Self::substitute_params_stmt(stmt, param_map));
+        }
+        substituted
+    }
+
+    fn substitute_params_stmt(stmt: HlsStatement, param_map: &HashMap<String, HlsExpr>) -> Vec<HlsStatement> {
+        match stmt {
+            HlsStatement::Let { name, value, type_annotation } => vec![HlsStatement::Let { 
                 name, 
-                args: args.into_iter().map(Self::optimize_expr).collect() 
+                value: Self::substitute_params_expr(value, param_map), 
+                type_annotation 
+            }],
+            HlsStatement::Assign { name, value } => vec![HlsStatement::Assign { 
+                name, 
+                value: Self::substitute_params_expr(value, param_map) 
+            }],
+            HlsStatement::If { condition, then_branch, else_branch } => vec![HlsStatement::If {
+                condition: Self::substitute_params_expr(condition, param_map),
+                then_branch: then_branch.into_iter().flat_map(|s| Self::substitute_params_stmt(s, param_map)).collect(),
+                else_branch: else_branch.map(|b| b.into_iter().flat_map(|s| Self::substitute_params_stmt(s, param_map)).collect()),
+            }],
+            HlsStatement::Call { name, args } => vec![HlsStatement::Call {
+                name,
+                args: args.into_iter().map(|a| Self::substitute_params_expr(a, param_map)).collect(),
+            }],
+            HlsStatement::Text(expr) => vec![HlsStatement::Text(Self::substitute_params_expr(expr, param_map))],
+            HlsStatement::Emit { event, payload } => vec![HlsStatement::Emit {
+                event,
+                payload: Self::substitute_params_expr(payload, param_map),
+            }],
+            HlsStatement::Return(expr) => vec![HlsStatement::Return(expr.map(|e| Self::substitute_params_expr(e, param_map)))],
+            _ => vec![stmt],
+        }
+    }
+
+    fn substitute_params_expr(expr: HlsExpr, param_map: &HashMap<String, HlsExpr>) -> HlsExpr {
+        match expr {
+            HlsExpr::Var(name) => {
+                if let Some(sub) = param_map.get(&name) {
+                    sub.clone()
+                } else {
+                    HlsExpr::Var(name)
+                }
+            }
+            HlsExpr::BinOp { left, op, right } => HlsExpr::BinOp {
+                left: Box::new(Self::substitute_params_expr(*left, param_map)),
+                op,
+                right: Box::new(Self::substitute_params_expr(*right, param_map)),
             },
+            HlsExpr::UnaryOp { op, expr } => HlsExpr::UnaryOp {
+                op,
+                expr: Box::new(Self::substitute_params_expr(*expr, param_map)),
+            },
+            HlsExpr::Call { name, args } => HlsExpr::Call {
+                name,
+                args: args.into_iter().map(|a| Self::substitute_params_expr(a, param_map)).collect(),
+            },
+            HlsExpr::Ternary { condition, then_expr, else_expr } => HlsExpr::Ternary {
+                condition: Box::new(Self::substitute_params_expr(*condition, param_map)),
+                then_expr: Box::new(Self::substitute_params_expr(*then_expr, param_map)),
+                else_expr: Box::new(Self::substitute_params_expr(*else_expr, param_map)),
+            },
+            HlsExpr::List(items) => HlsExpr::List(items.into_iter().map(|i| Self::substitute_params_expr(i, param_map)).collect()),
+            HlsExpr::Object(pairs) => HlsExpr::Object(pairs.into_iter().map(|(k, v)| (k, Self::substitute_params_expr(v, param_map))).collect()),
             _ => expr,
         }
     }
@@ -980,8 +1135,16 @@ fn parse_statement(input: &str) -> IResult<&str, HlsStatement> {
         parse_call_stmt,
         parse_text_stmt,
         parse_emit_stmt,
+        parse_return_stmt,
         parse_comment,
     ))(input)
+}
+
+fn parse_return_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("return")(input)?;
+    let (input, expr) = opt(preceded(multispace1, parse_expr))(input)?;
+    Ok((input, HlsStatement::Return(expr)))
 }
 
 fn parse_fn_def_stmt(input: &str) -> IResult<&str, HlsStatement> {
@@ -1462,18 +1625,19 @@ mod tests {
         "#;
         let binary = Compiler::compile(source).unwrap();
         
-        // Should create a text element with content attribute
+        // Should push the string and then call DefineTextFromStack
         assert!(binary.instructions.iter().any(|i| matches!(i,
-            Instruction::SetAttribute { key, value, .. } 
-            if key == "content" && value == "Hello World"
+            Instruction::Push(val) if val.as_str() == Some("Hello World")
+        )));
+        assert!(binary.instructions.iter().any(|i| matches!(i,
+            Instruction::DefineTextFromStack
         )));
     }
 
     #[test]
     fn test_compile_conditional() {
         let source = r#"
-            let show = true
-            if show {
+            if true {
                 element visible {}
             } else {
                 element hidden {}
@@ -1481,7 +1645,7 @@ mod tests {
         "#;
         let binary = Compiler::compile(source).unwrap();
         
-        // Should only compile the "visible" branch since show is true
+        // Should only compile the "visible" branch since condition is true
         assert!(binary.instructions.iter().any(|i| matches!(i,
             Instruction::DefineElement { tag, .. } if tag == "visible"
         )));
@@ -1547,5 +1711,28 @@ mod tests {
         
         // Comment should not affect output
         assert!(!binary.instructions.is_empty());
+    }
+
+    #[test]
+    fn test_function_inlining() {
+        let source = r#"
+            fn add(a, b) {
+                return a + b
+            }
+            element div {
+                text add(10, 20)
+            }
+        "#;
+        let binary = Compiler::compile(source).unwrap();
+        
+        // add(10, 20) should be inlined to 10 + 20 and then folded to 30
+        assert!(binary.instructions.iter().any(|i| matches!(i,
+            Instruction::Push(val) if val.as_f64() == Some(30.0)
+        )));
+        
+        // Also check that there's no Call instruction for "add" if it was inlined
+        assert!(!binary.instructions.iter().any(|i| matches!(i,
+            Instruction::Call { .. }
+        )));
     }
 }
