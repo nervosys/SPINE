@@ -1,6 +1,7 @@
 use anyhow::Result;
-use log::{info, error};
+use tracing::{info, error, instrument, span, Level};
 use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite};
 use hyperlight_protocol::{ProtocolHandler, Message, BrowserCommand, Response, PreComputedResponse};
 use hyperlight_parser::parse_html;
 use hyperlight_wasm::WasmRuntime;
@@ -11,9 +12,15 @@ use tokio::sync::Mutex;
 use dashmap::DashMap;
 use uuid::Uuid;
 use serde::{Serialize, Deserialize};
+use axum::{routing::get, Router};
+use prometheus::{Encoder, TextEncoder};
 
 mod vdom;
+mod telemetry;
+mod tls;
 use vdom::VirtualDom;
+use telemetry::*;
+use tls::*;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Session {
@@ -23,6 +30,8 @@ struct Session {
     current_vdom: Option<VirtualDom>,
     last_command: Option<BrowserCommand>,
     needs_morph: bool,
+    /// Reactive state variables
+    state: DashMap<String, serde_json::Value>,
 }
 
 struct BrowserState {
@@ -32,12 +41,16 @@ struct BrowserState {
     cluster: Mutex<ClusterNode>,
 }
 
+#[instrument(skip(state, session_id, request_id))]
 async fn handle_command(
     state: &Arc<BrowserState>,
     session_id: &str,
     command: BrowserCommand,
     request_id: String,
 ) -> (Response, Vec<Vec<f32>>) {
+    let timer = COMMAND_LATENCY.start_timer();
+    COMMANDS_TOTAL.inc();
+    
     let mut latent_to_stream = Vec::new();
     let response = match command {
         BrowserCommand::Navigate { url } => {
@@ -131,6 +144,21 @@ async fn handle_command(
                     patches = new_vdom.diff(old_vdom);
                 }
                 session.current_vdom = Some(new_vdom);
+
+                // Handle state events from WASM
+                for event in &result.events {
+                    match event.name.as_str() {
+                        "state_declared" | "state_updated" => {
+                            if let (Some(name), Some(value)) = (
+                                event.payload.get("name").and_then(|v| v.as_str()),
+                                event.payload.get("value")
+                            ) {
+                                session.state.insert(name.to_string(), value.clone());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
             
             Response {
@@ -287,12 +315,13 @@ async fn handle_command(
         }
     };
     
+    timer.observe_duration();
     (response, latent_to_stream)
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::init();
+    init_telemetry("hyperlight-core")?;
     info!("Starting Hyperlight Agentic Browser...");
 
     let addr = "127.0.0.1:8080".parse().unwrap();
@@ -312,6 +341,24 @@ async fn main() -> Result<()> {
         client: reqwest::Client::new(),
         encoder: Mutex::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)), // Standard 256-dim latent space
         cluster: Mutex::new(cluster_node),
+    });
+
+    // Start metrics server
+    let metrics_app = Router::new().route("/metrics", get(|| async {
+        let encoder = TextEncoder::new();
+        let metric_families = prometheus::gather();
+        let mut buffer = vec![];
+        encoder.encode(&metric_families, &mut buffer).unwrap();
+        String::from_utf8(buffer).unwrap()
+    }));
+
+    tokio::spawn(async move {
+        let addr = "0.0.0.0:9090".parse().unwrap();
+        info!("Metrics server listening on {}", addr);
+        axum::Server::bind(&addr)
+            .serve(metrics_app.into_make_service())
+            .await
+            .unwrap();
     });
 
     // Start cluster event listener
@@ -374,135 +421,175 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     info!("Listening on 127.0.0.1:8080");
 
+    // TLS setup
+    let tls_acceptor = if std::env::var("HYPERLIGHT_TLS").unwrap_or_default() == "1" {
+        let cert_path = std::path::Path::new("certs/cert.pem");
+        let key_path = std::path::Path::new("certs/key.pem");
+        if cert_path.exists() && key_path.exists() {
+            Some(create_tls_acceptor(cert_path, key_path)?)
+        } else {
+            info!("TLS enabled but certs not found at certs/. Falling back to plain TCP.");
+            None
+        }
+    } else {
+        None
+    };
+
     loop {
         let (socket, addr) = listener.accept().await?;
+        let span = span!(Level::INFO, "connection", remote_addr = %addr);
+        let _enter = span.enter();
         info!("New connection from {}", addr);
 
         let state = Arc::clone(&state);
+        let tls_acceptor = tls_acceptor.clone();
+        
         tokio::spawn(async move {
-            let mut handler = ProtocolHandler::new(socket);
-            let mut session_id: Option<String> = None;
-
-            loop {
-                match handler.receive_message().await {
-                    Ok(Message::Request(req)) => {
-                        info!("Received request: {:?}", req);
-                        
-                        // Ensure session exists
-                        let id = if let Some(id) = session_id.as_ref() {
-                            id.clone()
-                        } else {
-                            let new_id = Uuid::new_v4().to_string();
-                            state.sessions.insert(new_id.clone(), Session {
-                                current_url: None,
-                                current_html: None,
-                                current_vdom: None,
-                                last_command: None,
-                                needs_morph: false,
-                            });
-                            
-                            // Register session with cluster
-                            let cluster = state.cluster.lock().await;
-                            cluster.register_local_session(new_id.clone());
-                            
-                            session_id = Some(new_id.clone());
-                            new_id
-                        };
-
-                        // Check if session needs a proactive morph
-                        if let Some(mut session) = state.sessions.get_mut(&id) {
-                            if session.needs_morph {
-                                let seed = rand::random::<u64>();
-                                info!("Sending proactive MorphRequest for session {}", id);
-                                if let Ok(_) = handler.send_message(&Message::MorphRequest { seed }).await {
-                                    handler.morph_now(seed);
-                                    session.needs_morph = false;
-                                }
-                            }
-                        }
-
-                        // Handle the command
-                        let (res, latent_to_stream) = if let BrowserCommand::Morph = req.command {
-                            let seed = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_nanos() as u64;
-                            handler.morph_now(seed);
-                            (Response {
-                                id: req.id,
-                                result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
-                                error: None,
-                            }, Vec::new())
-                        } else {
-                            let (res, latent) = handle_command(&state, &id, req.command.clone(), req.id).await;
-                            if let Some(mut session) = state.sessions.get_mut(&id) {
-                                session.last_command = Some(req.command);
-                            }
-                            (res, latent)
-                        };
-
-                        if let Err(e) = handler.send_message(&Message::Response(res)).await {
-                            error!("Failed to send response: {}", e);
-                        }
-                        
-                        // Stream any latent vectors produced
-                        for vector in latent_to_stream {
-                            let latent_msg = hyperlight_protocol::LatentVector {
-                                components: vector,
-                                dim_hint: 0,
-                                epoch: 0,
-                            };
-                            if let Err(e) = handler.send_message(&Message::LatentMessage(latent_msg)).await {
-                                error!("Failed to stream latent vector: {}", e);
-                            }
-                        }
-
-                        // Speculative pre-computation for likely next requests
-                        let state_clone = state.clone();
-                        let id_clone = id.clone();
-                        handler.speculate_responses(|predicted_hash| {
-                            let session = state_clone.sessions.get(&id_clone)?;
-                            let last_cmd = session.last_command.as_ref()?;
-                            
-                            match last_cmd {
-                                BrowserCommand::Navigate { .. } => {
-                                    // If we just navigated, the agent will likely ask for UR
-                                    if let Some(html) = &session.current_html {
-                                        if let Ok(ur) = parse_html(html) {
-                                            return Some(Message::PreComputed(PreComputedResponse {
-                                                request_hash: predicted_hash,
-                                                result: serde_json::to_value(ur).unwrap(),
-                                                confidence: 0.85,
-                                                alternatives: Vec::new(),
-                                            }));
-                                        }
-                                    }
-                                }
-                                BrowserCommand::GetUR => {
-                                    // If we just got UR, the agent might want raw HTML for transpilation
-                                    if let Some(html) = &session.current_html {
-                                        return Some(Message::PreComputed(PreComputedResponse {
-                                            request_hash: predicted_hash,
-                                            result: serde_json::json!({ "html": html }),
-                                            confidence: 0.7,
-                                            alternatives: Vec::new(),
-                                        }));
-                                    }
-                                }
-                                _ => {}
-                            }
-                            
-                            None
-                        });
+            if let Some(acceptor) = tls_acceptor {
+                match acceptor.accept(socket).await {
+                    Ok(tls_stream) => {
+                        let mut handler = ProtocolHandler::new(tls_stream);
+                        handle_session(&mut handler, state).await;
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        error!("Connection error: {}", e);
-                        // Cleanup session if needed, or keep it for reconnection
-                        break;
-                    }
+                    Err(e) => error!("TLS handshake failed: {}", e),
                 }
+            } else {
+                let mut handler = ProtocolHandler::new(socket);
+                handle_session(&mut handler, state).await;
             }
         });
+    }
+}
+
+async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>) 
+where 
+    S: AsyncRead + AsyncWrite + Unpin + Send 
+{
+    let mut session_id: Option<String> = None;
+
+    loop {
+        match handler.receive_message().await {
+            Ok(Message::Request(req)) => {
+                let req_span = span!(Level::INFO, "request", request_id = %req.id, command = ?req.command);
+                let _enter = req_span.enter();
+                info!("Received request: {:?}", req);
+                
+                // Ensure session exists
+                let id = if let Some(id) = session_id.as_ref() {
+                    id.clone()
+                } else {
+                    let new_id = Uuid::new_v4().to_string();
+                    SESSIONS_ACTIVE.inc();
+                    state.sessions.insert(new_id.clone(), Session {
+                        current_url: None,
+                        current_html: None,
+                        current_vdom: None,
+                        last_command: None,
+                        needs_morph: false,
+                        state: DashMap::new(),
+                    });
+                    
+                    // Register session with cluster
+                    let cluster = state.cluster.lock().await;
+                    cluster.register_local_session(new_id.clone());
+                    
+                    session_id = Some(new_id.clone());
+                    new_id
+                };
+
+                // Check if session needs a proactive morph
+                if let Some(mut session) = state.sessions.get_mut(&id) {
+                    if session.needs_morph {
+                        let seed = rand::random::<u64>();
+                        info!("Sending proactive MorphRequest for session {}", id);
+                        if let Ok(_) = handler.send_message(&Message::MorphRequest { seed }).await {
+                            handler.morph_now(seed);
+                            session.needs_morph = false;
+                        }
+                    }
+                }
+
+                // Handle the command
+                let (res, latent_to_stream) = if let BrowserCommand::Morph = req.command {
+                    let seed = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos() as u64;
+                    handler.morph_now(seed);
+                    PROTOCOL_MORPHS.inc();
+                    (Response {
+                        id: req.id,
+                        result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
+                        error: None,
+                    }, Vec::new())
+                } else {
+                    let (res, latent) = handle_command(&state, &id, req.command.clone(), req.id).await;
+                    if let Some(mut session) = state.sessions.get_mut(&id) {
+                        session.last_command = Some(req.command);
+                    }
+                    (res, latent)
+                };
+
+                if let Err(e) = handler.send_message(&Message::Response(res)).await {
+                    error!("Failed to send response: {}", e);
+                }
+                
+                // Stream any latent vectors produced
+                for vector in latent_to_stream {
+                    let latent_msg = hyperlight_protocol::LatentVector {
+                        components: vector,
+                        dim_hint: 0,
+                        epoch: 0,
+                    };
+                    if let Err(e) = handler.send_message(&Message::LatentMessage(latent_msg)).await {
+                        error!("Failed to stream latent vector: {}", e);
+                    }
+                }
+
+                // Speculative pre-computation for likely next requests
+                let state_clone = state.clone();
+                let id_clone = id.clone();
+                handler.speculate_responses(|predicted_hash| {
+                    let session = state_clone.sessions.get(&id_clone)?;
+                    let last_cmd = session.last_command.as_ref()?;
+                    
+                    match last_cmd {
+                        BrowserCommand::Navigate { .. } => {
+                            // If we just navigated, the agent will likely ask for UR
+                            if let Some(html) = &session.current_html {
+                                if let Ok(ur) = parse_html(html) {
+                                    return Some(Message::PreComputed(PreComputedResponse {
+                                        request_hash: predicted_hash,
+                                        result: serde_json::to_value(ur).unwrap(),
+                                        confidence: 0.85,
+                                        alternatives: Vec::new(),
+                                    }));
+                                }
+                            }
+                        }
+                        BrowserCommand::GetUR => {
+                            // If we just got UR, the agent might want raw HTML for transpilation
+                            if let Some(html) = &session.current_html {
+                                return Some(Message::PreComputed(PreComputedResponse {
+                                    request_hash: predicted_hash,
+                                    result: serde_json::json!({ "html": html }),
+                                    confidence: 0.7,
+                                    alternatives: Vec::new(),
+                                }));
+                            }
+                        }
+                        _ => {}
+                    }
+                    
+                    None
+                });
+            }
+            Ok(_) => {}
+            Err(e) => {
+                error!("Connection error: {}", e);
+                // Cleanup session if needed, or keep it for reconnection
+                break;
+            }
+        }
     }
 }

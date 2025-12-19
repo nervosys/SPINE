@@ -288,6 +288,28 @@ impl HlbRuntime {
                         entropy_estimate: entropy,
                     });
                 }
+
+                Instruction::DeclareState { name, initial_json } => {
+                    events.push(VEvent {
+                        name: "state_declared".to_string(),
+                        payload: serde_json::json!({ "name": name, "value": initial_json }),
+                        timestamp_ns: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64,
+                    });
+                }
+
+                Instruction::UpdateState { name, value_json } => {
+                    events.push(VEvent {
+                        name: "state_updated".to_string(),
+                        payload: serde_json::json!({ "name": name, "value": value_json }),
+                        timestamp_ns: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos() as u64,
+                    });
+                }
             }
         }
         

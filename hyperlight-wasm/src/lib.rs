@@ -96,6 +96,8 @@ impl HlbToWatCompiler {
         wat.push_str("  (import \"env\" \"stream_latent\" (func $stream_latent (param i32 i32)))\n");
         wat.push_str("  (import \"env\" \"morph_protocol\" (func $morph_protocol (param i64)))\n");
         wat.push_str("  (import \"env\" \"inject_decoy\" (func $inject_decoy (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"declare_state\" (func $declare_state (param i32 i32 i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"update_state\" (func $update_state (param i32 i32 i32 i32)))\n");
         wat.push_str("\n");
         
         // Memory for string data
@@ -157,6 +159,34 @@ impl HlbToWatCompiler {
                             escape_wat_string(&payload_str)
                         ));
                         data_offset += len + 1;
+                    }
+                }
+                Instruction::DeclareState { name, initial_json } => {
+                    for s in [name, &initial_json.to_string()] {
+                        if !string_offsets.contains_key(s) {
+                            let len = s.len() as u32;
+                            string_offsets.insert(s.clone(), (data_offset, len));
+                            data_section.push_str(&format!(
+                                "  (data (i32.const {}) \"{}\")\n",
+                                data_offset,
+                                escape_wat_string(s)
+                            ));
+                            data_offset += len + 1;
+                        }
+                    }
+                }
+                Instruction::UpdateState { name, value_json } => {
+                    for s in [name, &value_json.to_string()] {
+                        if !string_offsets.contains_key(s) {
+                            let len = s.len() as u32;
+                            string_offsets.insert(s.clone(), (data_offset, len));
+                            data_section.push_str(&format!(
+                                "  (data (i32.const {}) \"{}\")\n",
+                                data_offset,
+                                escape_wat_string(s)
+                            ));
+                            data_offset += len + 1;
+                        }
                     }
                 }
                 _ => {}
@@ -246,6 +276,34 @@ impl HlbToWatCompiler {
                     wat.push_str(&format!(
                         "    (call $morph_protocol (i64.const {}))\n",
                         seed
+                    ));
+                }
+                
+                Instruction::DeclareState { name, initial_json } => {
+                    let (name_offset, name_len) = string_offsets.get(name).unwrap();
+                    let initial_str = initial_json.to_string();
+                    let (val_offset, val_len) = string_offsets.get(&initial_str).unwrap();
+                    wat.push_str(&format!(
+                        "    ;; DeclareState name=\"{}\"\n",
+                        name
+                    ));
+                    wat.push_str(&format!(
+                        "    (call $declare_state (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))\n",
+                        name_offset, name_len, val_offset, val_len
+                    ));
+                }
+                
+                Instruction::UpdateState { name, value_json } => {
+                    let (name_offset, name_len) = string_offsets.get(name).unwrap();
+                    let value_str = value_json.to_string();
+                    let (val_offset, val_len) = string_offsets.get(&value_str).unwrap();
+                    wat.push_str(&format!(
+                        "    ;; UpdateState name=\"{}\"\n",
+                        name
+                    ));
+                    wat.push_str(&format!(
+                        "    (call $update_state (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))\n",
+                        name_offset, name_len, val_offset, val_len
                     ));
                 }
                 
@@ -499,6 +557,60 @@ impl WasmRuntime {
                 let mut state = caller.data().lock().unwrap();
                 state.instruction_count += 1;
                 // Decoy injection would be handled by the protocol layer
+            },
+        )?;
+
+        // declare_state(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)
+        linker.func_wrap(
+            "env",
+            "declare_state",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32| {
+                let memory = caller.get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .expect("memory export");
+                
+                let mut name_buf = vec![0u8; name_len as usize];
+                let mut val_buf = vec![0u8; val_len as usize];
+                memory.read(&caller, name_ptr as usize, &mut name_buf).expect("read name");
+                memory.read(&caller, val_ptr as usize, &mut val_buf).expect("read value");
+                
+                let name = String::from_utf8_lossy(&name_buf).to_string();
+                let val_str = String::from_utf8_lossy(&val_buf).to_string();
+                let val: serde_json::Value = serde_json::from_str(&val_str).unwrap_or(serde_json::Value::Null);
+                
+                let mut state = caller.data().lock().unwrap();
+                state.events.push(WasmEvent { 
+                    name: "state_declared".to_string(), 
+                    payload: serde_json::json!({ "name": name, "value": val }) 
+                });
+                state.instruction_count += 1;
+            },
+        )?;
+
+        // update_state(name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32)
+        linker.func_wrap(
+            "env",
+            "update_state",
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32, val_ptr: i32, val_len: i32| {
+                let memory = caller.get_export("memory")
+                    .and_then(|e| e.into_memory())
+                    .expect("memory export");
+                
+                let mut name_buf = vec![0u8; name_len as usize];
+                let mut val_buf = vec![0u8; val_len as usize];
+                memory.read(&caller, name_ptr as usize, &mut name_buf).expect("read name");
+                memory.read(&caller, val_ptr as usize, &mut val_buf).expect("read value");
+                
+                let name = String::from_utf8_lossy(&name_buf).to_string();
+                let val_str = String::from_utf8_lossy(&val_buf).to_string();
+                let val: serde_json::Value = serde_json::from_str(&val_str).unwrap_or(serde_json::Value::Null);
+                
+                let mut state = caller.data().lock().unwrap();
+                state.events.push(WasmEvent { 
+                    name: "state_updated".to_string(), 
+                    payload: serde_json::json!({ "name": name, "value": val }) 
+                });
+                state.instruction_count += 1;
             },
         )?;
         

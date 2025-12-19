@@ -26,7 +26,7 @@ struct HyperlightBrowser {
     status: String,
     elements: Vec<WasmElement>,
     latent_vector: Vec<f32>,
-    agent: Arc<Mutex<Option<AgentClient>>>,
+    agent: Arc<Mutex<Option<AgentClient<tokio::net::TcpStream>>>>,
     cluster_client: ClusterClient,
     rt: Runtime,
     human_mode: bool,
@@ -70,7 +70,7 @@ impl HyperlightBrowser {
             let _ = tx.send(BrowserEvent::StatusChanged(format!("Connecting to {}...", addr))).await;
             match AgentClient::connect(&addr.to_string()).await {
                 Ok(mut client) => {
-                    let mut latent_rx = client.subscribe_latent().await.unwrap();
+                    let (mut latent_rx, _) = client.start_listener().await;
                     let tx_latent = tx.clone();
                     
                     tokio::spawn(async move {
@@ -100,10 +100,14 @@ impl HyperlightBrowser {
         
         self.rt.spawn(async move {
             let mut lock = agent_clone.lock().await;
-            if let Some(agent) = lock.as_mut() {
-                let _ = tx.send(BrowserEvent::StatusChanged(format!("Navigating to {}...", url))).await;
-                
-                match agent.navigate(&url).await {
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Navigating to {}...", url))).await;
+            
+            match agent.navigate(&url).await {
                     Ok(_) => {
                         if human_mode {
                             match agent.get_raw_html().await {
@@ -157,9 +161,6 @@ impl HyperlightBrowser {
                         let _ = tx.send(BrowserEvent::Error(format!("Navigation failed: {}", e))).await;
                     }
                 }
-            } else {
-                let _ = tx.send(BrowserEvent::Error("Not connected to core".to_string())).await;
-            }
         });
     }
 
@@ -170,16 +171,19 @@ impl HyperlightBrowser {
         
         self.rt.spawn(async move {
             let mut lock = agent_clone.lock().await;
-            if let Some(agent) = lock.as_mut() {
-                let _ = tx.send(BrowserEvent::StatusChanged(format!("Searching for '{}'...", query))).await;
-                match agent.search(&query).await {
-                    Ok(results) => {
-                        let _ = tx.send(BrowserEvent::ContentUpdated(format!("Search Results:\n{}", serde_json::to_string_pretty(&results).unwrap()))).await;
-                        let _ = tx.send(BrowserEvent::StatusChanged("Search complete".to_string())).await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(BrowserEvent::Error(format!("Search failed: {}", e))).await;
-                    }
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Searching for '{}'...", query))).await;
+            match agent.search(&query).await {
+                Ok(results) => {
+                    let _ = tx.send(BrowserEvent::ContentUpdated(format!("Search Results:\n{}", serde_json::to_string_pretty(&results).unwrap()))).await;
+                    let _ = tx.send(BrowserEvent::StatusChanged("Search complete".to_string())).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowserEvent::Error(format!("Search failed: {}", e))).await;
                 }
             }
         });
@@ -192,15 +196,18 @@ impl HyperlightBrowser {
         
         self.rt.spawn(async move {
             let mut lock = agent_clone.lock().await;
-            if let Some(agent) = lock.as_mut() {
-                let _ = tx.send(BrowserEvent::StatusChanged(format!("Transferring session to {}...", target_node))).await;
-                match agent.transfer_session(target_node).await {
-                    Ok(_) => {
-                        let _ = tx.send(BrowserEvent::StatusChanged("Transfer initiated".to_string())).await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(BrowserEvent::Error(format!("Transfer failed: {}", e))).await;
-                    }
+            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            let _ = tx.send(BrowserEvent::StatusChanged(format!("Transferring session to {}...", target_node))).await;
+            match agent.transfer_session(target_node).await {
+                Ok(_) => {
+                    let _ = tx.send(BrowserEvent::StatusChanged("Transfer initiated".to_string())).await;
+                }
+                Err(e) => {
+                    let _ = tx.send(BrowserEvent::Error(format!("Transfer failed: {}", e))).await;
                 }
             }
         });
@@ -266,15 +273,18 @@ impl HyperlightBrowser {
                         
                         self.rt.spawn(async move {
                             let mut lock = agent_clone.lock().await;
-                            if let Some(agent) = lock.as_mut() {
-                                let _ = tx.send(BrowserEvent::StatusChanged(format!("Clicking {}...", element_id))).await;
-                                match agent.click(&element_id).await {
-                                    Ok(_) => {
-                                        let _ = tx.send(BrowserEvent::StatusChanged("Action successful".to_string())).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(BrowserEvent::Error(format!("Click failed: {}", e))).await;
-                                    }
+                            let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                                Some(a) => a,
+                                None => return,
+                            };
+                            
+                            let _ = tx.send(BrowserEvent::StatusChanged(format!("Clicking {}...", element_id))).await;
+                            match agent.click(&element_id).await {
+                                Ok(_) => {
+                                    let _ = tx.send(BrowserEvent::StatusChanged("Action successful".to_string())).await;
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(BrowserEvent::Error(format!("Click failed: {}", e))).await;
                                 }
                             }
                         });
@@ -374,16 +384,19 @@ impl eframe::App for HyperlightBrowser {
                     let tx = self.event_tx.clone();
                     self.rt.spawn(async move {
                         let mut lock = agent_clone.lock().await;
-                        if let Some(agent) = lock.as_mut() {
-                            let _ = tx.send(BrowserEvent::StatusChanged("Fetching latent representation...".to_string())).await;
-                            match agent.get_latent_ur(128).await {
-                                Ok(latent) => {
-                                    let _ = tx.send(BrowserEvent::LatentUpdated(latent)).await;
-                                    let _ = tx.send(BrowserEvent::StatusChanged("Latent vector received".to_string())).await;
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(BrowserEvent::Error(format!("Latent fetch failed: {}", e))).await;
-                                }
+                        let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                            Some(a) => a,
+                            None => return,
+                        };
+                        
+                        let _ = tx.send(BrowserEvent::StatusChanged("Fetching latent representation...".to_string())).await;
+                        match agent.get_latent_ur(128).await {
+                            Ok(latent) => {
+                                let _ = tx.send(BrowserEvent::LatentUpdated(latent)).await;
+                                let _ = tx.send(BrowserEvent::StatusChanged("Latent vector received".to_string())).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(BrowserEvent::Error(format!("Latent fetch failed: {}", e))).await;
                             }
                         }
                     });
@@ -394,15 +407,18 @@ impl eframe::App for HyperlightBrowser {
                     let tx = self.event_tx.clone();
                     self.rt.spawn(async move {
                         let mut lock = agent_clone.lock().await;
-                        if let Some(agent) = lock.as_mut() {
-                            let _ = tx.send(BrowserEvent::StatusChanged("Morphing protocol...".to_string())).await;
-                            match agent.morph().await {
-                                Ok(_) => {
-                                    let _ = tx.send(BrowserEvent::StatusChanged("Protocol Morphed".to_string())).await;
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(BrowserEvent::Error(format!("Morph failed: {}", e))).await;
-                                }
+                        let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                            Some(a) => a,
+                            None => return,
+                        };
+                        
+                        let _ = tx.send(BrowserEvent::StatusChanged("Morphing protocol...".to_string())).await;
+                        match agent.morph().await {
+                            Ok(_) => {
+                                let _ = tx.send(BrowserEvent::StatusChanged("Protocol Morphed".to_string())).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(BrowserEvent::Error(format!("Morph failed: {}", e))).await;
                             }
                         }
                     });
@@ -413,15 +429,18 @@ impl eframe::App for HyperlightBrowser {
                     let tx = self.event_tx.clone();
                     self.rt.spawn(async move {
                         let mut lock = agent_clone.lock().await;
-                        if let Some(agent) = lock.as_mut() {
-                            let _ = tx.send(BrowserEvent::StatusChanged("Injecting decoy traffic...".to_string())).await;
-                            match agent.handler.send_decoy().await {
-                                Ok(_) => {
-                                    let _ = tx.send(BrowserEvent::StatusChanged("Decoy Injected".to_string())).await;
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(BrowserEvent::Error(format!("Decoy failed: {}", e))).await;
-                                }
+                        let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
+                            Some(a) => a,
+                            None => return,
+                        };
+                        
+                        let _ = tx.send(BrowserEvent::StatusChanged("Injecting decoy traffic...".to_string())).await;
+                        match agent.handler.send_decoy().await {
+                            Ok(_) => {
+                                let _ = tx.send(BrowserEvent::StatusChanged("Decoy Injected".to_string())).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(BrowserEvent::Error(format!("Decoy failed: {}", e))).await;
                             }
                         }
                     });
@@ -440,7 +459,8 @@ impl eframe::App for HyperlightBrowser {
                 
                 if let Ok(agent_lock) = self.agent.try_lock() {
                     if let Some(agent) = agent_lock.as_ref() {
-                        let stats = agent.get_speculation_stats();
+                        let agent: &AgentClient<tokio::net::TcpStream> = agent;
+                        let stats = agent.handler.speculation_stats.clone();
                         ui.label(format!("Speculation: Hits: {} / Preds: {} ({:.1}%)", 
                             stats.output_hits, 
                             stats.output_predictions,

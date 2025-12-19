@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
 use aes_gcm::{Aes256Gcm, Key, Nonce, KeyInit, aead::Aead};
 use zstd::stream::encode_all;
 use zstd::stream::decode_all;
@@ -456,6 +455,10 @@ pub enum Instruction {
     MorphProtocol { seed: u64 },
     /// Inject decoy traffic
     Decoy { noise: Vec<f32> },
+    /// Declare a reactive state variable
+    DeclareState { name: String, initial_json: serde_json::Value },
+    /// Update a reactive state variable
+    UpdateState { name: String, value_json: serde_json::Value },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -499,8 +502,8 @@ pub struct Event {
 // CHAMELEON PROTOCOL HANDLER
 // =============================================================================
 
-pub struct ProtocolHandler {
-    stream: TcpStream,
+pub struct ProtocolHandler<S> {
+    stream: S,
     /// Traditional encryption (fallback)
     cipher: Option<Aes256Gcm>,
     /// Chameleon latent-space key
@@ -556,8 +559,11 @@ impl SpeculationStats {
     }
 }
 
-impl ProtocolHandler {
-    pub fn new(stream: TcpStream) -> Self {
+impl<S> ProtocolHandler<S> 
+where 
+    S: AsyncRead + AsyncWrite + Unpin + Send
+{
+    pub fn new(stream: S) -> Self {
         Self { 
             stream, 
             cipher: None,

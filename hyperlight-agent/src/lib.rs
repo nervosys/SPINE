@@ -2,36 +2,36 @@ use hyperlight_protocol::{Message, ProtocolHandler, BrowserCommand, Request, Res
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use hyperlight_parser::UnifiedRepresentation;
-use hyperlight_cluster::ClusterClient;
-use std::net::SocketAddr;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 // Re-export the compiler for convenience
 pub use hyperlight_compiler::Compiler;
 
-pub struct AgentClient {
+pub struct AgentClient<S> {
     /// Public handler for advanced protocol operations (Chameleon, Speculation, etc.)
-    pub handler: ProtocolHandler,
+    pub handler: ProtocolHandler<S>,
     request_counter: u64,
-    response_txs: std::collections::HashMap<String, mpsc::Sender<Response>>,
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,
     event_tx: Option<mpsc::Sender<hyperlight_protocol::Event>>,
 }
 
-impl AgentClient {
+impl AgentClient<TcpStream> {
     pub async fn connect(addr: &str) -> anyhow::Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         let handler = ProtocolHandler::new(stream);
         Ok(Self { 
             handler, 
             request_counter: 0,
-            response_txs: std::collections::HashMap::new(),
             latent_tx: None,
             event_tx: None,
         })
     }
+}
 
-    /// Start listening for incoming messages in the background.
-    /// This is required for latent streaming and events.
+impl<S> AgentClient<S> 
+where 
+    S: AsyncRead + AsyncWrite + Unpin + Send
+{
     pub async fn start_listener(&mut self) -> (mpsc::Receiver<Vec<f32>>, mpsc::Receiver<hyperlight_protocol::Event>) {
         let (latent_tx, latent_rx) = mpsc::channel(100);
         let (event_tx, event_rx) = mpsc::channel(100);

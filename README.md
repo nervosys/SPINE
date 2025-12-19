@@ -1,4 +1,4 @@
-# Hyperlight
+# Hyperlight ⚡
 
 **Hyperlight** is a revolutionary web browser stack built from the ground up for **agentic AI** and **human-AI collaboration**. Unlike traditional browsers designed for human rendering, Hyperlight provides:
 

@@ -45,6 +45,8 @@ pub enum HlsType {
     Boolean,
     Element,
     List(Box<HlsType>),
+    Object,
+    Null,
     Any,
 }
 
@@ -54,6 +56,7 @@ pub enum HlsValue {
     Number(f64),
     Boolean(bool),
     List(Vec<HlsValue>),
+    Object(HashMap<String, HlsValue>),
     Null,
 }
 
@@ -161,6 +164,13 @@ impl Compiler {
         let (_, statements) = parse_program(source)
             .map_err(|e| anyhow::anyhow!("Parse error: {:?}", e))?;
         
+        // Type checking pass
+        let mut type_ctx = CompilerContext::default();
+        for stmt in &statements {
+            Self::check_types(&mut type_ctx, stmt)?;
+        }
+        
+        // Compilation pass
         for stmt in statements {
             Self::compile_statement(&mut ctx, &stmt)?;
         }
@@ -222,17 +232,33 @@ impl Compiler {
                 ctx.element_stack.pop();
             }
             
-            HlsStatement::Let { name, value } => {
+            HlsStatement::Let { name, value, type_annotation } => {
                 let val = Self::eval_expr(ctx, value);
-                let typ = Self::infer_type(&val);
+                let inferred = Self::infer_type(&val);
+                let typ = type_annotation.clone().unwrap_or(inferred);
                 ctx.variables.insert(name.clone(), (typ, val));
             }
             
-            HlsStatement::State { name, initial } => {
+            HlsStatement::State { name, initial, type_annotation } => {
                 let val = Self::eval_expr(ctx, initial);
-                let typ = Self::infer_type(&val);
-                ctx.variables.insert(name.clone(), (typ, val));
-                // State variables can trigger re-renders (future: emit state instruction)
+                let inferred = Self::infer_type(&val);
+                let typ = type_annotation.clone().unwrap_or(inferred);
+                ctx.variables.insert(name.clone(), (typ.clone(), val));
+                // Emit state declaration instruction for reactive updates
+                ctx.instructions.push(Instruction::DeclareState {
+                    name: name.clone(),
+                    initial_json: Self::value_to_json(&ctx.variables.get(name).map(|(_, v)| v.clone()).unwrap_or(HlsValue::Null)),
+                });
+            }
+            
+            HlsStatement::FnDef { name, params, body, return_type } => {
+                // Register the function for later calls
+                ctx.functions.insert(name.clone(), HlsFunction {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                    return_type: return_type.clone().unwrap_or(HlsType::Any),
+                });
             }
             
             HlsStatement::If { condition, then_branch, else_branch } => {
@@ -323,10 +349,47 @@ impl Compiler {
             HlsStatement::Assign { name, value } => {
                 let val = Self::eval_expr(ctx, value);
                 let typ = Self::infer_type(&val);
-                ctx.variables.insert(name.clone(), (typ, val));
+                ctx.variables.insert(name.clone(), (typ, val.clone()));
+                
+                // If it's a state variable, emit an update instruction
+                ctx.instructions.push(Instruction::UpdateState {
+                    name: name.clone(),
+                    value_json: Self::value_to_json(&val),
+                });
             }
             
             HlsStatement::Call { name, args } => {
+                // Check for user-defined functions first
+                if let Some(func) = ctx.functions.get(name).cloned() {
+                    // Create a new scope for the function call
+                    let mut call_ctx = CompilerContext {
+                        variables: ctx.variables.clone(),
+                        functions: ctx.functions.clone(),
+                        scope_depth: ctx.scope_depth + 1,
+                        instructions: Vec::new(),
+                        string_pool: ctx.string_pool.clone(),
+                        element_stack: ctx.element_stack.clone(),
+                    };
+                    
+                    // Bind arguments to parameters
+                    for (i, (param_name, _)) in func.params.iter().enumerate() {
+                        if let Some(arg_expr) = args.get(i) {
+                            let arg_val = Self::eval_expr(ctx, arg_expr);
+                            let arg_typ = Self::infer_type(&arg_val);
+                            call_ctx.variables.insert(param_name.clone(), (arg_typ, arg_val));
+                        }
+                    }
+                    
+                    // Execute function body
+                    for stmt in &func.body {
+                        Self::compile_statement(&mut call_ctx, stmt)?;
+                    }
+                    
+                    // Merge instructions back
+                    ctx.instructions.extend(call_ctx.instructions);
+                    return Ok(());
+                }
+
                 // Built-in functions
                 match name.as_str() {
                     "print" => {
@@ -433,12 +496,11 @@ impl Compiler {
                 }
             }
             HlsExpr::Object(pairs) => {
-                // Convert to JSON-like representation
-                let obj_str = pairs.iter()
-                    .map(|(k, v)| format!("{}: {}", k, Self::eval_expr_to_string(ctx, v)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                HlsValue::String(format!("{{{}}}", obj_str))
+                let mut map = HashMap::new();
+                for (k, v) in pairs {
+                    map.insert(k.clone(), Self::eval_expr(ctx, v));
+                }
+                HlsValue::Object(map)
             }
             HlsExpr::Call { name, args } => {
                 // Built-in expression functions
@@ -559,6 +621,12 @@ impl Compiler {
                 let items_str: Vec<String> = items.iter().map(Self::value_to_string).collect();
                 format!("[{}]", items_str.join(", "))
             }
+            HlsValue::Object(map) => {
+                let pairs: Vec<String> = map.iter()
+                    .map(|(k, v)| format!("{}: {}", k, Self::value_to_string(v)))
+                    .collect();
+                format!("{{{}}}", pairs.join(", "))
+            }
             HlsValue::Null => "null".to_string(),
         }
     }
@@ -568,26 +636,223 @@ impl Compiler {
             HlsValue::String(_) => HlsType::String,
             HlsValue::Number(_) => HlsType::Number,
             HlsValue::Boolean(_) => HlsType::Boolean,
-            HlsValue::List(_) => HlsType::List(Box::new(HlsType::Any)),
-            HlsValue::Null => HlsType::Any,
+            HlsValue::List(items) => {
+                if items.is_empty() {
+                    HlsType::List(Box::new(HlsType::Any))
+                } else {
+                    let inner = Self::infer_type(&items[0]);
+                    HlsType::List(Box::new(inner))
+                }
+            }
+            HlsValue::Object(_) => HlsType::Object,
+            HlsValue::Null => HlsType::Null,
         }
     }
     
+    fn infer_expr_type(ctx: &CompilerContext, expr: &HlsExpr) -> anyhow::Result<HlsType> {
+        match expr {
+            HlsExpr::StringLit(_) => Ok(HlsType::String),
+            HlsExpr::NumberLit(_) => Ok(HlsType::Number),
+            HlsExpr::BoolLit(_) => Ok(HlsType::Boolean),
+            HlsExpr::Var(name) => {
+                ctx.variables.get(name)
+                    .map(|(t, _)| t.clone())
+                    .ok_or_else(|| anyhow::anyhow!("Undefined variable '{}'", name))
+            }
+            HlsExpr::BinOp { left, op, right } => {
+                let lt = Self::infer_expr_type(ctx, left)?;
+                let rt = Self::infer_expr_type(ctx, right)?;
+                match op {
+                    BinOperator::Add | BinOperator::Sub | BinOperator::Mul | BinOperator::Div | BinOperator::Mod => {
+                        if lt == HlsType::Number && rt == HlsType::Number {
+                            Ok(HlsType::Number)
+                        } else {
+                            Err(anyhow::anyhow!("Arithmetic operators require numbers"))
+                        }
+                    }
+                    BinOperator::Eq | BinOperator::Ne | BinOperator::Lt | BinOperator::Le | BinOperator::Gt | BinOperator::Ge => {
+                        Ok(HlsType::Boolean)
+                    }
+                    BinOperator::And | BinOperator::Or => {
+                        Ok(HlsType::Boolean)
+                    }
+                    BinOperator::Concat => Ok(HlsType::String),
+                }
+            }
+            HlsExpr::UnaryOp { op, expr } => {
+                let t = Self::infer_expr_type(ctx, expr)?;
+                match op {
+                    UnaryOperator::Not => Ok(HlsType::Boolean),
+                    UnaryOperator::Neg => {
+                        if t == HlsType::Number { Ok(HlsType::Number) }
+                        else { Err(anyhow::anyhow!("Negation requires a number")) }
+                    }
+                }
+            }
+            HlsExpr::List(items) => {
+                if items.is_empty() {
+                    Ok(HlsType::List(Box::new(HlsType::Any)))
+                } else {
+                    let inner = Self::infer_expr_type(ctx, &items[0])?;
+                    Ok(HlsType::List(Box::new(inner)))
+                }
+            }
+            HlsExpr::Object(_) => Ok(HlsType::Object),
+            HlsExpr::Call { name, args } => {
+                if let Some(func) = ctx.functions.get(name) {
+                    Ok(func.return_type.clone())
+                } else {
+                    // Built-ins
+                    match name.as_str() {
+                        "len" => Ok(HlsType::Number),
+                        "str" => Ok(HlsType::String),
+                        "num" => Ok(HlsType::Number),
+                        _ => Ok(HlsType::Any),
+                    }
+                }
+            }
+            HlsExpr::Property { .. } => Ok(HlsType::Any),
+            HlsExpr::Index { object, .. } => {
+                let ot = Self::infer_expr_type(ctx, object)?;
+                match ot {
+                    HlsType::List(inner) => Ok(*inner),
+                    _ => Ok(HlsType::Any),
+                }
+            }
+            HlsExpr::Ternary { then_expr, .. } => Self::infer_expr_type(ctx, then_expr),
+        }
+    }
+
+    fn types_match(expected: &HlsType, actual: &HlsType) -> bool {
+        match (expected, actual) {
+            (HlsType::Any, _) | (_, HlsType::Any) => true,
+            (HlsType::List(e), HlsType::List(a)) => Self::types_match(e, a),
+            (e, a) => e == a,
+        }
+    }
+
+    fn check_types(ctx: &mut CompilerContext, stmt: &HlsStatement) -> anyhow::Result<()> {
+        match stmt {
+            HlsStatement::Let { name, value, type_annotation } => {
+                let val_type = Self::infer_expr_type(ctx, value)?;
+                let final_type = if let Some(annotated) = type_annotation {
+                    if !Self::types_match(annotated, &val_type) {
+                        return Err(anyhow::anyhow!("Type mismatch for variable '{}': expected {:?}, found {:?}", name, annotated, val_type));
+                    }
+                    annotated.clone()
+                } else {
+                    val_type
+                };
+                ctx.variables.insert(name.clone(), (final_type, HlsValue::Null));
+            }
+            HlsStatement::State { name, initial, type_annotation } => {
+                let val_type = Self::infer_expr_type(ctx, initial)?;
+                let final_type = if let Some(annotated) = type_annotation {
+                    if !Self::types_match(annotated, &val_type) {
+                        return Err(anyhow::anyhow!("Type mismatch for state '{}': expected {:?}, found {:?}", name, annotated, val_type));
+                    }
+                    annotated.clone()
+                } else {
+                    val_type
+                };
+                ctx.variables.insert(name.clone(), (final_type, HlsValue::Null));
+            }
+            HlsStatement::Assign { name, value } => {
+                let val_type = Self::infer_expr_type(ctx, value)?;
+                if let Some((expected_type, _)) = ctx.variables.get(name) {
+                    if !Self::types_match(expected_type, &val_type) {
+                        return Err(anyhow::anyhow!("Type mismatch in assignment to '{}': expected {:?}, found {:?}", name, expected_type, val_type));
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Undefined variable '{}'", name));
+                }
+            }
+            HlsStatement::FnDef { name, params, body, return_type } => {
+                let mut fn_ctx = CompilerContext {
+                    variables: ctx.variables.clone(),
+                    functions: ctx.functions.clone(),
+                    ..Default::default()
+                };
+                for (p_name, p_type) in params {
+                    fn_ctx.variables.insert(p_name.clone(), (p_type.clone(), HlsValue::Null));
+                }
+                
+                let r_type = return_type.clone().unwrap_or(HlsType::Any);
+                ctx.functions.insert(name.clone(), HlsFunction {
+                    name: name.clone(),
+                    params: params.clone(),
+                    body: body.clone(),
+                    return_type: r_type.clone(),
+                });
+
+                for s in body {
+                    Self::check_types(&mut fn_ctx, s)?;
+                }
+            }
+            HlsStatement::If { condition, then_branch, else_branch } => {
+                let _ = Self::infer_expr_type(ctx, condition)?;
+                for s in then_branch { Self::check_types(ctx, s)?; }
+                if let Some(eb) = else_branch {
+                    for s in eb { Self::check_types(ctx, s)?; }
+                }
+            }
+            HlsStatement::For { item, list, body } => {
+                let lt = Self::infer_expr_type(ctx, list)?;
+                let inner_type = match lt {
+                    HlsType::List(inner) => *inner,
+                    _ => HlsType::Any,
+                };
+                ctx.variables.insert(item.clone(), (inner_type, HlsValue::Null));
+                for s in body { Self::check_types(ctx, s)?; }
+                ctx.variables.remove(item);
+            }
+            HlsStatement::Element { children, .. } => {
+                for s in children { Self::check_types(ctx, s)?; }
+            }
+            HlsStatement::Call { name, args } => {
+                if let Some(func) = ctx.functions.get(name) {
+                    if func.params.len() != args.len() {
+                        return Err(anyhow::anyhow!("Function '{}' expected {} arguments, found {}", name, func.params.len(), args.len()));
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        let arg_type = Self::infer_expr_type(ctx, arg)?;
+                        if !Self::types_match(&func.params[i].1, &arg_type) {
+                            return Err(anyhow::anyhow!("Type mismatch in call to '{}' for argument {}: expected {:?}, found {:?}", name, i, func.params[i].1, arg_type));
+                        }
+                    }
+                }
+            }
+            HlsStatement::Return(expr) => {
+                if let Some(e) = expr {
+                    let _ = Self::infer_expr_type(ctx, e)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    
     fn expr_to_json(ctx: &CompilerContext, expr: &HlsExpr) -> serde_json::Value {
-        match Self::eval_expr(ctx, expr) {
-            HlsValue::String(s) => serde_json::Value::String(s),
+        Self::value_to_json(&Self::eval_expr(ctx, expr))
+    }
+
+    fn value_to_json(val: &HlsValue) -> serde_json::Value {
+        match val {
+            HlsValue::String(s) => serde_json::Value::String(s.clone()),
             HlsValue::Number(n) => serde_json::json!(n),
-            HlsValue::Boolean(b) => serde_json::Value::Bool(b),
+            HlsValue::Boolean(b) => serde_json::Value::Bool(*b),
             HlsValue::List(items) => {
                 let json_items: Vec<serde_json::Value> = items.iter()
-                    .map(|v| match v {
-                        HlsValue::String(s) => serde_json::Value::String(s.clone()),
-                        HlsValue::Number(n) => serde_json::json!(n),
-                        HlsValue::Boolean(b) => serde_json::Value::Bool(*b),
-                        _ => serde_json::Value::Null,
-                    })
+                    .map(Self::value_to_json)
                     .collect();
                 serde_json::Value::Array(json_items)
+            }
+            HlsValue::Object(map) => {
+                let mut json_obj = serde_json::Map::new();
+                for (k, v) in map {
+                    json_obj.insert(k.clone(), Self::value_to_json(v));
+                }
+                serde_json::Value::Object(json_obj)
             }
             HlsValue::Null => serde_json::Value::Null,
         }
@@ -605,15 +870,91 @@ fn parse_program(input: &str) -> IResult<&str, Vec<HlsStatement>> {
 fn parse_statement(input: &str) -> IResult<&str, HlsStatement> {
     alt((
         parse_element_stmt,
+        parse_fn_def_stmt,
         parse_let_stmt,
         parse_state_stmt,
         parse_if_stmt,
         parse_for_stmt,
         parse_while_stmt,
+        parse_assign_stmt,
+        parse_call_stmt,
         parse_text_stmt,
         parse_emit_stmt,
         parse_comment,
     ))(input)
+}
+
+fn parse_fn_def_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, _) = multispace0(input)?;
+    let (input, _) = tag("fn")(input)?;
+    let (input, _) = multispace1(input)?;
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('(')(input)?;
+    let (input, params) = separated_list0(
+        tuple((multispace0, nom_char(','), multispace0)),
+        parse_param
+    )(input)?;
+    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, return_type) = opt(preceded(
+        tuple((tag("->"), multispace0)),
+        parse_type
+    ))(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('{')(input)?;
+    let (input, body) = many0(preceded(multispace0, parse_statement))(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('}')(input)?;
+
+    Ok((input, HlsStatement::FnDef {
+        name: name.to_string(),
+        params,
+        body,
+        return_type,
+    }))
+}
+
+fn parse_param(input: &str) -> IResult<&str, (String, HlsType)> {
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, typ) = opt(preceded(
+        tuple((nom_char(':'), multispace0)),
+        parse_type
+    ))(input)?;
+    Ok((input, (name.to_string(), typ.unwrap_or(HlsType::Any))))
+}
+
+fn parse_type(input: &str) -> IResult<&str, HlsType> {
+    alt((
+        value(HlsType::String, tag("string")),
+        value(HlsType::Number, tag("number")),
+        value(HlsType::Boolean, tag("boolean")),
+        value(HlsType::Element, tag("element")),
+        map(preceded(tag("list<"), terminated(parse_type, tag(">"))), |t| HlsType::List(Box::new(t))),
+        value(HlsType::Any, tag("any")),
+    ))(input)
+}
+
+fn parse_assign_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('=')(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, value) = parse_expr(input)?;
+    Ok((input, HlsStatement::Assign { name: name.to_string(), value }))
+}
+
+fn parse_call_stmt(input: &str) -> IResult<&str, HlsStatement> {
+    let (input, name) = parse_identifier(input)?;
+    let (input, _) = multispace0(input)?;
+    let (input, _) = nom_char('(')(input)?;
+    let (input, args) = separated_list0(
+        tuple((multispace0, nom_char(','), multispace0)),
+        parse_expr
+    )(input)?;
+    let (input, _) = nom_char(')')(input)?;
+    Ok((input, HlsStatement::Call { name: name.to_string(), args }))
 }
 
 fn parse_element_stmt(input: &str) -> IResult<&str, HlsStatement> {
@@ -654,6 +995,11 @@ fn parse_let_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
+    let (input, type_annotation) = opt(preceded(
+        tuple((nom_char(':'), multispace0)),
+        parse_type
+    ))(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, _) = nom_char('=')(input)?;
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_expr(input)?;
@@ -661,6 +1007,7 @@ fn parse_let_stmt(input: &str) -> IResult<&str, HlsStatement> {
     Ok((input, HlsStatement::Let {
         name: name.to_string(),
         value,
+        type_annotation,
     }))
 }
 
@@ -670,6 +1017,11 @@ fn parse_state_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
+    let (input, type_annotation) = opt(preceded(
+        tuple((nom_char(':'), multispace0)),
+        parse_type
+    ))(input)?;
+    let (input, _) = multispace0(input)?;
     let (input, _) = nom_char('=')(input)?;
     let (input, _) = multispace0(input)?;
     let (input, initial) = parse_expr(input)?;
@@ -677,6 +1029,7 @@ fn parse_state_stmt(input: &str) -> IResult<&str, HlsStatement> {
     Ok((input, HlsStatement::State {
         name: name.to_string(),
         initial,
+        type_annotation,
     }))
 }
 

@@ -21,3 +21,5 @@ rand = "0.8"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 hyperlight-neural = { path = "../hyperlight-neural" }
 hyperlight-crypto = { path = "../hyperlight-crypto" }
+rustls.workspace = true
+tokio-rustls.workspace = true
