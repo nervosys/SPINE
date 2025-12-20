@@ -330,13 +330,22 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 
 ### 7. hyperlight-neural
 
-**Purpose**: Neural network-based encoding for the Chameleon Protocol.
+**Purpose**: Neural network-based encoding for the Chameleon Protocol using the **Titans architecture**.
 
 **Architecture**:
 
 - **VAE (Variational Autoencoder)**: Learns stochastic latent projections of protocol messages.
-- **LSTM**: Maintains temporal state to evolve the encoding over time.
+- **Titans (Neural Long-Term Memory)**: Test-time training with persistent memory tokens and surprise-gated updates.
 - **Attention**: Multi-head attention for history-aware message prediction.
+
+**Why Titans over LSTM?**
+
+| LSTM | Titans |
+|------|--------|
+| Fixed hidden state size | Persistent memory tokens |
+| Gradient-based training only | Test-time training (online adaptation) |
+| Forgets over long sequences | Unbounded context via memory consolidation |
+| No anomaly detection | Surprise-gated writes for novelty detection |
 
 ### 8. hyperlight-crypto
 
@@ -462,13 +471,14 @@ pub struct ExecutionResult {
 
 ### 8. hyperlight-neural
 
-**Purpose**: Neural network-based latent space encoding for the Chameleon Protocol.
+**Purpose**: Neural network-based latent space encoding for the Chameleon Protocol using **Titans architecture**.
 
 **Key Responsibilities**:
 - Variational Autoencoder (VAE) for projecting message patterns into latent space.
-- LSTM for temporal state tracking of communication patterns.
+- **Titans (Neural Long-Term Memory)** for temporal state tracking with test-time training.
 - Multi-Head Attention for identifying critical message features.
 - Dynamic latent space evolution (morphing) to prevent traffic analysis.
+- **Surprise detection** for anomaly-aware protocol adaptation.
 
 ### 9. hyperlight-crypto
 

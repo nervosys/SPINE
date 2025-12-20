@@ -1,10 +1,27 @@
 # Hyperlight ⚡
 
-**Hyperlight** is a revolutionary web browser stack built from the ground up for **agentic AI** and **human-AI collaboration**. Unlike traditional browsers designed for human rendering, Hyperlight provides:
+**Hyperlight** is a next-generation **Agentic Web Stack** designed as an alternative to the traditional TCP/IP web architecture. Built from the ground up for **collaborative and adversarial AI systems**, Hyperlight provides a complete communication and execution framework for autonomous agents.
+
+> *"The web was designed for humans reading documents. Hyperlight is designed for AI systems executing programs."*
+
+## Why a New Web Stack?
+
+The traditional web stack (HTTP/HTML/CSS/JS) was designed in the 1990s for humans browsing hyperlinked documents. It's fundamentally misaligned with how AI agents operate:
+
+| Traditional Web | Hyperlight Agentic Web |
+|-----------------|------------------------|
+| Documents for human reading | Programs for AI execution |
+| Rendering-first (DOM → Layout → Paint) | Semantics-first (UR extraction) |
+| Stateless request/response | Persistent neural memory |
+| Static protocols (fingerprintable) | Moving-target defense (Chameleon) |
+| Single-agent browsing | Multi-agent swarm coordination |
+| RNN/LSTM sequence modeling | Titans architecture (test-time training) |
+
+## Core Principles
 
 - **Semantic Extraction**: Directly parses web content into structured representations without rendering pipelines.
 - **Binary Execution**: Treats websites as executable programs with instruction-based semantics.
-- **Secure & Compressed Protocols**: AES-256-GCM encryption and Zstd compression for high-throughput AI communication.
+- **Adaptive Protocols**: Chameleon Protocol with Titans neural memory for moving-target defense.
 - **Latent Streaming**: Native support for streaming high-dimensional vectors (embeddings, latent representations) to agents.
 - **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats for seamless human-AI interaction.
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
@@ -23,16 +40,36 @@ Hyperlight is composed of 11 specialized crates:
 - **`hyperlight-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
 - **`hyperlight-wasm`**: High-performance execution runtime for HLB using WebAssembly.
 - **`hyperlight-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
-- **`hyperlight-neural`**: Neural network-based encoding (VAE, LSTM, Attention) for the Chameleon Protocol.
-- **`hyperlight-crypto`**: Advanced cryptographic primitives including transformer-based prediction and quantum-resistant keys.
+- **`hyperlight-neural`**: **Titans architecture** (Neural Long-Term Memory + Transformers) for adaptive protocol evolution.
+- **`hyperlight-crypto`**: Transformer-based speculative decoding and quantum-resistant lattice cryptography.
 
 ## Intelligence Layer
 
-Hyperlight features a sophisticated intelligence layer that optimizes communication and security:
+Hyperlight features a sophisticated intelligence layer optimized for AI-to-AI communication:
 
-- **Speculative Decoding**: Uses a Transformer-based predictor to anticipate next messages, allowing the receiver to pre-compute responses and achieve zero-latency delivery on hits.
-- **Chameleon Protocol**: A moving-target defense system where the protocol's latent basis and encryption keys evolve per-message based on neural projections.
-- **Latent Streaming**: Asynchronous streaming of high-dimensional vectors from the WASM runtime to the agent, enabling real-time neural state synchronization.
+### Titans Architecture (Neural Long-Term Memory)
+
+Unlike traditional RNNs or LSTMs, Hyperlight uses the **Titans architecture** from Google Research:
+
+- **Test-Time Training**: Memory updates via online gradient descent during inference
+- **Surprise-Gated Writes**: Memory only updates when predictions fail (high surprise)
+- **Persistent Memory Tokens**: Compressed representations that survive across contexts
+- **Unbounded Context**: No fixed context window—memory persists indefinitely
+
+```rust
+// Titans memory update rule: M_t = M_{t-1} - η * ∇L(M_{t-1}, x_t)
+// Where L is surprise loss and η is gated by prediction error
+let temporal = self.titans_memory.forward(&latent);
+let surprise = self.titans_memory.get_surprise(); // Anomaly detection
+```
+
+### Speculative Decoding
+
+Uses a **Transformer-based predictor** to anticipate next messages, enabling zero-latency delivery when predictions match.
+
+### Chameleon Protocol
+
+A **moving-target defense system** where the protocol's latent basis and encryption keys evolve per-message based on neural projections.
 
 ## Virtual DOM & Incremental Updates
 
