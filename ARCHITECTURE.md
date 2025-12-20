@@ -348,6 +348,21 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 | Forgets over long sequences  | Unbounded context via memory consolidation  |
 | No anomaly detection         | Surprise-gated writes for novelty detection |
 
+**Titans + MIRAS for Continual Learning**:
+
+Hyperlight uses the [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) because an Agentic Web Stack requires **continual learning**—the ability to adapt to new patterns without offline retraining:
+
+- **Test-Time Memorization**: Memory updates occur *during inference*, not just training. When the protocol encounters a new communication pattern, it learns instantly.
+- **Surprise-Based Gating**: The gradient magnitude acts as a "surprise metric"—routine data is ignored, novel/anomalous data is prioritized for permanent storage.
+- **Momentum**: Captures not just immediate surprises but also relevant follow-up context.
+- **Adaptive Forgetting**: Weight decay prevents memory overflow during unbounded sessions.
+- **Deep Memory > Wide Memory**: MIRAS research shows deeper memory architectures outperform wider fixed-size states.
+
+This is essential for:
+1. Protocol evolution (Chameleon must continuously adapt to resist fingerprinting)
+2. Real-time anomaly detection (surprise scores identify attacks)
+3. Agent learning (each interaction improves future predictions)
+
 ### 8. hyperlight-crypto
 
 **Purpose**: Advanced cryptographic primitives and **Titans-based prediction**.
@@ -361,12 +376,12 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 
 **Why Titans over standard Transformers?**
 
-| Transformer | Titans |
-|-------------|--------|
-| O(n²) attention complexity | O(1) memory complexity |
-| Fixed context window | Unbounded persistent memory |
-| Static weights | Test-time training adaptation |
-| No novelty detection | Surprise-gated anomaly detection |
+| Transformer                | Titans                           |
+| -------------------------- | -------------------------------- |
+| O(n²) attention complexity | O(1) memory complexity           |
+| Fixed context window       | Unbounded persistent memory      |
+| Static weights             | Test-time training adaptation    |
+| No novelty detection       | Surprise-gated anomaly detection |
 
 ### 9. hyperlight-agent
 

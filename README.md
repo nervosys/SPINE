@@ -64,6 +64,24 @@ let temporal = self.titans_memory.forward(&latent);
 let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 ```
 
+> **Why Titans + MIRAS for Continual Learning?**
+> 
+> Hyperlight is designed as a **continual learning system** where agents must adapt to evolving web content, new communication patterns, and adversarial conditions in real-time—without offline retraining.
+> 
+> The [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) from Google Research is uniquely suited for this because:
+> 
+> 1. **Test-Time Memorization**: Unlike static models that require retraining, Titans updates its memory *while running*. When an agent encounters a new website structure or protocol variation, it learns immediately.
+> 
+> 2. **Surprise-Based Prioritization**: The "surprise metric" (gradient magnitude) acts as a filter—routine, expected patterns are efficiently ignored while novel or anomalous inputs are prioritized for permanent storage. This mirrors how humans remember unexpected events.
+> 
+> 3. **Momentum + Forgetting**: Titans captures not just momentary surprises but also relevant follow-up context, while adaptive weight decay prevents memory overflow during extremely long sessions.
+> 
+> 4. **Deep Memory Architecture**: MIRAS shows that memory *depth* matters more than size. Hyperlight's multi-layer memory modules achieve better perplexity and scaling than fixed-size RNN states.
+> 
+> 5. **Efficiency**: Combines RNN-like O(1) inference speed with Transformer-like expressive power—critical for real-time agent communication.
+> 
+> This makes Titans ideal for an Agentic Web Stack where protocols must continuously evolve to resist fingerprinting, agents must learn from every interaction, and security requires instant anomaly detection.
+
 ### Titans-Based Speculative Decoding
 
 Uses a **TitansPredictor** with Neural Long-Term Memory to anticipate next messages, enabling:
