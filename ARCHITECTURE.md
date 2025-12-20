@@ -543,6 +543,47 @@ Hyperlight reduces perceived latency by predicting the next likely messages in a
 3. If the agent's next request matches a prediction, the response is served with zero-bandwidth reconstruction from the local cache.
 4. High surprise scores trigger anomaly alerts for security monitoring.
 
+### MIRAS-Adaptive Encoding
+
+The MIRAS framework (Memory, Inference, Retrieval, and Storage) provides **continual learning** variants that automatically adapt to traffic patterns:
+
+**MIRAS Variants**:
+
+| Variant | Use Case | Update Strategy |
+|---------|----------|-----------------|
+| **Titans** | Baseline | Surprise-gated writes |
+| **YAAD** | High anomaly traffic | Outlier-robust gradient clipping |
+| **MONETA** | Long-running sessions | Lp-norm stability (prevents drift) |
+| **MEMORA** | Mixed traffic | Probability-constrained updates |
+
+**Adaptive Switching Logic**:
+
+```rust
+let variant = if anomaly > threshold * 2.0 {
+    MirasVariant::Yaad       // Outlier robustness
+} else if anomaly > threshold {
+    MirasVariant::Memora     // Balanced updates
+} else if message_count > 10000 {
+    MirasVariant::Moneta     // Long-running stability
+} else {
+    MirasVariant::Titans     // Baseline
+};
+```
+
+**MIRAS Integration Points**:
+
+1. **ChameleonKey (hyperlight-protocol)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
+2. **MirasTitansPredictor (hyperlight-crypto)**: Dual-track surprise monitoring from both Titans and MIRAS encoders.
+3. **MirasNeuralEncoder (hyperlight-neural)**: Core MIRAS memory implementations (YAAD, MONETA, MEMORA).
+
+**Combined Surprise Detection**:
+
+```rust
+let combined_surprise = (titans_surprise + miras_surprise) / 2.0;
+```
+
+This enables more robust anomaly detection by combining Titans' byte-level predictions with MIRAS's latent-space pattern recognition.
+
 ### Chameleon Protocol
 
 A moving-target defense protocol that hides communication patterns in latent space.
