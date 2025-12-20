@@ -549,12 +549,12 @@ The MIRAS framework (Memory, Inference, Retrieval, and Storage) provides **conti
 
 **MIRAS Variants**:
 
-| Variant | Use Case | Update Strategy |
-|---------|----------|-----------------|
-| **Titans** | Baseline | Surprise-gated writes |
-| **YAAD** | High anomaly traffic | Outlier-robust gradient clipping |
+| Variant    | Use Case              | Update Strategy                    |
+| ---------- | --------------------- | ---------------------------------- |
+| **Titans** | Baseline              | Surprise-gated writes              |
+| **YAAD**   | High anomaly traffic  | Outlier-robust gradient clipping   |
 | **MONETA** | Long-running sessions | Lp-norm stability (prevents drift) |
-| **MEMORA** | Mixed traffic | Probability-constrained updates |
+| **MEMORA** | Mixed traffic         | Probability-constrained updates    |
 
 **Adaptive Switching Logic**:
 
