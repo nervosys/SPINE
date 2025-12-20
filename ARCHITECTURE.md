@@ -18,8 +18,8 @@ Hyperlight is a **headless browser engine** designed exclusively for AI agents. 
 ┌────────────────────▼─────────────────────────────────────┐
 │                  Protocol Layer                          │
 │  (hyperlight-protocol: Message encoding/decoding)        │
-│  • Neural Latent Encoding (hyperlight-neural)            │
-│  • Transformer Prediction (hyperlight-crypto)            │
+│  • Titans Neural Encoding (hyperlight-neural)            │
+│  • Titans Prediction (hyperlight-crypto)                 │
 │  • Quantum-Resistant Key Evolution (hyperlight-crypto)   │
 │  • Moving-Target Defense (Morphing)                      │
 └────────────────────┬─────────────────────────────────────┘
@@ -179,7 +179,8 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 
 **Speculative Decoding**:
 
-- **Transformer Prediction**: Uses a `TransformerPredictor` to predict the next bytes of a message before they are fully received.
+- **Titans Prediction**: Uses a `TitansPredictor` with Neural Long-Term Memory to predict the next bytes of a message before they are fully received.
+- **Anomaly Detection**: Surprise scores identify novel or malicious patterns.
 - **Latency Reduction**: Allows the agent to begin processing responses while they are still in transit.
 
 **Message Format**:
@@ -340,22 +341,32 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 
 **Why Titans over LSTM?**
 
-| LSTM | Titans |
-|------|--------|
-| Fixed hidden state size | Persistent memory tokens |
-| Gradient-based training only | Test-time training (online adaptation) |
-| Forgets over long sequences | Unbounded context via memory consolidation |
-| No anomaly detection | Surprise-gated writes for novelty detection |
+| LSTM                         | Titans                                      |
+| ---------------------------- | ------------------------------------------- |
+| Fixed hidden state size      | Persistent memory tokens                    |
+| Gradient-based training only | Test-time training (online adaptation)      |
+| Forgets over long sequences  | Unbounded context via memory consolidation  |
+| No anomaly detection         | Surprise-gated writes for novelty detection |
 
 ### 8. hyperlight-crypto
 
-**Purpose**: Advanced cryptographic primitives and transformer-based prediction.
+**Purpose**: Advanced cryptographic primitives and **Titans-based prediction**.
 
 **Key Features**:
 
-- **Transformer Predictor**: Decoder-only transformer for byte-level speculative decoding.
+- **TitansPredictor**: Neural Long-Term Memory for byte-level speculative decoding with unbounded context.
+- **Anomaly Detection**: Surprise-gated updates identify novel or malicious message patterns.
 - **Quantum-Resistant Keys**: Ring-LWE lattice cryptography for post-quantum security.
 - **Key Evolution**: Hash-chain based forward secrecy.
+
+**Why Titans over standard Transformers?**
+
+| Transformer | Titans |
+|-------------|--------|
+| O(n²) attention complexity | O(1) memory complexity |
+| Fixed context window | Unbounded persistent memory |
+| Static weights | Test-time training adaptation |
+| No novelty detection | Surprise-gated anomaly detection |
 
 ### 9. hyperlight-agent
 
@@ -485,7 +496,8 @@ pub struct ExecutionResult {
 **Purpose**: Advanced cryptography and predictive modeling.
 
 **Key Responsibilities**:
-- Transformer-based byte-level message prediction for speculative decoding.
+- **Titans-based** byte-level message prediction for speculative decoding.
+- Anomaly detection via surprise-gated memory updates.
 - Quantum-resistant lattice-based key exchange (RLWE).
 - Secure seed generation for Chameleon protocol evolution.
 
@@ -508,12 +520,13 @@ pub struct ExecutionResult {
 
 ## Advanced Features
 
-### Speculative Decoding
+### Titans Speculative Decoding
 
-Hyperlight reduces perceived latency by predicting the next likely messages in a sequence.
-1. The `TransformerPredictor` analyzes historical message patterns.
+Hyperlight reduces perceived latency by predicting the next likely messages in a sequence using Neural Long-Term Memory.
+1. The `TitansPredictor` analyzes historical message patterns with persistent memory.
 2. The `ProtocolHandler` pre-computes responses for predicted requests.
 3. If the agent's next request matches a prediction, the response is served with zero-bandwidth reconstruction from the local cache.
+4. High surprise scores trigger anomaly alerts for security monitoring.
 
 ### Chameleon Protocol
 

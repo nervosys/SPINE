@@ -8,14 +8,14 @@
 
 The traditional web stack (HTTP/HTML/CSS/JS) was designed in the 1990s for humans browsing hyperlinked documents. It's fundamentally misaligned with how AI agents operate:
 
-| Traditional Web | Hyperlight Agentic Web |
-|-----------------|------------------------|
-| Documents for human reading | Programs for AI execution |
-| Rendering-first (DOM → Layout → Paint) | Semantics-first (UR extraction) |
-| Stateless request/response | Persistent neural memory |
-| Static protocols (fingerprintable) | Moving-target defense (Chameleon) |
-| Single-agent browsing | Multi-agent swarm coordination |
-| RNN/LSTM sequence modeling | Titans architecture (test-time training) |
+| Traditional Web                        | Hyperlight Agentic Web                   |
+| -------------------------------------- | ---------------------------------------- |
+| Documents for human reading            | Programs for AI execution                |
+| Rendering-first (DOM → Layout → Paint) | Semantics-first (UR extraction)          |
+| Stateless request/response             | Persistent neural memory                 |
+| Static protocols (fingerprintable)     | Moving-target defense (Chameleon)        |
+| Single-agent browsing                  | Multi-agent swarm coordination           |
+| RNN/LSTM sequence modeling             | Titans architecture (test-time training) |
 
 ## Core Principles
 
@@ -40,8 +40,8 @@ Hyperlight is composed of 11 specialized crates:
 - **`hyperlight-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
 - **`hyperlight-wasm`**: High-performance execution runtime for HLB using WebAssembly.
 - **`hyperlight-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
-- **`hyperlight-neural`**: **Titans architecture** (Neural Long-Term Memory + Transformers) for adaptive protocol evolution.
-- **`hyperlight-crypto`**: Transformer-based speculative decoding and quantum-resistant lattice cryptography.
+- **`hyperlight-neural`**: **Titans architecture** (Neural Long-Term Memory) for adaptive protocol encoding.
+- **`hyperlight-crypto`**: **Titans-based speculative decoding** and quantum-resistant lattice cryptography.
 
 ## Intelligence Layer
 
@@ -49,12 +49,13 @@ Hyperlight features a sophisticated intelligence layer optimized for AI-to-AI co
 
 ### Titans Architecture (Neural Long-Term Memory)
 
-Unlike traditional RNNs or LSTMs, Hyperlight uses the **Titans architecture** from Google Research:
+Unlike traditional RNNs, LSTMs, or even standard Transformers, Hyperlight uses the **Titans architecture** from Google Research throughout the entire stack:
 
 - **Test-Time Training**: Memory updates via online gradient descent during inference
 - **Surprise-Gated Writes**: Memory only updates when predictions fail (high surprise)
 - **Persistent Memory Tokens**: Compressed representations that survive across contexts
 - **Unbounded Context**: No fixed context window—memory persists indefinitely
+- **Anomaly Detection**: Built-in surprise metrics for detecting malicious or novel patterns
 
 ```rust
 // Titans memory update rule: M_t = M_{t-1} - η * ∇L(M_{t-1}, x_t)
@@ -63,9 +64,12 @@ let temporal = self.titans_memory.forward(&latent);
 let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 ```
 
-### Speculative Decoding
+### Titans-Based Speculative Decoding
 
-Uses a **Transformer-based predictor** to anticipate next messages, enabling zero-latency delivery when predictions match.
+Uses a **TitansPredictor** with Neural Long-Term Memory to anticipate next messages, enabling:
+- Zero-latency delivery when predictions match
+- Anomaly detection via surprise scores
+- Adaptive learning from communication patterns
 
 ### Chameleon Protocol
 
@@ -252,29 +256,30 @@ The HLS compiler generates these instructions:
 Hyperlight includes advanced features for high-security and low-latency agentic communication:
 
 - **Chameleon Protocol**: A latent-space cryptographic system that evolves the protocol's "shape" per-message using neural encoders.
-- **Speculative Decoding**: Bidirectional message prediction using transformer models to reduce perceived latency by pre-computing responses.
+- **Titans Speculative Decoding**: Message prediction using Neural Long-Term Memory to reduce perceived latency by pre-computing responses.
 - **Quantum-Resistant Keys**: Lattice-based key evolution that resists quantum computing attacks.
-- **Neural Latent Encoding**: Variational Autoencoders (VAE) combined with LSTM and Attention mechanisms to project web content into high-dimensional latent spaces.
+- **Titans Neural Encoding**: Neural Long-Term Memory with VAE and Attention mechanisms to project web content into high-dimensional latent spaces.
 
 ## Intelligence Layer
 
 Hyperlight features a deep intelligence layer that optimizes for both performance and security in AI-to-AI communication.
 
-### Speculative Decoding
+### Titans Speculative Decoding
 
-Inspired by LLM inference techniques, Hyperlight uses a **Transformer-based predictor** to anticipate the next likely messages in a protocol stream.
+Inspired by LLM inference techniques, Hyperlight uses a **TitansPredictor** with Neural Long-Term Memory to anticipate the next likely messages in a protocol stream.
 
 - **Zero-Bandwidth Hits**: If a prediction is correct, the receiver reconstructs the message from its local cache, sending only a tiny confirmation hash.
 - **Latency Reduction**: The core engine can pre-compute responses for predicted requests before they even arrive.
 - **Pattern Obfuscation**: Speculative traffic makes the protocol stream appear as high-entropy noise to external observers.
+- **Anomaly Detection**: High surprise scores indicate novel or potentially malicious patterns.
 
 ### Chameleon Protocol (Moving-Target Defense)
 
-The Chameleon Protocol uses **Neural Latent Encoding** to hide communication patterns.
+The Chameleon Protocol uses **Titans Neural Long-Term Memory** to hide communication patterns.
 
 - **Latent Morphing**: Messages are projected into a high-dimensional latent space using a Variational Autoencoder (VAE).
 - **Dynamic Evolution**: The transformation matrices evolve over time based on quantum-resistant seeds, ensuring that the "language" of the protocol is constantly changing.
-- **Implicit Encryption**: The latent space projection itself acts as a form of encryption where the model weights and temporal state (LSTM) are the keys.
+- **Implicit Encryption**: The latent space projection itself acts as a form of encryption where the model weights and Titans memory state are the keys.
 
 ## Getting Started
 
@@ -531,13 +536,14 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 │   ├─ Knowledge Consensus (2/3)      │
 │   └─ Autonomous Planning            │
 ├─────────────────────────────────────┤
-│   Speculative Decoding Layer        │
-│   ├─ Transformer Prediction         │
+│   Titans Speculative Decoding       │
+│   ├─ Neural Long-Term Memory        │
+│   ├─ Surprise-Gated Prediction      │
 │   ├─ Pre-computed Response Cache    │
 │   └─ Confirmation/Delta Encoding    │
 ├─────────────────────────────────────┤
 │   Chameleon Layer                   │
-│   ├─ Latent-Space Encoding          │
+│   ├─ Titans Latent-Space Encoding   │
 │   ├─ Moving-Target Defense          │
 │   └─ Decoy Traffic Generation       │
 ├─────────────────────────────────────┤
@@ -571,14 +577,14 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Chameleon Protocol** (latent-space cryptography)
 - [x] **Moving-Target Defense** (dynamic protocol morphing)
 - [x] **Decoy Traffic** injection
-- [x] **Speculative Decoding** (prediction-accelerated communication)
+- [x] **Titans Speculative Decoding** (prediction-accelerated communication with NLM)
 - [x] **Bi-directional Speculation** (input + output prediction)
 - [x] **Advanced HLS Syntax** (variables, state, conditionals, loops, expressions)
 - [x] **Virtual DOM Runtime** (binary execution with UR generation)
 - [x] **WebAssembly Runtime** (HLB → WASM near-native execution)
 - [x] **Distributed Agent Coordination** (cluster, load balancing, session affinity)
-- [x] **Neural Latent Encoder** (VAE, LSTM, Attention for learned projections)
-- [x] **Transformer Message Predictor** (autoregressive byte-level prediction)
+- [x] **Titans Neural Encoder** (Neural Long-Term Memory + VAE + Attention)
+- [x] **Titans Message Predictor** (autoregressive byte-level prediction with anomaly detection)
 - [x] **Quantum-Resistant Key Evolution** (RLWE lattice cryptography)
 - [x] **Human Compatibility Layer** (HTML/CSS/JS → HLS transpilation)
 - [x] **Cross-Platform GUI Browser** (egui-based human interface)

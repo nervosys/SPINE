@@ -117,6 +117,7 @@ impl SpeculativePredictor {
             num_layers: 4,
             ff_dim: 128,
             max_seq_len: 128,
+            memory_size: 32,  // Titans persistent memory tokens
             seed: 42,
         };
         Self {
@@ -267,6 +268,7 @@ impl ChameleonKey {
             num_layers: 4,
             ff_dim: 128,
             max_seq_len: 128,
+            memory_size: 32,  // Titans persistent memory tokens
             seed: 42,
         };
         let params = LatticeParams {
