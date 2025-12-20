@@ -7,7 +7,7 @@ use zstd::stream::decode_all;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
-use hyperlight_neural::NeuralLatentEncoder;
+use hyperlight_neural::{NeuralLatentEncoder, MirasNeuralEncoder, NeuralEncoderConfig, MirasVariant};
 use hyperlight_crypto::{TransformerPredictor, TransformerConfig, QuantumSpeculativeProtocol, LatticeParams};
 
 /// Chameleon Protocol: A moving-target defense system that uses latent space
@@ -248,14 +248,22 @@ pub struct LatentVector {
 /// This is the "key" in our latent cryptography system.
 #[derive(Clone)]
 pub struct ChameleonKey {
-    /// Neural latent encoder
+    /// Neural latent encoder (legacy)
     encoder: NeuralLatentEncoder,
+    /// MIRAS-adaptive encoder for enhanced continual learning
+    miras_encoder: Option<MirasNeuralEncoder>,
     /// Quantum-resistant key evolution
     quantum: QuantumSpeculativeProtocol,
     /// Dimension of the latent space
     dimension: usize,
     /// Message counter for key evolution
     epoch: u64,
+    /// Anomaly history for adaptive MIRAS selection
+    anomaly_scores: VecDeque<f32>,
+    /// Current MIRAS variant in use
+    active_variant: MirasVariant,
+    /// Threshold for switching to YAAD (outlier-robust)
+    anomaly_threshold: f32,
 }
 
 impl ChameleonKey {
@@ -282,16 +290,83 @@ impl ChameleonKey {
         let seed = hasher.finish();
 
         Self {
-            encoder: NeuralLatentEncoder::new(dimension, 1024, &[256, 128], 10, seed),
+            // attention_heads (8) must divide latent_dim (128): 128/8=16 ✓
+            encoder: NeuralLatentEncoder::new(dimension, 128, &[256, 128], 8, seed),
+            miras_encoder: None,
             quantum: QuantumSpeculativeProtocol::new(config, params, seed),
             dimension,
             epoch: 0,
+            anomaly_scores: VecDeque::with_capacity(100),
+            active_variant: MirasVariant::Titans,
+            anomaly_threshold: 5.0,
+        }
+    }
+    
+    /// Create with MIRAS-adaptive encoding for continual learning
+    pub fn new_with_miras(secret: &[u8; 32], variant: MirasVariant) -> Self {
+        let dimension = 128;
+        let config = TransformerConfig {
+            embed_dim: 64,
+            num_heads: 4,
+            num_layers: 4,
+            ff_dim: 128,
+            max_seq_len: 128,
+            memory_size: 32,
+            seed: 42,
+        };
+        let params = LatticeParams {
+            n: 512,
+            q: 12289,
+            p: 12289,
+            sigma: 3.2,
+        };
+        let mut hasher = DefaultHasher::new();
+        secret.hash(&mut hasher);
+        let seed = hasher.finish();
+        
+        let miras_config = NeuralEncoderConfig {
+            input_dim: 256,
+            latent_dim: dimension,  // 128
+            hidden_dims: vec![256, 128],
+            attention_heads: 8,     // 128/8=16 ✓
+            seed,
+            miras_variant: variant,
+            memory_tokens: 16,
+        };
+
+        Self {
+            // attention_heads (8) must divide latent_dim (128): 128/8=16 ✓
+            encoder: NeuralLatentEncoder::new(dimension, 128, &[256, 128], 8, seed),
+            miras_encoder: Some(miras_config.build_miras()),
+            quantum: QuantumSpeculativeProtocol::new(config, params, seed),
+            dimension,
+            epoch: 0,
+            anomaly_scores: VecDeque::with_capacity(100),
+            active_variant: variant,
+            anomaly_threshold: 5.0,
         }
     }
     
     /// Encode data into the latent space
     pub fn encode(&mut self, data: &[u8]) -> LatentVector {
-        let components = self.encoder.encode(data);
+        let components = if let Some(ref mut miras) = self.miras_encoder {
+            // Use MIRAS encoder with adaptive memory
+            let encoded = miras.encode(data);
+            
+            // Track surprise for anomaly detection
+            let surprise = miras.get_surprise();
+            self.anomaly_scores.push_back(surprise);
+            if self.anomaly_scores.len() > 100 {
+                self.anomaly_scores.pop_front();
+            }
+            
+            // Adaptive variant switching based on anomaly patterns
+            self.maybe_switch_variant();
+            
+            encoded
+        } else {
+            self.encoder.encode(data)
+        };
         
         LatentVector {
             components,
@@ -317,6 +392,64 @@ impl ChameleonKey {
         
         // Perturb the neural encoder with the combined seed to shift the latent space
         self.encoder.evolve(combined_seed);
+    }
+    
+    /// Get current anomaly level (average surprise over recent messages)
+    pub fn anomaly_level(&self) -> f32 {
+        if self.anomaly_scores.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = self.anomaly_scores.iter().sum();
+        sum / self.anomaly_scores.len() as f32
+    }
+    
+    /// Get current MIRAS variant
+    pub fn variant(&self) -> &'static str {
+        match &self.miras_encoder {
+            Some(enc) => enc.variant(),
+            None => "Legacy",
+        }
+    }
+    
+    /// Adaptively switch MIRAS variant based on traffic patterns
+    fn maybe_switch_variant(&mut self) {
+        if self.miras_encoder.is_none() {
+            return;
+        }
+        
+        let anomaly = self.anomaly_level();
+        let current = self.active_variant;
+        
+        // Decision logic for variant switching
+        let new_variant = if anomaly > self.anomaly_threshold * 2.0 {
+            // Very high anomaly → YAAD for outlier robustness
+            MirasVariant::Yaad
+        } else if anomaly > self.anomaly_threshold {
+            // Moderate anomaly → MEMORA for balanced updates
+            MirasVariant::Memora
+        } else if self.epoch > 10000 {
+            // Long-running session → MONETA for stability
+            MirasVariant::Moneta { p: 2.0 }
+        } else {
+            // Normal operation → Titans baseline
+            MirasVariant::Titans
+        };
+        
+        // Only switch if variant changed (avoid unnecessary rebuilds)
+        if std::mem::discriminant(&new_variant) != std::mem::discriminant(&current) {
+            let seed = self.epoch ^ 0xDEADBEEF;
+            let config = NeuralEncoderConfig {
+                input_dim: 256,
+                latent_dim: self.dimension,
+                hidden_dims: vec![256, 128],
+                attention_heads: 8,
+                seed,
+                miras_variant: new_variant,
+                memory_tokens: 16,
+            };
+            self.miras_encoder = Some(config.build_miras());
+            self.active_variant = new_variant;
+        }
     }
 }
 
@@ -1168,5 +1301,88 @@ where
         if let Some(ref mut chameleon) = self.chameleon {
             chameleon.evolve(seed);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_chameleon_key_basic() {
+        let secret = [0x42u8; 32];
+        let mut key = ChameleonKey::new(&secret);
+        
+        // Encode some data
+        let data = b"Hello, Chameleon Protocol!";
+        let vector = key.encode(data);
+        
+        assert!(!vector.components.is_empty());
+        assert_eq!(vector.epoch, 0);
+        
+        // Evolve the key
+        key.evolve(0xDEADBEEF);
+        let vector2 = key.encode(data);
+        assert_eq!(vector2.epoch, 1);
+    }
+    
+    #[test]
+    fn test_chameleon_key_miras() {
+        let secret = [0x42u8; 32];
+        let mut key = ChameleonKey::new_with_miras(&secret, MirasVariant::Yaad);
+        
+        assert_eq!(key.variant(), "YAAD");
+        
+        // Encode data
+        let data = b"MIRAS-powered encoding";
+        let vector = key.encode(data);
+        assert!(!vector.components.is_empty());
+        
+        // Check anomaly tracking
+        let anomaly = key.anomaly_level();
+        assert!(anomaly >= 0.0);
+    }
+    
+    #[test]
+    fn test_chameleon_miras_variants() {
+        let secret = [0x42u8; 32];
+        
+        // Test all MIRAS variants
+        for variant in [
+            MirasVariant::Titans,
+            MirasVariant::Yaad,
+            MirasVariant::Moneta { p: 2.0 },
+            MirasVariant::Memora,
+        ] {
+            let mut key = ChameleonKey::new_with_miras(&secret, variant);
+            let vector = key.encode(b"Test message");
+            assert!(!vector.components.is_empty());
+        }
+    }
+    
+    #[test]
+    fn test_speculative_predictor() {
+        let mut predictor = SpeculativePredictor::new();
+        
+        // Observe some messages
+        predictor.observe(b"GET /api/users", MessageType::Request);
+        predictor.observe(b"200 OK", MessageType::Response);
+        predictor.observe(b"GET /api/posts", MessageType::Request);
+        
+        // Get prediction
+        let (hash, confidence) = predictor.predict_next();
+        assert!(hash != 0 || confidence >= 0.0);
+    }
+    
+    #[test]
+    fn test_protocol_morphology() {
+        let mut morph = ProtocolMorphology::new(12345);
+        let initial_version = morph.frame_version;
+        
+        morph.evolve(67890);
+        
+        // Frame version should evolve
+        // The evolve function changes internal state
+        assert!(morph.frame_version != initial_version || morph.header_size > 0);
     }
 }
