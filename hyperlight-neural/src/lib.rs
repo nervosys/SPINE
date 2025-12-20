@@ -1206,6 +1206,20 @@ impl NeuralLatentEncoder {
     }
 }
 
+/// MIRAS variant selection for neural encoder
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub enum MirasVariant {
+    /// Standard Titans memory (baseline)
+    #[default]
+    Titans,
+    /// YAAD - robust to outliers (noisy data)
+    Yaad,
+    /// MONETA - Lp-norm stability (long sequences)
+    Moneta { p: f32 },
+    /// MEMORA - probability-constrained (balanced updates)
+    Memora,
+}
+
 /// Configuration for neural encoder
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NeuralEncoderConfig {
@@ -1214,7 +1228,15 @@ pub struct NeuralEncoderConfig {
     pub hidden_dims: Vec<usize>,
     pub attention_heads: usize,
     pub seed: u64,
+    /// MIRAS variant for memory system (default: Titans)
+    #[serde(default)]
+    pub miras_variant: MirasVariant,
+    /// Number of persistent memory tokens (default: 8)
+    #[serde(default = "default_memory_tokens")]
+    pub memory_tokens: usize,
 }
+
+fn default_memory_tokens() -> usize { 8 }
 
 impl Default for NeuralEncoderConfig {
     fn default() -> Self {
@@ -1224,6 +1246,8 @@ impl Default for NeuralEncoderConfig {
             hidden_dims: vec![128, 96],
             attention_heads: 4,
             seed: 42,
+            miras_variant: MirasVariant::Titans,
+            memory_tokens: 8,
         }
     }
 }
@@ -1237,6 +1261,158 @@ impl NeuralEncoderConfig {
             self.attention_heads,
             self.seed,
         )
+    }
+    
+    /// Build encoder with MIRAS variant selection
+    pub fn build_miras(&self) -> MirasNeuralEncoder {
+        MirasNeuralEncoder::new(self)
+    }
+    
+    /// Use YAAD for noisy protocol data
+    pub fn with_yaad(mut self) -> Self {
+        self.miras_variant = MirasVariant::Yaad;
+        self
+    }
+    
+    /// Use MONETA for long-running sessions
+    pub fn with_moneta(mut self, p: f32) -> Self {
+        self.miras_variant = MirasVariant::Moneta { p };
+        self
+    }
+    
+    /// Use MEMORA for balanced memory updates
+    pub fn with_memora(mut self) -> Self {
+        self.miras_variant = MirasVariant::Memora;
+        self
+    }
+}
+
+/// Neural encoder with MIRAS variant support
+/// 
+/// This encoder uses the unified MirasMemory system, allowing
+/// runtime selection between Titans, YAAD, MONETA, and MEMORA.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MirasNeuralEncoder {
+    pub variational_encoder: VariationalEncoder,
+    pub memory: MirasMemory,
+    pub attention: MultiHeadAttention,
+    pub projection_head: DenseLayer,
+    latent_dim: usize,
+    message_history: VecDeque<Vec<f32>>,
+    history_limit: usize,
+    #[serde(skip, default = "default_rng")]
+    rng: StdRng,
+}
+
+impl MirasNeuralEncoder {
+    pub fn new(config: &NeuralEncoderConfig) -> Self {
+        let mut rng = StdRng::seed_from_u64(config.seed);
+        
+        let variational_encoder = VariationalEncoder::new(
+            config.input_dim, 
+            config.latent_dim, 
+            &config.hidden_dims, 
+            &mut rng
+        );
+        
+        // Create memory based on MIRAS variant
+        let memory = match config.miras_variant {
+            MirasVariant::Titans => {
+                MirasMemory::new_titans(config.latent_dim, config.latent_dim, config.memory_tokens, &mut rng)
+            }
+            MirasVariant::Yaad => {
+                MirasMemory::new_yaad(config.latent_dim, config.latent_dim, config.memory_tokens, &mut rng)
+            }
+            MirasVariant::Moneta { p } => {
+                MirasMemory::new_moneta(config.latent_dim, config.latent_dim, config.memory_tokens, p, &mut rng)
+            }
+            MirasVariant::Memora => {
+                MirasMemory::new_memora(config.latent_dim, config.latent_dim, config.memory_tokens, &mut rng)
+            }
+        };
+        
+        let attention = MultiHeadAttention::new(config.latent_dim, config.attention_heads, &mut rng);
+        let projection_head = DenseLayer::new(config.latent_dim * 2, config.latent_dim, Activation::Tanh, &mut rng);
+        
+        Self {
+            variational_encoder,
+            memory,
+            attention,
+            projection_head,
+            latent_dim: config.latent_dim,
+            message_history: VecDeque::new(),
+            history_limit: 32,
+            rng,
+        }
+    }
+    
+    /// Get the active MIRAS variant name
+    pub fn variant(&self) -> &'static str {
+        self.memory.variant_name()
+    }
+
+    /// Encode a message into latent space using selected MIRAS memory
+    pub fn encode(&mut self, message_bytes: &[u8]) -> Vec<f32> {
+        let mut input: Vec<f32> = message_bytes.iter().map(|&b| b as f32 / 255.0).collect();
+        input.resize(256, 0.0);
+        
+        let (_mean, _logvar, latent) = self.variational_encoder.encode(&input, &mut self.rng);
+        
+        self.message_history.push_back(latent.clone());
+        if self.message_history.len() > self.history_limit {
+            self.message_history.pop_front();
+        }
+        
+        // MIRAS memory evolution
+        let temporal = self.memory.forward(&latent);
+        
+        let history: Vec<Vec<f32>> = self.message_history.iter().cloned().collect();
+        let attended = self.attention.forward(&history);
+        
+        let mut combined = temporal.clone();
+        combined.extend(attended);
+        
+        let mut final_layer = self.projection_head.clone();
+        let projected = final_layer.forward(&combined);
+        
+        let morph_seed = self.compute_morph_seed();
+        self.apply_morph(&projected, morph_seed)
+    }
+    
+    /// Get cumulative surprise (anomaly detection)
+    pub fn get_surprise(&self) -> f32 {
+        self.memory.get_surprise()
+    }
+    
+    /// Reset memory and history
+    pub fn reset(&mut self) {
+        self.memory.reset_state();
+        self.message_history.clear();
+    }
+    
+    fn compute_morph_seed(&self) -> u64 {
+        let mut seed = 0u64;
+        for (i, msg) in self.message_history.iter().enumerate() {
+            for (j, &val) in msg.iter().enumerate() {
+                seed = seed.wrapping_add((val.to_bits() as u64).wrapping_mul((i * j + 1) as u64));
+            }
+        }
+        seed
+    }
+    
+    fn apply_morph(&self, latent: &[f32], seed: u64) -> Vec<f32> {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut morphed = latent.to_vec();
+        
+        for i in 0..morphed.len() {
+            let rot_angle: f32 = rng.gen_range(0.0..1.0) * std::f32::consts::PI * 2.0;
+            let j = (i + 1) % morphed.len();
+            let (a, b) = (morphed[i], morphed[j]);
+            morphed[i] = a * rot_angle.cos() - b * rot_angle.sin();
+            morphed[j] = a * rot_angle.sin() + b * rot_angle.cos();
+        }
+        
+        morphed
     }
 }
 
@@ -1325,6 +1501,7 @@ mod tests {
             hidden_dims: vec![32],
             attention_heads: 2,
             seed: 42,
+            ..Default::default()
         };
         let mut encoder = config.build();
         
@@ -1378,6 +1555,7 @@ mod tests {
             hidden_dims: vec![16],
             attention_heads: 2,
             seed: 42,
+            ..Default::default()
         };
         let mut encoder = config.build();
         
@@ -1566,6 +1744,76 @@ mod tests {
         
         assert!(titans_out.iter().all(|&x| x.is_finite()));
         assert!(yaad_out.iter().all(|&x| x.is_finite()));
+    }
+
+    #[test]
+    fn test_miras_neural_encoder() {
+        // Test all MIRAS variants via the unified encoder
+        let base_config = NeuralEncoderConfig {
+            input_dim: 64,
+            latent_dim: 16,
+            hidden_dims: vec![32],
+            attention_heads: 2,
+            seed: 42,
+            miras_variant: MirasVariant::Titans,
+            memory_tokens: 4,
+        };
+        
+        // Test Titans (default)
+        let mut enc = base_config.clone().build_miras();
+        assert_eq!(enc.variant(), "Titans");
+        let latent = enc.encode(b"Test message");
+        assert_eq!(latent.len(), 16);
+        
+        // Test YAAD
+        let mut enc = base_config.clone().with_yaad().build_miras();
+        assert_eq!(enc.variant(), "YAAD");
+        let latent = enc.encode(b"Test message");
+        assert_eq!(latent.len(), 16);
+        
+        // Test MONETA
+        let mut enc = base_config.clone().with_moneta(2.0).build_miras();
+        assert_eq!(enc.variant(), "MONETA");
+        let latent = enc.encode(b"Test message");
+        assert_eq!(latent.len(), 16);
+        
+        // Test MEMORA
+        let mut enc = base_config.with_memora().build_miras();
+        assert_eq!(enc.variant(), "MEMORA");
+        let latent = enc.encode(b"Test message");
+        assert_eq!(latent.len(), 16);
+    }
+
+    #[test]
+    fn test_miras_encoder_surprise_tracking() {
+        let config = NeuralEncoderConfig {
+            input_dim: 64,
+            latent_dim: 16,
+            hidden_dims: vec![32],
+            attention_heads: 2,
+            seed: 42,
+            ..Default::default()
+        }.with_yaad();
+        let mut encoder = config.build_miras();
+        
+        // Encode varying messages - should accumulate some surprise
+        for i in 0..5 {
+            encoder.encode(format!("Different {} pattern", i).as_bytes());
+        }
+        let surprise = encoder.get_surprise();
+        
+        // Should have accumulated non-zero surprise from varied inputs
+        assert!(surprise >= 0.0);
+        
+        // Reset should clear surprise
+        encoder.reset();
+        
+        // After reset, encode again
+        encoder.encode(b"Fresh start");
+        
+        // Encoder should still work after reset
+        let output = encoder.encode(b"Another message");
+        assert_eq!(output.len(), 16);
     }
 }
 

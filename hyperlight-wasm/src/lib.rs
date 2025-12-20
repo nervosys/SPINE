@@ -1299,6 +1299,7 @@ impl Default for WasmRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     
     #[test]
     fn test_compile_simple_hlb_to_wat() {
@@ -1308,6 +1309,9 @@ mod tests {
                 Instruction::SetAttribute { id: 1, key: "class".to_string(), value: "container".to_string() },
             ],
             data: Vec::new(),
+            render_start: 0,
+            exported_functions: HashMap::new(),
+            capabilities: Vec::new(),
         };
         
         let wat = HlbToWatCompiler::compile(&binary);
@@ -1330,6 +1334,9 @@ mod tests {
                 Instruction::SetAttribute { id: 2, key: "text".to_string(), value: "Hello".to_string() },
             ],
             data: Vec::new(),
+            render_start: 0,
+            exported_functions: HashMap::new(),
+            capabilities: Vec::new(),
         };
         
         let result = runtime.execute(&binary).unwrap();
@@ -1350,6 +1357,9 @@ mod tests {
                 },
             ],
             data: Vec::new(),
+            render_start: 0,
+            exported_functions: HashMap::new(),
+            capabilities: Vec::new(),
         };
         
         let result = runtime.execute(&binary).unwrap();

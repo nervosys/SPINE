@@ -74,13 +74,14 @@ async fn main() -> Result<()> {
     println!("[2] Executing autonomous binary...");
     let response = client.execute_binary(binary).await?;
     
-    if let Some(result) = response.result {
-        println!("\n[RESULT] Execution successful:");
-        if let Some(actions) = result.get("actions") {
-            println!("    Actions requested by WASM: {}", actions);
-        }
-        if let Some(stats) = result.get("stats") {
-            println!("    Instructions executed: {}", stats.get("instructions_executed").unwrap());
+    // execute_binary returns serde_json::Value
+    println!("\n[RESULT] Execution response: {}", response);
+    if let Some(actions) = response.get("actions") {
+        println!("    Actions requested by WASM: {}", actions);
+    }
+    if let Some(stats) = response.get("stats") {
+        if let Some(count) = stats.get("instructions_executed") {
+            println!("    Instructions executed: {}", count);
         }
     }
 
@@ -89,13 +90,10 @@ async fn main() -> Result<()> {
     // For this demo, we'll just trigger the 'Click' event to move to the next step
     
     println!("[4] Clicking 'Simulate Result Found' button...");
-    let click_res = client.handle_event(0, "click", serde_json::json!({})).await?;
+    let patches = client.handle_event(0, "click", serde_json::json!({})).await?;
     
-    if let Some(result) = click_res.result {
-        if let Some(patches) = result.get("patches") {
-            println!("    ✓ Event handled. Received {} VDOM patches.", patches.as_array().unwrap().len());
-        }
-    }
+    // handle_event returns Vec<VDomPatch>
+    println!("    ✓ Event handled. Received {} VDOM patches.", patches.len());
 
     println!("\n[DONE] Autonomous agent demo complete.");
     Ok(())

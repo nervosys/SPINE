@@ -20,15 +20,16 @@
 - [x] HLS Compiler: Full language with variables, state, conditionals, loops, expressions, and functions
 - [x] Virtual DOM Runtime: HLB execution with UR generation and reactive re-rendering
 - [x] Chameleon Protocol: Latent-space cryptography with moving-target defense
-- [x] Speculative Decoding: Bidirectional message prediction with Transformer models
+- [x] Speculative Decoding: Bidirectional message prediction with Titans architecture
 - [x] WebAssembly Runtime: HLB → WASM near-native execution with host function interop
 - [x] Distributed Clustering: Load balancing, session affinity, leader election, and distributed search
-- [x] Neural Latent Encoder: VAE, LSTM, Attention for learned projections
-- [x] Transformer Predictor: Autoregressive byte-level message prediction
+- [x] Neural Latent Encoder: VAE, Titans Memory, Attention for learned projections
+- [x] Titans Predictor: Neural long-term memory with surprise-gated learning
 - [x] Quantum-Resistant Keys: RLWE lattice cryptography with forward-secure evolution
 - [x] Human Interaction: Realistic mouse paths and typing delays for bot-detection bypass
+- [x] MIRAS Framework: Unified memory variants (YAAD, MONETA, MEMORA) for continual learning
 
-### Workspace Structure (9 crates)
+### Workspace Structure (10 crates)
 - `hyperlight-core`: Multi-session orchestration engine
 - `hyperlight-parser`: Recursive semantic HTML parser
 - `hyperlight-protocol`: TCP protocol with encryption/compression
@@ -36,5 +37,6 @@
 - `hyperlight-compiler`: HLS → HLB compiler
 - `hyperlight-wasm`: WebAssembly runtime
 - `hyperlight-cluster`: Distributed coordination
-- `hyperlight-neural`: Neural network-based encoding
-- `hyperlight-crypto`: Transformer prediction + quantum cryptography
+- `hyperlight-neural`: Neural network-based encoding with MIRAS variants
+- `hyperlight-crypto`: Titans prediction + quantum cryptography
+- `hyperlight-human`: Bot-detection bypass with realistic interaction
