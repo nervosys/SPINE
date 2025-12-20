@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  release:
+    types: [created]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: hyperlight-linux-x64
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: hyperlight-windows-x64
+            ext: ".exe"
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: hyperlight-macos-x64
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: hyperlight-macos-arm64
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Run tests
+        if: matrix.target != 'aarch64-apple-darwin'
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Run MIRAS demos
+        if: matrix.target != 'aarch64-apple-darwin'
+        run: |
+          cargo run --example miras_demo -p hyperlight-crypto --release --target ${{ matrix.target }}
+          cargo run --example chameleon_demo -p hyperlight-protocol --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist/${{ matrix.artifact }}
+          cp target/${{ matrix.target }}/release/hyperlight-core${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          cp target/${{ matrix.target }}/release/hyperlight-browser${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          cp README.md ARCHITECTURE.md HLS_SPEC.md dist/${{ matrix.artifact }}/
+          cd dist && tar -czvf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/${{ matrix.artifact }}
+          Copy-Item target/${{ matrix.target }}/release/hyperlight-core${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          Copy-Item target/${{ matrix.target }}/release/hyperlight-browser${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          Copy-Item README.md, ARCHITECTURE.md, HLS_SPEC.md dist/${{ matrix.artifact }}/
+          Compress-Archive -Path dist/${{ matrix.artifact }} -DestinationPath dist/${{ matrix.artifact }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.*
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-action@stable
+      - run: cargo doc --no-deps --all-features
+      - uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: target/doc
+
+  release:
+    needs: [build, docs]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/hyperlight-linux-x64/*.tar.gz
+            artifacts/hyperlight-windows-x64/*.zip
+            artifacts/hyperlight-macos-x64/*.tar.gz
+            artifacts/hyperlight-macos-arm64/*.tar.gz
