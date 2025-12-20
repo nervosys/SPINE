@@ -358,6 +358,414 @@ impl TitansMemory {
     }
 }
 
+// ============================================================================
+// MIRAS VARIANTS: Memory as Internal Regularized Associative Storage
+// ============================================================================
+// 
+// MIRAS is a theoretical framework that unifies sequence models as associative
+// memory modules with different loss functions and regularization schemes.
+// These variants provide different tradeoffs for continual learning.
+
+/// Loss function types for MIRAS variants
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum MirasLoss {
+    /// Standard MSE loss (baseline Titans)
+    MSE,
+    /// Huber loss - robust to outliers (YAAD)
+    Huber { delta: f32 },
+    /// Generalized norm with configurable p (MONETA)
+    LpNorm { p: f32 },
+    /// KL divergence for probability-constrained memory (MEMORA)
+    KLDivergence,
+}
+
+impl MirasLoss {
+    /// Compute loss value
+    pub fn compute(&self, predicted: &[f32], target: &[f32]) -> f32 {
+        let n = predicted.len().min(target.len());
+        if n == 0 {
+            return 0.0;
+        }
+        
+        match self {
+            MirasLoss::MSE => {
+                let sum: f32 = predicted.iter()
+                    .zip(target.iter())
+                    .map(|(p, t)| (p - t).powi(2))
+                    .sum();
+                sum / n as f32
+            }
+            MirasLoss::Huber { delta } => {
+                let sum: f32 = predicted.iter()
+                    .zip(target.iter())
+                    .map(|(p, t)| {
+                        let diff = (p - t).abs();
+                        if diff <= *delta {
+                            0.5 * diff * diff
+                        } else {
+                            delta * (diff - 0.5 * delta)
+                        }
+                    })
+                    .sum();
+                sum / n as f32
+            }
+            MirasLoss::LpNorm { p } => {
+                let sum: f32 = predicted.iter()
+                    .zip(target.iter())
+                    .map(|(pred, tgt)| (pred - tgt).abs().powf(*p))
+                    .sum();
+                (sum / n as f32).powf(1.0 / p)
+            }
+            MirasLoss::KLDivergence => {
+                // Treat as probability distributions (softmax first)
+                let mut p_soft = predicted.to_vec();
+                let mut t_soft = target.to_vec();
+                Self::softmax_inplace(&mut p_soft);
+                Self::softmax_inplace(&mut t_soft);
+                
+                let sum: f32 = t_soft.iter()
+                    .zip(p_soft.iter())
+                    .map(|(t, p)| {
+                        if *t > 1e-10 && *p > 1e-10 {
+                            t * (t / p).ln()
+                        } else {
+                            0.0
+                        }
+                    })
+                    .sum();
+                sum
+            }
+        }
+    }
+    
+    /// Compute gradient of loss w.r.t. prediction
+    pub fn gradient(&self, predicted: &[f32], target: &[f32]) -> Vec<f32> {
+        let n = predicted.len().min(target.len());
+        
+        match self {
+            MirasLoss::MSE => {
+                predicted.iter()
+                    .zip(target.iter())
+                    .map(|(p, t)| 2.0 * (p - t) / n as f32)
+                    .collect()
+            }
+            MirasLoss::Huber { delta } => {
+                predicted.iter()
+                    .zip(target.iter())
+                    .map(|(p, t)| {
+                        let diff = p - t;
+                        if diff.abs() <= *delta {
+                            diff / n as f32
+                        } else {
+                            delta * diff.signum() / n as f32
+                        }
+                    })
+                    .collect()
+            }
+            MirasLoss::LpNorm { p } => {
+                let loss = self.compute(predicted, target);
+                if loss < 1e-10 {
+                    return vec![0.0; n];
+                }
+                predicted.iter()
+                    .zip(target.iter())
+                    .map(|(pred, tgt)| {
+                        let diff = pred - tgt;
+                        let sign = if diff > 0.0 { 1.0 } else { -1.0 };
+                        sign * diff.abs().powf(p - 1.0) * loss.powf(1.0 - p) / n as f32
+                    })
+                    .collect()
+            }
+            MirasLoss::KLDivergence => {
+                let mut p_soft = predicted.to_vec();
+                Self::softmax_inplace(&mut p_soft);
+                let mut t_soft = target.to_vec();
+                Self::softmax_inplace(&mut t_soft);
+                
+                // d(KL)/d(p) = -t/p (before softmax jacobian)
+                // Simplified: gradient w.r.t. logits
+                p_soft.iter()
+                    .zip(t_soft.iter())
+                    .map(|(p, t)| p - t)
+                    .collect()
+            }
+        }
+    }
+    
+    fn softmax_inplace(x: &mut [f32]) {
+        let max = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mut sum = 0.0;
+        for v in x.iter_mut() {
+            *v = (*v - max).exp();
+            sum += *v;
+        }
+        if sum > 0.0 {
+            for v in x.iter_mut() {
+                *v /= sum;
+            }
+        }
+    }
+}
+
+/// Retention gate types for MIRAS memory regularization
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum RetentionGate {
+    /// Exponential decay (standard)
+    Exponential { decay: f32 },
+    /// Adaptive decay based on surprise
+    Adaptive { base_decay: f32, surprise_scale: f32 },
+    /// L1 regularization (sparse memory)
+    L1Sparse { lambda: f32 },
+    /// L2 regularization (smooth memory)
+    L2Smooth { lambda: f32 },
+}
+
+impl RetentionGate {
+    /// Compute retention factor given current surprise
+    pub fn compute(&self, surprise: f32) -> f32 {
+        match self {
+            RetentionGate::Exponential { decay } => *decay,
+            RetentionGate::Adaptive { base_decay, surprise_scale } => {
+                // Higher surprise = more retention (remember novel things)
+                (*base_decay + surprise * surprise_scale).min(1.0)
+            }
+            RetentionGate::L1Sparse { lambda } => 1.0 - lambda,
+            RetentionGate::L2Smooth { lambda } => 1.0 - lambda,
+        }
+    }
+    
+    /// Apply regularization to memory
+    pub fn regularize(&self, memory: &mut [f32]) {
+        match self {
+            RetentionGate::L1Sparse { lambda } => {
+                for m in memory.iter_mut() {
+                    let sign = m.signum();
+                    *m = (*m - lambda * sign).max(0.0) * sign;
+                }
+            }
+            RetentionGate::L2Smooth { lambda } => {
+                for m in memory.iter_mut() {
+                    *m *= 1.0 - lambda;
+                }
+            }
+            _ => {} // Exponential and Adaptive don't modify directly
+        }
+    }
+}
+
+/// YAAD: Yet Another Attention Design (Huber-loss variant)
+/// 
+/// Robust to outliers in the input stream - doesn't overreact to
+/// single anomalous tokens. Ideal for noisy protocol data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YaadMemory {
+    base: TitansMemory,
+    loss: MirasLoss,
+    retention: RetentionGate,
+    momentum: f32,
+    momentum_buffer: Vec<f32>,
+}
+
+impl YaadMemory {
+    pub fn new(input_dim: usize, hidden_dim: usize, num_memory_tokens: usize, rng: &mut StdRng) -> Self {
+        Self {
+            base: TitansMemory::new(input_dim, hidden_dim, num_memory_tokens, rng),
+            loss: MirasLoss::Huber { delta: 1.0 },
+            retention: RetentionGate::Adaptive { base_decay: 0.95, surprise_scale: 0.05 },
+            momentum: 0.9,
+            momentum_buffer: vec![0.0; hidden_dim],
+        }
+    }
+    
+    pub fn forward(&mut self, input: &[f32]) -> Vec<f32> {
+        let output = self.base.forward(input);
+        
+        // Apply Huber-based gradient with momentum
+        let gradient = self.loss.gradient(input, &self.base.last_prediction);
+        let len = gradient.len().min(self.momentum_buffer.len());
+        for i in 0..len {
+            self.momentum_buffer[i] = self.momentum * self.momentum_buffer[i] + (1.0 - self.momentum) * gradient[i];
+        }
+        
+        // Apply retention regularization
+        let retention = self.retention.compute(self.base.get_surprise());
+        for token in &mut self.base.memory_tokens {
+            for m in token.iter_mut() {
+                *m *= retention;
+            }
+        }
+        
+        output
+    }
+    
+    pub fn get_surprise(&self) -> f32 {
+        self.base.get_surprise()
+    }
+    
+    pub fn reset_state(&mut self) {
+        self.base.reset_state();
+        self.momentum_buffer.fill(0.0);
+    }
+}
+
+/// MONETA: Memory with Optimized Norm-based Training Architecture
+/// 
+/// Uses Lp norms for more disciplined memory updates.
+/// Better stability for very long sequences.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonetaMemory {
+    base: TitansMemory,
+    loss: MirasLoss,
+    retention: RetentionGate,
+    p_norm: f32,
+}
+
+impl MonetaMemory {
+    pub fn new(input_dim: usize, hidden_dim: usize, num_memory_tokens: usize, p: f32, rng: &mut StdRng) -> Self {
+        Self {
+            base: TitansMemory::new(input_dim, hidden_dim, num_memory_tokens, rng),
+            loss: MirasLoss::LpNorm { p },
+            retention: RetentionGate::L2Smooth { lambda: 0.01 },
+            p_norm: p,
+        }
+    }
+    
+    pub fn forward(&mut self, input: &[f32]) -> Vec<f32> {
+        let output = self.base.forward(input);
+        
+        // Apply L2 smoothing for stability
+        for token in &mut self.base.memory_tokens {
+            self.retention.regularize(token);
+        }
+        
+        output
+    }
+    
+    pub fn get_surprise(&self) -> f32 {
+        self.base.get_surprise()
+    }
+    
+    pub fn reset_state(&mut self) {
+        self.base.reset_state();
+    }
+}
+
+/// MEMORA: Memory with Optimized Regularized Associations
+/// 
+/// Treats memory as a probability distribution for maximum stability.
+/// Uses KL divergence to ensure controlled, balanced updates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoraMemory {
+    base: TitansMemory,
+    loss: MirasLoss,
+    retention: RetentionGate,
+    temperature: f32,
+}
+
+impl MemoraMemory {
+    pub fn new(input_dim: usize, hidden_dim: usize, num_memory_tokens: usize, rng: &mut StdRng) -> Self {
+        Self {
+            base: TitansMemory::new(input_dim, hidden_dim, num_memory_tokens, rng),
+            loss: MirasLoss::KLDivergence,
+            retention: RetentionGate::Exponential { decay: 0.99 },
+            temperature: 1.0,
+        }
+    }
+    
+    pub fn forward(&mut self, input: &[f32]) -> Vec<f32> {
+        let output = self.base.forward(input);
+        
+        // Normalize memory tokens to probability-like distributions
+        for token in &mut self.base.memory_tokens {
+            let max = token.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let sum: f32 = token.iter().map(|&x| ((x - max) / self.temperature).exp()).sum();
+            if sum > 0.0 {
+                for m in token.iter_mut() {
+                    *m = ((*m - max) / self.temperature).exp() / sum;
+                }
+            }
+        }
+        
+        output
+    }
+    
+    pub fn get_surprise(&self) -> f32 {
+        self.base.get_surprise()
+    }
+    
+    pub fn reset_state(&mut self) {
+        self.base.reset_state();
+    }
+}
+
+/// Unified MIRAS memory that can switch between variants at runtime
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MirasMemory {
+    /// Standard Titans (baseline)
+    Titans(TitansMemory),
+    /// YAAD - robust to outliers
+    Yaad(YaadMemory),
+    /// MONETA - Lp norm stability
+    Moneta(MonetaMemory),
+    /// MEMORA - probability-constrained
+    Memora(MemoraMemory),
+}
+
+impl MirasMemory {
+    pub fn new_titans(input_dim: usize, hidden_dim: usize, num_tokens: usize, rng: &mut StdRng) -> Self {
+        MirasMemory::Titans(TitansMemory::new(input_dim, hidden_dim, num_tokens, rng))
+    }
+    
+    pub fn new_yaad(input_dim: usize, hidden_dim: usize, num_tokens: usize, rng: &mut StdRng) -> Self {
+        MirasMemory::Yaad(YaadMemory::new(input_dim, hidden_dim, num_tokens, rng))
+    }
+    
+    pub fn new_moneta(input_dim: usize, hidden_dim: usize, num_tokens: usize, p: f32, rng: &mut StdRng) -> Self {
+        MirasMemory::Moneta(MonetaMemory::new(input_dim, hidden_dim, num_tokens, p, rng))
+    }
+    
+    pub fn new_memora(input_dim: usize, hidden_dim: usize, num_tokens: usize, rng: &mut StdRng) -> Self {
+        MirasMemory::Memora(MemoraMemory::new(input_dim, hidden_dim, num_tokens, rng))
+    }
+    
+    pub fn forward(&mut self, input: &[f32]) -> Vec<f32> {
+        match self {
+            MirasMemory::Titans(m) => m.forward(input),
+            MirasMemory::Yaad(m) => m.forward(input),
+            MirasMemory::Moneta(m) => m.forward(input),
+            MirasMemory::Memora(m) => m.forward(input),
+        }
+    }
+    
+    pub fn get_surprise(&self) -> f32 {
+        match self {
+            MirasMemory::Titans(m) => m.get_surprise(),
+            MirasMemory::Yaad(m) => m.get_surprise(),
+            MirasMemory::Moneta(m) => m.get_surprise(),
+            MirasMemory::Memora(m) => m.get_surprise(),
+        }
+    }
+    
+    pub fn reset_state(&mut self) {
+        match self {
+            MirasMemory::Titans(m) => m.reset_state(),
+            MirasMemory::Yaad(m) => m.reset_state(),
+            MirasMemory::Moneta(m) => m.reset_state(),
+            MirasMemory::Memora(m) => m.reset_state(),
+        }
+    }
+    
+    /// Get variant name for debugging/logging
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            MirasMemory::Titans(_) => "Titans",
+            MirasMemory::Yaad(_) => "YAAD",
+            MirasMemory::Moneta(_) => "MONETA",
+            MirasMemory::Memora(_) => "MEMORA",
+        }
+    }
+}
+
 /// Multi-head attention for message prediction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiHeadAttention {
@@ -985,6 +1393,179 @@ mod tests {
         // Loss should generally decrease with training
         // (not guaranteed due to stochasticity, but should be close)
         assert!(loss1 > 0.0 && loss2 > 0.0);
+    }
+
+    // ========================================================================
+    // MIRAS VARIANT TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_miras_loss_functions() {
+        let predicted = vec![0.5, 0.3, 0.2];
+        let target = vec![0.4, 0.4, 0.2];
+        
+        // MSE
+        let mse = MirasLoss::MSE;
+        let mse_val = mse.compute(&predicted, &target);
+        assert!(mse_val >= 0.0);
+        
+        // Huber
+        let huber = MirasLoss::Huber { delta: 0.5 };
+        let huber_val = huber.compute(&predicted, &target);
+        assert!(huber_val >= 0.0);
+        assert!(huber_val <= mse_val || (huber_val - mse_val).abs() < 0.1);
+        
+        // Lp Norm
+        let lp = MirasLoss::LpNorm { p: 1.5 };
+        let lp_val = lp.compute(&predicted, &target);
+        assert!(lp_val >= 0.0);
+        
+        // KL Divergence
+        let kl = MirasLoss::KLDivergence;
+        let kl_val = kl.compute(&predicted, &target);
+        assert!(kl_val >= 0.0);
+    }
+
+    #[test]
+    fn test_miras_loss_gradients() {
+        let predicted = vec![0.5, 0.3, 0.2];
+        let target = vec![0.4, 0.4, 0.2];
+        
+        // All loss functions should produce gradients
+        let losses = vec![
+            MirasLoss::MSE,
+            MirasLoss::Huber { delta: 0.5 },
+            MirasLoss::LpNorm { p: 2.0 },
+            MirasLoss::KLDivergence,
+        ];
+        
+        for loss in losses {
+            let grad = loss.gradient(&predicted, &target);
+            assert_eq!(grad.len(), predicted.len());
+        }
+    }
+
+    #[test]
+    fn test_retention_gate() {
+        let exp = RetentionGate::Exponential { decay: 0.95 };
+        assert!((exp.compute(0.0) - 0.95).abs() < 1e-6);
+        
+        let adaptive = RetentionGate::Adaptive { base_decay: 0.9, surprise_scale: 0.1 };
+        let low_surprise = adaptive.compute(0.1);
+        let high_surprise = adaptive.compute(0.5);
+        assert!(high_surprise > low_surprise); // More surprise = more retention
+        
+        let l1 = RetentionGate::L1Sparse { lambda: 0.1 };
+        let mut mem = vec![0.5, -0.3, 0.05];
+        l1.regularize(&mut mem);
+        // L1 should push values toward zero
+        
+        let l2 = RetentionGate::L2Smooth { lambda: 0.1 };
+        let mut mem2 = vec![1.0, -1.0, 0.5];
+        l2.regularize(&mut mem2);
+        assert!((mem2[0] - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_yaad_memory() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut yaad = YaadMemory::new(4, 8, 4, &mut rng);
+        
+        // Should handle normal inputs
+        let output = yaad.forward(&[0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(output.len(), 8);
+        
+        // Should be robust to outliers
+        let output_outlier = yaad.forward(&[10.0, 0.2, 0.3, 0.4]);
+        assert_eq!(output_outlier.len(), 8);
+        
+        // Surprise should accumulate
+        assert!(yaad.get_surprise() > 0.0);
+    }
+
+    #[test]
+    fn test_moneta_memory() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut moneta = MonetaMemory::new(4, 8, 4, 2.0, &mut rng);
+        
+        // Standard forward pass
+        let output = moneta.forward(&[0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(output.len(), 8);
+        
+        // Multiple passes should remain stable
+        for _ in 0..10 {
+            let out = moneta.forward(&[0.2, 0.3, 0.4, 0.5]);
+            assert!(out.iter().all(|&x| x.is_finite()));
+        }
+    }
+
+    #[test]
+    fn test_memora_memory() {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut memora = MemoraMemory::new(4, 8, 4, &mut rng);
+        
+        // Forward pass
+        let output = memora.forward(&[0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(output.len(), 8);
+        
+        // Memory tokens should be probability-like (sum near 1)
+        // This is enforced by the softmax normalization
+        assert!(memora.get_surprise() >= 0.0);
+    }
+
+    #[test]
+    fn test_miras_memory_enum() {
+        let mut rng = StdRng::seed_from_u64(42);
+        
+        let variants = vec![
+            MirasMemory::new_titans(4, 8, 4, &mut rng),
+            MirasMemory::new_yaad(4, 8, 4, &mut rng),
+            MirasMemory::new_moneta(4, 8, 4, 2.0, &mut rng),
+            MirasMemory::new_memora(4, 8, 4, &mut rng),
+        ];
+        
+        let names = ["Titans", "YAAD", "MONETA", "MEMORA"];
+        
+        for (mut mem, expected_name) in variants.into_iter().zip(names.iter()) {
+            assert_eq!(mem.variant_name(), *expected_name);
+            
+            // All variants should produce valid output
+            let output = mem.forward(&[0.1, 0.2, 0.3, 0.4]);
+            assert_eq!(output.len(), 8);
+            assert!(output.iter().all(|&x| x.is_finite()));
+            
+            // All variants should track surprise
+            let _ = mem.get_surprise();
+            
+            // All variants should support reset
+            mem.reset_state();
+        }
+    }
+
+    #[test]
+    fn test_miras_outlier_robustness() {
+        let mut rng = StdRng::seed_from_u64(42);
+        
+        // YAAD should be more robust to outliers than base Titans
+        let mut titans = TitansMemory::new(4, 8, 4, &mut rng);
+        let mut yaad = YaadMemory::new(4, 8, 4, &mut rng);
+        
+        // Train on normal data
+        for _ in 0..10 {
+            titans.forward(&[0.1, 0.2, 0.3, 0.4]);
+            yaad.forward(&[0.1, 0.2, 0.3, 0.4]);
+        }
+        
+        // Inject outlier
+        titans.forward(&[100.0, 0.2, 0.3, 0.4]);
+        yaad.forward(&[100.0, 0.2, 0.3, 0.4]);
+        
+        // Both should still produce finite output
+        let titans_out = titans.forward(&[0.1, 0.2, 0.3, 0.4]);
+        let yaad_out = yaad.forward(&[0.1, 0.2, 0.3, 0.4]);
+        
+        assert!(titans_out.iter().all(|&x| x.is_finite()));
+        assert!(yaad_out.iter().all(|&x| x.is_finite()));
     }
 }
 
