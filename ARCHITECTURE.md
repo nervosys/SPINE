@@ -722,13 +722,120 @@ Agents maintain persistent knowledge with embedding-based retrieval for similari
 
 ### Integration with Hyperlight Stack
 
-| Agentic Layer | Hyperlight Component | Purpose |
-|---------------|---------------------|---------|
-| Transport | hyperlight-protocol | QUIC/TCP with Chameleon encryption |
-| Neural Encoding | hyperlight-neural | VAE + MIRAS latent projections |
-| Prediction | hyperlight-crypto | Titans predictor for speculative communication |
-| Planning | hyperlight-compiler | HLS→HLB for executable plans |
-| Knowledge | hyperlight-cluster | Distributed knowledge synchronization |
+| Agentic Layer   | Hyperlight Component | Purpose                                        |
+| --------------- | -------------------- | ---------------------------------------------- |
+| Transport       | hyperlight-protocol  | QUIC/TCP with Chameleon encryption             |
+| Neural Encoding | hyperlight-neural    | VAE + MIRAS latent projections                 |
+| Prediction      | hyperlight-crypto    | Titans predictor for speculative communication |
+| Planning        | hyperlight-compiler  | HLS→HLB for executable plans                   |
+| Knowledge       | hyperlight-cluster   | Distributed knowledge synchronization          |
+
+### Advanced Agentic Features
+
+#### 6. Decentralized Identity (DID)
+
+Every agent has a cryptographic identity following W3C DID standards:
+
+```rust
+let did = AgentDID::generate("ResearchAgent");
+did.add_service(ServiceEndpoint {
+    service_type: ServiceType::AgentMessaging,
+    endpoint: "wss://agent.hyperlight.net/msg".into(),
+    protocols: vec!["chameleon-v1".into()],
+});
+let signature = did.sign(message);
+let verified = did.verify(message, &signature);
+```
+
+#### 7. Protocol Negotiation
+
+Agents negotiate communication protocols semantically:
+
+```rust
+let mut negotiation = ProtocolNegotiation::initiate(
+    agent_a_did,
+    agent_b_did,
+    vec![
+        CommunicationProtocol::LatentSpace { encoder: "titans-v2".into(), dimension: 256 },
+        CommunicationProtocol::SemanticJSON { schema_version: "2.0".into() },
+    ],
+);
+negotiation.respond(&agent_b_acceptable);
+// Status: Agreed(SemanticJSON)
+```
+
+#### 8. Emergent Agent Composition
+
+Specialists combine into composite agents:
+
+```rust
+let mut composite = CompositeAgent::new(
+    "ResearchTeam",
+    CompositionStrategy::Parallel { aggregation: AggregationMethod::BestConfidence },
+);
+composite.add_component(data_miner, ComponentRole::Specialist { capability: ContentExtraction }, 1.0);
+composite.add_component(writer, ComponentRole::Primary { domains: vec!["synthesis".into()] }, 0.8);
+let routes = composite.route(&AgentCapability::ContentExtraction); // Returns relevant specialists
+```
+
+#### 9. Agent Marketplace
+
+Discover, procure, and rate agent services:
+
+```rust
+let marketplace = AgentMarketplace::new();
+marketplace.list_service(MarketplaceListing {
+    title: "Research Assistant".into(),
+    pricing: PricingModel::PerRequest { credits: 50 },
+    sla: ServiceLevelAgreement { max_response_time_ms: 3000, uptime_percentage: 99.5, .. },
+    ..
+});
+let tx = marketplace.procure(listing_id, consumer_id).await?;
+marketplace.complete_transaction(tx, true, Some(5), Some("Great service!")).await;
+```
+
+#### 10. Temporal Reasoning
+
+Causal chains, predictions, and schedule validation:
+
+```rust
+let reasoner = TemporalReasoner::new();
+reasoner.record_event(TemporalEvent {
+    event_type: "search_initiated".into(),
+    causes: vec![user_request_id],
+    effects: vec![results_delivered_id],
+    ..
+}).await;
+let chain = reasoner.find_causal_chain(cause_id, effect_id).await;
+let prediction = reasoner.predict("user_followup", 0.8, &[cause_id]);
+```
+
+#### 11. Context Bridging
+
+Share context across agent boundaries with access policies:
+
+```rust
+let bridge = ContextBridge::new();
+let pool_id = bridge.create_pool("research-session", owner_id, initial_context);
+bridge.join_pool(&pool_id, collaborator_id)?;
+bridge.share(&pool_id, updated_context, &owner_id)?;
+let ctx = bridge.read(&pool_id, &collaborator_id)?;
+```
+
+#### 12. Fluent Agent Builder
+
+Quick agent setup with chainable API:
+
+```rust
+let system = agent("MarketAnalyst")
+    .with_capabilities(vec![ContentExtraction, KnowledgeManagement])
+    .with_trust(TrustLevel::Verified)
+    .with_did()
+    .with_marketplace("Analysis Service", "Market insights", PricingModel::PerRequest { credits: 25 })
+    .with_protocols(vec![CommunicationProtocol::LatentSpace { encoder: "titans".into(), dimension: 128 }])
+    .build()
+    .await;
+```
 
 ### The Future of Web Interaction
 
@@ -739,5 +846,11 @@ With the Agentic Web Stack, Hyperlight enables:
 3. **Collective Problem-Solving**: Swarms tackle complex tasks
 4. **Continuous Learning**: MIRAS-based perpetual memory
 5. **Autonomous Operation**: Multi-step workflow execution
+6. **Decentralized Identity**: Cryptographic agent identities (W3C DID)
+7. **Protocol Agility**: Negotiate optimal communication protocols
+8. **Emergent Composition**: Specialists combine into superagents
+9. **Marketplace Economy**: Service discovery, reputation, and transactions
+10. **Temporal Intelligence**: Causal reasoning and prediction
+11. **Context Bridging**: Cross-agent knowledge sharing with policies
 
 The agentic web isn't coming—it's here.
