@@ -45,3 +45,7 @@ path = "examples/swarm_intelligence.rs"
 [[example]]
 name = "advanced_agentic"
 path = "examples/advanced_agentic.rs"
+
+[[example]]
+name = "infrastructure_demo"
+path = "examples/infrastructure_demo.rs"

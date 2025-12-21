@@ -94,7 +94,7 @@ impl Default for AgentId {
 }
 
 /// Agent capability declaration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AgentCapability {
     /// Can navigate the web
     Navigation,
@@ -123,9 +123,10 @@ pub enum AgentCapability {
 }
 
 /// Agent trust level in the network
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
 pub enum TrustLevel {
     /// Unknown/untrusted agent
+    #[default]
     Unknown = 0,
     /// Basic trust (verified identity)
     Verified = 1,
@@ -3492,6 +3493,1488 @@ impl AgenticWebBuilder {
 /// Helper function to quickly create an agent system
 pub fn agent(name: &str) -> AgenticWebBuilder {
     AgenticWebBuilder::new(name)
+}
+
+// =============================================================================
+// AGENT VERSIONING & HOT MIGRATIONS
+// =============================================================================
+
+/// Semantic version for agents
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AgentVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+    pub prerelease: Option<String>,
+}
+
+impl AgentVersion {
+    pub fn new(major: u32, minor: u32, patch: u32) -> Self {
+        Self { major, minor, patch, prerelease: None }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('-').collect();
+        let version_parts: Vec<u32> = parts[0].split('.').filter_map(|p| p.parse().ok()).collect();
+        if version_parts.len() >= 3 {
+            Some(Self {
+                major: version_parts[0],
+                minor: version_parts[1],
+                patch: version_parts[2],
+                prerelease: parts.get(1).map(|s| s.to_string()),
+            })
+        } else {
+            None
+        }
+    }
+
+    pub fn is_compatible_with(&self, other: &Self) -> bool {
+        self.major == other.major
+    }
+
+    pub fn bump_patch(&self) -> Self {
+        Self { major: self.major, minor: self.minor, patch: self.patch + 1, prerelease: None }
+    }
+
+    pub fn bump_minor(&self) -> Self {
+        Self { major: self.major, minor: self.minor + 1, patch: 0, prerelease: None }
+    }
+
+    pub fn bump_major(&self) -> Self {
+        Self { major: self.major + 1, minor: 0, patch: 0, prerelease: None }
+    }
+}
+
+impl std::fmt::Display for AgentVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if let Some(ref pre) = self.prerelease {
+            write!(f, "-{}", pre)?;
+        }
+        Ok(())
+    }
+}
+
+/// Migration step for agent upgrades
+#[derive(Debug, Clone)]
+pub struct Migration {
+    pub id: String,
+    pub from_version: AgentVersion,
+    pub to_version: AgentVersion,
+    pub description: String,
+    pub reversible: bool,
+    pub steps: Vec<MigrationStep>,
+}
+
+#[derive(Debug, Clone)]
+pub enum MigrationStep {
+    /// Add a new capability
+    AddCapability(AgentCapability),
+    /// Remove a capability
+    RemoveCapability(AgentCapability),
+    /// Transform knowledge graph
+    TransformKnowledge { transform_fn: String },
+    /// Update behavior tree
+    UpdateBehavior { old_behavior: String, new_behavior: String },
+    /// Migrate state
+    MigrateState { key: String, transform: String },
+    /// Execute custom migration logic
+    Custom { script: String },
+}
+
+/// Hot migration controller
+pub struct MigrationController {
+    migrations: DashMap<String, Migration>,
+    applied: DashMap<Uuid, Vec<String>>, // agent_id -> applied migration ids
+    rollback_points: DashMap<Uuid, Vec<AgentSnapshot>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentSnapshot {
+    pub id: Uuid,
+    pub version: AgentVersion,
+    pub timestamp: DateTime<Utc>,
+    pub state: serde_json::Value,
+    pub knowledge_hash: String,
+}
+
+impl MigrationController {
+    pub fn new() -> Self {
+        Self {
+            migrations: DashMap::new(),
+            applied: DashMap::new(),
+            rollback_points: DashMap::new(),
+        }
+    }
+
+    pub fn register_migration(&self, migration: Migration) {
+        self.migrations.insert(migration.id.clone(), migration);
+    }
+
+    /// Find migration path between versions
+    pub fn find_migration_path(&self, from: &AgentVersion, to: &AgentVersion) -> Vec<Migration> {
+        let mut path = Vec::new();
+        let mut current = from.clone();
+        
+        while current != *to {
+            let next_migration = self.migrations.iter()
+                .find(|m| m.from_version == current)
+                .map(|r| r.clone());
+            
+            if let Some(migration) = next_migration {
+                current = migration.to_version.clone();
+                path.push(migration);
+            } else {
+                break;
+            }
+        }
+        path
+    }
+
+    /// Snapshot agent before migration
+    pub fn snapshot(&self, agent_id: Uuid, version: AgentVersion, state: serde_json::Value) -> AgentSnapshot {
+        let snapshot = AgentSnapshot {
+            id: agent_id,
+            version,
+            timestamp: Utc::now(),
+            state: state.clone(),
+            knowledge_hash: format!("{:x}", simple_hash(&state.to_string())),
+        };
+        
+        self.rollback_points
+            .entry(agent_id)
+            .or_insert_with(Vec::new)
+            .push(snapshot.clone());
+        
+        snapshot
+    }
+
+    /// Apply migration to agent
+    pub async fn apply_migration(&self, agent_id: Uuid, migration: &Migration) -> Result<(), String> {
+        for step in &migration.steps {
+            self.apply_step(agent_id, step).await?;
+        }
+        
+        self.applied
+            .entry(agent_id)
+            .or_insert_with(Vec::new)
+            .push(migration.id.clone());
+        
+        Ok(())
+    }
+
+    async fn apply_step(&self, _agent_id: Uuid, step: &MigrationStep) -> Result<(), String> {
+        match step {
+            MigrationStep::AddCapability(cap) => {
+                println!("  [Migration] Adding capability: {:?}", cap);
+            }
+            MigrationStep::RemoveCapability(cap) => {
+                println!("  [Migration] Removing capability: {:?}", cap);
+            }
+            MigrationStep::TransformKnowledge { transform_fn } => {
+                println!("  [Migration] Transforming knowledge with: {}", transform_fn);
+            }
+            MigrationStep::UpdateBehavior { old_behavior, new_behavior } => {
+                println!("  [Migration] Updating behavior {} -> {}", old_behavior, new_behavior);
+            }
+            MigrationStep::MigrateState { key, transform } => {
+                println!("  [Migration] Migrating state key {} with: {}", key, transform);
+            }
+            MigrationStep::Custom { script } => {
+                println!("  [Migration] Executing custom script: {}", script);
+            }
+        }
+        Ok(())
+    }
+
+    /// Rollback to previous version
+    pub async fn rollback(&self, agent_id: Uuid) -> Result<AgentSnapshot, String> {
+        let mut snapshots = self.rollback_points
+            .get_mut(&agent_id)
+            .ok_or("No rollback points")?;
+        
+        snapshots.pop().ok_or("No snapshots available".to_string())
+    }
+}
+
+fn simple_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+// =============================================================================
+// SEMANTIC ROUTING MESH
+// =============================================================================
+
+/// Content-based message router
+pub struct SemanticRouter {
+    routes: DashMap<String, Vec<SemanticRoute>>,
+    subscriptions: DashMap<Uuid, Vec<SemanticSubscription>>,
+    message_queue: Arc<Mutex<Vec<RoutedMessage>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticRoute {
+    pub id: Uuid,
+    pub pattern: SemanticPattern,
+    pub destination: RouteDestination,
+    pub priority: u32,
+    pub filters: Vec<RouteFilter>,
+    pub transforms: Vec<MessageTransform>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SemanticPattern {
+    /// Match by topic keywords
+    Topic(Vec<String>),
+    /// Match by embedding similarity
+    Embedding { center: Vec<f32>, radius: f32 },
+    /// Match by content type
+    ContentType(String),
+    /// Match by capability requirement
+    CapabilityRequired(AgentCapability),
+    /// Match by custom predicate
+    Predicate { expression: String },
+    /// Match all
+    Any,
+}
+
+#[derive(Debug, Clone)]
+pub enum RouteDestination {
+    /// Single agent
+    Agent(Uuid),
+    /// Agent group
+    Group(String),
+    /// Load-balanced pool
+    Pool { agents: Vec<Uuid>, strategy: LoadBalanceStrategy },
+    /// Broadcast to all matching
+    Broadcast,
+    /// Dead letter queue
+    DeadLetter,
+}
+
+#[derive(Debug, Clone)]
+pub enum LoadBalanceStrategy {
+    RoundRobin,
+    Random,
+    LeastConnections,
+    WeightedRandom { weights: Vec<f32> },
+    CapabilityBased,
+}
+
+#[derive(Debug, Clone)]
+pub enum RouteFilter {
+    /// Minimum trust level
+    TrustLevel(TrustLevel),
+    /// Rate limit
+    RateLimit { max_per_second: u32 },
+    /// Content size limit
+    MaxSize(usize),
+    /// Time window
+    TimeWindow { start: DateTime<Utc>, end: DateTime<Utc> },
+}
+
+#[derive(Debug, Clone)]
+pub enum MessageTransform {
+    /// Add metadata
+    AddMetadata { key: String, value: String },
+    /// Encrypt content
+    Encrypt { algorithm: String },
+    /// Compress content
+    Compress,
+    /// Convert format
+    ConvertFormat { from: String, to: String },
+    /// Enrich with context
+    Enrich { source: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct RoutedMessage {
+    pub id: Uuid,
+    pub source: Uuid,
+    pub content: serde_json::Value,
+    pub embedding: Option<Vec<f32>>,
+    pub routed_at: DateTime<Utc>,
+    pub route_path: Vec<Uuid>,
+    pub ttl: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticSubscription {
+    pub id: Uuid,
+    pub agent_id: Uuid,
+    pub pattern: SemanticPattern,
+    pub callback: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl SemanticRouter {
+    pub fn new() -> Self {
+        Self {
+            routes: DashMap::new(),
+            subscriptions: DashMap::new(),
+            message_queue: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Add a semantic route
+    pub fn add_route(&self, route: SemanticRoute) {
+        self.routes
+            .entry(format!("{:?}", route.pattern))
+            .or_insert_with(Vec::new)
+            .push(route);
+    }
+
+    /// Subscribe to messages matching pattern
+    pub fn subscribe(&self, agent_id: Uuid, pattern: SemanticPattern, callback: &str) -> Uuid {
+        let sub = SemanticSubscription {
+            id: Uuid::new_v4(),
+            agent_id,
+            pattern,
+            callback: callback.to_string(),
+            created_at: Utc::now(),
+        };
+        let id = sub.id;
+        
+        self.subscriptions
+            .entry(agent_id)
+            .or_insert_with(Vec::new)
+            .push(sub);
+        
+        id
+    }
+
+    /// Route a message
+    pub async fn route(&self, message: RoutedMessage) -> Vec<Uuid> {
+        let mut destinations = Vec::new();
+        
+        // Find matching routes
+        for entry in self.routes.iter() {
+            for route in entry.value().iter() {
+                if self.matches(&route.pattern, &message) {
+                    let dest_agents = self.resolve_destination(&route.destination);
+                    destinations.extend(dest_agents);
+                }
+            }
+        }
+        
+        // Check subscriptions
+        for entry in self.subscriptions.iter() {
+            for sub in entry.value().iter() {
+                if self.matches(&sub.pattern, &message) {
+                    destinations.push(sub.agent_id);
+                }
+            }
+        }
+        
+        destinations.sort();
+        destinations.dedup();
+        destinations
+    }
+
+    fn matches(&self, pattern: &SemanticPattern, message: &RoutedMessage) -> bool {
+        match pattern {
+            SemanticPattern::Any => true,
+            SemanticPattern::Topic(keywords) => {
+                let content = message.content.to_string().to_lowercase();
+                keywords.iter().any(|k| content.contains(&k.to_lowercase()))
+            }
+            SemanticPattern::Embedding { center, radius } => {
+                if let Some(ref emb) = message.embedding {
+                    cosine_similarity(center, emb) >= 1.0 - radius
+                } else {
+                    false
+                }
+            }
+            SemanticPattern::ContentType(ct) => {
+                message.content.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t == ct)
+                    .unwrap_or(false)
+            }
+            SemanticPattern::CapabilityRequired(_cap) => {
+                // Would check if destination agent has capability
+                true
+            }
+            SemanticPattern::Predicate { expression } => {
+                // Would evaluate expression
+                !expression.is_empty()
+            }
+        }
+    }
+
+    fn resolve_destination(&self, dest: &RouteDestination) -> Vec<Uuid> {
+        match dest {
+            RouteDestination::Agent(id) => vec![*id],
+            RouteDestination::Group(_name) => {
+                // Would look up group members
+                vec![]
+            }
+            RouteDestination::Pool { agents, strategy } => {
+                match strategy {
+                    LoadBalanceStrategy::Random => {
+                        agents.first().copied().into_iter().collect()
+                    }
+                    LoadBalanceStrategy::RoundRobin => {
+                        agents.first().copied().into_iter().collect()
+                    }
+                    _ => agents.clone(),
+                }
+            }
+            RouteDestination::Broadcast => vec![],
+            RouteDestination::DeadLetter => vec![],
+        }
+    }
+}
+
+// =============================================================================
+// DISTRIBUTED CONSENSUS PROTOCOLS
+// =============================================================================
+
+/// Multi-agent consensus system
+pub struct ConsensusEngine {
+    proposals: DashMap<Uuid, ConsensusProposal>,
+    votes: DashMap<Uuid, Vec<Vote>>,
+    committed: DashMap<Uuid, CommittedDecision>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsensusProposal {
+    pub id: Uuid,
+    pub proposer: Uuid,
+    pub topic: String,
+    pub value: serde_json::Value,
+    pub quorum: QuorumRequirement,
+    pub deadline: DateTime<Utc>,
+    pub status: ConsensusStatus,
+    pub participants: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub enum QuorumRequirement {
+    /// Simple majority (>50%)
+    Majority,
+    /// Two-thirds majority (>66%)
+    SuperMajority,
+    /// All must agree
+    Unanimous,
+    /// At least N votes
+    MinVotes(usize),
+    /// Weighted by trust
+    WeightedMajority { threshold: f64 },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConsensusStatus {
+    Proposed,
+    Voting,
+    Accepted,
+    Rejected,
+    TimedOut,
+    Committed,
+}
+
+#[derive(Debug, Clone)]
+pub struct Vote {
+    pub voter: Uuid,
+    pub proposal_id: Uuid,
+    pub decision: VoteDecision,
+    pub weight: f64,
+    pub reasoning: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum VoteDecision {
+    Accept,
+    Reject,
+    Abstain,
+    Conditional { conditions: Vec<String> },
+}
+
+#[derive(Debug, Clone)]
+pub struct CommittedDecision {
+    pub proposal_id: Uuid,
+    pub final_value: serde_json::Value,
+    pub vote_summary: VoteSummary,
+    pub committed_at: DateTime<Utc>,
+    pub execution_status: ExecutionStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoteSummary {
+    pub accept_count: usize,
+    pub reject_count: usize,
+    pub abstain_count: usize,
+    pub total_weight: f64,
+    pub accept_weight: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExecutionStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed(String),
+}
+
+impl ConsensusEngine {
+    pub fn new() -> Self {
+        Self {
+            proposals: DashMap::new(),
+            votes: DashMap::new(),
+            committed: DashMap::new(),
+        }
+    }
+
+    /// Create a new consensus proposal
+    pub fn propose(
+        &self,
+        proposer: Uuid,
+        topic: &str,
+        value: serde_json::Value,
+        quorum: QuorumRequirement,
+        participants: Vec<Uuid>,
+        timeout_secs: u64,
+    ) -> Uuid {
+        let proposal = ConsensusProposal {
+            id: Uuid::new_v4(),
+            proposer,
+            topic: topic.to_string(),
+            value,
+            quorum,
+            deadline: Utc::now() + chrono::Duration::seconds(timeout_secs as i64),
+            status: ConsensusStatus::Proposed,
+            participants,
+        };
+        
+        let id = proposal.id;
+        self.proposals.insert(id, proposal);
+        self.votes.insert(id, Vec::new());
+        
+        id
+    }
+
+    /// Cast a vote on a proposal
+    pub fn vote(&self, proposal_id: Uuid, voter: Uuid, decision: VoteDecision, weight: f64, reasoning: Option<&str>) -> Result<(), String> {
+        let mut proposal = self.proposals
+            .get_mut(&proposal_id)
+            .ok_or("Proposal not found")?;
+        
+        if !proposal.participants.contains(&voter) {
+            return Err("Not a participant".to_string());
+        }
+        
+        if proposal.status != ConsensusStatus::Proposed && proposal.status != ConsensusStatus::Voting {
+            return Err("Voting closed".to_string());
+        }
+        
+        proposal.status = ConsensusStatus::Voting;
+        drop(proposal);
+        
+        let vote = Vote {
+            voter,
+            proposal_id,
+            decision,
+            weight,
+            reasoning: reasoning.map(String::from),
+            timestamp: Utc::now(),
+        };
+        
+        self.votes
+            .entry(proposal_id)
+            .or_insert_with(Vec::new)
+            .push(vote);
+        
+        Ok(())
+    }
+
+    /// Check if consensus is reached
+    pub fn check_consensus(&self, proposal_id: Uuid) -> ConsensusStatus {
+        let proposal = match self.proposals.get(&proposal_id) {
+            Some(p) => p,
+            None => return ConsensusStatus::Rejected,
+        };
+        
+        let votes = match self.votes.get(&proposal_id) {
+            Some(v) => v,
+            None => return ConsensusStatus::Proposed,
+        };
+        
+        // Check deadline
+        if Utc::now() > proposal.deadline {
+            return ConsensusStatus::TimedOut;
+        }
+        
+        let summary = self.summarize_votes(&votes);
+        
+        let reached = match &proposal.quorum {
+            QuorumRequirement::Majority => {
+                summary.accept_count > summary.reject_count && 
+                summary.accept_count > (votes.len() / 2)
+            }
+            QuorumRequirement::SuperMajority => {
+                let threshold = (votes.len() as f64 * 0.66).ceil() as usize;
+                summary.accept_count >= threshold
+            }
+            QuorumRequirement::Unanimous => {
+                summary.accept_count == proposal.participants.len() && summary.reject_count == 0
+            }
+            QuorumRequirement::MinVotes(min) => {
+                summary.accept_count >= *min
+            }
+            QuorumRequirement::WeightedMajority { threshold } => {
+                summary.accept_weight / summary.total_weight >= *threshold
+            }
+        };
+        
+        if reached {
+            ConsensusStatus::Accepted
+        } else if summary.reject_count > proposal.participants.len() / 2 {
+            ConsensusStatus::Rejected
+        } else {
+            ConsensusStatus::Voting
+        }
+    }
+
+    /// Commit a decision
+    pub fn commit(&self, proposal_id: Uuid) -> Result<CommittedDecision, String> {
+        let proposal = self.proposals
+            .get(&proposal_id)
+            .ok_or("Proposal not found")?;
+        
+        let votes = self.votes
+            .get(&proposal_id)
+            .ok_or("No votes found")?;
+        
+        let decision = CommittedDecision {
+            proposal_id,
+            final_value: proposal.value.clone(),
+            vote_summary: self.summarize_votes(&votes),
+            committed_at: Utc::now(),
+            execution_status: ExecutionStatus::Pending,
+        };
+        
+        self.committed.insert(proposal_id, decision.clone());
+        
+        // Update proposal status
+        drop(proposal);
+        drop(votes);
+        if let Some(mut p) = self.proposals.get_mut(&proposal_id) {
+            p.status = ConsensusStatus::Committed;
+        }
+        
+        Ok(decision)
+    }
+
+    fn summarize_votes(&self, votes: &[Vote]) -> VoteSummary {
+        let mut accept_count = 0;
+        let mut reject_count = 0;
+        let mut abstain_count = 0;
+        let mut total_weight = 0.0;
+        let mut accept_weight = 0.0;
+        
+        for vote in votes {
+            total_weight += vote.weight;
+            match vote.decision {
+                VoteDecision::Accept => {
+                    accept_count += 1;
+                    accept_weight += vote.weight;
+                }
+                VoteDecision::Reject => reject_count += 1,
+                VoteDecision::Abstain => abstain_count += 1,
+                VoteDecision::Conditional { .. } => accept_count += 1,
+            }
+        }
+        
+        VoteSummary {
+            accept_count,
+            reject_count,
+            abstain_count,
+            total_weight,
+            accept_weight,
+        }
+    }
+}
+
+// =============================================================================
+// AGENT INTROSPECTION & DEBUGGING
+// =============================================================================
+
+/// Execution tracer for debugging
+pub struct AgentTracer {
+    traces: DashMap<Uuid, ExecutionTrace>,
+    breakpoints: DashMap<Uuid, Vec<Breakpoint>>,
+    watchers: DashMap<Uuid, Vec<StateWatcher>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExecutionTrace {
+    pub agent_id: Uuid,
+    pub session_id: Uuid,
+    pub started_at: DateTime<Utc>,
+    pub events: Vec<TraceEvent>,
+    pub status: TraceStatus,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraceEvent {
+    pub id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub event_type: TraceEventType,
+    pub data: serde_json::Value,
+    pub duration_us: Option<u64>,
+    pub parent_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub enum TraceEventType {
+    /// Agent started
+    AgentStart,
+    /// Intention created
+    IntentionCreated { goal: String },
+    /// Planning phase
+    PlanningStarted,
+    PlanningCompleted { steps: usize },
+    /// Action execution
+    ActionStarted { action: String },
+    ActionCompleted { result: String },
+    ActionFailed { error: String },
+    /// Knowledge operations
+    KnowledgeQuery { query: String },
+    KnowledgeUpdate { node_id: String },
+    /// Communication
+    MessageSent { to: Uuid },
+    MessageReceived { from: Uuid },
+    /// State changes
+    StateChange { key: String, old: String, new: String },
+    /// Custom events
+    Custom { name: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum TraceStatus {
+    Recording,
+    Paused,
+    Completed,
+    Error(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Breakpoint {
+    pub id: Uuid,
+    pub condition: BreakpointCondition,
+    pub action: BreakpointAction,
+    pub hit_count: u32,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum BreakpointCondition {
+    /// Break on specific action
+    OnAction(String),
+    /// Break on state change
+    OnStateChange { key: String },
+    /// Break on message
+    OnMessage { from: Option<Uuid>, to: Option<Uuid> },
+    /// Break on error
+    OnError,
+    /// Custom predicate
+    Predicate { expression: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum BreakpointAction {
+    /// Pause execution
+    Pause,
+    /// Log and continue
+    Log { message: String },
+    /// Capture state
+    Snapshot,
+    /// Execute callback
+    Callback { handler: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct StateWatcher {
+    pub id: Uuid,
+    pub key: String,
+    pub callback: String,
+    pub last_value: Option<serde_json::Value>,
+}
+
+impl AgentTracer {
+    pub fn new() -> Self {
+        Self {
+            traces: DashMap::new(),
+            breakpoints: DashMap::new(),
+            watchers: DashMap::new(),
+        }
+    }
+
+    /// Start tracing an agent
+    pub fn start_trace(&self, agent_id: Uuid) -> Uuid {
+        let session_id = Uuid::new_v4();
+        let trace = ExecutionTrace {
+            agent_id,
+            session_id,
+            started_at: Utc::now(),
+            events: Vec::new(),
+            status: TraceStatus::Recording,
+        };
+        
+        self.traces.insert(session_id, trace);
+        session_id
+    }
+
+    /// Record a trace event
+    pub fn record(&self, session_id: Uuid, event_type: TraceEventType, data: serde_json::Value) -> Option<Uuid> {
+        let mut trace = self.traces.get_mut(&session_id)?;
+        
+        let event = TraceEvent {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            event_type,
+            data,
+            duration_us: None,
+            parent_id: trace.events.last().map(|e| e.id),
+        };
+        
+        let id = event.id;
+        trace.events.push(event);
+        
+        Some(id)
+    }
+
+    /// Add a breakpoint
+    pub fn add_breakpoint(&self, agent_id: Uuid, condition: BreakpointCondition, action: BreakpointAction) -> Uuid {
+        let bp = Breakpoint {
+            id: Uuid::new_v4(),
+            condition,
+            action,
+            hit_count: 0,
+            enabled: true,
+        };
+        
+        let id = bp.id;
+        self.breakpoints
+            .entry(agent_id)
+            .or_insert_with(Vec::new)
+            .push(bp);
+        
+        id
+    }
+
+    /// Check breakpoints
+    pub fn check_breakpoints(&self, agent_id: Uuid, event: &TraceEventType) -> Option<BreakpointAction> {
+        let breakpoints = self.breakpoints.get(&agent_id)?;
+        
+        for bp in breakpoints.iter() {
+            if !bp.enabled {
+                continue;
+            }
+            
+            let matches = match (&bp.condition, event) {
+                (BreakpointCondition::OnAction(action), TraceEventType::ActionStarted { action: a }) => {
+                    action == a
+                }
+                (BreakpointCondition::OnStateChange { key }, TraceEventType::StateChange { key: k, .. }) => {
+                    key == k
+                }
+                (BreakpointCondition::OnMessage { from, to }, TraceEventType::MessageReceived { from: f }) => {
+                    from.map_or(true, |fr| &fr == f) && to.is_none()
+                }
+                (BreakpointCondition::OnError, TraceEventType::ActionFailed { .. }) => true,
+                _ => false,
+            };
+            
+            if matches {
+                return Some(bp.action.clone());
+            }
+        }
+        
+        None
+    }
+
+    /// Add a state watcher
+    pub fn watch(&self, agent_id: Uuid, key: &str, callback: &str) -> Uuid {
+        let watcher = StateWatcher {
+            id: Uuid::new_v4(),
+            key: key.to_string(),
+            callback: callback.to_string(),
+            last_value: None,
+        };
+        
+        let id = watcher.id;
+        self.watchers
+            .entry(agent_id)
+            .or_insert_with(Vec::new)
+            .push(watcher);
+        
+        id
+    }
+
+    /// Get trace summary
+    pub fn summarize(&self, session_id: Uuid) -> Option<TraceSummary> {
+        let trace = self.traces.get(&session_id)?;
+        
+        let mut action_count = 0;
+        let mut error_count = 0;
+        let mut message_count = 0;
+        
+        for event in &trace.events {
+            match &event.event_type {
+                TraceEventType::ActionStarted { .. } => action_count += 1,
+                TraceEventType::ActionFailed { .. } => error_count += 1,
+                TraceEventType::MessageSent { .. } | TraceEventType::MessageReceived { .. } => message_count += 1,
+                _ => {}
+            }
+        }
+        
+        Some(TraceSummary {
+            session_id,
+            agent_id: trace.agent_id,
+            duration_ms: (Utc::now() - trace.started_at).num_milliseconds() as u64,
+            event_count: trace.events.len(),
+            action_count,
+            error_count,
+            message_count,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TraceSummary {
+    pub session_id: Uuid,
+    pub agent_id: Uuid,
+    pub duration_ms: u64,
+    pub event_count: usize,
+    pub action_count: usize,
+    pub error_count: usize,
+    pub message_count: usize,
+}
+
+// =============================================================================
+// POLICY ENGINE
+// =============================================================================
+
+/// Declarative access control policy engine
+pub struct PolicyEngine {
+    policies: DashMap<String, Policy>,
+    evaluations: DashMap<Uuid, EvaluationResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Policy {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub rules: Vec<PolicyRule>,
+    pub priority: u32,
+    pub effect: PolicyEffect,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PolicyRule {
+    pub id: String,
+    pub subjects: Vec<SubjectMatcher>,
+    pub resources: Vec<ResourceMatcher>,
+    pub actions: Vec<String>,
+    pub conditions: Vec<PolicyCondition>,
+}
+
+#[derive(Debug, Clone)]
+pub enum SubjectMatcher {
+    /// Match by agent ID
+    AgentId(Uuid),
+    /// Match by capability
+    HasCapability(AgentCapability),
+    /// Match by trust level
+    TrustLevel(TrustLevel),
+    /// Match by group
+    InGroup(String),
+    /// Match any
+    Any,
+}
+
+#[derive(Debug, Clone)]
+pub enum ResourceMatcher {
+    /// Match by resource type
+    Type(String),
+    /// Match by path pattern
+    Path(String),
+    /// Match by owner
+    OwnedBy(Uuid),
+    /// Match by tag
+    Tagged(String),
+    /// Match any
+    Any,
+}
+
+#[derive(Debug, Clone)]
+pub enum PolicyCondition {
+    /// Time-based condition
+    TimeWindow { start: String, end: String },
+    /// Rate limit
+    RateLimit { max: u32, window_secs: u64 },
+    /// IP range
+    IpRange(String),
+    /// Custom expression
+    Expression(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PolicyEffect {
+    Allow,
+    Deny,
+    RequireApproval,
+    Log,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvaluationResult {
+    pub request_id: Uuid,
+    pub subject: Uuid,
+    pub resource: String,
+    pub action: String,
+    pub decision: PolicyEffect,
+    pub matching_policies: Vec<String>,
+    pub evaluated_at: DateTime<Utc>,
+    pub reason: Option<String>,
+}
+
+impl PolicyEngine {
+    pub fn new() -> Self {
+        Self {
+            policies: DashMap::new(),
+            evaluations: DashMap::new(),
+        }
+    }
+
+    /// Add a policy
+    pub fn add_policy(&self, policy: Policy) {
+        self.policies.insert(policy.id.clone(), policy);
+    }
+
+    /// Evaluate access request
+    pub fn evaluate(
+        &self,
+        subject: Uuid,
+        resource: &str,
+        action: &str,
+        context: &EvaluationContext,
+    ) -> EvaluationResult {
+        let mut matching = Vec::new();
+        let mut final_effect = PolicyEffect::Deny; // Default deny
+        let mut highest_priority = 0u32;
+        
+        for entry in self.policies.iter() {
+            let policy = entry.value();
+            if !policy.enabled {
+                continue;
+            }
+            
+            for rule in &policy.rules {
+                if self.matches_rule(rule, subject, resource, action, context) {
+                    matching.push(policy.id.clone());
+                    
+                    if policy.priority >= highest_priority {
+                        highest_priority = policy.priority;
+                        final_effect = policy.effect.clone();
+                    }
+                }
+            }
+        }
+        
+        let result = EvaluationResult {
+            request_id: Uuid::new_v4(),
+            subject,
+            resource: resource.to_string(),
+            action: action.to_string(),
+            decision: final_effect,
+            matching_policies: matching,
+            evaluated_at: Utc::now(),
+            reason: None,
+        };
+        
+        self.evaluations.insert(result.request_id, result.clone());
+        result
+    }
+
+    fn matches_rule(
+        &self,
+        rule: &PolicyRule,
+        subject: Uuid,
+        resource: &str,
+        action: &str,
+        context: &EvaluationContext,
+    ) -> bool {
+        // Check action
+        if !rule.actions.iter().any(|a| a == "*" || a == action) {
+            return false;
+        }
+        
+        // Check subject
+        let subject_matches = rule.subjects.iter().any(|s| match s {
+            SubjectMatcher::AgentId(id) => *id == subject,
+            SubjectMatcher::HasCapability(cap) => context.capabilities.contains(cap),
+            SubjectMatcher::TrustLevel(level) => context.trust_level >= *level,
+            SubjectMatcher::InGroup(group) => context.groups.contains(group),
+            SubjectMatcher::Any => true,
+        });
+        
+        if !subject_matches {
+            return false;
+        }
+        
+        // Check resource
+        let resource_matches = rule.resources.iter().any(|r| match r {
+            ResourceMatcher::Type(t) => resource.starts_with(t),
+            ResourceMatcher::Path(p) => resource.contains(p),
+            ResourceMatcher::OwnedBy(owner) => context.resource_owner.as_ref() == Some(owner),
+            ResourceMatcher::Tagged(tag) => context.resource_tags.contains(tag),
+            ResourceMatcher::Any => true,
+        });
+        
+        if !resource_matches {
+            return false;
+        }
+        
+        // Check conditions
+        rule.conditions.iter().all(|c| self.evaluate_condition(c, context))
+    }
+
+    fn evaluate_condition(&self, condition: &PolicyCondition, _context: &EvaluationContext) -> bool {
+        match condition {
+            PolicyCondition::TimeWindow { start: _, end: _ } => {
+                // Would parse and check time
+                true
+            }
+            PolicyCondition::RateLimit { max: _, window_secs: _ } => {
+                // Would check rate limit
+                true
+            }
+            PolicyCondition::IpRange(_range) => {
+                // Would check IP
+                true
+            }
+            PolicyCondition::Expression(_expr) => {
+                // Would evaluate expression
+                true
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EvaluationContext {
+    pub capabilities: Vec<AgentCapability>,
+    pub trust_level: TrustLevel,
+    pub groups: Vec<String>,
+    pub resource_owner: Option<Uuid>,
+    pub resource_tags: Vec<String>,
+    pub ip_address: Option<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+// =============================================================================
+// EVENT SOURCING
+// =============================================================================
+
+/// Full audit trail with event sourcing
+pub struct EventStore {
+    events: DashMap<Uuid, Vec<StoredEvent>>,
+    projections: DashMap<String, Projection>,
+    subscribers: DashMap<String, Vec<EventSubscriber>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredEvent {
+    pub id: Uuid,
+    pub aggregate_id: Uuid,
+    pub aggregate_type: String,
+    pub event_type: String,
+    pub version: u64,
+    pub data: serde_json::Value,
+    pub metadata: EventMetadata,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventMetadata {
+    pub correlation_id: Option<Uuid>,
+    pub causation_id: Option<Uuid>,
+    pub actor: Option<Uuid>,
+    pub source: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Projection {
+    pub name: String,
+    pub event_types: Vec<String>,
+    pub state: Arc<Mutex<serde_json::Value>>,
+    pub version: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EventSubscriber {
+    pub id: Uuid,
+    pub event_types: Vec<String>,
+    pub callback: String,
+    pub filter: Option<String>,
+}
+
+impl EventStore {
+    pub fn new() -> Self {
+        Self {
+            events: DashMap::new(),
+            projections: DashMap::new(),
+            subscribers: DashMap::new(),
+        }
+    }
+
+    /// Append event to stream
+    pub fn append(&self, aggregate_id: Uuid, event: StoredEvent) -> u64 {
+        let mut stream = self.events.entry(aggregate_id).or_insert_with(Vec::new);
+        let version = stream.len() as u64;
+        stream.push(event);
+        
+        version
+    }
+
+    /// Load events for aggregate
+    pub fn load(&self, aggregate_id: Uuid) -> Vec<StoredEvent> {
+        self.events
+            .get(&aggregate_id)
+            .map(|e| e.clone())
+            .unwrap_or_default()
+    }
+
+    /// Load events after version
+    pub fn load_from(&self, aggregate_id: Uuid, from_version: u64) -> Vec<StoredEvent> {
+        self.events
+            .get(&aggregate_id)
+            .map(|e| e.iter().filter(|ev| ev.version >= from_version).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Create projection
+    pub fn create_projection(&self, name: &str, event_types: Vec<String>, initial: serde_json::Value) {
+        let projection = Projection {
+            name: name.to_string(),
+            event_types,
+            state: Arc::new(Mutex::new(initial)),
+            version: 0,
+        };
+        self.projections.insert(name.to_string(), projection);
+    }
+
+    /// Get projection state
+    pub fn get_projection(&self, name: &str) -> Option<serde_json::Value> {
+        let projection = self.projections.get(name)?;
+        let guard = projection.state.try_lock().ok()?;
+        Some(guard.clone())
+    }
+
+    /// Subscribe to events
+    pub fn subscribe(&self, event_types: Vec<String>, callback: &str) -> Uuid {
+        let subscriber = EventSubscriber {
+            id: Uuid::new_v4(),
+            event_types: event_types.clone(),
+            callback: callback.to_string(),
+            filter: None,
+        };
+        
+        let id = subscriber.id;
+        
+        for event_type in event_types {
+            self.subscribers
+                .entry(event_type)
+                .or_insert_with(Vec::new)
+                .push(subscriber.clone());
+        }
+        
+        id
+    }
+
+    /// Replay events for rebuild
+    pub fn replay(&self, aggregate_id: Uuid, handler: impl Fn(&StoredEvent)) {
+        if let Some(events) = self.events.get(&aggregate_id) {
+            for event in events.iter() {
+                handler(event);
+            }
+        }
+    }
+
+    /// Get event count
+    pub fn event_count(&self, aggregate_id: Uuid) -> usize {
+        self.events.get(&aggregate_id).map(|e| e.len()).unwrap_or(0)
+    }
+
+    /// Snapshot current state
+    pub fn snapshot(&self, aggregate_id: Uuid) -> Option<AggregateSnapshot> {
+        let events = self.events.get(&aggregate_id)?;
+        
+        Some(AggregateSnapshot {
+            aggregate_id,
+            version: events.len() as u64,
+            state: serde_json::json!({
+                "event_count": events.len(),
+                "last_event": events.last().map(|e| &e.event_type),
+            }),
+            timestamp: Utc::now(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateSnapshot {
+    pub aggregate_id: Uuid,
+    pub version: u64,
+    pub state: serde_json::Value,
+    pub timestamp: DateTime<Utc>,
+}
+
+// =============================================================================
+// AGENT FEDERATION
+// =============================================================================
+
+/// Cross-network agent federation
+pub struct AgentFederation {
+    local_registry: DashMap<Uuid, FederatedAgent>,
+    remote_registries: DashMap<String, RemoteRegistry>,
+    trust_links: DashMap<String, TrustLink>,
+    routing_table: DashMap<Uuid, FederationRoute>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FederatedAgent {
+    pub id: Uuid,
+    pub did: Option<AgentDID>,
+    pub capabilities: Vec<AgentCapability>,
+    pub federation: String,
+    pub endpoints: Vec<String>,
+    pub trust_level: TrustLevel,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteRegistry {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub protocol: String,
+    pub trust_level: TrustLevel,
+    pub agents_count: usize,
+    pub last_sync: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustLink {
+    pub local_federation: String,
+    pub remote_federation: String,
+    pub trust_level: TrustLevel,
+    pub established_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub bidirectional: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FederationRoute {
+    pub agent_id: Uuid,
+    pub via: Vec<String>,
+    pub latency_ms: u32,
+    pub cost: f64,
+}
+
+impl AgentFederation {
+    pub fn new() -> Self {
+        Self {
+            local_registry: DashMap::new(),
+            remote_registries: DashMap::new(),
+            trust_links: DashMap::new(),
+            routing_table: DashMap::new(),
+        }
+    }
+
+    /// Register local agent
+    pub fn register_local(&self, agent: FederatedAgent) {
+        self.local_registry.insert(agent.id, agent);
+    }
+
+    /// Add remote registry
+    pub fn add_remote_registry(&self, registry: RemoteRegistry) {
+        self.remote_registries.insert(registry.id.clone(), registry);
+    }
+
+    /// Establish trust link
+    pub fn establish_trust(&self, local: &str, remote: &str, level: TrustLevel, bidirectional: bool) {
+        let link = TrustLink {
+            local_federation: local.to_string(),
+            remote_federation: remote.to_string(),
+            trust_level: level,
+            established_at: Utc::now(),
+            expires_at: None,
+            bidirectional,
+        };
+        
+        let key = format!("{}:{}", local, remote);
+        self.trust_links.insert(key, link);
+    }
+
+    /// Find agent across federations
+    pub async fn find_agent(&self, capability: AgentCapability) -> Vec<FederatedAgent> {
+        let mut results = Vec::new();
+        
+        // Check local
+        for entry in self.local_registry.iter() {
+            if entry.capabilities.contains(&capability) {
+                results.push(entry.clone());
+            }
+        }
+        
+        // Would query remote registries here
+        
+        results
+    }
+
+    /// Route message to federated agent
+    pub fn route_to(&self, agent_id: Uuid) -> Option<FederationRoute> {
+        // Check if local
+        if self.local_registry.contains_key(&agent_id) {
+            return Some(FederationRoute {
+                agent_id,
+                via: vec![],
+                latency_ms: 0,
+                cost: 0.0,
+            });
+        }
+        
+        // Check routing table
+        self.routing_table.get(&agent_id).map(|r| r.clone())
+    }
+
+    /// Get federation statistics
+    pub fn stats(&self) -> FederationStats {
+        FederationStats {
+            local_agents: self.local_registry.len(),
+            remote_registries: self.remote_registries.len(),
+            trust_links: self.trust_links.len(),
+            routes: self.routing_table.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FederationStats {
+    pub local_agents: usize,
+    pub remote_registries: usize,
+    pub trust_links: usize,
+    pub routes: usize,
 }
 
 #[cfg(test)]
