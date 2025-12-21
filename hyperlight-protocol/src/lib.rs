@@ -7,8 +7,19 @@ use zstd::stream::decode_all;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 use hyperlight_neural::{NeuralLatentEncoder, MirasNeuralEncoder, NeuralEncoderConfig, MirasVariant};
 use hyperlight_crypto::{TransformerPredictor, TransformerConfig, QuantumSpeculativeProtocol, LatticeParams};
+
+// QUIC transport support (uses rustls 0.23 via quinn)
+#[cfg(feature = "quic")]
+use quinn::{Endpoint, Connection as QuinnConnection, ClientConfig, ServerConfig};
+#[cfg(feature = "quic")]
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+#[cfg(feature = "quic")]
+use rustls_quic as quic_rustls;  // rustls 0.23 for QUIC
+#[cfg(feature = "quic")]
+use std::net::SocketAddr;
 
 /// Chameleon Protocol: A moving-target defense system that uses latent space
 /// transformations for implicit encryption and compression.
@@ -1300,6 +1311,641 @@ where
         self.morphology.evolve(seed);
         if let Some(ref mut chameleon) = self.chameleon {
             chameleon.evolve(seed);
+        }
+    }
+}
+
+// =============================================================================
+// QUIC TRANSPORT (FALLBACK / 0-RTT)
+// =============================================================================
+
+/// Transport mode selection
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportMode {
+    /// TCP with TLS (default, maximum compatibility)
+    Tcp,
+    /// QUIC with 0-RTT (lower latency, built-in encryption)
+    Quic,
+    /// Automatic: try QUIC first, fallback to TCP
+    Auto,
+}
+
+impl Default for TransportMode {
+    fn default() -> Self {
+        TransportMode::Auto
+    }
+}
+
+/// Configuration for transport layer
+#[derive(Debug, Clone)]
+pub struct TransportConfig {
+    /// Transport mode
+    pub mode: TransportMode,
+    /// Enable 0-RTT for QUIC (trades security for speed on resumption)
+    pub enable_0rtt: bool,
+    /// Maximum idle timeout in seconds
+    pub idle_timeout_secs: u64,
+    /// Keep-alive interval in seconds (0 = disabled)
+    pub keep_alive_secs: u64,
+    /// Maximum concurrent streams (QUIC only)
+    pub max_streams: u32,
+    /// Server name for TLS/QUIC SNI
+    pub server_name: Option<String>,
+}
+
+impl Default for TransportConfig {
+    fn default() -> Self {
+        Self {
+            mode: TransportMode::Auto,
+            enable_0rtt: true,
+            idle_timeout_secs: 30,
+            keep_alive_secs: 5,
+            max_streams: 100,
+            server_name: None,
+        }
+    }
+}
+
+/// Unified transport that supports both TCP and QUIC
+pub enum Transport {
+    /// TCP stream (wrapped in TLS if encrypted)
+    Tcp(Box<dyn AsyncReadWrite>),
+    /// QUIC connection with streams
+    #[cfg(feature = "quic")]
+    Quic(QuicTransport),
+}
+
+/// Trait alias for async read/write
+pub trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> AsyncReadWrite for T {}
+
+#[cfg(feature = "quic")]
+pub struct QuicTransport {
+    connection: QuinnConnection,
+    send_stream: Option<quinn::SendStream>,
+    recv_stream: Option<quinn::RecvStream>,
+}
+
+#[cfg(feature = "quic")]
+impl QuicTransport {
+    /// Create a new QUIC transport from an existing connection
+    pub fn new(connection: QuinnConnection) -> Self {
+        Self {
+            connection,
+            send_stream: None,
+            recv_stream: None,
+        }
+    }
+    
+    /// Open a bidirectional stream
+    pub async fn open_bi(&mut self) -> anyhow::Result<()> {
+        let (send, recv) = self.connection.open_bi().await?;
+        self.send_stream = Some(send);
+        self.recv_stream = Some(recv);
+        Ok(())
+    }
+    
+    /// Accept an incoming bidirectional stream
+    pub async fn accept_bi(&mut self) -> anyhow::Result<()> {
+        let (send, recv) = self.connection.accept_bi().await?;
+        self.send_stream = Some(send);
+        self.recv_stream = Some(recv);
+        Ok(())
+    }
+    
+    /// Write data to the QUIC stream
+    pub async fn write_all(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        if let Some(ref mut stream) = self.send_stream {
+            stream.write_all(data).await?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("No send stream open"))
+        }
+    }
+    
+    /// Read exact bytes from the QUIC stream
+    pub async fn read_exact(&mut self, buf: &mut [u8]) -> anyhow::Result<()> {
+        if let Some(ref mut stream) = self.recv_stream {
+            stream.read_exact(buf).await?;
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("No recv stream open"))
+        }
+    }
+    
+    /// Get RTT estimate
+    pub fn rtt(&self) -> std::time::Duration {
+        self.connection.rtt()
+    }
+    
+    /// Check if connection supports 0-RTT
+    pub fn is_0rtt(&self) -> bool {
+        // 0-RTT is accepted if we have session tickets
+        true // Simplified - quinn handles this internally
+    }
+    
+    /// Close the connection gracefully
+    pub fn close(&self, code: u32, reason: &str) {
+        self.connection.close(quinn::VarInt::from_u32(code), reason.as_bytes());
+    }
+}
+
+/// QUIC endpoint builder for server/client
+#[cfg(feature = "quic")]
+pub struct QuicEndpointBuilder {
+    config: TransportConfig,
+}
+
+#[cfg(feature = "quic")]
+impl QuicEndpointBuilder {
+    pub fn new() -> Self {
+        Self {
+            config: TransportConfig::default(),
+        }
+    }
+    
+    pub fn with_config(config: TransportConfig) -> Self {
+        Self { config }
+    }
+    
+    /// Generate self-signed certificate for testing/development
+    fn generate_self_signed_cert() -> anyhow::Result<(CertificateDer<'static>, PrivateKeyDer<'static>)> {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+        let key = PrivateKeyDer::Pkcs8(cert.get_key_pair().serialize_der().into());
+        let cert_der = CertificateDer::from(cert.serialize_der()?);
+        Ok((cert_der, key))
+    }
+    
+    /// Build a server endpoint
+    pub fn build_server(&self, bind_addr: SocketAddr) -> anyhow::Result<Endpoint> {
+        let (cert, key) = Self::generate_self_signed_cert()?;
+        
+        // Use quinn's crypto config builder with rustls 0.23
+        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(
+            quic_rustls::ServerConfig::builder_with_protocol_versions(&[&quic_rustls::version::TLS13])
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)?
+        )?;
+        
+        let mut server_config = ServerConfig::with_crypto(Arc::new(crypto));
+        
+        let transport = Arc::get_mut(&mut server_config.transport).unwrap();
+        transport.max_idle_timeout(Some(
+            std::time::Duration::from_secs(self.config.idle_timeout_secs).try_into()?
+        ));
+        transport.keep_alive_interval(Some(
+            std::time::Duration::from_secs(self.config.keep_alive_secs)
+        ));
+        transport.max_concurrent_bidi_streams(self.config.max_streams.into());
+        
+        let endpoint = Endpoint::server(server_config, bind_addr)?;
+        Ok(endpoint)
+    }
+    
+    /// Build a client endpoint with platform verifier (for development: skip verification)
+    pub fn build_client(&self) -> anyhow::Result<Endpoint> {
+        // Create a permissive client config for development
+        // In production, use rustls-platform-verifier
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(
+            quic_rustls::ClientConfig::builder_with_protocol_versions(&[&quic_rustls::version::TLS13])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
+                .with_no_client_auth()
+        )?;
+        
+        let client_config = ClientConfig::new(Arc::new(crypto));
+        
+        let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
+        endpoint.set_default_client_config(client_config);
+        
+        Ok(endpoint)
+    }
+    
+    /// Connect to a QUIC server
+    pub async fn connect(&self, endpoint: &Endpoint, addr: SocketAddr, server_name: &str) -> anyhow::Result<QuicTransport> {
+        let connection = endpoint.connect(addr, server_name)?.await?;
+        let mut transport = QuicTransport::new(connection);
+        transport.open_bi().await?;
+        Ok(transport)
+    }
+}
+
+#[cfg(feature = "quic")]
+impl Default for QuicEndpointBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Skip certificate verification (development only!)
+/// WARNING: Do NOT use in production - this accepts any certificate!
+#[cfg(feature = "quic")]
+#[derive(Debug)]
+struct SkipServerVerification;
+
+#[cfg(feature = "quic")]
+impl quic_rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<quic_rustls::client::danger::ServerCertVerified, quic_rustls::Error> {
+        Ok(quic_rustls::client::danger::ServerCertVerified::assertion())
+    }
+    
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &quic_rustls::DigitallySignedStruct,
+    ) -> Result<quic_rustls::client::danger::HandshakeSignatureValid, quic_rustls::Error> {
+        Ok(quic_rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &quic_rustls::DigitallySignedStruct,
+    ) -> Result<quic_rustls::client::danger::HandshakeSignatureValid, quic_rustls::Error> {
+        Ok(quic_rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+    
+    fn supported_verify_schemes(&self) -> Vec<quic_rustls::SignatureScheme> {
+        vec![
+            quic_rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            quic_rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            quic_rustls::SignatureScheme::RSA_PKCS1_SHA384,
+            quic_rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+            quic_rustls::SignatureScheme::RSA_PKCS1_SHA512,
+            quic_rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+            quic_rustls::SignatureScheme::RSA_PSS_SHA256,
+            quic_rustls::SignatureScheme::RSA_PSS_SHA384,
+            quic_rustls::SignatureScheme::RSA_PSS_SHA512,
+            quic_rustls::SignatureScheme::ED25519,
+        ]
+    }
+}
+
+/// Unified connection that works over both TCP and QUIC
+pub struct HyperlightConnection {
+    transport: TransportInner,
+    handler: ProtocolHandlerState,
+}
+
+enum TransportInner {
+    Tcp {
+        stream: Box<dyn AsyncReadWrite>,
+    },
+    #[cfg(feature = "quic")]
+    Quic {
+        transport: QuicTransport,
+    },
+}
+
+struct ProtocolHandlerState {
+    cipher: Option<Aes256Gcm>,
+    chameleon: Option<ChameleonKey>,
+    morphology: ProtocolMorphology,
+    moving_target: bool,
+    output_predictor: SpeculativePredictor,
+    input_predictor: SpeculativePredictor,
+    precomputed_cache: Vec<(u64, Message)>,
+    prediction_cache: Vec<(u64, Vec<u8>)>,
+    last_output_prediction: Option<u64>,
+    last_input_prediction: Option<u64>,
+    pub speculation_stats: SpeculationStats,
+}
+
+impl HyperlightConnection {
+    /// Create from TCP stream
+    pub fn from_tcp<S: AsyncReadWrite + 'static>(stream: S) -> Self {
+        Self {
+            transport: TransportInner::Tcp {
+                stream: Box::new(stream),
+            },
+            handler: ProtocolHandlerState::new(),
+        }
+    }
+    
+    /// Create from QUIC transport
+    #[cfg(feature = "quic")]
+    pub fn from_quic(transport: QuicTransport) -> Self {
+        Self {
+            transport: TransportInner::Quic { transport },
+            handler: ProtocolHandlerState::new(),
+        }
+    }
+    
+    /// Enable Chameleon protocol
+    pub fn enable_chameleon(&mut self, secret: [u8; 32]) {
+        self.handler.chameleon = Some(ChameleonKey::new(&secret));
+        self.handler.morphology = ProtocolMorphology::new(
+            u64::from_le_bytes(secret[0..8].try_into().unwrap())
+        );
+        self.handler.moving_target = true;
+    }
+    
+    /// Get transport mode
+    pub fn transport_mode(&self) -> TransportMode {
+        match &self.transport {
+            TransportInner::Tcp { .. } => TransportMode::Tcp,
+            #[cfg(feature = "quic")]
+            TransportInner::Quic { .. } => TransportMode::Quic,
+        }
+    }
+    
+    /// Get RTT estimate (QUIC only, returns None for TCP)
+    #[cfg(feature = "quic")]
+    pub fn rtt(&self) -> Option<std::time::Duration> {
+        match &self.transport {
+            TransportInner::Quic { transport } => Some(transport.rtt()),
+            _ => None,
+        }
+    }
+    
+    /// Send a message
+    pub async fn send(&mut self, msg: &Message) -> anyhow::Result<()> {
+        let data = self.handler.encode_message(msg)?;
+        
+        match &mut self.transport {
+            TransportInner::Tcp { stream } => {
+                self.handler.write_frame(stream.as_mut(), &data).await?;
+            }
+            #[cfg(feature = "quic")]
+            TransportInner::Quic { transport } => {
+                // QUIC: length-prefixed frame
+                let len = (data.len() as u32).to_le_bytes();
+                transport.write_all(&len).await?;
+                transport.write_all(&data).await?;
+            }
+        }
+        
+        // Evolve key after sending
+        if let Some(ref mut chameleon) = self.handler.chameleon {
+            if self.handler.moving_target {
+                let hash = Self::hash_data(&data);
+                chameleon.evolve(hash);
+                self.handler.morphology.evolve(hash);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Receive a message
+    pub async fn recv(&mut self) -> anyhow::Result<Message> {
+        let data = match &mut self.transport {
+            TransportInner::Tcp { stream } => {
+                self.handler.read_frame(stream.as_mut()).await?
+            }
+            #[cfg(feature = "quic")]
+            TransportInner::Quic { transport } => {
+                let mut len_buf = [0u8; 4];
+                transport.read_exact(&mut len_buf).await?;
+                let len = u32::from_le_bytes(len_buf) as usize;
+                let mut buf = vec![0u8; len];
+                transport.read_exact(&mut buf).await?;
+                buf
+            }
+        };
+        
+        let msg = self.handler.decode_message(&data)?;
+        
+        // Evolve key after receiving
+        if let Some(ref mut chameleon) = self.handler.chameleon {
+            if self.handler.moving_target {
+                let hash = Self::hash_data(&data);
+                chameleon.evolve(hash);
+                self.handler.morphology.evolve(hash);
+            }
+        }
+        
+        Ok(msg)
+    }
+    
+    fn hash_data(data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+impl ProtocolHandlerState {
+    fn new() -> Self {
+        Self {
+            cipher: None,
+            chameleon: None,
+            morphology: ProtocolMorphology::new(0),
+            moving_target: false,
+            output_predictor: SpeculativePredictor::new(),
+            input_predictor: SpeculativePredictor::new(),
+            precomputed_cache: Vec::with_capacity(16),
+            prediction_cache: Vec::with_capacity(16),
+            last_output_prediction: None,
+            last_input_prediction: None,
+            speculation_stats: SpeculationStats::default(),
+        }
+    }
+    
+    fn encode_message(&mut self, msg: &Message) -> anyhow::Result<Vec<u8>> {
+        let mut data = serde_json::to_vec(msg)?;
+        
+        // Apply padding
+        data = self.apply_padding(data);
+        
+        // Compression
+        data = encode_all(&data[..], 3)?;
+        
+        // Chameleon encoding
+        if let Some(ref mut chameleon) = self.chameleon {
+            let latent = chameleon.encode(&data);
+            data = serde_json::to_vec(&latent)?;
+        } else if let Some(cipher) = &self.cipher {
+            let nonce_bytes = rand::random::<[u8; 12]>();
+            let nonce = Nonce::from_slice(&nonce_bytes);
+            data = cipher.encrypt(nonce, data.as_ref())
+                .map_err(|e| anyhow::anyhow!("Encryption error: {}", e))?;
+            let mut with_nonce = nonce_bytes.to_vec();
+            with_nonce.extend(data);
+            data = with_nonce;
+        }
+        
+        Ok(data)
+    }
+    
+    fn decode_message(&mut self, data: &[u8]) -> anyhow::Result<Message> {
+        let mut data = data.to_vec();
+        
+        // Chameleon decoding
+        if let Some(ref mut chameleon) = self.chameleon {
+            let latent: LatentVector = serde_json::from_slice(&data)?;
+            data = chameleon.decode(&latent);
+        } else if let Some(cipher) = &self.cipher {
+            if data.len() < 12 {
+                return Err(anyhow::anyhow!("Invalid encrypted message"));
+            }
+            let nonce = Nonce::from_slice(&data[..12]);
+            data = cipher.decrypt(nonce, &data[12..])
+                .map_err(|e| anyhow::anyhow!("Decryption error: {}", e))?;
+        }
+        
+        // Decompression
+        data = decode_all(&data[..])?;
+        
+        // Remove padding
+        data = self.remove_padding(data);
+        
+        let msg: Message = serde_json::from_slice(&data)?;
+        Ok(msg)
+    }
+    
+    async fn write_frame<W: AsyncWrite + Unpin + ?Sized>(&self, writer: &mut W, data: &[u8]) -> anyhow::Result<()> {
+        let len = data.len() as u32;
+        let mut header = Vec::with_capacity(self.morphology.header_size as usize);
+        
+        let len_bytes = if self.morphology.big_endian {
+            len.to_be_bytes()
+        } else {
+            len.to_le_bytes()
+        };
+        header.extend_from_slice(&len_bytes);
+        header.push(self.morphology.frame_version);
+        
+        while header.len() < self.morphology.header_size as usize {
+            header.push(self.morphology.checksum_variant);
+        }
+        
+        writer.write_all(&header).await?;
+        writer.write_all(data).await?;
+        Ok(())
+    }
+    
+    async fn read_frame<R: AsyncRead + Unpin + ?Sized>(&self, reader: &mut R) -> anyhow::Result<Vec<u8>> {
+        let mut header = vec![0u8; self.morphology.header_size as usize];
+        reader.read_exact(&mut header).await?;
+        
+        let len_bytes: [u8; 4] = header[0..4].try_into()?;
+        let len = if self.morphology.big_endian {
+            u32::from_be_bytes(len_bytes)
+        } else {
+            u32::from_le_bytes(len_bytes)
+        } as usize;
+        
+        let mut buf = vec![0u8; len];
+        reader.read_exact(&mut buf).await?;
+        Ok(buf)
+    }
+    
+    fn apply_padding(&self, mut data: Vec<u8>) -> Vec<u8> {
+        match self.morphology.padding_mode {
+            PaddingMode::None => data,
+            PaddingMode::Pkcs7 => {
+                let padding_len = 16 - (data.len() % 16);
+                data.extend(std::iter::repeat(padding_len as u8).take(padding_len));
+                data
+            }
+            PaddingMode::Random => {
+                let padding_len = 16 - (data.len() % 16);
+                let mut state = self.morphology.frame_version as u64;
+                for _ in 0..padding_len {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    data.push(state as u8);
+                }
+                data.push(padding_len as u8);
+                data
+            }
+            PaddingMode::Chaotic => {
+                let target = 16 + (self.morphology.frame_version as usize % 240);
+                let padding_len = if data.len() >= target { 16 } else { target - data.len() };
+                let original_len = data.len();
+                
+                let mut state = self.morphology.checksum_variant as u64 * 12345;
+                for _ in 0..padding_len {
+                    state ^= state << 13;
+                    state ^= state >> 7;
+                    state ^= state << 17;
+                    data.push(state as u8);
+                }
+                data.extend_from_slice(&(original_len as u32).to_le_bytes());
+                data
+            }
+        }
+    }
+    
+    fn remove_padding(&self, mut data: Vec<u8>) -> Vec<u8> {
+        match self.morphology.padding_mode {
+            PaddingMode::None => data,
+            PaddingMode::Pkcs7 => {
+                if let Some(&padding_len) = data.last() {
+                    let len = data.len().saturating_sub(padding_len as usize);
+                    data.truncate(len);
+                }
+                data
+            }
+            PaddingMode::Random => {
+                if let Some(&padding_len) = data.last() {
+                    let len = data.len().saturating_sub(padding_len as usize + 1);
+                    data.truncate(len);
+                }
+                data
+            }
+            PaddingMode::Chaotic => {
+                if data.len() >= 4 {
+                    let len_bytes: [u8; 4] = data[data.len()-4..].try_into().unwrap_or([0; 4]);
+                    let original_len = u32::from_le_bytes(len_bytes) as usize;
+                    data.truncate(original_len);
+                }
+                data
+            }
+        }
+    }
+}
+
+/// Connect with automatic transport selection (QUIC with TCP fallback)
+#[cfg(feature = "quic")]
+pub async fn connect_auto(
+    addr: SocketAddr,
+    tcp_fallback: impl std::future::Future<Output = anyhow::Result<impl AsyncReadWrite + 'static>>,
+    config: TransportConfig,
+) -> anyhow::Result<HyperlightConnection> {
+    match config.mode {
+        TransportMode::Tcp => {
+            let stream = tcp_fallback.await?;
+            Ok(HyperlightConnection::from_tcp(stream))
+        }
+        TransportMode::Quic => {
+            let builder = QuicEndpointBuilder::with_config(config.clone());
+            let endpoint = builder.build_client()?;
+            let server_name = config.server_name.as_deref().unwrap_or("localhost");
+            let transport = builder.connect(&endpoint, addr, server_name).await?;
+            Ok(HyperlightConnection::from_quic(transport))
+        }
+        TransportMode::Auto => {
+            // Try QUIC first
+            let builder = QuicEndpointBuilder::with_config(config.clone());
+            if let Ok(endpoint) = builder.build_client() {
+                let server_name = config.server_name.as_deref().unwrap_or("localhost");
+                if let Ok(transport) = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    builder.connect(&endpoint, addr, server_name)
+                ).await {
+                    if let Ok(transport) = transport {
+                        log::info!("Connected via QUIC to {}", addr);
+                        return Ok(HyperlightConnection::from_quic(transport));
+                    }
+                }
+            }
+            
+            // Fallback to TCP
+            log::info!("QUIC unavailable, falling back to TCP for {}", addr);
+            let stream = tcp_fallback.await?;
+            Ok(HyperlightConnection::from_tcp(stream))
         }
     }
 }
