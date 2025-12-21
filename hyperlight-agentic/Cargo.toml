@@ -49,3 +49,7 @@ path = "examples/advanced_agentic.rs"
 [[example]]
 name = "infrastructure_demo"
 path = "examples/infrastructure_demo.rs"
+
+[[example]]
+name = "cognitive_demo"
+path = "examples/cognitive_demo.rs"

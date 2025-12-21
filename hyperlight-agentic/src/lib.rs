@@ -4977,6 +4977,1308 @@ pub struct FederationStats {
     pub routes: usize,
 }
 
+// =============================================================================
+// AGENT REASONING ENGINE
+// =============================================================================
+
+/// Logical reasoning engine for agents
+pub struct ReasoningEngine {
+    facts: DashMap<String, Fact>,
+    rules: DashMap<String, InferenceRule>,
+    inferences: DashMap<String, Inference>,
+    strategies: Vec<ReasoningStrategy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fact {
+    pub id: String,
+    pub predicate: String,
+    pub arguments: Vec<FactValue>,
+    pub confidence: f64,
+    pub source: FactSource,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FactValue {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+    Entity(String),
+    List(Vec<FactValue>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FactSource {
+    Observation,
+    Inference { rule_id: String, from: Vec<String> },
+    External { source: String },
+    UserProvided,
+}
+
+#[derive(Debug, Clone)]
+pub struct InferenceRule {
+    pub id: String,
+    pub name: String,
+    pub conditions: Vec<RuleCondition>,
+    pub conclusion: RuleConclusion,
+    pub confidence_factor: f64,
+    pub priority: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleCondition {
+    pub predicate: String,
+    pub bindings: Vec<BindingPattern>,
+    pub negated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum BindingPattern {
+    Variable(String),
+    Constant(FactValue),
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuleConclusion {
+    pub predicate: String,
+    pub arguments: Vec<BindingPattern>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Inference {
+    pub id: String,
+    pub rule_id: String,
+    pub bindings: HashMap<String, FactValue>,
+    pub result: Fact,
+    pub confidence: f64,
+    pub inferred_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ReasoningStrategy {
+    ForwardChaining,
+    BackwardChaining,
+    AbductiveReasoning,
+    AnalogicalReasoning { similarity_threshold: f64 },
+}
+
+impl ReasoningEngine {
+    pub fn new() -> Self {
+        Self {
+            facts: DashMap::new(),
+            rules: DashMap::new(),
+            inferences: DashMap::new(),
+            strategies: vec![ReasoningStrategy::ForwardChaining],
+        }
+    }
+
+    /// Assert a fact
+    pub fn assert_fact(&self, fact: Fact) {
+        self.facts.insert(fact.id.clone(), fact);
+    }
+
+    /// Add an inference rule
+    pub fn add_rule(&self, rule: InferenceRule) {
+        self.rules.insert(rule.id.clone(), rule);
+    }
+
+    /// Query facts matching a pattern
+    pub fn query(&self, predicate: &str, bindings: &[BindingPattern]) -> Vec<(Fact, HashMap<String, FactValue>)> {
+        let mut results = Vec::new();
+        
+        for entry in self.facts.iter() {
+            let fact = entry.value();
+            if fact.predicate == predicate {
+                if let Some(matched_bindings) = self.match_bindings(&fact.arguments, bindings) {
+                    results.push((fact.clone(), matched_bindings));
+                }
+            }
+        }
+        
+        results
+    }
+
+    fn match_bindings(&self, args: &[FactValue], patterns: &[BindingPattern]) -> Option<HashMap<String, FactValue>> {
+        if args.len() != patterns.len() {
+            return None;
+        }
+        
+        let mut bindings = HashMap::new();
+        
+        for (arg, pattern) in args.iter().zip(patterns.iter()) {
+            match pattern {
+                BindingPattern::Variable(name) => {
+                    if let Some(existing) = bindings.get(name) {
+                        if !self.values_equal(arg, existing) {
+                            return None;
+                        }
+                    } else {
+                        bindings.insert(name.clone(), arg.clone());
+                    }
+                }
+                BindingPattern::Constant(val) => {
+                    if !self.values_equal(arg, val) {
+                        return None;
+                    }
+                }
+                BindingPattern::Wildcard => {}
+            }
+        }
+        
+        Some(bindings)
+    }
+
+    fn values_equal(&self, a: &FactValue, b: &FactValue) -> bool {
+        match (a, b) {
+            (FactValue::String(s1), FactValue::String(s2)) => s1 == s2,
+            (FactValue::Number(n1), FactValue::Number(n2)) => (n1 - n2).abs() < 0.0001,
+            (FactValue::Boolean(b1), FactValue::Boolean(b2)) => b1 == b2,
+            (FactValue::Entity(e1), FactValue::Entity(e2)) => e1 == e2,
+            _ => false,
+        }
+    }
+
+    /// Run forward chaining inference
+    pub fn infer(&self) -> Vec<Inference> {
+        let mut new_inferences = Vec::new();
+        
+        for rule_entry in self.rules.iter() {
+            let rule = rule_entry.value();
+            
+            // Try to match all conditions
+            if let Some(bindings) = self.try_match_rule(rule) {
+                for binding_set in bindings {
+                    let inference = self.create_inference(rule, &binding_set);
+                    if !self.fact_exists(&inference.result) {
+                        self.facts.insert(inference.result.id.clone(), inference.result.clone());
+                        new_inferences.push(inference);
+                    }
+                }
+            }
+        }
+        
+        new_inferences
+    }
+
+    fn try_match_rule(&self, rule: &InferenceRule) -> Option<Vec<HashMap<String, FactValue>>> {
+        let mut all_bindings: Vec<HashMap<String, FactValue>> = vec![HashMap::new()];
+        
+        for condition in &rule.conditions {
+            let mut new_bindings = Vec::new();
+            
+            for existing in &all_bindings {
+                let matches = self.query(&condition.predicate, &condition.bindings);
+                for (_, matched) in matches {
+                    let mut combined = existing.clone();
+                    let mut valid = true;
+                    
+                    for (k, v) in matched {
+                        if let Some(existing_v) = combined.get(&k) {
+                            if !self.values_equal(&v, existing_v) {
+                                valid = false;
+                                break;
+                            }
+                        } else {
+                            combined.insert(k, v);
+                        }
+                    }
+                    
+                    if valid {
+                        if condition.negated {
+                            // For negated conditions, we want NO matches
+                        } else {
+                            new_bindings.push(combined);
+                        }
+                    }
+                }
+            }
+            
+            if new_bindings.is_empty() && !condition.negated {
+                return None;
+            }
+            
+            all_bindings = new_bindings;
+        }
+        
+        if all_bindings.is_empty() {
+            None
+        } else {
+            Some(all_bindings)
+        }
+    }
+
+    fn create_inference(&self, rule: &InferenceRule, bindings: &HashMap<String, FactValue>) -> Inference {
+        let mut args = Vec::new();
+        
+        for pattern in &rule.conclusion.arguments {
+            match pattern {
+                BindingPattern::Variable(name) => {
+                    if let Some(val) = bindings.get(name) {
+                        args.push(val.clone());
+                    }
+                }
+                BindingPattern::Constant(val) => {
+                    args.push(val.clone());
+                }
+                BindingPattern::Wildcard => {}
+            }
+        }
+        
+        let fact_id = format!("inferred-{}", Uuid::new_v4());
+        let inference_id = format!("inference-{}", Uuid::new_v4());
+        
+        Inference {
+            id: inference_id,
+            rule_id: rule.id.clone(),
+            bindings: bindings.clone(),
+            result: Fact {
+                id: fact_id,
+                predicate: rule.conclusion.predicate.clone(),
+                arguments: args,
+                confidence: rule.confidence_factor,
+                source: FactSource::Inference { 
+                    rule_id: rule.id.clone(), 
+                    from: bindings.keys().cloned().collect() 
+                },
+                timestamp: Utc::now(),
+            },
+            confidence: rule.confidence_factor,
+            inferred_at: Utc::now(),
+        }
+    }
+
+    fn fact_exists(&self, fact: &Fact) -> bool {
+        for entry in self.facts.iter() {
+            let existing = entry.value();
+            if existing.predicate == fact.predicate && existing.arguments.len() == fact.arguments.len() {
+                let all_equal = existing.arguments.iter()
+                    .zip(fact.arguments.iter())
+                    .all(|(a, b)| self.values_equal(a, b));
+                if all_equal {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Explain how a fact was derived
+    pub fn explain(&self, fact_id: &str) -> Option<ReasoningExplanation> {
+        let fact = self.facts.get(fact_id)?;
+        
+        match &fact.source {
+            FactSource::Observation => Some(ReasoningExplanation {
+                fact_id: fact_id.to_string(),
+                explanation_type: ExplanationType::Observed,
+                steps: vec![],
+                confidence: fact.confidence,
+            }),
+            FactSource::Inference { rule_id, from } => {
+                let mut steps = Vec::new();
+                steps.push(ExplanationStep {
+                    description: format!("Applied rule: {}", rule_id),
+                    supporting_facts: from.clone(),
+                });
+                
+                Some(ReasoningExplanation {
+                    fact_id: fact_id.to_string(),
+                    explanation_type: ExplanationType::Inferred,
+                    steps,
+                    confidence: fact.confidence,
+                })
+            }
+            FactSource::External { source } => Some(ReasoningExplanation {
+                fact_id: fact_id.to_string(),
+                explanation_type: ExplanationType::External { source: source.clone() },
+                steps: vec![],
+                confidence: fact.confidence,
+            }),
+            FactSource::UserProvided => Some(ReasoningExplanation {
+                fact_id: fact_id.to_string(),
+                explanation_type: ExplanationType::UserProvided,
+                steps: vec![],
+                confidence: fact.confidence,
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReasoningExplanation {
+    pub fact_id: String,
+    pub explanation_type: ExplanationType,
+    pub steps: Vec<ExplanationStep>,
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExplanationType {
+    Observed,
+    Inferred,
+    External { source: String },
+    UserProvided,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExplanationStep {
+    pub description: String,
+    pub supporting_facts: Vec<String>,
+}
+
+// =============================================================================
+// SEMANTIC MEMORY SYSTEM
+// =============================================================================
+
+/// Long-term semantic memory with retrieval
+pub struct SemanticMemory {
+    episodes: DashMap<Uuid, EpisodicMemory>,
+    concepts: DashMap<String, ConceptMemory>,
+    associations: DashMap<(String, String), Association>,
+    working_memory: Arc<Mutex<WorkingMemory>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EpisodicMemory {
+    pub id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub context: MemoryContext,
+    pub content: serde_json::Value,
+    pub emotional_valence: f64,
+    pub importance: f64,
+    pub access_count: u32,
+    pub last_accessed: DateTime<Utc>,
+    pub embedding: Option<Vec<f32>>,
+    pub associations: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryContext {
+    pub location: Option<String>,
+    pub task: Option<String>,
+    pub agents_involved: Vec<Uuid>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConceptMemory {
+    pub name: String,
+    pub definition: String,
+    pub examples: Vec<String>,
+    pub properties: HashMap<String, serde_json::Value>,
+    pub hierarchies: ConceptHierarchy,
+    pub confidence: f64,
+    pub embedding: Option<Vec<f32>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConceptHierarchy {
+    pub parents: Vec<String>,
+    pub children: Vec<String>,
+    pub siblings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Association {
+    pub source: String,
+    pub target: String,
+    pub relation_type: RelationType,
+    pub strength: f64,
+    pub created_at: DateTime<Utc>,
+    pub activated_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub enum RelationType {
+    IsA,
+    HasA,
+    PartOf,
+    CausedBy,
+    SimilarTo,
+    OppositeOf,
+    TemporallyRelated,
+    SpatiallyRelated,
+    Custom(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkingMemory {
+    pub items: VecDeque<WorkingMemoryItem>,
+    pub capacity: usize,
+    pub focus: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkingMemoryItem {
+    pub id: String,
+    pub content: serde_json::Value,
+    pub activation: f64,
+    pub added_at: DateTime<Utc>,
+}
+
+impl SemanticMemory {
+    pub fn new() -> Self {
+        Self {
+            episodes: DashMap::new(),
+            concepts: DashMap::new(),
+            associations: DashMap::new(),
+            working_memory: Arc::new(Mutex::new(WorkingMemory {
+                items: VecDeque::new(),
+                capacity: 7, // Miller's magic number
+                focus: None,
+            })),
+        }
+    }
+
+    /// Store an episodic memory
+    pub fn remember(&self, content: serde_json::Value, context: MemoryContext, importance: f64) -> Uuid {
+        let id = Uuid::new_v4();
+        let episode = EpisodicMemory {
+            id,
+            timestamp: Utc::now(),
+            context,
+            content,
+            emotional_valence: 0.0,
+            importance,
+            access_count: 0,
+            last_accessed: Utc::now(),
+            embedding: None,
+            associations: vec![],
+        };
+        
+        self.episodes.insert(id, episode);
+        id
+    }
+
+    /// Learn a concept
+    pub fn learn_concept(&self, name: &str, definition: &str, parents: Vec<String>) {
+        let concept = ConceptMemory {
+            name: name.to_string(),
+            definition: definition.to_string(),
+            examples: vec![],
+            properties: HashMap::new(),
+            hierarchies: ConceptHierarchy {
+                parents,
+                children: vec![],
+                siblings: vec![],
+            },
+            confidence: 0.5,
+            embedding: None,
+        };
+        
+        self.concepts.insert(name.to_string(), concept);
+    }
+
+    /// Create an association
+    pub fn associate(&self, source: &str, target: &str, relation: RelationType, strength: f64) {
+        let assoc = Association {
+            source: source.to_string(),
+            target: target.to_string(),
+            relation_type: relation,
+            strength,
+            created_at: Utc::now(),
+            activated_count: 0,
+        };
+        
+        self.associations.insert((source.to_string(), target.to_string()), assoc);
+    }
+
+    /// Retrieve memories by similarity
+    pub fn recall(&self, query_embedding: &[f32], limit: usize) -> Vec<EpisodicMemory> {
+        let mut results: Vec<_> = self.episodes.iter()
+            .filter_map(|entry| {
+                let episode = entry.value();
+                episode.embedding.as_ref().map(|emb| {
+                    let similarity = cosine_similarity(query_embedding, emb);
+                    (episode.clone(), similarity)
+                })
+            })
+            .collect();
+        
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.into_iter().take(limit).map(|(e, _)| e).collect()
+    }
+
+    /// Retrieve by recency-weighted importance
+    pub fn recall_recent(&self, limit: usize) -> Vec<EpisodicMemory> {
+        let now = Utc::now();
+        let mut results: Vec<_> = self.episodes.iter()
+            .map(|entry| {
+                let episode = entry.value();
+                let recency = 1.0 / (1.0 + (now - episode.timestamp).num_hours() as f64 / 24.0);
+                let score = episode.importance * recency;
+                (episode.clone(), score)
+            })
+            .collect();
+        
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.into_iter().take(limit).map(|(e, _)| e).collect()
+    }
+
+    /// Spread activation through associations
+    pub fn spread_activation(&self, source: &str, depth: usize) -> HashMap<String, f64> {
+        let mut activations = HashMap::new();
+        activations.insert(source.to_string(), 1.0);
+        
+        for _ in 0..depth {
+            let mut new_activations = activations.clone();
+            
+            for (key, activation) in &activations {
+                for entry in self.associations.iter() {
+                    let (src, tgt) = entry.key();
+                    let assoc = entry.value();
+                    
+                    if src == key {
+                        let propagated = activation * assoc.strength * 0.5;
+                        let current = new_activations.get(tgt).copied().unwrap_or(0.0);
+                        new_activations.insert(tgt.clone(), current + propagated);
+                    }
+                }
+            }
+            
+            activations = new_activations;
+        }
+        
+        activations
+    }
+
+    /// Focus working memory on a topic
+    pub fn focus(&self, topic: &str) {
+        if let Ok(mut wm) = self.working_memory.try_lock() {
+            wm.focus = Some(topic.to_string());
+        }
+    }
+
+    /// Add to working memory
+    pub fn attend(&self, id: &str, content: serde_json::Value) {
+        if let Ok(mut wm) = self.working_memory.try_lock() {
+            let item = WorkingMemoryItem {
+                id: id.to_string(),
+                content,
+                activation: 1.0,
+                added_at: Utc::now(),
+            };
+            
+            wm.items.push_front(item);
+            
+            while wm.items.len() > wm.capacity {
+                wm.items.pop_back();
+            }
+        }
+    }
+
+    /// Get working memory contents
+    pub fn get_working_memory(&self) -> Option<Vec<WorkingMemoryItem>> {
+        self.working_memory.try_lock().ok().map(|wm| wm.items.iter().cloned().collect())
+    }
+}
+
+// =============================================================================
+// GOAL DECOMPOSITION ENGINE
+// =============================================================================
+
+/// Hierarchical goal decomposition
+pub struct GoalDecomposer {
+    goals: DashMap<Uuid, HierarchicalGoal>,
+    strategies: Vec<DecompositionStrategy>,
+    templates: DashMap<String, GoalTemplate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HierarchicalGoal {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub goal_type: GoalType,
+    pub parent: Option<Uuid>,
+    pub subgoals: Vec<Uuid>,
+    pub preconditions: Vec<GoalCondition>,
+    pub postconditions: Vec<GoalCondition>,
+    pub priority: f64,
+    pub deadline: Option<DateTime<Utc>>,
+    pub status: GoalStatus,
+    pub progress: f64,
+    pub assigned_agent: Option<Uuid>,
+}
+
+#[derive(Debug, Clone)]
+pub enum GoalType {
+    Achievement { target_state: String },
+    Maintenance { invariant: String },
+    Optimization { metric: String, direction: OptimizationDirection },
+    Query { question: String },
+    Procedure { steps: Vec<String> },
+}
+
+#[derive(Debug, Clone)]
+pub enum OptimizationDirection {
+    Maximize,
+    Minimize,
+    Target(f64),
+}
+
+#[derive(Debug, Clone)]
+pub struct GoalCondition {
+    pub predicate: String,
+    pub parameters: Vec<String>,
+    pub negated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum GoalStatus {
+    Pending,
+    Active,
+    Suspended,
+    Achieved,
+    Failed { reason: String },
+    Abandoned,
+}
+
+#[derive(Debug, Clone)]
+pub enum DecompositionStrategy {
+    Sequential,
+    Parallel,
+    Conditional { condition: String },
+    Iterative { until: String },
+    Recursive,
+}
+
+#[derive(Debug, Clone)]
+pub struct GoalTemplate {
+    pub name: String,
+    pub pattern: String,
+    pub subgoal_patterns: Vec<String>,
+    pub strategy: DecompositionStrategy,
+}
+
+impl GoalDecomposer {
+    pub fn new() -> Self {
+        Self {
+            goals: DashMap::new(),
+            strategies: vec![DecompositionStrategy::Sequential],
+            templates: DashMap::new(),
+        }
+    }
+
+    /// Create a root goal
+    pub fn create_goal(&self, name: &str, description: &str, goal_type: GoalType) -> Uuid {
+        let id = Uuid::new_v4();
+        let goal = HierarchicalGoal {
+            id,
+            name: name.to_string(),
+            description: description.to_string(),
+            goal_type,
+            parent: None,
+            subgoals: vec![],
+            preconditions: vec![],
+            postconditions: vec![],
+            priority: 0.5,
+            deadline: None,
+            status: GoalStatus::Pending,
+            progress: 0.0,
+            assigned_agent: None,
+        };
+        
+        self.goals.insert(id, goal);
+        id
+    }
+
+    /// Decompose a goal into subgoals
+    pub fn decompose(&self, goal_id: Uuid, subgoals: Vec<(String, GoalType)>) -> Vec<Uuid> {
+        let mut subgoal_ids = Vec::new();
+        
+        for (name, goal_type) in subgoals {
+            let subgoal_id = Uuid::new_v4();
+            let subgoal = HierarchicalGoal {
+                id: subgoal_id,
+                name: name.clone(),
+                description: String::new(),
+                goal_type,
+                parent: Some(goal_id),
+                subgoals: vec![],
+                preconditions: vec![],
+                postconditions: vec![],
+                priority: 0.5,
+                deadline: None,
+                status: GoalStatus::Pending,
+                progress: 0.0,
+                assigned_agent: None,
+            };
+            
+            self.goals.insert(subgoal_id, subgoal);
+            subgoal_ids.push(subgoal_id);
+        }
+        
+        if let Some(mut goal) = self.goals.get_mut(&goal_id) {
+            goal.subgoals = subgoal_ids.clone();
+        }
+        
+        subgoal_ids
+    }
+
+    /// Add a goal template
+    pub fn add_template(&self, template: GoalTemplate) {
+        self.templates.insert(template.name.clone(), template);
+    }
+
+    /// Get leaf goals (actionable)
+    pub fn get_leaf_goals(&self) -> Vec<HierarchicalGoal> {
+        self.goals.iter()
+            .filter(|entry| entry.value().subgoals.is_empty())
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// Get ready goals (preconditions satisfied)
+    pub fn get_ready_goals(&self) -> Vec<HierarchicalGoal> {
+        self.get_leaf_goals()
+            .into_iter()
+            .filter(|g| g.status == GoalStatus::Pending && g.preconditions.is_empty())
+            .collect()
+    }
+
+    /// Update goal progress
+    pub fn update_progress(&self, goal_id: Uuid, progress: f64) {
+        if let Some(mut goal) = self.goals.get_mut(&goal_id) {
+            goal.progress = progress.clamp(0.0, 1.0);
+            
+            if goal.progress >= 1.0 {
+                goal.status = GoalStatus::Achieved;
+            }
+        }
+        
+        // Propagate to parent
+        if let Some(goal) = self.goals.get(&goal_id) {
+            if let Some(parent_id) = goal.parent {
+                self.recalculate_progress(parent_id);
+            }
+        }
+    }
+
+    fn recalculate_progress(&self, goal_id: Uuid) {
+        if let Some(mut goal) = self.goals.get_mut(&goal_id) {
+            if goal.subgoals.is_empty() {
+                return;
+            }
+            
+            let total_progress: f64 = goal.subgoals.iter()
+                .filter_map(|id| self.goals.get(id).map(|g| g.progress))
+                .sum();
+            
+            goal.progress = total_progress / goal.subgoals.len() as f64;
+            
+            if goal.progress >= 1.0 {
+                goal.status = GoalStatus::Achieved;
+            }
+        }
+    }
+
+    /// Get goal hierarchy as tree
+    pub fn get_hierarchy(&self, root_id: Uuid) -> Option<GoalTree> {
+        let goal = self.goals.get(&root_id)?;
+        
+        let children: Vec<GoalTree> = goal.subgoals.iter()
+            .filter_map(|id| self.get_hierarchy(*id))
+            .collect();
+        
+        Some(GoalTree {
+            goal: goal.clone(),
+            children,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GoalTree {
+    pub goal: HierarchicalGoal,
+    pub children: Vec<GoalTree>,
+}
+
+// =============================================================================
+// AGENT NEGOTIATION PROTOCOL
+// =============================================================================
+
+/// Multi-party agent negotiation
+pub struct NegotiationProtocol {
+    negotiations: DashMap<Uuid, Negotiation>,
+    strategies: DashMap<Uuid, NegotiationStrategy>,
+    history: DashMap<Uuid, Vec<NegotiationRound>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Negotiation {
+    pub id: Uuid,
+    pub topic: String,
+    pub participants: Vec<Uuid>,
+    pub status: NegotiationPhase,
+    pub current_proposal: Option<Proposal>,
+    pub deadline: DateTime<Utc>,
+    pub rules: NegotiationRules,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NegotiationPhase {
+    Initiated,
+    Bidding,
+    Bargaining,
+    Consensus,
+    Concluded { outcome: NegotiationOutcome },
+    Failed { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NegotiationOutcome {
+    Agreement,
+    Compromise,
+    NoAgreement,
+    Timeout,
+}
+
+#[derive(Debug, Clone)]
+pub struct NegotiationRules {
+    pub max_rounds: u32,
+    pub timeout_per_round_secs: u64,
+    pub allow_coalitions: bool,
+    pub allow_side_payments: bool,
+    pub voting_threshold: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Proposal {
+    pub id: Uuid,
+    pub proposer: Uuid,
+    pub terms: HashMap<String, serde_json::Value>,
+    pub utility_claims: HashMap<Uuid, f64>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NegotiationRound {
+    pub round_number: u32,
+    pub proposals: Vec<Proposal>,
+    pub responses: Vec<ProposalResponse>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProposalResponse {
+    pub responder: Uuid,
+    pub response_type: ResponseType,
+    pub counter_proposal: Option<Proposal>,
+    pub utility: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResponseType {
+    Accept,
+    Reject,
+    Counter,
+    Defer,
+}
+
+#[derive(Debug, Clone)]
+pub enum NegotiationStrategy {
+    Cooperative { concession_rate: f64 },
+    Competitive { aggression: f64 },
+    TitForTat,
+    BATNA { best_alternative_value: f64 },
+    Integrative { interests: Vec<String> },
+}
+
+impl NegotiationProtocol {
+    pub fn new() -> Self {
+        Self {
+            negotiations: DashMap::new(),
+            strategies: DashMap::new(),
+            history: DashMap::new(),
+        }
+    }
+
+    /// Initiate a negotiation
+    pub fn initiate(&self, topic: &str, participants: Vec<Uuid>, rules: NegotiationRules) -> Uuid {
+        let id = Uuid::new_v4();
+        let negotiation = Negotiation {
+            id,
+            topic: topic.to_string(),
+            participants: participants.clone(),
+            status: NegotiationPhase::Initiated,
+            current_proposal: None,
+            deadline: Utc::now() + chrono::Duration::seconds(rules.timeout_per_round_secs as i64 * rules.max_rounds as i64),
+            rules,
+        };
+        
+        self.negotiations.insert(id, negotiation);
+        self.history.insert(id, Vec::new());
+        
+        id
+    }
+
+    /// Set negotiation strategy for an agent
+    pub fn set_strategy(&self, agent_id: Uuid, strategy: NegotiationStrategy) {
+        self.strategies.insert(agent_id, strategy);
+    }
+
+    /// Submit a proposal
+    pub fn propose(&self, negotiation_id: Uuid, proposal: Proposal) -> Result<(), String> {
+        let mut negotiation = self.negotiations
+            .get_mut(&negotiation_id)
+            .ok_or("Negotiation not found")?;
+        
+        if !negotiation.participants.contains(&proposal.proposer) {
+            return Err("Not a participant".to_string());
+        }
+        
+        negotiation.current_proposal = Some(proposal);
+        negotiation.status = NegotiationPhase::Bargaining;
+        
+        Ok(())
+    }
+
+    /// Respond to current proposal
+    pub fn respond(&self, negotiation_id: Uuid, response: ProposalResponse) -> Result<(), String> {
+        let negotiation = self.negotiations
+            .get(&negotiation_id)
+            .ok_or("Negotiation not found")?;
+        
+        if !negotiation.participants.contains(&response.responder) {
+            return Err("Not a participant".to_string());
+        }
+        
+        // Record response
+        if let Some(mut history) = self.history.get_mut(&negotiation_id) {
+            if let Some(last_round) = history.last_mut() {
+                last_round.responses.push(response.clone());
+            } else {
+                history.push(NegotiationRound {
+                    round_number: 1,
+                    proposals: negotiation.current_proposal.iter().cloned().collect(),
+                    responses: vec![response.clone()],
+                    timestamp: Utc::now(),
+                });
+            }
+        }
+        
+        // Check for consensus
+        drop(negotiation);
+        self.check_consensus(negotiation_id);
+        
+        Ok(())
+    }
+
+    fn check_consensus(&self, negotiation_id: Uuid) {
+        let history = match self.history.get(&negotiation_id) {
+            Some(h) => h,
+            None => return,
+        };
+        
+        let mut negotiation = match self.negotiations.get_mut(&negotiation_id) {
+            Some(n) => n,
+            None => return,
+        };
+        
+        if let Some(last_round) = history.last() {
+            let accept_count = last_round.responses.iter()
+                .filter(|r| r.response_type == ResponseType::Accept)
+                .count();
+            
+            let total = negotiation.participants.len();
+            let threshold = (total as f64 * negotiation.rules.voting_threshold) as usize;
+            
+            if accept_count >= threshold {
+                negotiation.status = NegotiationPhase::Concluded { 
+                    outcome: NegotiationOutcome::Agreement 
+                };
+            }
+        }
+    }
+
+    /// Get negotiation status
+    pub fn get_status(&self, negotiation_id: Uuid) -> Option<NegotiationPhase> {
+        self.negotiations.get(&negotiation_id).map(|n| n.status.clone())
+    }
+
+    /// Calculate pareto-optimal solutions
+    pub fn find_pareto_optimal(&self, negotiation_id: Uuid) -> Vec<Proposal> {
+        let history = match self.history.get(&negotiation_id) {
+            Some(h) => h,
+            None => return vec![],
+        };
+        
+        let all_proposals: Vec<Proposal> = history.iter()
+            .flat_map(|r| r.proposals.iter().cloned())
+            .collect();
+        
+        // Find non-dominated proposals
+        let mut pareto = Vec::new();
+        
+        for proposal in &all_proposals {
+            let dominated = all_proposals.iter().any(|other| {
+                if proposal.id == other.id {
+                    return false;
+                }
+                
+                // Check if other dominates proposal
+                proposal.utility_claims.iter().all(|(agent, utility)| {
+                    other.utility_claims.get(agent).map_or(false, |other_utility| other_utility >= utility)
+                }) && proposal.utility_claims.iter().any(|(agent, utility)| {
+                    other.utility_claims.get(agent).map_or(false, |other_utility| other_utility > utility)
+                })
+            });
+            
+            if !dominated {
+                pareto.push(proposal.clone());
+            }
+        }
+        
+        pareto
+    }
+}
+
+// =============================================================================
+// RESOURCE MANAGEMENT
+// =============================================================================
+
+/// Agent resource allocation and management
+pub struct ResourceManager {
+    resources: DashMap<String, Resource>,
+    allocations: DashMap<(Uuid, String), Allocation>,
+    quotas: DashMap<Uuid, ResourceQuota>,
+    usage_history: DashMap<Uuid, Vec<UsageRecord>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Resource {
+    pub id: String,
+    pub name: String,
+    pub resource_type: ResourceType,
+    pub total_capacity: f64,
+    pub available: f64,
+    pub unit: String,
+    pub renewable: bool,
+    pub renewal_rate: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResourceType {
+    Compute,
+    Memory,
+    Storage,
+    Bandwidth,
+    ApiCalls,
+    Tokens,
+    Credits,
+    Custom(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Allocation {
+    pub agent_id: Uuid,
+    pub resource_id: String,
+    pub amount: f64,
+    pub allocated_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub priority: AllocationPriority,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AllocationPriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+    Critical = 3,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceQuota {
+    pub agent_id: Uuid,
+    pub limits: HashMap<String, f64>,
+    pub used: HashMap<String, f64>,
+    pub period: QuotaPeriod,
+    pub reset_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub enum QuotaPeriod {
+    Hourly,
+    Daily,
+    Weekly,
+    Monthly,
+    Unlimited,
+}
+
+#[derive(Debug, Clone)]
+pub struct UsageRecord {
+    pub agent_id: Uuid,
+    pub resource_id: String,
+    pub amount: f64,
+    pub operation: String,
+    pub timestamp: DateTime<Utc>,
+}
+
+impl ResourceManager {
+    pub fn new() -> Self {
+        Self {
+            resources: DashMap::new(),
+            allocations: DashMap::new(),
+            quotas: DashMap::new(),
+            usage_history: DashMap::new(),
+        }
+    }
+
+    /// Register a resource
+    pub fn register_resource(&self, resource: Resource) {
+        self.resources.insert(resource.id.clone(), resource);
+    }
+
+    /// Set quota for an agent
+    pub fn set_quota(&self, agent_id: Uuid, limits: HashMap<String, f64>, period: QuotaPeriod) {
+        let reset_at = match period {
+            QuotaPeriod::Hourly => Utc::now() + chrono::Duration::hours(1),
+            QuotaPeriod::Daily => Utc::now() + chrono::Duration::days(1),
+            QuotaPeriod::Weekly => Utc::now() + chrono::Duration::weeks(1),
+            QuotaPeriod::Monthly => Utc::now() + chrono::Duration::days(30),
+            QuotaPeriod::Unlimited => Utc::now() + chrono::Duration::days(36500),
+        };
+        
+        let quota = ResourceQuota {
+            agent_id,
+            limits,
+            used: HashMap::new(),
+            period,
+            reset_at,
+        };
+        
+        self.quotas.insert(agent_id, quota);
+    }
+
+    /// Request resource allocation
+    pub fn allocate(&self, agent_id: Uuid, resource_id: &str, amount: f64, priority: AllocationPriority) -> Result<Allocation, String> {
+        let mut resource = self.resources
+            .get_mut(resource_id)
+            .ok_or("Resource not found")?;
+        
+        // Check quota
+        if let Some(mut quota) = self.quotas.get_mut(&agent_id) {
+            if let Some(limit) = quota.limits.get(resource_id) {
+                let used = quota.used.get(resource_id).copied().unwrap_or(0.0);
+                if used + amount > *limit {
+                    return Err(format!("Quota exceeded: {} + {} > {}", used, amount, limit));
+                }
+            }
+        }
+        
+        // Check availability
+        if resource.available < amount {
+            return Err(format!("Insufficient resources: {} < {}", resource.available, amount));
+        }
+        
+        // Allocate
+        resource.available -= amount;
+        
+        let allocation = Allocation {
+            agent_id,
+            resource_id: resource_id.to_string(),
+            amount,
+            allocated_at: Utc::now(),
+            expires_at: None,
+            priority,
+        };
+        
+        self.allocations.insert((agent_id, resource_id.to_string()), allocation.clone());
+        
+        // Update quota usage
+        if let Some(mut quota) = self.quotas.get_mut(&agent_id) {
+            *quota.used.entry(resource_id.to_string()).or_insert(0.0) += amount;
+        }
+        
+        Ok(allocation)
+    }
+
+    /// Release allocation
+    pub fn release(&self, agent_id: Uuid, resource_id: &str) -> Result<f64, String> {
+        let allocation = self.allocations
+            .remove(&(agent_id, resource_id.to_string()))
+            .ok_or("Allocation not found")?;
+        
+        // Return to pool
+        if let Some(mut resource) = self.resources.get_mut(resource_id) {
+            resource.available += allocation.1.amount;
+        }
+        
+        Ok(allocation.1.amount)
+    }
+
+    /// Record usage
+    pub fn record_usage(&self, agent_id: Uuid, resource_id: &str, amount: f64, operation: &str) {
+        let record = UsageRecord {
+            agent_id,
+            resource_id: resource_id.to_string(),
+            amount,
+            operation: operation.to_string(),
+            timestamp: Utc::now(),
+        };
+        
+        self.usage_history
+            .entry(agent_id)
+            .or_insert_with(Vec::new)
+            .push(record);
+    }
+
+    /// Get current usage for agent
+    pub fn get_usage(&self, agent_id: Uuid) -> HashMap<String, f64> {
+        self.quotas
+            .get(&agent_id)
+            .map(|q| q.used.clone())
+            .unwrap_or_default()
+    }
+
+    /// Get resource availability
+    pub fn get_availability(&self, resource_id: &str) -> Option<f64> {
+        self.resources.get(resource_id).map(|r| r.available)
+    }
+
+    /// Renew renewable resources
+    pub fn renew_resources(&self) {
+        for mut entry in self.resources.iter_mut() {
+            let resource = entry.value_mut();
+            if resource.renewable {
+                if let Some(rate) = resource.renewal_rate {
+                    resource.available = (resource.available + rate).min(resource.total_capacity);
+                }
+            }
+        }
+    }
+
+    /// Get usage summary
+    pub fn get_summary(&self) -> ResourceSummary {
+        let mut total = 0.0;
+        let mut used = 0.0;
+        
+        for entry in self.resources.iter() {
+            total += entry.total_capacity;
+            used += entry.total_capacity - entry.available;
+        }
+        
+        ResourceSummary {
+            total_resources: self.resources.len(),
+            total_capacity: total,
+            total_used: used,
+            utilization: if total > 0.0 { used / total } else { 0.0 },
+            active_allocations: self.allocations.len(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceSummary {
+    pub total_resources: usize,
+    pub total_capacity: f64,
+    pub total_used: f64,
+    pub utilization: f64,
+    pub active_allocations: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
