@@ -62,6 +62,7 @@ use sha2::{Sha256, Digest};
 use tokio::sync::{mpsc, RwLock, broadcast, oneshot, Mutex};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use rand::Rng;
 
 use hyperlight_neural::MirasVariant;
 use hyperlight_crypto::MirasTitansPredictor;
@@ -6334,4 +6335,1230 @@ mod tests {
             panic!("Expected semantic locator");
         }
     }
+}
+
+// =============================================================================
+// AGENT LEARNING & ADAPTATION
+// =============================================================================
+
+/// Learning signal types for reinforcement learning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LearningSignal {
+    /// Immediate reward/punishment
+    Reward { value: f64, context: String },
+    /// Delayed reward with attribution
+    DelayedReward { value: f64, delay_steps: usize, attribution: Vec<(String, f64)> },
+    /// Intrinsic motivation (curiosity, novelty)
+    Intrinsic { kind: IntrinsicMotivation, intensity: f64 },
+    /// Social learning from other agents
+    Social { source_agent: Uuid, behavior: String, outcome: f64 },
+    /// Counterfactual learning (what-if)
+    Counterfactual { action_taken: String, alternative: String, estimated_diff: f64 },
+}
+
+/// Intrinsic motivation types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum IntrinsicMotivation {
+    Curiosity,          // Novelty-seeking
+    Competence,         // Mastery-seeking
+    Autonomy,           // Self-determination
+    Relatedness,        // Social connection
+    Progress,           // Improvement sensing
+}
+
+/// Experience replay buffer entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Experience {
+    pub id: Uuid,
+    pub state: StateRepresentation,
+    pub action: String,
+    pub next_state: StateRepresentation,
+    pub signal: LearningSignal,
+    pub priority: f64,
+    pub timestamp: DateTime<Utc>,
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+/// State representation for learning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateRepresentation {
+    pub features: Vec<f64>,
+    pub symbolic: HashMap<String, serde_json::Value>,
+    pub context_id: Option<String>,
+}
+
+impl StateRepresentation {
+    pub fn new(features: Vec<f64>) -> Self {
+        Self {
+            features,
+            symbolic: HashMap::new(),
+            context_id: None,
+        }
+    }
+    
+    pub fn with_symbol(mut self, key: &str, value: serde_json::Value) -> Self {
+        self.symbolic.insert(key.to_string(), value);
+        self
+    }
+}
+
+/// Learning policy representation for RL
+#[derive(Debug, Clone)]
+pub struct LearningPolicy {
+    pub id: Uuid,
+    pub name: String,
+    pub action_values: DashMap<String, ActionValue>,
+    pub exploration_rate: f64,
+    pub learning_rate: f64,
+    pub discount_factor: f64,
+    pub created_at: DateTime<Utc>,
+    pub update_count: u64,
+}
+
+/// Action value with statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionValue {
+    pub action: String,
+    pub value: f64,
+    pub count: u64,
+    pub variance: f64,
+    pub last_update: DateTime<Utc>,
+}
+
+/// Learning algorithm types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LearningAlgorithm {
+    QLearning { alpha: f64, gamma: f64 },
+    SARSA { alpha: f64, gamma: f64 },
+    ActorCritic { actor_lr: f64, critic_lr: f64 },
+    PolicyGradient { learning_rate: f64, baseline: f64 },
+    EvolutionStrategy { population_size: usize, sigma: f64 },
+}
+
+/// Agent learning system
+pub struct AgentLearner {
+    agent_id: Uuid,
+    policies: DashMap<String, LearningPolicy>,
+    experience_buffer: Arc<RwLock<Vec<Experience>>>,
+    buffer_capacity: usize,
+    algorithm: LearningAlgorithm,
+    adaptation_hooks: Vec<Box<dyn Fn(&Experience, &LearningPolicy) + Send + Sync>>,
+    total_experiences: u64,
+    cumulative_reward: f64,
+}
+
+impl AgentLearner {
+    pub fn new(agent_id: Uuid, algorithm: LearningAlgorithm, buffer_capacity: usize) -> Self {
+        Self {
+            agent_id,
+            policies: DashMap::new(),
+            experience_buffer: Arc::new(RwLock::new(Vec::with_capacity(buffer_capacity))),
+            buffer_capacity,
+            algorithm,
+            adaptation_hooks: Vec::new(),
+            total_experiences: 0,
+            cumulative_reward: 0.0,
+        }
+    }
+    
+    /// Create or get a policy for a domain
+    pub fn get_or_create_policy(&self, domain: &str) -> LearningPolicy {
+        if let Some(policy) = self.policies.get(domain) {
+            policy.clone()
+        } else {
+            let (lr, gamma) = match &self.algorithm {
+                LearningAlgorithm::QLearning { alpha, gamma } => (*alpha, *gamma),
+                LearningAlgorithm::SARSA { alpha, gamma } => (*alpha, *gamma),
+                LearningAlgorithm::ActorCritic { actor_lr, .. } => (*actor_lr, 0.99),
+                LearningAlgorithm::PolicyGradient { learning_rate, .. } => (*learning_rate, 0.99),
+                LearningAlgorithm::EvolutionStrategy { .. } => (0.01, 0.99),
+            };
+            
+            let policy = LearningPolicy {
+                id: Uuid::new_v4(),
+                name: domain.to_string(),
+                action_values: DashMap::new(),
+                exploration_rate: 0.1,
+                learning_rate: lr,
+                discount_factor: gamma,
+                created_at: Utc::now(),
+                update_count: 0,
+            };
+            self.policies.insert(domain.to_string(), policy.clone());
+            policy
+        }
+    }
+    
+    /// Record an experience
+    pub async fn record_experience(&mut self, experience: Experience) {
+        // Track cumulative reward
+        if let LearningSignal::Reward { value, .. } = &experience.signal {
+            self.cumulative_reward += value;
+        }
+        
+        let mut buffer = self.experience_buffer.write().await;
+        
+        // Prioritized experience replay - higher priority for surprising experiences
+        if buffer.len() >= self.buffer_capacity {
+            // Remove lowest priority experience
+            if let Some(min_idx) = buffer.iter()
+                .enumerate()
+                .min_by(|a, b| a.1.priority.partial_cmp(&b.1.priority).unwrap())
+                .map(|(i, _)| i) 
+            {
+                buffer.remove(min_idx);
+            }
+        }
+        
+        buffer.push(experience);
+        self.total_experiences += 1;
+    }
+    
+    /// Learn from experiences (batch update)
+    pub async fn learn(&self, batch_size: usize, domain: &str) -> f64 {
+        let buffer = self.experience_buffer.read().await;
+        if buffer.is_empty() {
+            return 0.0;
+        }
+        
+        let mut policy = self.get_or_create_policy(domain);
+        let mut total_delta = 0.0;
+        
+        // Sample experiences (prioritized)
+        let mut rng = rand::thread_rng();
+        let samples: Vec<_> = buffer.iter()
+            .filter(|e| e.action.starts_with(domain))
+            .collect();
+        
+        let sample_count = samples.len().min(batch_size);
+        if sample_count == 0 {
+            return 0.0;
+        }
+        
+        for experience in samples.iter().take(sample_count) {
+            let delta = self.update_policy(&mut policy, experience);
+            total_delta += delta.abs();
+        }
+        
+        // Store updated policy
+        if let Some(mut p) = self.policies.get_mut(domain) {
+            p.update_count = policy.update_count;
+            // Update action values
+            for entry in policy.action_values.iter() {
+                p.action_values.insert(entry.key().clone(), entry.value().clone());
+            }
+        }
+        
+        total_delta / sample_count as f64
+    }
+    
+    fn update_policy(&self, policy: &mut LearningPolicy, experience: &Experience) -> f64 {
+        let reward = match &experience.signal {
+            LearningSignal::Reward { value, .. } => *value,
+            LearningSignal::DelayedReward { value, .. } => *value,
+            LearningSignal::Intrinsic { intensity, .. } => *intensity * 0.1,
+            LearningSignal::Social { outcome, .. } => *outcome * 0.5,
+            LearningSignal::Counterfactual { estimated_diff, .. } => *estimated_diff,
+        };
+        
+        let action = &experience.action;
+        let current_value = policy.action_values
+            .get(action)
+            .map(|v| v.value)
+            .unwrap_or(0.0);
+        
+        // Q-learning update: Q(s,a) = Q(s,a) + α * (r + γ * max(Q(s')) - Q(s,a))
+        let max_next = policy.action_values.iter()
+            .map(|e| e.value().value)
+            .fold(0.0_f64, |a, b| a.max(b));
+        
+        let td_target = reward + policy.discount_factor * max_next;
+        let delta = td_target - current_value;
+        let new_value = current_value + policy.learning_rate * delta;
+        
+        // Update action value with running statistics
+        let mut entry = policy.action_values.entry(action.clone()).or_insert(ActionValue {
+            action: action.clone(),
+            value: 0.0,
+            count: 0,
+            variance: 0.0,
+            last_update: Utc::now(),
+        });
+        
+        // Online variance calculation
+        let old_mean = entry.value;
+        entry.count += 1;
+        entry.value = new_value;
+        let diff = new_value - old_mean;
+        entry.variance += diff * (new_value - entry.value);
+        entry.last_update = Utc::now();
+        
+        policy.update_count += 1;
+        
+        delta
+    }
+    
+    /// Select action using current policy (epsilon-greedy)
+    pub fn select_action(&self, domain: &str, available_actions: &[String]) -> String {
+        let policy = self.get_or_create_policy(domain);
+        let mut rng = rand::thread_rng();
+        
+        // Epsilon-greedy exploration
+        if rng.gen::<f64>() < policy.exploration_rate {
+            // Random exploration
+            available_actions[rng.gen_range(0..available_actions.len())].clone()
+        } else {
+            // Greedy exploitation
+            available_actions.iter()
+                .max_by(|a, b| {
+                    let va = policy.action_values.get(*a).map(|v| v.value).unwrap_or(0.0);
+                    let vb = policy.action_values.get(*b).map(|v| v.value).unwrap_or(0.0);
+                    va.partial_cmp(&vb).unwrap()
+                })
+                .cloned()
+                .unwrap_or_else(|| available_actions[0].clone())
+        }
+    }
+    
+    /// Decay exploration rate
+    pub fn decay_exploration(&self, domain: &str, decay_rate: f64, min_rate: f64) {
+        if let Some(mut policy) = self.policies.get_mut(domain) {
+            policy.exploration_rate = (policy.exploration_rate * decay_rate).max(min_rate);
+        }
+    }
+    
+    /// Get learning statistics
+    pub fn get_stats(&self) -> LearningStats {
+        let total_value: f64 = self.policies.iter()
+            .flat_map(|p| {
+                let values: Vec<f64> = p.action_values.iter().map(|a| a.value).collect();
+                values
+            })
+            .sum();
+        let count = self.policies.len().max(1) as f64;
+        
+        LearningStats {
+            total_experiences: self.total_experiences,
+            cumulative_reward: self.cumulative_reward,
+            policy_count: self.policies.len(),
+            average_value: total_value / count,
+        }
+    }
+}
+
+/// Learning statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningStats {
+    pub total_experiences: u64,
+    pub cumulative_reward: f64,
+    pub policy_count: usize,
+    pub average_value: f64,
+}
+
+// =============================================================================
+// SKILL LIBRARY & TRANSFER LEARNING
+// =============================================================================
+
+/// Transferable skill representation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Skill {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub category: SkillCategory,
+    pub preconditions: Vec<SkillCondition>,
+    pub effects: Vec<SkillEffect>,
+    pub parameters: Vec<SkillParameter>,
+    pub execution_trace: Option<String>,
+    pub success_rate: f64,
+    pub usage_count: u64,
+    pub created_at: DateTime<Utc>,
+    pub learned_from: Option<Uuid>,  // Source agent
+}
+
+/// Skill categories
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum SkillCategory {
+    Navigation,
+    DataExtraction,
+    Communication,
+    Analysis,
+    Planning,
+    Learning,
+    Coordination,
+    Custom(String),
+}
+
+/// Skill precondition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillCondition {
+    pub kind: ConditionKind,
+    pub parameters: HashMap<String, serde_json::Value>,
+}
+
+/// Condition types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConditionKind {
+    StateEquals { key: String, value: serde_json::Value },
+    HasCapability(String),
+    ResourceAvailable { resource: String, amount: f64 },
+    TimeConstraint { after: Option<DateTime<Utc>>, before: Option<DateTime<Utc>> },
+    Custom(String),
+}
+
+/// Skill effect
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillEffect {
+    pub kind: EffectKind,
+    pub probability: f64,
+}
+
+/// Effect types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EffectKind {
+    StateChange { key: String, value: serde_json::Value },
+    ResourceConsumed { resource: String, amount: f64 },
+    ResourceProduced { resource: String, amount: f64 },
+    MessageSent { recipient: String },
+    KnowledgeGained { topic: String },
+    Custom(String),
+}
+
+/// Skill parameter
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillParameter {
+    pub name: String,
+    pub param_type: SkillParamType,
+    pub default: Option<serde_json::Value>,
+    pub required: bool,
+}
+
+/// Parameter types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SkillParamType {
+    String,
+    Number,
+    Boolean,
+    Url,
+    Selector,
+    AgentId,
+    Custom(String),
+}
+
+/// Skill library for storing and retrieving skills
+pub struct SkillLibrary {
+    skills: DashMap<Uuid, Skill>,
+    category_index: DashMap<SkillCategory, Vec<Uuid>>,
+    name_index: DashMap<String, Uuid>,
+    similarity_threshold: f64,
+}
+
+impl SkillLibrary {
+    pub fn new() -> Self {
+        Self {
+            skills: DashMap::new(),
+            category_index: DashMap::new(),
+            name_index: DashMap::new(),
+            similarity_threshold: 0.8,
+        }
+    }
+    
+    /// Register a new skill
+    pub fn register(&self, skill: Skill) -> Uuid {
+        let id = skill.id;
+        let name = skill.name.clone();
+        let category = skill.category.clone();
+        
+        self.skills.insert(id, skill);
+        self.name_index.insert(name, id);
+        
+        self.category_index
+            .entry(category)
+            .or_insert_with(Vec::new)
+            .push(id);
+        
+        id
+    }
+    
+    /// Get skill by ID
+    pub fn get(&self, id: &Uuid) -> Option<Skill> {
+        self.skills.get(id).map(|s| s.clone())
+    }
+    
+    /// Get skill by name
+    pub fn get_by_name(&self, name: &str) -> Option<Skill> {
+        self.name_index.get(name)
+            .and_then(|id| self.skills.get(&id).map(|s| s.clone()))
+    }
+    
+    /// Find skills by category
+    pub fn find_by_category(&self, category: &SkillCategory) -> Vec<Skill> {
+        self.category_index.get(category)
+            .map(|ids| ids.iter()
+                .filter_map(|id| self.skills.get(id).map(|s| s.clone()))
+                .collect())
+            .unwrap_or_default()
+    }
+    
+    /// Find applicable skills given current state
+    pub fn find_applicable(&self, state: &HashMap<String, serde_json::Value>) -> Vec<Skill> {
+        self.skills.iter()
+            .filter(|entry| self.check_preconditions(&entry.preconditions, state))
+            .map(|entry| entry.clone())
+            .collect()
+    }
+    
+    fn check_preconditions(&self, preconditions: &[SkillCondition], state: &HashMap<String, serde_json::Value>) -> bool {
+        preconditions.iter().all(|cond| {
+            match &cond.kind {
+                ConditionKind::StateEquals { key, value } => {
+                    state.get(key).map(|v| v == value).unwrap_or(false)
+                }
+                ConditionKind::HasCapability(cap) => {
+                    state.get("capabilities")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().any(|c| c.as_str() == Some(cap)))
+                        .unwrap_or(false)
+                }
+                _ => true
+            }
+        })
+    }
+    
+    /// Transfer skill from one agent to another (with adaptation)
+    pub fn transfer_skill(&self, skill_id: &Uuid, target_agent: Uuid) -> Option<Skill> {
+        self.skills.get(skill_id).map(|skill| {
+            let mut transferred = skill.clone();
+            transferred.id = Uuid::new_v4();
+            transferred.learned_from = Some(skill.id);
+            transferred.usage_count = 0;
+            transferred.success_rate = skill.success_rate * 0.8; // Initial penalty
+            transferred.created_at = Utc::now();
+            transferred
+        })
+    }
+    
+    /// Record skill usage outcome
+    pub fn record_usage(&self, skill_id: &Uuid, success: bool) {
+        if let Some(mut skill) = self.skills.get_mut(skill_id) {
+            skill.usage_count += 1;
+            // Running average
+            let alpha = 1.0 / skill.usage_count as f64;
+            skill.success_rate = skill.success_rate * (1.0 - alpha) + 
+                                 (if success { 1.0 } else { 0.0 }) * alpha;
+        }
+    }
+    
+    /// Get library statistics
+    pub fn stats(&self) -> SkillLibraryStats {
+        let by_category: HashMap<String, usize> = self.category_index.iter()
+            .map(|e| (format!("{:?}", e.key()), e.value().len()))
+            .collect();
+        
+        SkillLibraryStats {
+            total_skills: self.skills.len(),
+            by_category,
+            average_success_rate: self.skills.iter()
+                .map(|s| s.success_rate)
+                .sum::<f64>() / self.skills.len().max(1) as f64,
+            total_usages: self.skills.iter()
+                .map(|s| s.usage_count)
+                .sum(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLibraryStats {
+    pub total_skills: usize,
+    pub by_category: HashMap<String, usize>,
+    pub average_success_rate: f64,
+    pub total_usages: u64,
+}
+
+// =============================================================================
+// META-LEARNING & LEARNING TO LEARN
+// =============================================================================
+
+/// Meta-learning configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaLearningConfig {
+    pub inner_learning_rate: f64,
+    pub outer_learning_rate: f64,
+    pub inner_steps: usize,
+    pub task_batch_size: usize,
+    pub adaptation_steps: usize,
+}
+
+impl Default for MetaLearningConfig {
+    fn default() -> Self {
+        Self {
+            inner_learning_rate: 0.01,
+            outer_learning_rate: 0.001,
+            inner_steps: 5,
+            task_batch_size: 4,
+            adaptation_steps: 10,
+        }
+    }
+}
+
+/// Task representation for meta-learning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LearningTask {
+    pub id: Uuid,
+    pub name: String,
+    pub domain: String,
+    pub train_experiences: Vec<Experience>,
+    pub test_experiences: Vec<Experience>,
+    pub difficulty: f64,
+    pub similarity_to_prior: f64,
+}
+
+/// Meta-learner for rapid adaptation
+pub struct MetaLearner {
+    config: MetaLearningConfig,
+    base_policy: LearningPolicy,
+    task_history: Vec<LearningTask>,
+    adaptation_performance: DashMap<String, Vec<f64>>,
+    meta_parameters: Vec<f64>,
+}
+
+impl MetaLearner {
+    pub fn new(config: MetaLearningConfig) -> Self {
+        Self {
+            config,
+            base_policy: LearningPolicy {
+                id: Uuid::new_v4(),
+                name: "meta_base".to_string(),
+                action_values: DashMap::new(),
+                exploration_rate: 0.2,
+                learning_rate: 0.01,
+                discount_factor: 0.99,
+                created_at: Utc::now(),
+                update_count: 0,
+            },
+            task_history: Vec::new(),
+            adaptation_performance: DashMap::new(),
+            meta_parameters: vec![0.0; 100], // Learned initialization
+        }
+    }
+    
+    /// Adapt to a new task quickly using meta-learned initialization
+    pub async fn adapt_to_task(&self, task: &LearningTask) -> LearningPolicy {
+        let mut adapted_policy = self.base_policy.clone();
+        adapted_policy.id = Uuid::new_v4();
+        adapted_policy.name = format!("adapted_{}", task.name);
+        adapted_policy.learning_rate = self.config.inner_learning_rate;
+        
+        // Initialize from meta-parameters (learned good starting point)
+        for (i, param) in self.meta_parameters.iter().enumerate() {
+            let action_key = format!("action_{}", i % 10);
+            if let Some(mut av) = adapted_policy.action_values.get_mut(&action_key) {
+                av.value += param * 0.1;
+            }
+        }
+        
+        // Inner loop: quick adaptation using task's training data
+        for _ in 0..self.config.adaptation_steps {
+            for exp in &task.train_experiences {
+                self.inner_update(&mut adapted_policy, exp);
+            }
+        }
+        
+        adapted_policy
+    }
+    
+    fn inner_update(&self, policy: &mut LearningPolicy, experience: &Experience) {
+        let reward = match &experience.signal {
+            LearningSignal::Reward { value, .. } => *value,
+            _ => 0.0,
+        };
+        
+        let action = &experience.action;
+        let current = policy.action_values
+            .get(action)
+            .map(|v| v.value)
+            .unwrap_or(0.0);
+        
+        let new_value = current + policy.learning_rate * (reward - current);
+        
+        policy.action_values.entry(action.clone()).or_insert(ActionValue {
+            action: action.clone(),
+            value: 0.0,
+            count: 0,
+            variance: 0.0,
+            last_update: Utc::now(),
+        }).value = new_value;
+    }
+    
+    /// Meta-update: improve base policy from task batch performance
+    pub async fn meta_update(&mut self, tasks: &[LearningTask]) {
+        let mut gradients = vec![0.0; self.meta_parameters.len()];
+        
+        for task in tasks {
+            // Adapt to task
+            let adapted = self.adapt_to_task(task).await;
+            
+            // Evaluate on test set
+            let performance = self.evaluate_policy(&adapted, &task.test_experiences);
+            
+            // Track adaptation performance
+            self.adaptation_performance
+                .entry(task.domain.clone())
+                .or_insert_with(Vec::new)
+                .push(performance);
+            
+            // Compute meta-gradient (simplified)
+            for (_i, grad) in gradients.iter_mut().enumerate() {
+                *grad += (performance - 0.5) * 0.01; // Baseline subtraction
+            }
+        }
+        
+        // Update meta-parameters
+        for (param, grad) in self.meta_parameters.iter_mut().zip(gradients.iter()) {
+            *param += self.config.outer_learning_rate * grad / tasks.len() as f64;
+        }
+        
+        // Update base policy's learning rate based on adaptation success
+        let avg_performance: Vec<f64> = self.adaptation_performance.iter()
+            .flat_map(|e| {
+                let vals: Vec<f64> = e.value().iter().cloned().collect();
+                vals
+            })
+            .collect();
+        
+        if !avg_performance.is_empty() {
+            let avg = avg_performance.iter().sum::<f64>() / avg_performance.len() as f64;
+            // Increase exploration if adapting poorly
+            if avg < 0.5 {
+                self.base_policy.exploration_rate = (self.base_policy.exploration_rate * 1.1).min(0.5);
+            }
+        }
+    }
+    
+    fn evaluate_policy(&self, policy: &LearningPolicy, experiences: &[Experience]) -> f64 {
+        if experiences.is_empty() {
+            return 0.5;
+        }
+        
+        let mut total_reward = 0.0;
+        for exp in experiences {
+            let predicted_value = policy.action_values
+                .get(&exp.action)
+                .map(|v| v.value)
+                .unwrap_or(0.0);
+            
+            let actual = match &exp.signal {
+                LearningSignal::Reward { value, .. } => *value,
+                _ => 0.0,
+            };
+            
+            // Reward for good predictions
+            total_reward += 1.0 - (predicted_value - actual).abs().min(1.0);
+        }
+        
+        total_reward / experiences.len() as f64
+    }
+    
+    /// Record task for history
+    pub fn record_task(&mut self, task: LearningTask) {
+        self.task_history.push(task);
+        // Keep history bounded
+        if self.task_history.len() > 1000 {
+            self.task_history.remove(0);
+        }
+    }
+    
+    /// Get meta-learning statistics
+    pub fn stats(&self) -> MetaLearningStats {
+        let domain_performance: HashMap<String, f64> = self.adaptation_performance.iter()
+            .map(|e| {
+                let avg = e.value().iter().sum::<f64>() / e.value().len().max(1) as f64;
+                (e.key().clone(), avg)
+            })
+            .collect();
+        
+        MetaLearningStats {
+            tasks_learned: self.task_history.len(),
+            domains: domain_performance.keys().cloned().collect(),
+            domain_performance,
+            meta_parameter_norm: self.meta_parameters.iter().map(|p| p * p).sum::<f64>().sqrt(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaLearningStats {
+    pub tasks_learned: usize,
+    pub domains: Vec<String>,
+    pub domain_performance: HashMap<String, f64>,
+    pub meta_parameter_norm: f64,
+}
+
+// =============================================================================
+// CURRICULUM LEARNING
+// =============================================================================
+
+/// Curriculum stage for progressive learning
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurriculumStage {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub difficulty: f64,
+    pub prerequisites: Vec<Uuid>,
+    pub skills_taught: Vec<String>,
+    pub success_threshold: f64,
+    pub max_attempts: usize,
+}
+
+/// Curriculum learning manager
+pub struct CurriculumManager {
+    stages: DashMap<Uuid, CurriculumStage>,
+    progress: DashMap<Uuid, AgentProgress>,  // Agent -> Progress
+    stage_order: Vec<Uuid>,
+}
+
+/// Agent's progress through curriculum
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentProgress {
+    pub agent_id: Uuid,
+    pub current_stage: Option<Uuid>,
+    pub completed_stages: Vec<Uuid>,
+    pub stage_attempts: HashMap<Uuid, usize>,
+    pub stage_scores: HashMap<Uuid, f64>,
+    pub started_at: DateTime<Utc>,
+    pub last_activity: DateTime<Utc>,
+}
+
+impl CurriculumManager {
+    pub fn new() -> Self {
+        Self {
+            stages: DashMap::new(),
+            progress: DashMap::new(),
+            stage_order: Vec::new(),
+        }
+    }
+    
+    /// Add a stage to the curriculum
+    pub fn add_stage(&mut self, stage: CurriculumStage) {
+        let id = stage.id;
+        self.stages.insert(id, stage);
+        self.stage_order.push(id);
+    }
+    
+    /// Sort stages by difficulty
+    pub fn sort_by_difficulty(&mut self) {
+        self.stage_order.sort_by(|a, b| {
+            let da = self.stages.get(a).map(|s| s.difficulty).unwrap_or(0.0);
+            let db = self.stages.get(b).map(|s| s.difficulty).unwrap_or(0.0);
+            da.partial_cmp(&db).unwrap()
+        });
+    }
+    
+    /// Enroll an agent in the curriculum
+    pub fn enroll(&self, agent_id: Uuid) {
+        let first_stage = self.stage_order.first().cloned();
+        self.progress.insert(agent_id, AgentProgress {
+            agent_id,
+            current_stage: first_stage,
+            completed_stages: Vec::new(),
+            stage_attempts: HashMap::new(),
+            stage_scores: HashMap::new(),
+            started_at: Utc::now(),
+            last_activity: Utc::now(),
+        });
+    }
+    
+    /// Get next stage for agent
+    pub fn get_next_stage(&self, agent_id: &Uuid) -> Option<CurriculumStage> {
+        let progress = self.progress.get(agent_id)?;
+        
+        // Find first uncompleted stage with satisfied prerequisites
+        for stage_id in &self.stage_order {
+            if progress.completed_stages.contains(stage_id) {
+                continue;
+            }
+            
+            if let Some(stage) = self.stages.get(stage_id) {
+                let prereqs_met = stage.prerequisites.iter()
+                    .all(|p| progress.completed_stages.contains(p));
+                
+                if prereqs_met {
+                    return Some(stage.clone());
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Record stage attempt result
+    pub fn record_attempt(&self, agent_id: &Uuid, stage_id: &Uuid, score: f64) -> CurriculumResult {
+        // First, get the stage info we need
+        let stage_info = self.stages.get(stage_id).map(|s| (s.success_threshold, s.max_attempts));
+        
+        if let Some(mut progress) = self.progress.get_mut(agent_id) {
+            progress.last_activity = Utc::now();
+            
+            // Get attempts count
+            let current_attempts = *progress.stage_attempts.get(stage_id).unwrap_or(&0);
+            let new_attempts = current_attempts + 1;
+            progress.stage_attempts.insert(*stage_id, new_attempts);
+            progress.stage_scores.insert(*stage_id, score);
+            
+            if let Some((success_threshold, max_attempts)) = stage_info {
+                if score >= success_threshold {
+                    progress.completed_stages.push(*stage_id);
+                    // Drop the mutable borrow before calling get_next_stage
+                    drop(progress);
+                    
+                    let next_stage_id = self.get_next_stage(agent_id).map(|s| s.id);
+                    
+                    // Update current_stage
+                    if let Some(mut progress) = self.progress.get_mut(agent_id) {
+                        progress.current_stage = next_stage_id;
+                    }
+                    
+                    return CurriculumResult::StageCompleted { 
+                        stage_id: *stage_id, 
+                        score,
+                        next_stage: next_stage_id,
+                    };
+                } else if new_attempts >= max_attempts {
+                    return CurriculumResult::StageFailed { 
+                        stage_id: *stage_id, 
+                        attempts: new_attempts,
+                        best_score: score,
+                    };
+                } else {
+                    return CurriculumResult::RetryNeeded { 
+                        stage_id: *stage_id, 
+                        attempts_remaining: max_attempts - new_attempts,
+                        current_score: score,
+                    };
+                }
+            }
+        }
+        
+        CurriculumResult::AgentNotEnrolled
+    }
+    
+    /// Get agent's progress
+    pub fn get_progress(&self, agent_id: &Uuid) -> Option<AgentProgress> {
+        self.progress.get(agent_id).map(|p| p.clone())
+    }
+    
+    /// Get curriculum statistics
+    pub fn stats(&self) -> CurriculumStats {
+        let completion_rates: HashMap<Uuid, f64> = self.stages.iter()
+            .map(|entry| {
+                let stage_id = *entry.key();
+                let completed = self.progress.iter()
+                    .filter(|p| p.completed_stages.contains(&stage_id))
+                    .count();
+                let enrolled = self.progress.len();
+                (stage_id, completed as f64 / enrolled.max(1) as f64)
+            })
+            .collect();
+        
+        CurriculumStats {
+            total_stages: self.stages.len(),
+            enrolled_agents: self.progress.len(),
+            stage_completion_rates: completion_rates,
+            average_progress: self.progress.iter()
+                .map(|p| p.completed_stages.len() as f64 / self.stages.len().max(1) as f64)
+                .sum::<f64>() / self.progress.len().max(1) as f64,
+        }
+    }
+}
+
+/// Result of curriculum stage attempt
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CurriculumResult {
+    StageCompleted { stage_id: Uuid, score: f64, next_stage: Option<Uuid> },
+    StageFailed { stage_id: Uuid, attempts: usize, best_score: f64 },
+    RetryNeeded { stage_id: Uuid, attempts_remaining: usize, current_score: f64 },
+    AgentNotEnrolled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurriculumStats {
+    pub total_stages: usize,
+    pub enrolled_agents: usize,
+    pub stage_completion_rates: HashMap<Uuid, f64>,
+    pub average_progress: f64,
+}
+
+// =============================================================================
+// EMERGENT BEHAVIOR DETECTION
+// =============================================================================
+
+/// Detected emergent behavior pattern
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergentBehavior {
+    pub id: Uuid,
+    pub name: String,
+    pub pattern: BehaviorPattern,
+    pub involved_agents: Vec<Uuid>,
+    pub first_observed: DateTime<Utc>,
+    pub occurrence_count: u64,
+    pub beneficial: Option<bool>,
+    pub description: String,
+}
+
+/// Behavior pattern types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum BehaviorPattern {
+    /// Spontaneous coordination without explicit instruction
+    SpontaneousCoordination { action_sequence: Vec<String> },
+    /// Novel problem-solving approach
+    NovelStrategy { problem_type: String, solution_path: Vec<String> },
+    /// Self-organizing structure
+    SelfOrganization { structure_type: String, participants: usize },
+    /// Collective intelligence emergence
+    CollectiveIntelligence { task: String, combined_performance: f64 },
+    /// Role differentiation
+    RoleDifferentiation { roles: Vec<String>, specialization_scores: HashMap<Uuid, f64> },
+    /// Communication protocol emergence
+    EmergentProtocol { signal_vocabulary: Vec<String>, effectiveness: f64 },
+}
+
+/// Emergent behavior detector
+pub struct EmergentBehaviorDetector {
+    behaviors: DashMap<Uuid, EmergentBehavior>,
+    action_history: Arc<RwLock<Vec<AgentAction>>>,
+    detection_window: usize,
+    novelty_threshold: f64,
+    coordination_threshold: f64,
+}
+
+/// Recorded agent action
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAction {
+    pub agent_id: Uuid,
+    pub action: String,
+    pub timestamp: DateTime<Utc>,
+    pub context: HashMap<String, serde_json::Value>,
+    pub outcome: Option<f64>,
+}
+
+impl EmergentBehaviorDetector {
+    pub fn new(detection_window: usize) -> Self {
+        Self {
+            behaviors: DashMap::new(),
+            action_history: Arc::new(RwLock::new(Vec::new())),
+            detection_window,
+            novelty_threshold: 0.7,
+            coordination_threshold: 0.8,
+        }
+    }
+    
+    /// Record an agent action
+    pub async fn record_action(&self, action: AgentAction) {
+        let mut history = self.action_history.write().await;
+        history.push(action);
+        
+        // Keep bounded history
+        if history.len() > self.detection_window * 10 {
+            history.drain(0..self.detection_window);
+        }
+    }
+    
+    /// Analyze for emergent behaviors
+    pub async fn analyze(&self) -> Vec<EmergentBehavior> {
+        let history = self.action_history.read().await;
+        let mut detected = Vec::new();
+        
+        // Detect spontaneous coordination
+        if let Some(behavior) = self.detect_coordination(&history) {
+            detected.push(behavior);
+        }
+        
+        // Detect role differentiation
+        if let Some(behavior) = self.detect_role_differentiation(&history) {
+            detected.push(behavior);
+        }
+        
+        // Detect novel strategies
+        if let Some(behavior) = self.detect_novel_strategy(&history) {
+            detected.push(behavior);
+        }
+        
+        // Store detected behaviors
+        for behavior in &detected {
+            if let Some(mut existing) = self.behaviors.get_mut(&behavior.id) {
+                existing.occurrence_count += 1;
+            } else {
+                self.behaviors.insert(behavior.id, behavior.clone());
+            }
+        }
+        
+        detected
+    }
+    
+    fn detect_coordination(&self, history: &[AgentAction]) -> Option<EmergentBehavior> {
+        if history.len() < 10 {
+            return None;
+        }
+        
+        // Look for synchronized actions across agents
+        let recent = &history[history.len().saturating_sub(self.detection_window)..];
+        
+        // Group by time windows
+        let mut time_windows: HashMap<i64, Vec<&AgentAction>> = HashMap::new();
+        for action in recent {
+            let window_key = action.timestamp.timestamp() / 5; // 5-second windows
+            time_windows.entry(window_key).or_insert_with(Vec::new).push(action);
+        }
+        
+        // Find windows with multiple agents doing related actions
+        for (_, actions) in &time_windows {
+            if actions.len() >= 3 {
+                let agents: Vec<Uuid> = actions.iter().map(|a| a.agent_id).collect();
+                let unique_agents: std::collections::HashSet<_> = agents.iter().collect();
+                
+                if unique_agents.len() >= 2 {
+                    let action_sequence: Vec<String> = actions.iter()
+                        .map(|a| a.action.clone())
+                        .collect();
+                    
+                    return Some(EmergentBehavior {
+                        id: Uuid::new_v4(),
+                        name: "Spontaneous Coordination".to_string(),
+                        pattern: BehaviorPattern::SpontaneousCoordination { action_sequence },
+                        involved_agents: unique_agents.into_iter().cloned().collect(),
+                        first_observed: Utc::now(),
+                        occurrence_count: 1,
+                        beneficial: None,
+                        description: "Multiple agents synchronized actions without explicit coordination".to_string(),
+                    });
+                }
+            }
+        }
+        
+        None
+    }
+    
+    fn detect_role_differentiation(&self, history: &[AgentAction]) -> Option<EmergentBehavior> {
+        if history.len() < 20 {
+            return None;
+        }
+        
+        // Analyze action distribution per agent
+        let mut agent_actions: HashMap<Uuid, HashMap<String, usize>> = HashMap::new();
+        
+        for action in history {
+            agent_actions
+                .entry(action.agent_id)
+                .or_insert_with(HashMap::new)
+                .entry(action.action.clone())
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+        }
+        
+        // Calculate specialization scores
+        let mut specialization_scores: HashMap<Uuid, f64> = HashMap::new();
+        let mut roles: Vec<String> = Vec::new();
+        
+        for (agent, actions) in &agent_actions {
+            let total: usize = actions.values().sum();
+            if total > 0 {
+                // Find dominant action type
+                if let Some((dominant, count)) = actions.iter().max_by_key(|(_, c)| *c) {
+                    let specialization = *count as f64 / total as f64;
+                    if specialization > 0.5 {
+                        specialization_scores.insert(*agent, specialization);
+                        if !roles.contains(dominant) {
+                            roles.push(dominant.clone());
+                        }
+                    }
+                }
+            }
+        }
+        
+        if roles.len() >= 2 && specialization_scores.len() >= 2 {
+            return Some(EmergentBehavior {
+                id: Uuid::new_v4(),
+                name: "Role Differentiation".to_string(),
+                pattern: BehaviorPattern::RoleDifferentiation { roles, specialization_scores: specialization_scores.clone() },
+                involved_agents: specialization_scores.keys().cloned().collect(),
+                first_observed: Utc::now(),
+                occurrence_count: 1,
+                beneficial: Some(true),
+                description: "Agents have naturally differentiated into specialized roles".to_string(),
+            });
+        }
+        
+        None
+    }
+    
+    fn detect_novel_strategy(&self, history: &[AgentAction]) -> Option<EmergentBehavior> {
+        if history.len() < 5 {
+            return None;
+        }
+        
+        // Look for action sequences that achieve high outcomes
+        let recent = &history[history.len().saturating_sub(10)..];
+        
+        let high_outcome_actions: Vec<_> = recent.iter()
+            .filter(|a| a.outcome.map(|o| o > 0.8).unwrap_or(false))
+            .collect();
+        
+        if high_outcome_actions.len() >= 3 {
+            let solution_path: Vec<String> = high_outcome_actions.iter()
+                .map(|a| a.action.clone())
+                .collect();
+            
+            return Some(EmergentBehavior {
+                id: Uuid::new_v4(),
+                name: "Novel Strategy".to_string(),
+                pattern: BehaviorPattern::NovelStrategy { 
+                    problem_type: "general".to_string(), 
+                    solution_path 
+                },
+                involved_agents: high_outcome_actions.iter().map(|a| a.agent_id).collect(),
+                first_observed: Utc::now(),
+                occurrence_count: 1,
+                beneficial: Some(true),
+                description: "A new effective action sequence has been discovered".to_string(),
+            });
+        }
+        
+        None
+    }
+    
+    /// Mark a behavior as beneficial or harmful
+    pub fn classify_behavior(&self, behavior_id: &Uuid, beneficial: bool) {
+        if let Some(mut behavior) = self.behaviors.get_mut(behavior_id) {
+            behavior.beneficial = Some(beneficial);
+        }
+    }
+    
+    /// Get all detected behaviors
+    pub fn get_behaviors(&self) -> Vec<EmergentBehavior> {
+        self.behaviors.iter().map(|e| e.clone()).collect()
+    }
+    
+    /// Get detection statistics
+    pub fn stats(&self) -> EmergentBehaviorStats {
+        let behaviors: Vec<_> = self.behaviors.iter().collect();
+        
+        EmergentBehaviorStats {
+            total_detected: behaviors.len(),
+            beneficial: behaviors.iter().filter(|b| b.beneficial == Some(true)).count(),
+            harmful: behaviors.iter().filter(|b| b.beneficial == Some(false)).count(),
+            unclassified: behaviors.iter().filter(|b| b.beneficial.is_none()).count(),
+            total_occurrences: behaviors.iter().map(|b| b.occurrence_count).sum(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmergentBehaviorStats {
+    pub total_detected: usize,
+    pub beneficial: usize,
+    pub harmful: usize,
+    pub unclassified: usize,
+    pub total_occurrences: u64,
 }
