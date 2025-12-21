@@ -1,0 +1,30 @@
+[package]
+name = "hyperlight-agentic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "The Agentic Web Stack - A new paradigm for agent-native web interaction"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+tokio.workspace = true
+rand.workspace = true
+sha2.workspace = true
+
+# Internal dependencies
+hyperlight-neural = { path = "../hyperlight-neural" }
+hyperlight-crypto = { path = "../hyperlight-crypto" }
+hyperlight-protocol = { path = "../hyperlight-protocol" }
+hyperlight-compiler = { path = "../hyperlight-compiler" }
+
+# Agent-specific
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "5.5"
+petgraph = "0.6"
+url = { version = "2.5", features = ["serde"] }
+regex = "1.10"

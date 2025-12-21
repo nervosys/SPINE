@@ -651,3 +651,93 @@ A moving-target defense protocol that hides communication patterns in latent spa
 ## Conclusion
 
 Hyperlight represents a paradigm shift in how AI agents interact with the web. By eliminating rendering overhead and providing structured, semantic representations, it enables agents to operate at speeds and scales previously impossible with traditional browsers.
+
+---
+
+## The Agentic Web Stack (hyperlight-agentic)
+
+### Vision: Beyond the Human Web
+
+The traditional web was designed for humans: point, click, read, scroll. Hyperlight's **Agentic Web Stack** reimagines the web for AI agents as first-class citizens. This is not an evolution of the human web—it's a parallel universe where agents navigate by meaning, communicate in latent space, and form swarms for collective intelligence.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AGENTIC WEB STACK                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 5: Collective Intelligence                               │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │ SwarmMind   │ │ Consensus   │ │ Emergence   │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 4: Agent Cognition                                       │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │ Goals       │ │ Planning    │ │ Learning    │               │
+│  │ Intentions  │ │ Reasoning   │ │ Memory      │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 3: Semantic Web                                          │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │ Knowledge   │ │ Ontology    │ │ Inference   │               │
+│  │ Graph       │ │ Mapping     │ │ Engine      │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 2: Latent Communication                                  │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │ Chameleon   │ │ Speculative │ │ Neural      │               │
+│  │ Protocol    │ │ Decoding    │ │ Encoding    │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 1: Transport                                             │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
+│  │ QUIC/0-RTT  │ │ TCP/TLS     │ │ WebSocket   │               │
+│  └─────────────┘ └─────────────┘ └─────────────┘               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Core Concepts
+
+#### 1. Semantic Resource Locators
+
+Agents don't navigate by URLs—they navigate by **meaning**:
+
+- **Traditional URL**: ResourceLocator::Url("https://weather.gov/sf")
+- **Semantic**: ResourceLocator::Semantic { concept: "weather", constraints: ["location:sf"] }
+- **Latent Space**: ResourceLocator::LatentCoord { space: "knowledge", coordinates: [0.5, -0.3] }
+
+#### 2. Intentions & Goals
+
+Agents express **what** they want, not **how** to get it. The runtime handles navigation, extraction, and verification.
+
+#### 3. Agent-to-Agent Communication
+
+Messages include **latent encodings** for semantic matching, enabling agents to find relevant knowledge across the network.
+
+#### 4. Collective Intelligence (Swarms)
+
+Agents form swarms with roles: Leader, Coordinator, Worker, Validator, Observer. Swarms enable parallel execution, consensus building, and emergent intelligence.
+
+#### 5. Knowledge Graph with Semantic Search
+
+Agents maintain persistent knowledge with embedding-based retrieval for similarity queries.
+
+### Integration with Hyperlight Stack
+
+| Agentic Layer | Hyperlight Component | Purpose |
+|---------------|---------------------|---------|
+| Transport | hyperlight-protocol | QUIC/TCP with Chameleon encryption |
+| Neural Encoding | hyperlight-neural | VAE + MIRAS latent projections |
+| Prediction | hyperlight-crypto | Titans predictor for speculative communication |
+| Planning | hyperlight-compiler | HLS→HLB for executable plans |
+| Knowledge | hyperlight-cluster | Distributed knowledge synchronization |
+
+### The Future of Web Interaction
+
+With the Agentic Web Stack, Hyperlight enables:
+
+1. **Semantic Navigation**: Find resources by meaning, not addresses
+2. **Latent Communication**: Messages carry neural embeddings
+3. **Collective Problem-Solving**: Swarms tackle complex tasks
+4. **Continuous Learning**: MIRAS-based perpetual memory
+5. **Autonomous Operation**: Multi-step workflow execution
+
+The agentic web isn't coming—it's here.

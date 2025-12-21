@@ -11,6 +11,7 @@ members = [
     "hyperlight-crypto",
     "hyperlight-human",
     "hyperlight-browser",
+    "hyperlight-agentic",
 ]
 resolver = "2"
 
