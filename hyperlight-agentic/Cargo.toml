@@ -57,3 +57,11 @@ path = "examples/cognitive_demo.rs"
 [[example]]
 name = "learning_demo"
 path = "examples/learning_demo.rs"
+
+[[example]]
+name = "communication_demo"
+path = "examples/communication_demo.rs"
+
+[[example]]
+name = "neural_protocol_demo"
+path = "examples/neural_protocol_demo.rs"

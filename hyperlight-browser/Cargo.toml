@@ -12,6 +12,7 @@ hyperlight-human = { path = "../hyperlight-human" }
 hyperlight-wasm = { path = "../hyperlight-wasm" }
 hyperlight-protocol = { path = "../hyperlight-protocol" }
 hyperlight-cluster = { path = "../hyperlight-cluster" }
+hyperlight-agentic = { path = "../hyperlight-agentic" }
 eframe = "0.28"
 egui = "0.28"
 tokio = { workspace = true }

@@ -700,6 +700,12 @@ pub enum BrowserCommand {
     CreateSwarmPlan { goal: String },
     /// Execute a specific task within a swarm plan
     ExecutePlanTask { plan_id: Uuid, task_id: Uuid },
+    /// Transmit data using the neural protocol
+    NeuralTransmit { data: Vec<u8>, domain: String },
+    /// Get the full agentic state (memory, speech acts, etc.)
+    GetAgenticState,
+    /// Send a speech act to another agent
+    SendSpeechAct { target_id: Uuid, performative: String, content: String },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

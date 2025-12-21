@@ -88,6 +88,7 @@ struct BrowserState {
     client: reqwest::Client,
     encoder: Mutex<NeuralLatentEncoder>,
     cluster: Mutex<ClusterNode>,
+    agentic_runtime: Arc<hyperlight_agentic::AgenticWebRuntime>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
 }
@@ -817,6 +818,54 @@ async fn handle_command(
                 }
             }
         }
+        BrowserCommand::NeuralTransmit { data, domain } => {
+            let domain_enum = match domain.as_str() {
+                "RealTime" => hyperlight_agentic::ProtocolDomain::RealTime,
+                "BulkData" => hyperlight_agentic::ProtocolDomain::BulkData,
+                "SecureControl" => hyperlight_agentic::ProtocolDomain::SecureControl,
+                "IoT" => hyperlight_agentic::ProtocolDomain::IoT,
+                _ => hyperlight_agentic::ProtocolDomain::BulkData,
+            };
+            
+            let mut protocol = hyperlight_agentic::NeuralProtocol::new(1000.0, 5.0);
+            match protocol.transmit(&data, domain_enum).await {
+                Ok(stats) => Response {
+                    id: request_id,
+                    result: Some(serde_json::to_value(stats).unwrap()),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id: request_id,
+                    result: None,
+                    error: Some(e),
+                },
+            }
+        }
+        BrowserCommand::GetAgenticState => {
+            let runtime = state.agentic_runtime.clone();
+            let profile = runtime.profile();
+            let variant = profile.miras_variant.clone();
+            let surprise = 0.15; 
+            
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({
+                    "miras_variant": variant,
+                    "surprise_level": surprise,
+                    "agent_id": profile.id,
+                    "trust_level": format!("{:?}", profile.trust_level),
+                })),
+                error: None,
+            }
+        }
+        BrowserCommand::SendSpeechAct { target_id, performative, content } => {
+            info!("Sending speech act to {}: {} - {}", target_id, performative, content);
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({ "status": "sent" })),
+                error: None,
+            }
+        }
     };
     
     timer.observe_duration();
@@ -828,7 +877,10 @@ async fn main() -> Result<()> {
     init_telemetry("hyperlight-core")?;
     info!("Starting Hyperlight Agentic Browser...");
 
-    let cluster_addr = "127.0.0.1:8081".parse().unwrap();
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let cluster_port = port.parse::<u16>().unwrap() + 1000;
+    let cluster_addr = format!("127.0.0.1:{}", cluster_port).parse().unwrap();
+    
     let capabilities = NodeCapabilities {
         supports_wasm: true,
         supports_chameleon: true,
@@ -841,6 +893,17 @@ async fn main() -> Result<()> {
     let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
     cluster_node.start().await?;
 
+    let profile = hyperlight_agentic::AgentProfile::new("Hyperlight Core Agent")
+        .with_capabilities(vec![
+            hyperlight_agentic::AgentCapability::Navigation,
+            hyperlight_agentic::AgentCapability::ContentExtraction,
+            hyperlight_agentic::AgentCapability::AgentCommunication,
+            hyperlight_agentic::AgentCapability::KnowledgeManagement,
+            hyperlight_agentic::AgentCapability::SwarmParticipation,
+        ])
+        .with_trust(hyperlight_agentic::TrustLevel::Core);
+    let agentic_runtime = Arc::new(hyperlight_agentic::AgenticWebRuntime::new(profile));
+
     let state = Arc::new(BrowserState {
         sessions: DashMap::new(),
         knowledge_base: DashMap::new(),
@@ -849,6 +912,7 @@ async fn main() -> Result<()> {
         client: reqwest::Client::new(),
         encoder: Mutex::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)), // Standard 256-dim latent space
         cluster: Mutex::new(cluster_node),
+        agentic_runtime,
         rate_limits: DashMap::new(),
     });
 
@@ -1215,8 +1279,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    let addr = "127.0.0.1:8082";
-    let listener = TcpListener::bind(addr).await?;
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = TcpListener::bind(&addr).await?;
     info!("Listening on {}", addr);
 
     // TLS setup

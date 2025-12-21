@@ -299,6 +299,46 @@ The Chameleon Protocol uses **Titans Neural Long-Term Memory** to hide communica
 - **Dynamic Evolution**: The transformation matrices evolve over time based on quantum-resistant seeds, ensuring that the "language" of the protocol is constantly changing.
 - **Implicit Encryption**: The latent space projection itself acts as a form of encryption where the model weights and Titans memory state are the keys.
 
+## Deployment
+
+Hyperlight is designed for high-performance native deployment in distributed clusters.
+
+### Quick Start (Local Cluster)
+
+The easiest way to deploy a local Hyperlight cluster is using the provided deployment script:
+
+```bash
+# Start a 3-node local cluster (1 seed, 2 worker nodes)
+./scripts/deploy.sh
+```
+
+This will start:
+- **Seed Node**: Port 8080 (Central orchestrator)
+- **Worker Nodes**: Ports 8081 and 8082, connected to the seed node.
+
+Logs and data will be stored in the `./data` directory.
+
+### Manual Deployment
+
+To deploy a single node manually:
+
+```bash
+# Build the core server
+cargo build --release -p hyperlight-core
+
+# Run the server
+./target/release/hyperlight-core
+```
+
+### Environment Variables
+
+- `RUST_LOG`: Logging level (`info`, `debug`, `trace`)
+- `PORT`: The port to listen on for agent connections (default: `8080`)
+- `NODE_ID`: Unique identifier for the node
+- `SEED_NODES`: Comma-separated list of seed nodes (e.g., `127.0.0.1:8080`)
+- `HYPERLIGHT_KNOWLEDGE_DIR`: Path for persistent knowledge storage
+- `HYPERLIGHT_SESSIONS_DIR`: Path for session data storage
+
 ## Getting Started
 
 ### Prerequisites

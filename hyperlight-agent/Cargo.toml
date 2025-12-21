@@ -12,6 +12,7 @@ hyperlight-compiler = { path = "../hyperlight-compiler" }
 hyperlight-wasm = { path = "../hyperlight-wasm" }
 hyperlight-cluster = { path = "../hyperlight-cluster" }
 hyperlight-human = { path = "../hyperlight-human" }
+hyperlight-agentic = { path = "../hyperlight-agentic" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

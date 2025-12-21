@@ -20,6 +20,9 @@ enum BrowserEvent {
     CapabilitiesUpdated(Vec<String>),
     ReasoningUpdated(Vec<hyperlight_human::AgentAction>),
     PlansUpdated(Vec<hyperlight_protocol::SwarmPlan>),
+    NeuralStatsUpdated(hyperlight_agentic::TransmissionResult),
+    MemoryStateUpdated(String, f32),
+    SpeechActsUpdated(Vec<hyperlight_agentic::Performative>),
     Error(String),
 }
 
@@ -45,6 +48,14 @@ struct HyperlightBrowser {
     proposal_tags: String,
     swarm_goal: String,
     active_plans: Vec<hyperlight_protocol::SwarmPlan>,
+    neural_stats: Option<hyperlight_agentic::TransmissionResult>,
+    miras_variant: String,
+    surprise_level: f32,
+    selected_domain: hyperlight_agentic::ProtocolDomain,
+    speech_acts: Vec<hyperlight_agentic::Performative>,
+    comms_target_id: String,
+    comms_performative: String,
+    comms_content: String,
     agent: Arc<Mutex<Option<AgentClient<tokio::net::TcpStream>>>>,
     cluster_client: ClusterClient,
     rt: Runtime,
@@ -58,6 +69,8 @@ struct HyperlightBrowser {
     show_swarm: bool,
     show_consensus: bool,
     show_planning: bool,
+    show_neural: bool,
+    show_communication: bool,
     autonomous_mode: bool,
     event_tx: mpsc::Sender<BrowserEvent>,
     event_rx: mpsc::Receiver<BrowserEvent>,
@@ -88,6 +101,14 @@ impl HyperlightBrowser {
             proposal_tags: String::new(),
             swarm_goal: String::new(),
             active_plans: Vec::new(),
+            neural_stats: None,
+            miras_variant: "MONETA".to_string(),
+            surprise_level: 0.0,
+            selected_domain: hyperlight_agentic::ProtocolDomain::BulkData,
+            speech_acts: Vec::new(),
+            comms_target_id: String::new(),
+            comms_performative: "Inform".to_string(),
+            comms_content: String::new(),
             agent: Arc::new(Mutex::new(None)),
             cluster_client: ClusterClient::new(vec!["127.0.0.1:8080".parse().unwrap()]),
             rt: Runtime::new().unwrap(),
@@ -101,6 +122,8 @@ impl HyperlightBrowser {
             show_swarm: false,
             show_consensus: false,
             show_planning: false,
+            show_neural: true,
+            show_communication: true,
             autonomous_mode: false,
             event_tx: tx,
             event_rx: rx,
@@ -372,6 +395,62 @@ impl HyperlightBrowser {
         });
     }
 
+    fn refresh_agentic_state(&mut self) {
+        let agent_clone = self.agent.clone();
+        let tx = self.event_tx.clone();
+        
+        self.rt.spawn(async move {
+            let mut lock = agent_clone.lock().await;
+            let agent = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            if let Ok(state) = agent.get_agentic_state().await {
+                if let Some(variant) = state["miras_variant"].as_str() {
+                    let surprise = state["surprise_level"].as_f64().unwrap_or(0.0) as f32;
+                    let _ = tx.send(BrowserEvent::MemoryStateUpdated(variant.to_string(), surprise)).await;
+                }
+                if let Some(acts_val) = state["speech_acts"].as_array() {
+                    if let Ok(acts) = serde_json::from_value::<Vec<hyperlight_agentic::Performative>>(serde_json::Value::Array(acts_val.clone())) {
+                        let _ = tx.send(BrowserEvent::SpeechActsUpdated(acts)).await;
+                    }
+                }
+            }
+        });
+    }
+
+    fn send_speech_act(&mut self) {
+        let target_id_str = self.comms_target_id.clone();
+        let performative = self.comms_performative.clone();
+        let content = self.comms_content.clone();
+        let agent_clone = self.agent.clone();
+        let tx = self.event_tx.clone();
+        
+        self.rt.spawn(async move {
+            let target_id = match uuid::Uuid::parse_str(&target_id_str) {
+                Ok(id) => id,
+                Err(_) => {
+                    let _ = tx.send(BrowserEvent::Error("Invalid Target Agent ID".to_string())).await;
+                    return;
+                }
+            };
+
+            let mut lock = agent_clone.lock().await;
+            let agent = match lock.as_mut() {
+                Some(a) => a,
+                None => return,
+            };
+            
+            if let Err(e) = agent.send_speech_act(target_id, &performative, &content).await {
+                let _ = tx.send(BrowserEvent::Error(format!("Failed to send speech act: {}", e))).await;
+            } else {
+                let _ = tx.send(BrowserEvent::StatusChanged("Speech act sent".to_string())).await;
+            }
+        });
+        self.comms_content.clear();
+    }
+
     fn transfer(&mut self) {
         let agent_clone = self.agent.clone();
         let tx = self.event_tx.clone();
@@ -532,6 +611,12 @@ impl eframe::App for HyperlightBrowser {
                 BrowserEvent::CapabilitiesUpdated(caps) => self.current_capabilities = caps,
                 BrowserEvent::ReasoningUpdated(actions) => self.suggested_actions = actions,
                 BrowserEvent::PlansUpdated(plans) => self.active_plans = plans,
+                BrowserEvent::NeuralStatsUpdated(stats) => self.neural_stats = Some(stats),
+                BrowserEvent::MemoryStateUpdated(variant, surprise) => {
+                    self.miras_variant = variant;
+                    self.surprise_level = surprise;
+                }
+                BrowserEvent::SpeechActsUpdated(acts) => self.speech_acts = acts,
                 BrowserEvent::Error(e) => {
                     self.status = format!("Error: {}", e);
                     self.content = format!("Error: {}", e);
@@ -679,6 +764,8 @@ impl eframe::App for HyperlightBrowser {
                 ui.checkbox(&mut self.show_swarm, "Swarm");
                 ui.checkbox(&mut self.show_consensus, "Consensus");
                 ui.checkbox(&mut self.show_planning, "Planning");
+                ui.checkbox(&mut self.show_neural, "Neural");
+                ui.checkbox(&mut self.show_communication, "Comms");
 
                 if ui.checkbox(&mut self.autonomous_mode, "Auto").changed() {
                     let enabled = self.autonomous_mode;
@@ -1065,6 +1152,145 @@ impl eframe::App for HyperlightBrowser {
                         });
                     }
                 }
+            });
+        }
+
+        if self.show_neural {
+            egui::SidePanel::right("neural_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Neural & Memory Dashboard");
+                ui.separator();
+
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Titans Memory State").strong());
+                        if ui.button("🔄").clicked() {
+                            self.refresh_agentic_state();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Active MIRAS Variant:");
+                        ui.label(egui::RichText::new(&self.miras_variant).color(egui::Color32::from_rgb(0, 255, 255)));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Surprise Level:");
+                        ui.add(egui::ProgressBar::new(self.surprise_level).text(format!("{:.2}", self.surprise_level)));
+                    });
+                });
+
+                ui.separator();
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Neural Protocol Stats").strong());
+                    if let Some(stats) = &self.neural_stats {
+                        ui.label(format!("Throughput: {:.2} Mbps", stats.throughput_mbps));
+                        ui.label(format!("Compression: {:.2}x", stats.compression_ratio));
+                        ui.label(format!("Spike Count: {}", stats.spike_count));
+                        ui.label(format!("Latency: {:?}", stats.duration));
+                    } else {
+                        ui.label("No neural traffic detected");
+                    }
+                });
+
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Domain-Specific ASIC").strong());
+                    egui::ComboBox::from_label("Modality")
+                        .selected_text(format!("{:?}", self.selected_domain))
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::BulkData, "BulkData");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::Text, "Text");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::Image, "Image");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::Audio, "Audio");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::Video, "Video");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::StructuredData, "StructuredData");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::Code, "Code");
+                            ui.selectable_value(&mut self.selected_domain, hyperlight_agentic::ProtocolDomain::NeuralWeights, "NeuralWeights");
+                        });
+
+                    if ui.button("Run Neural Benchmark").clicked() {
+                        let agent_clone = self.agent.clone();
+                        let tx = self.event_tx.clone();
+                        let domain = self.selected_domain;
+                        self.rt.spawn(async move {
+                            let mut lock = agent_clone.lock().await;
+                            let agent = match lock.as_mut() {
+                                Some(a) => a,
+                                None => return,
+                            };
+                            
+                            let data = vec![0u8; 1024 * 1024]; // 1MB
+                            if let Ok(stats) = agent.transmit_neural(&data, domain).await {
+                                let _ = tx.send(BrowserEvent::NeuralStatsUpdated(stats)).await;
+                            }
+                        });
+                    }
+                });
+            });
+        }
+
+        if self.show_communication {
+            egui::SidePanel::left("comms_panel").resizable(true).show(ctx, |ui| {
+                ui.heading("Agent Communication");
+                ui.separator();
+
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Send Speech Act").strong());
+                    ui.horizontal(|ui| {
+                        ui.label("Target ID:");
+                        ui.text_edit_singleline(&mut self.comms_target_id);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Performative:");
+                        egui::ComboBox::from_label("")
+                            .selected_text(&self.comms_performative)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.comms_performative, "Inform".to_string(), "Inform");
+                                ui.selectable_value(&mut self.comms_performative, "Request".to_string(), "Request");
+                                ui.selectable_value(&mut self.comms_performative, "Propose".to_string(), "Propose");
+                                ui.selectable_value(&mut self.comms_performative, "Accept".to_string(), "Accept");
+                                ui.selectable_value(&mut self.comms_performative, "Reject".to_string(), "Reject");
+                                ui.selectable_value(&mut self.comms_performative, "CallForProposal".to_string(), "CallForProposal");
+                            });
+                    });
+                    ui.label("Content:");
+                    ui.add(egui::TextEdit::multiline(&mut self.comms_content).desired_rows(2));
+                    if ui.button("Send Act").clicked() {
+                        self.send_speech_act();
+                    }
+                });
+
+                ui.separator();
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Speech Acts (FIPA)").strong());
+                    if self.speech_acts.is_empty() {
+                        ui.label("No active conversations");
+                    } else {
+                        for act in &self.speech_acts {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(format!("{:?}", act.speech_act)).color(egui::Color32::GOLD));
+                                    ui.label(format!("from: {}", act.sender.to_string().get(0..8).unwrap_or("...")));
+                                });
+                                match &act.speech_act {
+                                    hyperlight_agentic::SpeechAct::Inform { content } => {
+                                        ui.label(format!("Content: {}", content));
+                                    }
+                                    hyperlight_agentic::SpeechAct::Request { action, .. } => {
+                                        ui.label(format!("Request: {}", action));
+                                    }
+                                    _ => {
+                                        ui.label("Other speech act");
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
+
+                ui.separator();
+                ui.group(|ui| {
+                    ui.label(egui::RichText::new("Contract Net Protocol").strong());
+                    ui.label("Manager: Active");
+                    ui.label("Bids received: 0");
+                });
             });
         }
 

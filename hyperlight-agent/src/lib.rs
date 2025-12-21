@@ -18,6 +18,7 @@ pub struct AgentClient<S> {
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,
     event_tx: Option<mpsc::Sender<hyperlight_protocol::Event>>,
     human_engine: Option<HumanInteractionEngine>,
+    pub neural_protocol: Option<hyperlight_agentic::NeuralProtocol>,
 }
 
 impl AgentClient<TcpStream> {
@@ -30,6 +31,7 @@ impl AgentClient<TcpStream> {
             latent_tx: None,
             event_tx: None,
             human_engine: None,
+            neural_protocol: Some(hyperlight_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
 }
@@ -92,6 +94,7 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             latent_tx: None,
             event_tx: None,
             human_engine: None,
+            neural_protocol: Some(hyperlight_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
 }
@@ -427,6 +430,43 @@ where
         let res = self.send_request(BrowserCommand::ExecutePlanTask { 
             plan_id, 
             task_id 
+        }).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(())
+    }
+
+    pub async fn transmit_neural(&mut self, data: &[u8], domain: hyperlight_agentic::ProtocolDomain) -> anyhow::Result<hyperlight_agentic::TransmissionResult> {
+        let domain_str = format!("{:?}", domain);
+        let res = self.send_request(BrowserCommand::NeuralTransmit { 
+            data: data.to_vec(), 
+            domain: domain_str 
+        }).await?;
+        
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        
+        let stats = res.result
+            .and_then(|v| serde_json::from_value::<hyperlight_agentic::TransmissionResult>(v).ok())
+            .ok_or_else(|| anyhow::anyhow!("Failed to parse transmission results"))?;
+        Ok(stats)
+    }
+
+    pub async fn get_agentic_state(&mut self) -> anyhow::Result<serde_json::Value> {
+        let res = self.send_request(BrowserCommand::GetAgenticState).await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(res.result.unwrap_or_default())
+    }
+
+    pub async fn send_speech_act(&mut self, target_id: uuid::Uuid, performative: &str, content: &str) -> anyhow::Result<()> {
+        let res = self.send_request(BrowserCommand::SendSpeechAct { 
+            target_id, 
+            performative: performative.to_string(), 
+            content: content.to_string() 
         }).await?;
         if let Some(err) = res.error {
             anyhow::bail!(err);
