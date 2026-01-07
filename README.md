@@ -1,14 +1,24 @@
-# Hyperlight ⚡
+# SPINE 🧠🦴
 
-**Hyperlight** is a next-generation **Agentic Web Stack** designed as an alternative to the traditional TCP/IP web architecture. Built from the ground up for **collaborative and adversarial AI systems**, Hyperlight provides a complete communication and execution framework for autonomous agents.
+**SPINE** (Synaptic Path INterconnecting Entities) is a **bioinspired agentic web stack** designed as an alternative to the traditional TCP/IP web architecture. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
 
-> *"The web was designed for humans reading documents. Hyperlight is designed for AI systems executing programs."*
+> *"The web was designed for humans reading documents. SPINE is designed for AI systems executing programs—like a digital nervous system for the agentic web."*
+
+## Why "SPINE"?
+
+The name SPINE reflects the bioinspired principles at its core:
+
+- **Synaptic Communication**: Neural-inspired message passing with Titans architecture
+- **Adaptive Signal Routing**: Like biological spinal cords routing signals between brain and body
+- **Distributed Processing**: Swarm intelligence mimicking neural population coding
+- **Moving-Target Defense**: Chameleon Protocol inspired by biological camouflage
+- **Memory Consolidation**: MIRAS variants implementing continual learning like hippocampal replay
 
 ## Why a New Web Stack?
 
 The traditional web stack (HTTP/HTML/CSS/JS) was designed in the 1990s for humans browsing hyperlinked documents. It's fundamentally misaligned with how AI agents operate:
 
-| Traditional Web                        | Hyperlight Agentic Web                   |
+| Traditional Web                        | SPINE Agentic Web                        |
 | -------------------------------------- | ---------------------------------------- |
 | Documents for human reading            | Programs for AI execution                |
 | Rendering-first (DOM → Layout → Paint) | Semantics-first (UR extraction)          |
@@ -29,27 +39,41 @@ The traditional web stack (HTTP/HTML/CSS/JS) was designed in the 1990s for human
 
 ## Core Components
 
-Hyperlight is composed of 11 specialized crates:
+SPINE is composed of 16 specialized crates organized into a cohesive bioinspired architecture:
 
-- **`hyperlight-core`**: Multi-session orchestration engine managing concurrent AI agent connections.
-- **`hyperlight-parser`**: Recursive semantic parser translating HTML into **Unified Representation (UR)** optimized for LLM context windows.
-- **`hyperlight-protocol`**: Low-latency TCP-based protocol with encryption, compression, and binary program execution support.
-- **`hyperlight-compiler`**: Compiles **Hyperlight Source (HLS)** into **Hyperlight Binary (HLB)** for the "websites-as-programs" paradigm.
-- **`hyperlight-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the Hyperlight stack.
-- **`hyperlight-human`**: Transpiler for legacy web content (HTML/CSS/JS) into Hyperlight-native HLS/HLB.
-- **`hyperlight-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
-- **`hyperlight-wasm`**: High-performance execution runtime for HLB using WebAssembly.
-- **`hyperlight-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
-- **`hyperlight-neural`**: **Titans architecture** (Neural Long-Term Memory) for adaptive protocol encoding.
-- **`hyperlight-crypto`**: **Titans-based speculative decoding** and quantum-resistant lattice cryptography.
+### Foundation Layer
+- **`spine-core`**: Multi-session orchestration engine managing concurrent AI agent connections.
+- **`spine-parser`**: Recursive semantic parser translating HTML into **Unified Representation (UR)** optimized for LLM context windows.
+- **`spine-compiler`**: Compiles **SPINE Source (HLS)** into **SPINE Binary (HLB)** for the "websites-as-programs" paradigm.
+- **`spine-wasm`**: High-performance execution runtime for HLB using WebAssembly.
+
+### Transport Layer
+- **`spine-protocol`**: Low-latency TCP-based protocol with encryption, compression, and binary program execution support.
+- **`spine-transport`**: High-performance zero-copy transport layer with BBR congestion control and connection pooling.
+- **`spine-stream`**: Reactive streaming layer with multiplexing, flow control, chunked transfer, and priority queuing.
+
+### Intelligence Layer
+- **`spine-neural`**: **Titans architecture** (Neural Long-Term Memory) with MIRAS variants for adaptive protocol encoding.
+- **`spine-crypto`**: **Titans-based speculative decoding** and quantum-resistant lattice cryptography.
+- **`spine-recursive`**: **Recursive Language Model** for infinite context (10M+ chars) via REPL environment per arXiv:2512.24601.
+- **`spine-knowledge`**: **Unified bioinspired memory** with episodic (hippocampus), semantic (neocortex), working (prefrontal cortex), and collective (social brain) subsystems. CRDT-based distributed single-source-of-truth.
+
+### Agent Layer
+- **`spine-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the SPINE stack.
+- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities.
+- **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
+- **`spine-human`**: Bot-detection bypass with realistic mouse paths, typing delays, and human-like interaction patterns.
+
+### Application Layer
+- **`spine-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
 
 ## Intelligence Layer
 
-Hyperlight features a sophisticated intelligence layer optimized for AI-to-AI communication:
+SPINE features a sophisticated intelligence layer optimized for AI-to-AI communication:
 
 ### Titans Architecture (Neural Long-Term Memory)
 
-Unlike traditional RNNs, LSTMs, or even standard Transformers, Hyperlight uses the **Titans architecture** from Google Research throughout the entire stack:
+Unlike traditional RNNs, LSTMs, or even standard Transformers, SPINE uses the **Titans architecture** from Google Research throughout the entire stack:
 
 - **Test-Time Training**: Memory updates via online gradient descent during inference
 - **Surprise-Gated Writes**: Memory only updates when predictions fail (high surprise)
@@ -66,7 +90,7 @@ let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 
 > **Why Titans + MIRAS for Continual Learning?**
 > 
-> Hyperlight is designed as a **continual learning system** where agents must adapt to evolving web content, new communication patterns, and adversarial conditions in real-time—without offline retraining.
+> SPINE is designed as a **continual learning system** where agents must adapt to evolving web content, new communication patterns, and adversarial conditions in real-time—without offline retraining.
 > 
 > The [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) from Google Research is uniquely suited for this because:
 > 
@@ -76,7 +100,7 @@ let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 > 
 > 3. **Momentum + Forgetting**: Titans captures not just momentary surprises but also relevant follow-up context, while adaptive weight decay prevents memory overflow during extremely long sessions.
 > 
-> 4. **Deep Memory Architecture**: MIRAS shows that memory *depth* matters more than size. Hyperlight's multi-layer memory modules achieve better perplexity and scaling than fixed-size RNN states.
+> 4. **Deep Memory Architecture**: MIRAS shows that memory *depth* matters more than size. SPINE's multi-layer memory modules achieve better perplexity and scaling than fixed-size RNN states.
 > 
 > 5. **Efficiency**: Combines RNN-like O(1) inference speed with Transformer-like expressive power—critical for real-time agent communication.
 > 
@@ -95,15 +119,15 @@ A **moving-target defense system** where the protocol's latent basis and encrypt
 
 ## Virtual DOM & Incremental Updates
 
-The Hyperlight core maintains a **Virtual DOM** for each session, enabling efficient incremental updates:
+The SPINE Core maintains a **Virtual DOM** for each session, enabling efficient incremental updates:
 
-- **HLB Execution**: Hyperlight Binary is executed in a sandboxed WASM environment, producing a Virtual DOM tree.
+- **HLB Execution**: SPINE Binary is executed in a sandboxed WASM environment, producing a Virtual DOM tree.
 - **VDom Diffing**: The core computes the minimal set of patches (Create, Remove, SetAttr, etc.) between execution cycles.
 - **Patch Streaming**: Only the changes are sent to the client, significantly reducing bandwidth for dynamic applications.
 
 ## Distributed Swarm Intelligence
 
-Hyperlight enables **autonomous agent swarms** that collaborate on complex tasks:
+SPINE enables **autonomous agent swarms** that collaborate on complex tasks:
 
 ### Skill-Based Task Routing
 
@@ -158,6 +182,62 @@ client.store_knowledge("api_endpoint", json!("https://api.example.com"), vec!["c
 let results = client.query_knowledge("endpoint", vec!["config"], 10).await?;
 ```
 
+### Unified Bioinspired Memory (spine-knowledge)
+
+SPINE's memory architecture mirrors the human brain's organization:
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                    UNIFIED MEMORY ARCHITECTURE                       │
+├─────────────────────────────────────────────────────────────────────┤
+│  Episodic Memory (Hippocampus)                                      │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ • Titans-based surprise-gated learning                      │    │
+│  │ • Stores experiences when surprise exceeds threshold        │    │
+│  │ • Neural embedding via NeuralLatentEncoder                  │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+├─────────────────────────────────────────────────────────────────────┤
+│  Semantic Memory (Neocortex)                                        │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ • Conceptual knowledge graph with relations                 │    │
+│  │ • Hierarchical categorization (is-a, part-of, related)      │    │
+│  │ • Large content storage with chunking                       │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+├─────────────────────────────────────────────────────────────────────┤
+│  Working Memory (Prefrontal Cortex)                                 │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ • Goal-directed active context                              │    │
+│  │ • Attention-based priority scoring                          │    │
+│  │ • Limited capacity (like human ~7 items)                    │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+├─────────────────────────────────────────────────────────────────────┤
+│  Collective Memory (Social Brain)                                   │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │ • CRDT-based distributed single-source-of-truth             │    │
+│  │ • Vector clocks for causal ordering                         │    │
+│  │ • Multi-node confirmation for trust scoring                 │    │
+│  └─────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+```rust
+// Create unified memory for an agent
+let memory = UnifiedMemory::new(agent_id, UnifiedConfig::default());
+
+// Episodic: Store surprise-gated experiences
+memory.episodic.store("Discovered new API endpoint", context);
+
+// Semantic: Learn concepts with relations
+memory.semantic.store_concept("API", "Application Programming Interface", attrs);
+memory.semantic.add_relation("REST", "API", "is-a");
+
+// Working: Manage goal-directed context
+memory.working.set_goal("Extract pricing data", 0.9);
+
+// Collective: Share knowledge across agents (CRDT)
+memory.collective.store("market_price", KnowledgeValue::Float(1234.56), tags, 0.95);
+```
+
 ## Unified Representation (UR)
 
 The UR is a recursive, tree-based structure that simplifies web content into actionable elements:
@@ -191,16 +271,16 @@ The UR is a recursive, tree-based structure that simplifies web content into act
 }
 ```
 
-## Hyperlight Source Language (HLS)
+## SPINE Source Language (HLS)
 
-HLS is a human-readable language designed to define web interfaces as executable programs. It compiles to **Hyperlight Binary (HLB)**, which agents can execute directly in the Virtual DOM runtime.
+HLS is a human-readable language designed to define web interfaces as executable programs. It compiles to **SPINE Binary (HLB)**, which agents can execute directly in the Virtual DOM runtime.
 
 ### Example HLS
 
 ```hls
 element App {
   element Header {
-    text "Welcome to Hyperlight"
+    text "Welcome to SPINE"
   }
   element Content {
     button "Click Me" -> emit("button_clicked")
@@ -271,7 +351,7 @@ The HLS compiler generates these instructions:
 
 ## Intelligence Layer Features
 
-Hyperlight includes advanced features for high-security and low-latency agentic communication:
+SPINE includes advanced features for high-security and low-latency agentic communication:
 
 - **Chameleon Protocol**: A latent-space cryptographic system that evolves the protocol's "shape" per-message using neural encoders.
 - **Titans Speculative Decoding**: Message prediction using Neural Long-Term Memory to reduce perceived latency by pre-computing responses.
@@ -280,11 +360,11 @@ Hyperlight includes advanced features for high-security and low-latency agentic 
 
 ## Intelligence Layer
 
-Hyperlight features a deep intelligence layer that optimizes for both performance and security in AI-to-AI communication.
+SPINE features a deep intelligence layer that optimizes for both performance and security in AI-to-AI communication.
 
 ### Titans Speculative Decoding
 
-Inspired by LLM inference techniques, Hyperlight uses a **TitansPredictor** with Neural Long-Term Memory to anticipate the next likely messages in a protocol stream.
+Inspired by LLM inference techniques, SPINE uses a **TitansPredictor** with Neural Long-Term Memory to anticipate the next likely messages in a protocol stream.
 
 - **Zero-Bandwidth Hits**: If a prediction is correct, the receiver reconstructs the message from its local cache, sending only a tiny confirmation hash.
 - **Latency Reduction**: The core engine can pre-compute responses for predicted requests before they even arrive.
@@ -301,11 +381,11 @@ The Chameleon Protocol uses **Titans Neural Long-Term Memory** to hide communica
 
 ## Deployment
 
-Hyperlight is designed for high-performance native deployment in distributed clusters.
+SPINE is designed for high-performance native deployment in distributed clusters.
 
 ### Quick Start (Local Cluster)
 
-The easiest way to deploy a local Hyperlight cluster is using the provided deployment script:
+The easiest way to deploy a local SPINE cluster is using the provided deployment script:
 
 ```bash
 # Start a 3-node local cluster (1 seed, 2 worker nodes)
@@ -324,10 +404,10 @@ To deploy a single node manually:
 
 ```bash
 # Build the core server
-cargo build --release -p hyperlight-core
+cargo build --release -p spine-core
 
 # Run the server
-./target/release/hyperlight-core
+./target/release/spine-core
 ```
 
 ### Environment Variables
@@ -336,8 +416,8 @@ cargo build --release -p hyperlight-core
 - `PORT`: The port to listen on for agent connections (default: `8080`)
 - `NODE_ID`: Unique identifier for the node
 - `SEED_NODES`: Comma-separated list of seed nodes (e.g., `127.0.0.1:8080`)
-- `HYPERLIGHT_KNOWLEDGE_DIR`: Path for persistent knowledge storage
-- `HYPERLIGHT_SESSIONS_DIR`: Path for session data storage
+- `SPINE_KNOWLEDGE_DIR`: Path for persistent knowledge storage
+- `SPINE_SESSIONS_DIR`: Path for session data storage
 
 ## Getting Started
 
@@ -354,10 +434,10 @@ cargo build --release
 
 ### Running the Core
 
-Start the Hyperlight browser engine:
+Start the SPINE browser engine:
 
 ```bash
-cargo run -p hyperlight-core
+cargo run -p spine-core
 ```
 
 The core will listen on `127.0.0.1:8082` for agent and browser connections.
@@ -367,12 +447,12 @@ The core will listen on `127.0.0.1:8082` for agent and browser connections.
 In a separate terminal, launch the cross-platform GUI:
 
 ```bash
-cargo run -p hyperlight-browser
+cargo run -p spine-browser
 ```
 
 The GUI allows you to:
 
-- Enter URLs and navigate the web via the Hyperlight stack.
+- Enter URLs and navigate the web via the SPINE stack.
 - Toggle **Human Mode** to transpile legacy HTML into AI-native HLS.
 - View raw Unified Representations and agentic data streams.
 
@@ -381,7 +461,7 @@ The GUI allows you to:
 In a separate terminal:
 
 ```bash
-cargo run --example simple_agent -p hyperlight-agent
+cargo run --example simple_agent -p spine-agent
 ```
 
 The example agent will:
@@ -391,13 +471,13 @@ The example agent will:
 See skill-based task allocation in action (no server required):
 
 ```bash
-cargo run --example swarm_demo -p hyperlight-agent
+cargo run --example swarm_demo -p spine-agent
 ```
 
 Output:
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║     🚀 HYPERLIGHT SWARM PLANNING DEMONSTRATION 🚀            ║
+║     🚀 SPINE SWARM PLANNING DEMONSTRATION 🚀            ║
 ╚══════════════════════════════════════════════════════════════╝
 
 📡 SWARM CLUSTER INITIALIZED
@@ -419,7 +499,7 @@ Output:
 Demonstrates long-term memory and capability enforcement:
 
 ```bash
-cargo run --example knowledgeable_agent -p hyperlight-agent
+cargo run --example knowledgeable_agent -p spine-agent
 ```
 
 ### Simple Agent Example
@@ -434,7 +514,7 @@ The simple_agent example will:
 ### Example Output
 
 ```
-Connected to Hyperlight Core
+Connected to SPINE Core
 Navigating to https://example.com...
 Fetching Unified Representation...
 Page Title: Example Domain
@@ -448,7 +528,7 @@ Binary execution result: {"status": "executed", "instruction_count": 2}
 
 ### Chameleon Protocol (Moving-Target Defense)
 
-Hyperlight introduces the **Chameleon Protocol**, a revolutionary approach to secure communication that treats latent-space representations as a form of implicit encryption.
+SPINE introduces the **Chameleon Protocol**, a revolutionary approach to secure communication that treats latent-space representations as a form of implicit encryption.
 
 **Core Insight**: High-dimensional vector spaces are inherently encrypted—the transformation matrix IS the key. By evolving the transformation based on message history, we create a protocol that is impossible to statically analyze.
 
@@ -480,7 +560,7 @@ client.handler.enable_chameleon(secret);
 
 ### Speculative Decoding
 
-Inspired by LLM speculative decoding, Hyperlight predicts messages before they arrive and sends minimal confirmations when predictions match.
+Inspired by LLM speculative decoding, SPINE predicts messages before they arrive and sends minimal confirmations when predictions match.
 
 #### How It Works
 
@@ -525,7 +605,7 @@ println!("Bytes saved: {}", stats.bytes_saved);
 
 ### Traditional Encryption (Fallback)
 
-For compatibility, Hyperlight also supports **AES-256-GCM** encryption:
+For compatibility, SPINE also supports **AES-256-GCM** encryption:
 
 ```rust
 let key = [0u8; 32]; // Use a secure key in production
@@ -550,17 +630,17 @@ client.handler.send_message(&Message::Request(Request {
 
 ## Architecture
 
-Hyperlight eliminates traditional browser rendering pipelines (DOM → Layout → Paint) and replaces them with a multi-layered stack optimized for both AI and humans.
+SPINE eliminates traditional browser rendering pipelines (DOM → Layout → Paint) and replaces them with a multi-layered stack optimized for both AI and humans.
 
-### The Hyperlight Stack
+### The SPINE stack
 
-1.  **User Layer**: `hyperlight-browser` (GUI) provides a human-friendly interface.
-2.  **Compatibility Layer**: `hyperlight-human` transpiles legacy web content into AI-native formats.
-3.  **Agent Layer**: `hyperlight-agent` (SDK) enables autonomous interaction.
-4.  **Core Layer**: `hyperlight-core` orchestrates sessions and fetches content.
-5.  **Execution Layer**: `hyperlight-compiler` and `hyperlight-wasm` run websites as programs.
-6.  **Intelligence Layer**: `hyperlight-neural` and `hyperlight-crypto` provide secure, predictive communication.
-7.  **Infrastructure Layer**: `hyperlight-cluster` enables distributed scaling.
+1.  **User Layer**: `spine-browser` (GUI) provides a human-friendly interface.
+2.  **Compatibility Layer**: `spine-human` transpiles legacy web content into AI-native formats.
+3.  **Agent Layer**: `spine-agent` (SDK) enables autonomous interaction.
+4.  **Core Layer**: `spine-core` orchestrates sessions and fetches content.
+5.  **Execution Layer**: `spine-compiler` and `spine-wasm` run websites as programs.
+6.  **Intelligence Layer**: `spine-neural` and `spine-crypto` provide secure, predictive communication.
+7.  **Infrastructure Layer**: `spine-cluster` enables distributed scaling.
 
 ### Semantic Extraction Pipeline
 
@@ -654,14 +734,205 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Capability Enforcement** (permission-based HLB execution)
 - [x] **Swarm Planning API** (CreateSwarmPlan, ExecutePlanTask)
 - [x] **HLS Memory Operations** (remember, query_memory, reason)
+- [x] **Social Network Swarms** (hierarchical, small-world, scale-free, modular topologies)
+- [x] **Collaborative Roles** (coordinator, executor, expert, validator, innovator, mediator)
+- [x] **Adversarial Game Theory** (Nash equilibrium, minimax, regret matching)
+- [x] **Zero-Copy Message Pooling** (power-of-2 size classes for efficient reuse)
+- [x] **Compact Binary Protocol** (28-byte headers, minimal overhead)
+- [x] **Full LTO Optimization** (30% binary size reduction)
+
+## Adversarial Multi-Agent Intelligence
+
+SPINE is optimized for both **collaborative** and **adversarial** multi-agent scenarios.
+
+### Game-Theoretic Reasoning
+
+Built-in support for strategic decision-making in competitive environments:
+
+```rust
+// Create a payoff matrix for game-theoretic analysis
+let mut matrix = PayoffMatrix::new(players, actions);
+matrix.set_payoff(&[0, 0], &[-1.0, -1.0]); // Cooperate-Cooperate
+matrix.set_payoff(&[1, 1], &[-2.0, -2.0]); // Defect-Defect
+
+// Find Nash equilibria
+let solver = NashEquilibriumSolver::new(GameType::MixedMotive);
+let pure_nash = solver.find_pure_nash(&matrix);
+let mixed_nash = solver.find_mixed_nash(&matrix);
+
+// Minimax for zero-sum games
+let minimax = MinimaxSolver::new(max_depth);
+let (best_action, value) = minimax.solve(&matrix);
+```
+
+### Regret-Matching Agents
+
+Agents learn optimal strategies through counterfactual regret minimization:
+
+```rust
+let mut agent = AdversarialAgent::new("Player1", num_actions);
+
+// Select action using current strategy
+let action = agent.select_action();
+
+// Update strategy using regret matching (CFR-style)
+agent.update_regret(action, payoff, &counterfactual_payoffs);
+
+// Converges to Nash equilibrium over time
+let exploitability = agent.exploitability(&matrix, player_idx);
+```
+
+### Social Network Swarms
+
+Model agent relationships as graphical structures for coordination:
+
+```rust
+let network = SocialSwarmBuilder::new("Research Team")
+    .topology(SocialTopology::SmallWorld { rewire_prob: 0.3 })
+    .add_agent("Lead Researcher", vec![CollaborativeRole::Coordinator])
+    .add_agent("Data Scientist", vec![CollaborativeRole::Expert { domain: "ML".into() }])
+    .add_agent("Engineer", vec![CollaborativeRole::Executor])
+    .build();
+
+// Propagate influence through the network (PageRank-style)
+network.propagate_influence(iterations, damping);
+
+// Distribute tasks based on roles and influence
+let distribution = network.distribute_task("Build ML pipeline", &required_roles);
+```
+
+### Network Topologies
+
+| Topology         | Description                          | Use Case                |
+| ---------------- | ------------------------------------ | ----------------------- |
+| **Star**         | Central hub connects to all agents   | Command-and-control     |
+| **Hierarchical** | Tree-structured command chain        | Corporate organizations |
+| **FullMesh**     | All agents connected                 | Small, tight teams      |
+| **Ring**         | Circular neighbor connections        | Token-passing protocols |
+| **SmallWorld**   | Local clusters + long-range links    | Research collaborations |
+| **ScaleFree**    | Power-law degree distribution        | Influencer networks     |
+| **Modular**      | Dense clusters, sparse inter-cluster | Cross-functional teams  |
+| **Dynamic**      | Evolves based on interactions        | Adaptive organizations  |
+
+## Performance Optimizations
+
+SPINE is engineered for maximum efficiency:
+
+### Benchmark Results
+
+| Component                    | Metric      | Throughput      |
+| ---------------------------- | ----------- | --------------- |
+| Latent Serialize (128-dim)   | 96 ns       | 4.9 GiB/s       |
+| Latent Serialize (512-dim)   | 139 ns      | 13.7 GiB/s      |
+| Latent Serialize (1024-dim)  | 171 ns      | **22.3 GiB/s**  |
+| Cosine Similarity (128-dim)  | 52 ns       | 9.2 GiB/s       |
+| Cosine Similarity (1024-dim) | 426 ns      | **9.0 GiB/s**   |
+| Frame Encode (8KB)           | 95 ns       | **78-80 GiB/s** |
+| Frame Decode (8KB)           | 87 ns       | **85-90 GiB/s** |
+| Zero-Copy Buffer             | 34 ns       | 40+ GiB/s       |
+| BBR Pacing Decision          | **322 ps**  | -               |
+| Batch Encode (64 frames)     | 2.8 µs      | 22.7 Melem/s    |
+| Backpressure Stream          | 2.2M elem/s | -               |
+| Priority Queue               | 7.1M elem/s | -               |
+
+*Benchmarks run on release builds with LTO enabled. Results validated January 2026.*
+
+### SPINE vs Standard TCP/IP Stack
+
+SPINE's transport layer significantly outperforms standard TCP operations:
+
+| Benchmark                   | Standard TCP | SPINE      | Speedup   |
+| --------------------------- | ------------ | ---------- | --------- |
+| **End-to-End (100 msgs)**   | 3.3 ms       | 26 µs      | **125×**  |
+| **Latency (64 bytes)**      | 36 µs        | 70 ns      | **514×**  |
+| **Latency (1024 bytes)**    | 34 µs        | 85 ns      | **400×**  |
+| **Latency (4096 bytes)**    | 36 µs        | 133 ns     | **270×**  |
+| **Throughput (1KB)**        | 30 MiB/s     | 17.9 GiB/s | **610×**  |
+| **Throughput (8KB)**        | 30 MiB/s     | 11.1 GiB/s | **378×**  |
+| **Frame Encode (8KB)**      | -            | 93 ns      | 82 GiB/s  |
+| **Frame Decode (8KB)**      | -            | 89 ns      | 86 GiB/s  |
+| **Ring Buffer (16KB)**      | -            | 391 ns     | 39 GiB/s  |
+| **Serialization (4KB)**     | 28 ns (copy) | 56 ns      | 67 GiB/s  |
+| **BBR Congestion Ctrl**     | N/A          | 139 ns     | -         |
+| **Rate Limiter**            | N/A          | 36 ns      | -         |
+| **Alloc 10K bufs (slab)**   | 518 µs       | 487 µs     | **1.06×** |
+| **Aggregator (100 frames)** | 1.2 µs       | 1.5 µs     | -         |
+
+**Key Insights:**
+
+- **125× faster end-to-end** pipeline (full encode/buffer/decode cycle)
+- **514× lower latency** for small messages (frame codec vs TCP roundtrip)
+- **610× higher throughput** using zero-copy ring buffers
+- Frame codec achieves **82+ GiB/s** encode throughput
+- BBR congestion control adds only **139 ns** overhead per decision
+- All benchmarks validated with Criterion statistical analysis (100 samples)
+
+### Build Optimizations
+
+```toml
+[profile.release]
+opt-level = 3        # Maximum optimization
+lto = "fat"          # Full link-time optimization
+codegen-units = 1    # Single codegen unit
+panic = "abort"      # No unwinding overhead
+strip = true         # Strip symbols
+```
+
+**Results**: 30% binary size reduction (20.6 MB → 14.4 MB for core)
+
+### Zero-Copy Message Pool
+
+Efficient buffer management for high-throughput messaging:
+
+```rust
+let pool = MessagePool::new();
+
+// Allocate from pool (power-of-2 size classes)
+let mut buffer = pool.allocate(4096);
+buffer.write(&data);
+
+// Buffer returned to pool on drop (zero-copy reuse)
+```
+
+### Compact Binary Protocol
+
+Minimal overhead messaging (28-byte header):
+
+```rust
+let msg = CompactMessage::new(
+    message_types::TASK_ASSIGN,
+    sender_id,
+    receiver_id,
+    payload,
+);
+
+// Serialize directly to wire format
+let bytes = msg.to_bytes();
+```
+
+### Lightweight Swarm Coordination
+
+Optimized for minimal memory and CPU overhead:
+
+```rust
+let mut swarm = LightweightSwarm::new(swarm_id);
+swarm.add_agent(agent_id);
+swarm.broadcast(sender, message_types::BROADCAST, &payload);
+```
 
 ## Contributing
 
-Hyperlight is an experimental research project. Contributions are welcome, especially in:
+SPINE is an experimental research project. Contributions are welcome, especially in:
 
 - HLS language design
 - Binary execution optimization
 - Protocol efficiency improvements
+
+## Documentation
+
+- [Architecture Overview](ARCHITECTURE.md) - System design and component interactions
+- [Mathematical Proofs](MATHEMATICAL_PROOFS.md) - Formal proofs of time, space, and security optimality
+- [HLS Specification](HLS_SPEC.md) - SPINE Source language reference
 
 ## License
 

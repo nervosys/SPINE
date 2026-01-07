@@ -1,26 +1,51 @@
 [workspace]
 members = [
-    "hyperlight-core",
-    "hyperlight-parser",
-    "hyperlight-protocol",
-    "hyperlight-agent",
-    "hyperlight-compiler",
-    "hyperlight-wasm",
-    "hyperlight-cluster",
-    "hyperlight-neural",
-    "hyperlight-crypto",
-    "hyperlight-human",
-    "hyperlight-browser",
-    "hyperlight-agentic",
+    "spine-core",
+    "spine-parser",
+    "spine-protocol",
+    "spine-agent",
+    "spine-compiler",
+    "spine-wasm",
+    "spine-cluster",
+    "spine-neural",
+    "spine-crypto",
+    "spine-human",
+    "spine-browser",
+    "spine-agentic",
+    "spine-transport",
+    "spine-stream",
+    "spine-recursive",
+    "spine-knowledge",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["Hyperlight Team"]
-description = "An agentic AI web browser stack"
+authors = ["SPINE Team"]
+description = "A bioinspired agentic AI web stack"
 license = "MIT"
+
+# =============================================================================
+# MAXIMUM OPTIMIZATION PROFILE
+# =============================================================================
+
+[profile.release]
+opt-level = 3     # Maximum optimization
+lto = "fat"       # Full link-time optimization across all crates
+codegen-units = 1 # Single codegen unit for maximum optimization
+panic = "abort"   # Smaller binaries, no unwinding overhead
+strip = true      # Strip symbols for smaller binaries
+debug = false     # No debug info in release
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true         # Debug info for profiling
+strip = false
+
+[profile.bench]
+inherits = "release"
+debug = true         # Debug info for flamegraphs
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }

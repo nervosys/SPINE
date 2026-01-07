@@ -1,0 +1,16 @@
+[package]
+name = "spine-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Unified representation parser for SPINE"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+# For HTML parsing, we might want scraper or html5ever later
+scraper = "0.18"
+ego-tree = "0.6"

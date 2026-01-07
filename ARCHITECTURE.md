@@ -1,35 +1,35 @@
-# Hyperlight Architecture
+# SPINE Architecture
 
-This document provides a deep dive into the technical architecture of the Hyperlight web stack.
+This document provides a deep dive into the technical architecture of the SPINE web stack.
 
 ## System Overview
 
-Hyperlight is a **headless browser engine** designed exclusively for AI agents. It consists of eleven core crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, and human-readable web compatibility.
+SPINE is a **headless browser engine** designed exclusively for AI agents. It consists of fourteen core crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                     User Layer                           │
-│  • hyperlight-browser: Traditional GUI Browser           │
-│  • hyperlight-agent: High-level SDK for AI applications  │
+│  • spine-browser: Traditional GUI Browser           │
+│  • spine-agent: High-level SDK for AI applications  │
 └────────────────────┬─────────────────────────────────────┘
                      │
                      │ Chameleon Protocol + Speculative Decoding
                      │
 ┌────────────────────▼─────────────────────────────────────┐
 │                  Protocol Layer                          │
-│  (hyperlight-protocol: Message encoding/decoding)        │
-│  • Titans Neural Encoding (hyperlight-neural)            │
-│  • Titans Prediction (hyperlight-crypto)                 │
-│  • Quantum-Resistant Key Evolution (hyperlight-crypto)   │
+│  (spine-protocol: Message encoding/decoding)        │
+│  • Titans Neural Encoding (spine-neural)            │
+│  • Titans Prediction (spine-crypto)                 │
+│  • Quantum-Resistant Key Evolution (spine-crypto)   │
 │  • Moving-Target Defense (Morphing)                      │
 └────────────────────┬─────────────────────────────────────┘
                      │
 ┌────────────────────▼─────────────────────────────────────┐
 │                   Core Engine                            │
-│  (hyperlight-core: Session management & orchestration)   │
+│  (spine-core: Session management & orchestration)   │
 │  • Multi-agent session handling (DashMap)                │
 │  • Web content fetching (reqwest)                        │
-│  • WASM Execution Runtime (hyperlight-wasm)              │
+│  • WASM Execution Runtime (spine-wasm)              │
 └──────┬──────────────────────────┬────────────────────────┘
        │                          │
        │ HTML                     │ HLS Source
@@ -49,13 +49,13 @@ Hyperlight is a **headless browser engine** designed exclusively for AI agents. 
                    │
 ┌──────────────────▼───────────────────────────────────────┐
 │                Compatibility Layer                       │
-│  (hyperlight-human: HTML/CSS/JS → HLS Transpiler)        │
+│  (spine-human: HTML/CSS/JS → HLS Transpiler)        │
 │  • Backwards compatibility for traditional web          │
 └──────────────────────────────────────────────────────────┘
                    │
 ┌──────────────────▼───────────────────────────────────────┐
 │                Distributed Layer                         │
-│  (hyperlight-cluster: Scaling & Coordination)            │
+│  (spine-cluster: Scaling & Coordination)            │
 │  • Consistent Hashing for Session Affinity               │
 │  • Heartbeat-based Node Discovery                        │
 │  • Distributed Load Balancing                            │
@@ -64,7 +64,7 @@ Hyperlight is a **headless browser engine** designed exclusively for AI agents. 
 
 ## Component Details
 
-### 1. hyperlight-core
+### 1. spine-core
 
 **Purpose**: Central orchestration engine that manages agent sessions and web content fetching.
 
@@ -109,7 +109,7 @@ match command {
         // Return UnifiedRepresentation
     }
     ExecuteBinary(bin) => {
-        // Execute HLB instructions using hyperlight-wasm
+        // Execute HLB instructions using spine-wasm
         // Return execution result
     }
     Click { element_id } => {
@@ -121,11 +121,11 @@ match command {
 }
 ```
 
-### 2. hyperlight-parser
+### 2. spine-parser
 
 **Purpose**: Recursive semantic HTML parser that generates the Unified Representation.
 
-**Key Innovation**: Unlike traditional parsers that preserve DOM structure, the Hyperlight parser **collapses** the HTML tree into a flat, semantic representation optimized for LLM consumption.
+**Key Innovation**: Unlike traditional parsers that preserve DOM structure, the SPINE parser **collapses** the HTML tree into a flat, semantic representation optimized for LLM consumption.
 
 **Parsing Strategy**:
 
@@ -167,15 +167,15 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 - **Semantic Clarity**: LLMs understand "This is a button" better than `<button class="btn btn-primary">`.
 - **Actionable Elements**: Every element in the UR has a clear purpose (navigate, click, read).
 
-### 3. hyperlight-protocol
+### 3. spine-protocol
 
 **Purpose**: Low-latency, secure communication protocol between agents and the core.
 
 **Chameleon Protocol**:
 
-- **Latent-Space Cryptography**: Messages are projected into a high-dimensional latent space using `hyperlight-neural`.
+- **Latent-Space Cryptography**: Messages are projected into a high-dimensional latent space using `spine-neural`.
 - **Moving-Target Defense**: The protocol "morphs" its encoding scheme periodically to resist traffic analysis.
-- **Quantum-Resistant**: Uses Ring-LWE lattice-based cryptography from `hyperlight-crypto` for key evolution.
+- **Quantum-Resistant**: Uses Ring-LWE lattice-based cryptography from `spine-crypto` for key evolution.
 
 **Speculative Decoding**:
 
@@ -221,9 +221,9 @@ Incoming:
 TCP Receive → Strip Length → AES Decrypt → Zstd Decompress → JSON Deserialize → Message
 ```
 
-### 4. hyperlight-compiler
+### 4. spine-compiler
 
-**Purpose**: Compiles Hyperlight Source (HLS) into Hyperlight Binary (HLB).
+**Purpose**: Compiles SPINE Source (HLS) into SPINE Binary (HLB).
 
 **HLS Language Design**:
 
@@ -236,7 +236,7 @@ element App {
   attribute title "My Application"
   
   element Header {
-    text "Welcome to Hyperlight"
+    text "Welcome to SPINE"
   }
   
   element Content {
@@ -309,9 +309,9 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 6. `MorphProtocol` triggers Chameleon Protocol morphing
 7. `Decoy` injects noise for traffic analysis resistance
 
-### 5. hyperlight-wasm
+### 5. spine-wasm
 
-**Purpose**: High-performance execution runtime for Hyperlight Binary (HLB).
+**Purpose**: High-performance execution runtime for SPINE Binary (HLB).
 
 **Architecture**:
 
@@ -319,7 +319,7 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 - **JIT Execution**: Uses `wasmtime` to execute the generated WASM with near-native performance.
 - **Host Bindings**: Provides a secure interface for WASM programs to interact with the Virtual DOM.
 
-### 6. hyperlight-cluster
+### 6. spine-cluster
 
 **Purpose**: Distributed coordination layer for scaling Hyperlight across multiple nodes.
 
@@ -329,7 +329,7 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 - **Heartbeat Discovery**: Nodes broadcast their presence and health status.
 - **Load Balancing**: Distributes new sessions across the cluster based on load.
 
-### 7. hyperlight-neural
+### 7. spine-neural
 
 **Purpose**: Neural network-based encoding for the Chameleon Protocol using the **Titans architecture**.
 
@@ -350,7 +350,7 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 
 **Titans + MIRAS for Continual Learning**:
 
-Hyperlight uses the [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) because an Agentic Web Stack requires **continual learning**—the ability to adapt to new patterns without offline retraining:
+SPINE uses the [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) because an Agentic Web Stack requires **continual learning**—the ability to adapt to new patterns without offline retraining:
 
 - **Test-Time Memorization**: Memory updates occur *during inference*, not just training. When the protocol encounters a new communication pattern, it learns instantly.
 - **Surprise-Based Gating**: The gradient magnitude acts as a "surprise metric"—routine data is ignored, novel/anomalous data is prioritized for permanent storage.
@@ -363,7 +363,7 @@ This is essential for:
 2. Real-time anomaly detection (surprise scores identify attacks)
 3. Agent learning (each interaction improves future predictions)
 
-### 8. hyperlight-crypto
+### 8. spine-crypto
 
 **Purpose**: Advanced cryptographic primitives and **Titans-based prediction**.
 
@@ -383,7 +383,7 @@ This is essential for:
 | Static weights             | Test-time training adaptation    |
 | No novelty detection       | Surprise-gated anomaly detection |
 
-### 9. hyperlight-agent
+### 9. spine-agent
 
 **Purpose**: High-level SDK for building AI agents that interact with Hyperlight.
 
@@ -421,7 +421,7 @@ client.handler.send_message(&Message::Request(Request {
 })).await?;
 ```
 
-### 10. hyperlight-human
+### 10. spine-human
 
 **Purpose**: Transpiler for legacy web content (HTML/CSS/JS) into Hyperlight-native HLS/HLB.
 
@@ -429,16 +429,16 @@ client.handler.send_message(&Message::Request(Request {
 
 - **HTML Parsing**: Uses `scraper` and `ego-tree` to traverse legacy DOM structures.
 - **HLS Generation**: Recursively converts HTML nodes into semantic HLS instructions.
-- **Backwards Compatibility**: Enables human users to access the traditional web through the Hyperlight stack.
+- **Backwards Compatibility**: Enables human users to access the traditional web through the SPINE stack.
 
-### 11. hyperlight-browser
+### 11. spine-browser
 
 **Purpose**: Cross-platform GUI browser application for human users.
 
 **Key Features**:
 
 - **Modern GUI**: Built with `egui` and `eframe` for high-performance, cross-platform rendering.
-- **Agent Integration**: Uses `hyperlight-agent` to communicate with the core engine.
+- **Agent Integration**: Uses `spine-agent` to communicate with the core engine.
 - **Human Mode**: Seamlessly toggles between raw agentic views and transpiled human-readable content.
 - **Async Runtime**: Integrates `tokio` to handle background network tasks without blocking the UI thread.
 
@@ -495,7 +495,7 @@ pub struct ExecutionResult {
 ```
 
 
-### 8. hyperlight-neural
+### 8. spine-neural
 
 **Purpose**: Neural network-based latent space encoding for the Chameleon Protocol using **Titans architecture**.
 
@@ -506,7 +506,7 @@ pub struct ExecutionResult {
 - Dynamic latent space evolution (morphing) to prevent traffic analysis.
 - **Surprise detection** for anomaly-aware protocol adaptation.
 
-### 9. hyperlight-crypto
+### 9. spine-crypto
 
 **Purpose**: Advanced cryptography and predictive modeling.
 
@@ -516,7 +516,7 @@ pub struct ExecutionResult {
 - Quantum-resistant lattice-based key exchange (RLWE).
 - Secure seed generation for Chameleon protocol evolution.
 
-### 10. hyperlight-cluster
+### 10. spine-cluster
 
 **Purpose**: Distributed orchestration and scaling.
 
@@ -525,13 +525,13 @@ pub struct ExecutionResult {
 - Heartbeat-based node discovery and health monitoring.
 - Leader election and capability discovery.
 
-### 11. hyperlight-human
+### 11. spine-human
 
 **Purpose**: Web compatibility transpiler.
 
 **Key Responsibilities**:
 - Transpiling standard HTML/CSS/JS into Hyperlight Script (HLS).
-- Enabling traditional web content to run on the AI-native Hyperlight stack.
+- Enabling traditional web content to run on the AI-native SPINE stack.
 
 ## Advanced Features
 
@@ -572,9 +572,9 @@ let variant = if anomaly > threshold * 2.0 {
 
 **MIRAS Integration Points**:
 
-1. **ChameleonKey (hyperlight-protocol)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
-2. **MirasTitansPredictor (hyperlight-crypto)**: Dual-track surprise monitoring from both Titans and MIRAS encoders.
-3. **MirasNeuralEncoder (hyperlight-neural)**: Core MIRAS memory implementations (YAAD, MONETA, MEMORA).
+1. **ChameleonKey (spine-protocol)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
+2. **MirasTitansPredictor (spine-crypto)**: Dual-track surprise monitoring from both Titans and MIRAS encoders.
+3. **MirasNeuralEncoder (spine-neural)**: Core MIRAS memory implementations (YAAD, MONETA, MEMORA).
 
 **Combined Surprise Detection**:
 
@@ -654,11 +654,11 @@ Hyperlight represents a paradigm shift in how AI agents interact with the web. B
 
 ---
 
-## The Agentic Web Stack (hyperlight-agentic)
+## The Agentic Web Stack (spine-agentic)
 
 ### Vision: Beyond the Human Web
 
-The traditional web was designed for humans: point, click, read, scroll. Hyperlight's **Agentic Web Stack** reimagines the web for AI agents as first-class citizens. This is not an evolution of the human web—it's a parallel universe where agents navigate by meaning, communicate in latent space, and form swarms for collective intelligence.
+The traditional web was designed for humans: point, click, read, scroll. SPINE's **Agentic Web Stack** reimagines the web for AI agents as first-class citizens. This is not an evolution of the human web—it's a parallel universe where agents navigate by meaning, communicate in latent space, and form swarms for collective intelligence.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -720,15 +720,15 @@ Agents form swarms with roles: Leader, Coordinator, Worker, Validator, Observer.
 
 Agents maintain persistent knowledge with embedding-based retrieval for similarity queries.
 
-### Integration with Hyperlight Stack
+### Integration with SPINE stack
 
-| Agentic Layer   | Hyperlight Component | Purpose                                        |
+| Agentic Layer   | SPINE Component | Purpose                                        |
 | --------------- | -------------------- | ---------------------------------------------- |
-| Transport       | hyperlight-protocol  | QUIC/TCP with Chameleon encryption             |
-| Neural Encoding | hyperlight-neural    | VAE + MIRAS latent projections                 |
-| Prediction      | hyperlight-crypto    | Titans predictor for speculative communication |
-| Planning        | hyperlight-compiler  | HLS→HLB for executable plans                   |
-| Knowledge       | hyperlight-cluster   | Distributed knowledge synchronization          |
+| Transport       | spine-protocol  | QUIC/TCP with Chameleon encryption             |
+| Neural Encoding | spine-neural    | VAE + MIRAS latent projections                 |
+| Prediction      | spine-crypto    | Titans predictor for speculative communication |
+| Planning        | spine-compiler  | HLS→HLB for executable plans                   |
+| Knowledge       | spine-cluster   | Distributed knowledge synchronization          |
 
 ### Advanced Agentic Features
 
@@ -839,7 +839,7 @@ let system = agent("MarketAnalyst")
 
 ### The Future of Web Interaction
 
-With the Agentic Web Stack, Hyperlight enables:
+With the Agentic Web Stack, SPINE enables:
 
 1. **Semantic Navigation**: Find resources by meaning, not addresses
 2. **Latent Communication**: Messages carry neural embeddings
@@ -854,3 +854,353 @@ With the Agentic Web Stack, Hyperlight enables:
 11. **Context Bridging**: Cross-agent knowledge sharing with policies
 
 The agentic web isn't coming—it's here.
+
+## Performance Architecture
+
+### Build Optimization Profile
+
+SPINE uses aggressive compilation optimizations for minimal binary size and maximum runtime performance:
+
+```toml
+[profile.release]
+opt-level = 3        # Maximum optimization level
+lto = "fat"          # Full link-time optimization across all crates
+codegen-units = 1    # Single codegen unit for best optimization
+panic = "abort"      # No unwinding overhead
+strip = true         # Strip debug symbols
+```
+
+**Results**:
+- **30% binary size reduction** with full LTO
+- Core binary: 20.6 MB → 14.4 MB
+- Browser binary: 10.6 MB → 7.7 MB
+
+### Zero-Copy Memory Architecture
+
+#### Message Pool Design
+
+The `MessagePool` uses power-of-2 size classes for efficient buffer reuse:
+
+```
+Size Classes: 64B, 128B, 256B, 512B, 1KB, 2KB, 4KB, 8KB, 16KB, 32KB, 64KB, 128KB, 256KB, 512KB, 1MB
+
+┌─────────────────────────────────────────────────────────────┐
+│ MessagePool                                                 │
+├─────────────────────────────────────────────────────────────┤
+│ pools: Vec<DashMap<usize, Vec<Vec<u8>>>>                   │
+│   └─ One pool per size class                                │
+│   └─ Lock-free concurrent access                            │
+│   └─ Max 1000 buffers per class                             │
+├─────────────────────────────────────────────────────────────┤
+│ allocate(size) → PooledBuffer                               │
+│   1. Find smallest size class >= requested                  │
+│   2. Try to pop from pool (O(1))                            │
+│   3. If empty, allocate new Vec                             │
+├─────────────────────────────────────────────────────────────┤
+│ return_buffer(buffer, size_class)                           │
+│   1. Clear buffer content                                   │
+│   2. Push back to pool (O(1))                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Compact Message Format
+
+28-byte header with minimal overhead:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ CompactHeader (28 bytes, packed)                           │
+├────────────────────────────────────────────────────────────┤
+│ msg_type:  u8   │ Message type (PING, REQUEST, TASK, etc.) │
+│ priority:  u8   │ Priority level (0-255)                   │
+│ flags:     u16  │ Feature flags                            │
+│ sender:    u32  │ Sender agent ID                          │
+│ receiver:  u32  │ Receiver agent ID                        │
+│ timestamp: u64  │ Unix timestamp                           │
+│ sequence:  u64  │ Message sequence number                  │
+├────────────────────────────────────────────────────────────┤
+│ payload_len: u32                                           │
+│ payload:     Vec<u8>                                       │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Adversarial Game Theory Engine
+
+#### Nash Equilibrium Solver
+
+Supports both pure and mixed strategy equilibria:
+
+```
+find_pure_nash(matrix):
+  for each action_profile:
+    if no_player_can_improve(action_profile):
+      equilibria.push(action_profile)
+  return equilibria
+
+find_mixed_nash(matrix):  // Fictitious Play
+  initialize strategies to uniform
+  for iteration in 1..max_iterations:
+    for each player:
+      best_response = argmax(expected_payoff(strategies))
+      action_counts[player][best_response] += 1
+      strategies[player] = normalize(action_counts[player])
+  return strategies
+```
+
+#### Minimax Solver (Zero-Sum Games)
+
+Alpha-beta pruning for efficient search:
+
+```
+minimax(state, depth, alpha, beta, maximizing):
+  if depth == 0 or terminal(state):
+    return evaluate(state)
+  
+  if maximizing:
+    value = -∞
+    for action in actions:
+      value = max(value, minimax(result(action), depth-1, alpha, beta, false))
+      alpha = max(alpha, value)
+      if beta <= alpha:
+        break  // Prune
+    return value
+  else:
+    value = +∞
+    for action in actions:
+      value = min(value, minimax(result(action), depth-1, alpha, beta, true))
+      beta = min(beta, value)
+      if beta <= alpha:
+        break  // Prune
+    return value
+```
+
+#### Regret Matching (CFR-Style Learning)
+
+Agents converge to Nash equilibrium through counterfactual regret:
+
+```
+update_regret(action, payoff, counterfactual_payoffs):
+  // Accumulate regret for each action
+  for i in 0..num_actions:
+    regret[i] += counterfactual_payoffs[i] - payoff
+  
+  // Compute regret-matching strategy
+  positive_regret = regret.map(|r| max(0, r))
+  total = sum(positive_regret)
+  
+  if total > 0:
+    strategy = positive_regret / total
+  else:
+    strategy = uniform(num_actions)
+  
+  // Update running average strategy
+  avg_strategy = (avg_strategy * n + strategy) / (n + 1)
+```
+
+### Social Network Swarm Architecture
+
+#### Topology Construction
+
+```
+SocialSwarmNetwork:
+  ├─ Star: Hub-and-spoke with central coordinator
+  ├─ Hierarchical: Tree structure with depth/branching params
+  ├─ FullMesh: Complete graph (all pairs connected)
+  ├─ Ring: Circular bidirectional connections
+  ├─ SmallWorld: Ring + random rewiring (Watts-Strogatz)
+  ├─ ScaleFree: Preferential attachment (Barabási-Albert)
+  ├─ Modular: Dense clusters + sparse inter-cluster
+  └─ Dynamic: Triadic closure + strength-based evolution
+```
+
+#### Influence Propagation (PageRank-Style)
+
+```
+propagate_influence(iterations, damping=0.85):
+  for each agent:
+    influence[agent] = 1/N
+  
+  for i in 1..iterations:
+    for each agent:
+      incoming = (1 - damping) / N
+      for each relationship where to == agent:
+        out_degree = count(relationships where from == rel.from)
+        incoming += damping * influence[rel.from] * rel.strength * rel.trust / out_degree
+      new_influence[agent] = incoming
+    
+    normalize(new_influence)
+    influence = new_influence
+```
+
+#### Role-Based Task Distribution
+
+```
+distribute_task(description, required_roles):
+  1. Find coordinator (highest influence among Coordinator role)
+  2. Assign coordinator task with priority 1.0
+  
+  3. For each required_role:
+     Find agents with matching role
+     Assign with priority 0.8, dependency on coordinator
+  
+  4. Add executors for main work
+     Assign with priority 0.7, dependency on coordinator
+  
+  return TaskDistribution { task_id, assignments, coordinator }
+```
+
+---
+
+## 12. spine-transport
+
+**Purpose**: High-performance zero-copy transport layer with BBR congestion control.
+
+**Key Components**:
+
+- **Zero-Copy I/O**: Uses `io_uring` on Linux for kernel-bypassing I/O
+- **BBR Congestion Control**: Bottleneck Bandwidth and Round-trip propagation time
+- **Connection Pooling**: Reusable connections with health checking
+- **Frame Protocol**: Binary framing with CRC32 checksums
+- **Write Coalescing**: Batches small writes for efficiency
+
+**Architecture**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Application Layer                      │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Connection Pool                            │
+│  • Health checking         • Automatic reconnection     │
+│  • Load balancing          • Connection limits          │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              BBR Congestion Control                     │
+│  • Bandwidth estimation    • RTT tracking               │
+│  • Pacing rate control     • ProbeRTT state             │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Frame Layer                                │
+│  • Binary framing          • CRC32 checksums            │
+│  • Write coalescing        • Scatter-gather I/O         │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Zero-Copy I/O (io_uring)                   │
+│  • Kernel bypass           • Completion queues          │
+│  • Registered buffers      • SQ/CQ batching             │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 13. spine-stream
+
+**Purpose**: Reactive streaming layer with multiplexing, flow control, and priority queuing.
+
+**Key Components**:
+
+- **Stream Multiplexing**: Multiple logical streams over single connection
+- **Flow Control**: AIMD congestion control with RTT estimation
+- **Chunked Transfer**: Large data transfer with compression
+- **Priority Queuing**: Weighted fair queuing and deadline scheduling
+- **Latent Streaming**: Native streaming of neural embeddings
+
+**Architecture**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Application Layer                      │
+│  • BackpressureStream      • BatchingStream             │
+│  • RateLimitedStream       • WindowedStream             │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Stream Multiplexer                         │
+│  • Stream ID allocation    • Per-stream flow control    │
+│  • Priority scheduling     • Stream lifecycle mgmt      │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Flow Controller (AIMD)                     │
+│  • Sliding window          • Congestion avoidance       │
+│  • RTT estimation          • Slow start                 │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Chunked Transfer                           │
+│  • Chunk fragmentation     • Reassembly                 │
+│  • zstd/lz4 compression    • CRC32 verification         │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              spine-transport                       │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Stream Message Types**:
+
+```rust
+enum StreamPayload {
+    Bytes(Vec<u8>),                    // Raw bytes
+    LatentVector { dimensions, vector }, // Neural embeddings
+    LatentBatch { ... },               // Batched embeddings
+    Chunk { meta, data },              // Chunked transfer
+    Control(StreamControl),            // Flow control
+    Event(StreamEvent),                // Stream events
+    Compressed { algorithm, data },    // Compressed data
+}
+```
+
+---
+
+## 14. spine-agentic
+
+**Purpose**: Advanced agentic AI framework with swarm intelligence and cognitive architectures.
+
+**Key Capabilities**:
+
+- **Swarm Intelligence**: Multi-agent coordination with emergent behaviors
+- **Cognitive Architecture**: Goal decomposition, reasoning, and learning
+- **Adversarial Capabilities**: Game-theoretic agents with counterfactual regret
+- **Social Networks**: Influence propagation and trust modeling
+- **Neural Compression**: Latent-space communication encoding
+
+**Architecture**:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│              Agentic Web Runtime                        │
+│  • Agent registry          • Swarm management           │
+│  • Task execution          • Knowledge sharing          │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Cognitive Layer                            │
+│  • ReasoningEngine         • GoalDecomposer             │
+│  • AgentLearner            • SkillLibrary               │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Communication Layer                        │
+│  • SemanticRouter          • MessageBroker              │
+│  • ContextBridge           • PerformativeProtocol       │
+└─────────────────────────┬───────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────┐
+│              Swarm Intelligence                         │
+│  • EmergentBehaviorDetector • SocialSwarmNetwork        │
+│  • CollectiveIntelligence   • TaskDistribution          │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Agent Types**:
+
+- **Worker**: Executes assigned tasks
+- **Coordinator**: Manages workflow orchestration
+- **Explorer**: Discovers new information
+- **Guardian**: Monitors and enforces policies
+- **Learner**: Adapts from experience

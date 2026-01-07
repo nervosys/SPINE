@@ -1,0 +1,14 @@
+[package]
+name = "spine-neural"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Neural network-based latent encoder for SPINE's Chameleon Protocol"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+rand.workspace = true

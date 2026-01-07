@@ -1,0 +1,17 @@
+[package]
+name = "spine-wasm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "WebAssembly runtime for SPINE Binary (HLB) execution"
+
+[dependencies]
+spine-protocol = { path = "../spine-protocol" }
+spine-compiler = { path = "../spine-compiler" }
+wasmtime.workspace = true
+wat.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true

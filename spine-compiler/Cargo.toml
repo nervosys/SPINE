@@ -1,0 +1,17 @@
+[package]
+name = "spine-compiler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Compiler for SPINE Source (HLS) to SPINE Binary (HLB)"
+
+[dependencies]
+spine-protocol = { path = "../spine-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+nom = "7.1"                                     # For parsing HLS
+zstd = "0.12"                                   # For compression
+aes-gcm = "0.10"                                # For encryption

@@ -1,0 +1,24 @@
+[package]
+name = "spine-browser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+
+[dependencies]
+spine-agent = { path = "../spine-agent" }
+spine-human = { path = "../spine-human" }
+spine-wasm = { path = "../spine-wasm" }
+spine-protocol = { path = "../spine-protocol" }
+spine-cluster = { path = "../spine-cluster" }
+spine-agentic = { path = "../spine-agentic" }
+eframe = "0.28"
+egui = "0.28"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+uuid = { version = "1.4", features = ["v4"] }

@@ -1,11 +1,11 @@
-# Hyperlight Source Language (HLS) Specification
+# SPINE Source Language (HLS) Specification
 
 **Version**: 0.1.0-alpha  
 **Status**: Experimental
 
 ## Overview
 
-Hyperlight Source (HLS) is a declarative language for defining web interfaces as executable programs. It compiles to Hyperlight Binary (HLB), which can be executed by the Hyperlight core engine.
+SPINE Source (HLS) is a declarative language for defining web interfaces as executable programs. It compiles to SPINE Binary (HLB), which can be executed by the SPINE Core engine.
 
 ## Design Goals
 
@@ -585,5 +585,5 @@ Common errors:
 ## References
 
 - [Hyperlight Architecture](ARCHITECTURE.md)
-- [HLB Instruction Set](hyperlight-protocol/src/lib.rs)
-- [Compiler Implementation](hyperlight-compiler/src/lib.rs)
+- [HLB Instruction Set](spine-protocol/src/lib.rs)
+- [Compiler Implementation](spine-compiler/src/lib.rs)

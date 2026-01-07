@@ -1,0 +1,39 @@
+[package]
+name = "spine-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core engine for the SPINE bioinspired agentic browser"
+
+[dependencies]
+spine-parser = { path = "../spine-parser" }
+spine-protocol = { path = "../spine-protocol" }
+spine-agent = { path = "../spine-agent" }
+spine-wasm = { path = "../spine-wasm" }
+spine-compiler = { path = "../spine-compiler" }
+spine-neural = { path = "../spine-neural" }
+spine-human = { path = "../spine-human" }
+spine-cluster = { path = "../spine-cluster" }
+spine-agentic = { path = "../spine-agentic" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+reqwest.workspace = true
+dashmap = { version = "5.5", features = ["serde"] }
+uuid = { version = "1.4", features = ["v4"] }
+rand = "0.8"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
+prometheus.workspace = true
+lazy_static.workspace = true
+axum = "0.6"
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
