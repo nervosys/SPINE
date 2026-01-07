@@ -252,10 +252,19 @@ async fn handle_command(
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(html) = &session.current_html {
                     match spine_parser::parse_html(html) {
-                        Ok(ur) => Response {
-                            id: request_id,
-                            result: Some(serde_json::to_value(ur).unwrap()),
-                            error: None,
+                        Ok(ur) => {
+                            // Include VDOM tree and UR representations if available
+                            let vdom_tree = session.current_vdom.as_ref().map(|v| v.to_tree());
+                            let vdom_ur = session.current_vdom.as_ref().map(|v| v.to_ur());
+                            Response {
+                                id: request_id,
+                                result: Some(serde_json::json!({
+                                    "parsed_ur": serde_json::to_value(&ur).unwrap(),
+                                    "vdom_tree": vdom_tree,
+                                    "vdom_ur": vdom_ur,
+                                })),
+                                error: None,
+                            }
                         },
                         Err(e) => Response {
                             id: request_id,
@@ -1072,7 +1081,8 @@ async fn main() -> Result<()> {
                     let _ = cluster.vote_on_knowledge(proposal_id, true, 0.9).await;
                 }
                 spine_cluster::ClusterEvent::KnowledgeVoteReceived { proposal_id, voter_id, approved, confidence } => {
-                    info!("Vote received for proposal {}: approved={}, confidence={}", proposal_id, approved, confidence);
+                    info!("Vote received for proposal {} from node {}: approved={}, confidence={:.2}", 
+                          proposal_id, voter_id, approved, confidence);
                     
                     if let Some(mut proposal) = cluster_state.proposals.get_mut(&proposal_id) {
                         proposal.votes.push(KnowledgeVote {
@@ -1081,11 +1091,32 @@ async fn main() -> Result<()> {
                             confidence,
                         });
                         
-                        // Check if consensus reached
+                        // Check if consensus reached using weighted voting
                         let cluster = cluster_state.cluster.lock().await;
                         let total_nodes = cluster.get_healthy_nodes().len() + 1; // +1 for self
+                        
+                        // Compute weighted approval score using voter confidence
+                        let weighted_approval: f32 = proposal.votes.iter()
+                            .filter(|v| v.approved)
+                            .map(|v| v.confidence)
+                            .sum();
+                        let total_confidence: f32 = proposal.votes.iter()
+                            .map(|v| v.confidence)
+                            .sum();
+                        let weighted_ratio = if total_confidence > 0.0 { 
+                            weighted_approval / total_confidence 
+                        } else { 0.0 };
+                        
+                        // Log vote breakdown by voter
+                        for vote in proposal.votes.iter() {
+                            debug!("  Voter {}: approved={}, confidence={:.2}", 
+                                   vote.voter_id, vote.approved, vote.confidence);
+                        }
+                        
                         let approved_votes = proposal.votes.iter().filter(|v| v.approved).count();
                         let threshold = cluster.get_consensus_threshold();
+                        info!("Proposal {} from node {}: {}/{} votes ({:.1}% weighted approval)", 
+                              proposal_id, proposal.origin_node, approved_votes, total_nodes, weighted_ratio * 100.0);
                         
                         if (approved_votes as f32 / total_nodes as f32) >= threshold {
                             info!("Consensus reached for proposal {}. Committing...", proposal_id);

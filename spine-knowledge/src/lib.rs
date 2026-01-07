@@ -804,7 +804,8 @@ impl CollectiveMemory {
         entry.clock.tick(self.node_id);
         let hash = entry.content_hash();
 
-        if let Some(existing_id) = self.by_hash.get(&hash) {
+        if let Some(_existing_entry_id) = self.by_hash.get(&hash) {
+            // Content already exists with this hash - increment confirmation count
             if let Some(mut existing) = self.entries.get_mut(&key.to_string()) {
                 existing.confirmations += 1;
                 existing.clock.merge(&entry.clock);
