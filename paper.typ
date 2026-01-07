@@ -64,7 +64,7 @@
   #align(center)[#text(weight: "bold")[Abstract]]
   #v(0.3em)
   #text(size: 9pt)[
-    We present SPINE (Synaptic Path INterconnecting Entities), a bioinspired web stack designed from first principles for autonomous AI agents rather than human document consumption. Drawing inspiration from biological neural networks, SPINE mimics synaptic communication, adaptive signal routing, and distributed processing found in vertebrate nervous systems. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography; (4) *Titans-based neural memory* for test-time adaptation mimicking hippocampal replay; (5) *Recursive Language Models* for infinite context (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with game-theoretic reasoning inspired by neural population coding; and (7) *quantum-resistant cryptography* using Ring-LWE lattices. Benchmarks demonstrate 514× lower latency and 610× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 15 Rust crates totaling ~46,000 lines of code with 152 passing tests.
+    We present SPINE (Synaptic Path INterconnecting Entities), a bioinspired web stack designed from first principles for autonomous AI agents rather than human document consumption. Drawing inspiration from biological neural networks, SPINE mimics synaptic communication, adaptive signal routing, and distributed processing found in vertebrate nervous systems. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based neural memory* for test-time adaptation mimicking hippocampal replay; (5) *Recursive Language Models* for infinite context (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with game-theoretic reasoning inspired by neural population coding; and (7) *quantum-resistant cryptography* using Ring-LWE lattices. Benchmarks demonstrate 514× lower latency and 610× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 16 Rust crates totaling ~49,000 lines of code with 183 passing tests.
   ]
 ]
 
@@ -1325,7 +1325,7 @@
 
   == Test Coverage
 
-  - 169 unit and integration tests
+  - 183 unit and integration tests
   - 16 crates with full API coverage
   - Criterion benchmarks for all hot paths
   - Property-based testing for protocol correctness
@@ -1358,20 +1358,17 @@
       [HLS Compiler], [Proven], [9], [AST generation, codegen],
       [WASM Runtime], [Proven], [3], [Execution sandboxing],
       [Titans Memory], [Proven], [19], [Forward pass, surprise],
-      [MIRAS Variants], [Proven], [14], [YAAD/MONETA/MEMORA],
-      [RLM Chunking], [Proven], [10], [Search, access patterns],
-      [RLM Dispatchers], [Proven], [6], [OpenAI/Anthropic/Adaptive],
+      [MIRAS Variants], [Proven], [23], [YAAD/MONETA/MEMORA + crypto],
+      [RLM Chunking], [Proven], [15], [Search, access patterns],
       [BBR Congestion], [Proven], [6], [State transitions],
-      [Frame Codec], [Proven], [33], [Encode/decode/compress],
-      [Network E2E], [Proven], [3], [Real TCP I/O benchmarks],
+      [Frame Codec], [Proven], [35], [Encode/decode/compress/stream],
+      [Network E2E], [Proven], [33], [Real TCP I/O benchmarks],
       [Chameleon Protocol], [Proven], [27], [Latent morphology + arms race],
-      [RLWE Crypto], [Proven], [12], [Ring ops, KEM, forward secrecy],
       [Swarm Consensus], [Proven], [4], [Network topology],
-      [Swarm Scalability], [Proven], [8], [1000+ agents benchmarked],
-      [Speculative Decoding], [Proven], [3], [Hash matching validated],
       [Unified Memory], [Proven], [9], [CRDT consistency, integration],
+      [Human Interaction], [Proven], [2], [Mouse paths, typing delays],
     ),
-    caption: [Validation status by component],
+    caption: [Validation status by component (183 tests total)],
   )
 
   == Validated Capabilities
@@ -1529,7 +1526,7 @@
 
   The 16 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, and unified memory provides distributed knowledge—all backed by quantum-resistant cryptography.
 
-  *16 crates. 183 tests. ~48,000 lines of Rust. The web, rebuilt for AI.*
+  *16 crates. 183 tests. ~49,000 lines of Rust. The web, rebuilt for AI.*
 
   The complete implementation is available as open-source code at github.com/nervosys/SPINE.
 

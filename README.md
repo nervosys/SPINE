@@ -25,7 +25,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) was designed in the 1990s for human
 | Stateless request/response             | Persistent neural memory                 |
 | Static protocols (fingerprintable)     | Moving-target defense (Chameleon)        |
 | Single-agent browsing                  | Multi-agent swarm coordination           |
-| RNN/LSTM sequence modeling             | Titans architecture (test-time training) |
+| No neural nets                         | Titans architecture (test-time training) |
 
 ## Core Principles
 
