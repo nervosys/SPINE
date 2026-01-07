@@ -2,13 +2,12 @@
 #![allow(dead_code)]
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
+use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 use spine_crypto::{
     LatticeParams, QuantumSpeculativeProtocol, TransformerConfig, TransformerPredictor,
 };
-use spine_neural::{
-    MirasNeuralEncoder, MirasVariant, NeuralEncoderConfig, NeuralLatentEncoder,
-};
-use serde::{Deserialize, Serialize};
+use spine_neural::{MirasNeuralEncoder, MirasVariant, NeuralEncoderConfig, NeuralLatentEncoder};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -2120,6 +2119,978 @@ pub async fn connect_auto(
     }
 }
 
+// =============================================================================
+// EVOLVABLE NEURAL PROTOCOL FRAMEWORK
+// =============================================================================
+
+/// Genetic representation of a neural protocol's architecture.
+/// Protocols are encoded as genomes that can be mutated, crossed over, and selected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolGenome {
+    /// Unique identifier for this genome
+    pub id: Uuid,
+    /// Generation number (evolutionary lineage)
+    pub generation: u32,
+    /// Neural encoder architecture genes
+    pub encoder_genes: EncoderGenes,
+    /// Latent space configuration genes
+    pub latent_genes: LatentSpaceGenes,
+    /// Communication pattern genes
+    pub comm_genes: CommunicationGenes,
+    /// Fitness score from evaluation
+    pub fitness: f64,
+    /// Parent genomes (for lineage tracking)
+    pub parents: Vec<Uuid>,
+    /// Mutation history
+    pub mutations: Vec<MutationRecord>,
+}
+
+/// Genes controlling the neural encoder architecture
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EncoderGenes {
+    /// Number of hidden layers (1-8)
+    pub num_layers: u8,
+    /// Hidden dimensions for each layer
+    pub layer_dims: Vec<u16>,
+    /// Activation functions per layer
+    pub activations: Vec<ActivationGene>,
+    /// Attention heads in encoder (power of 2)
+    pub attention_heads: u8,
+    /// Use skip connections
+    pub skip_connections: bool,
+    /// Dropout rate (0.0-0.5)
+    pub dropout_rate: f32,
+    /// Layer normalization
+    pub layer_norm: bool,
+}
+
+/// Gene encoding an activation function
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum ActivationGene {
+    ReLU,
+    GELU,
+    SiLU,
+    Tanh,
+    Sigmoid,
+    LeakyReLU,
+    Mish,
+    Swish,
+}
+
+impl ActivationGene {
+    pub fn random(rng: &mut impl rand::Rng) -> Self {
+        match rng.gen_range(0..8) {
+            0 => Self::ReLU,
+            1 => Self::GELU,
+            2 => Self::SiLU,
+            3 => Self::Tanh,
+            4 => Self::Sigmoid,
+            5 => Self::LeakyReLU,
+            6 => Self::Mish,
+            _ => Self::Swish,
+        }
+    }
+
+    pub fn apply(&self, x: f32) -> f32 {
+        match self {
+            Self::ReLU => x.max(0.0),
+            Self::GELU => x * 0.5 * (1.0 + (x * 0.797_884_6 * (1.0 + 0.044715 * x * x)).tanh()),
+            Self::SiLU => x * (1.0 / (1.0 + (-x).exp())),
+            Self::Tanh => x.tanh(),
+            Self::Sigmoid => 1.0 / (1.0 + (-x).exp()),
+            Self::LeakyReLU => {
+                if x > 0.0 {
+                    x
+                } else {
+                    0.01 * x
+                }
+            }
+            Self::Mish => x * (((x).exp() + 1.0).ln()).tanh(),
+            Self::Swish => x * (1.0 / (1.0 + (-x).exp())),
+        }
+    }
+}
+
+/// Genes controlling the latent space representation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LatentSpaceGenes {
+    /// Base dimensionality (32-1024)
+    pub base_dim: u16,
+    /// Whether dimension can vary per message
+    pub variable_dim: bool,
+    /// Minimum dimension when variable
+    pub min_dim: u16,
+    /// Maximum dimension when variable
+    pub max_dim: u16,
+    /// Quantization bits (0=continuous, 1-16=discrete)
+    pub quantization_bits: u8,
+    /// Normalization strategy
+    pub normalization: NormalizationGene,
+    /// Sparsity target (0.0-1.0)
+    pub sparsity_target: f32,
+    /// Use residual encoding
+    pub residual_encoding: bool,
+}
+
+/// Normalization strategies for latent space
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum NormalizationGene {
+    None,
+    L1,
+    L2,
+    BatchNorm,
+    LayerNorm,
+    InstanceNorm,
+    Spherical,
+}
+
+impl NormalizationGene {
+    pub fn random(rng: &mut impl rand::Rng) -> Self {
+        match rng.gen_range(0..7) {
+            0 => Self::None,
+            1 => Self::L1,
+            2 => Self::L2,
+            3 => Self::BatchNorm,
+            4 => Self::LayerNorm,
+            5 => Self::InstanceNorm,
+            _ => Self::Spherical,
+        }
+    }
+}
+
+/// Genes controlling communication patterns
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommunicationGenes {
+    /// Frame header size strategy
+    pub header_strategy: HeaderStrategy,
+    /// Compression before encoding
+    pub pre_compression: bool,
+    /// Error correction level (0-3)
+    pub error_correction: u8,
+    /// Speculative decoding depth
+    pub speculation_depth: u8,
+    /// Batching strategy
+    pub batching: BatchingGene,
+    /// Flow control parameters
+    pub flow_control: FlowControlGenes,
+    /// Protocol morphology evolution rate
+    pub morphology_rate: f32,
+}
+
+/// Header encoding strategies
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum HeaderStrategy {
+    Fixed(u8),  // Fixed size in bytes
+    Variable,   // Variable length encoding
+    Implicit,   // Derive from content
+    Predictive, // Use speculation to minimize
+}
+
+/// Batching strategies for messages
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum BatchingGene {
+    None,
+    TimeWindow(u16),    // Batch within time window (ms)
+    SizeThreshold(u16), // Batch until size threshold
+    Adaptive,           // Adapt based on traffic patterns
+}
+
+/// Flow control genes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlowControlGenes {
+    /// Window size (messages)
+    pub window_size: u16,
+    /// Use congestion-based adaptation
+    pub congestion_aware: bool,
+    /// Priority levels supported
+    pub priority_levels: u8,
+    /// Backpressure sensitivity (0.0-1.0)
+    pub backpressure_sensitivity: f32,
+}
+
+/// Record of a mutation applied to a genome
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MutationRecord {
+    pub mutation_type: MutationType,
+    pub gene_path: String,
+    pub old_value: String,
+    pub new_value: String,
+    pub timestamp: u64,
+}
+
+/// Types of mutations that can occur
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum MutationType {
+    PointMutation, // Single gene change
+    Insertion,     // Add a layer/component
+    Deletion,      // Remove a layer/component
+    Duplication,   // Duplicate a component
+    Transposition, // Move a component
+    Crossover,     // From another genome
+    RandomReset,   // Reset to random value
+}
+
+impl ProtocolGenome {
+    /// Create a random genome
+    pub fn random(rng: &mut impl rand::Rng) -> Self {
+        let num_layers = rng.gen_range(2..=6);
+        let base_dim = 2u16.pow(rng.gen_range(5..=9)); // 32-512
+
+        Self {
+            id: Uuid::new_v4(),
+            generation: 0,
+            encoder_genes: EncoderGenes {
+                num_layers,
+                layer_dims: (0..num_layers)
+                    .map(|_| 2u16.pow(rng.gen_range(6..=9)))
+                    .collect(),
+                activations: (0..num_layers)
+                    .map(|_| ActivationGene::random(rng))
+                    .collect(),
+                attention_heads: 2u8.pow(rng.gen_range(1..=4)),
+                skip_connections: rng.gen_bool(0.5),
+                dropout_rate: rng.gen_range(0.0..0.3),
+                layer_norm: rng.gen_bool(0.7),
+            },
+            latent_genes: LatentSpaceGenes {
+                base_dim,
+                variable_dim: rng.gen_bool(0.3),
+                min_dim: base_dim / 2,
+                max_dim: base_dim * 2,
+                quantization_bits: if rng.gen_bool(0.3) {
+                    rng.gen_range(4..=12)
+                } else {
+                    0
+                },
+                normalization: NormalizationGene::random(rng),
+                sparsity_target: rng.gen_range(0.0..0.5),
+                residual_encoding: rng.gen_bool(0.4),
+            },
+            comm_genes: CommunicationGenes {
+                header_strategy: match rng.gen_range(0..4) {
+                    0 => HeaderStrategy::Fixed(rng.gen_range(8..=32)),
+                    1 => HeaderStrategy::Variable,
+                    2 => HeaderStrategy::Implicit,
+                    _ => HeaderStrategy::Predictive,
+                },
+                pre_compression: rng.gen_bool(0.5),
+                error_correction: rng.gen_range(0..=3),
+                speculation_depth: rng.gen_range(0..=4),
+                batching: match rng.gen_range(0..4) {
+                    0 => BatchingGene::None,
+                    1 => BatchingGene::TimeWindow(rng.gen_range(1..=100)),
+                    2 => BatchingGene::SizeThreshold(rng.gen_range(512..=8192)),
+                    _ => BatchingGene::Adaptive,
+                },
+                flow_control: FlowControlGenes {
+                    window_size: rng.gen_range(4..=64),
+                    congestion_aware: rng.gen_bool(0.7),
+                    priority_levels: rng.gen_range(1..=8),
+                    backpressure_sensitivity: rng.gen_range(0.3..0.9),
+                },
+                morphology_rate: rng.gen_range(0.01..0.2),
+            },
+            fitness: 0.0,
+            parents: vec![],
+            mutations: vec![],
+        }
+    }
+
+    /// Mutate this genome
+    pub fn mutate(&mut self, mutation_rate: f32, rng: &mut impl rand::Rng) {
+        // Encoder mutations
+        if rng.gen::<f32>() < mutation_rate {
+            let idx = rng.gen_range(0..self.encoder_genes.activations.len());
+            let old = self.encoder_genes.activations[idx];
+            self.encoder_genes.activations[idx] = ActivationGene::random(rng);
+            if self.encoder_genes.activations[idx] != old {
+                self.mutations.push(MutationRecord {
+                    mutation_type: MutationType::PointMutation,
+                    gene_path: format!("encoder.activation[{}]", idx),
+                    old_value: format!("{:?}", old),
+                    new_value: format!("{:?}", self.encoder_genes.activations[idx]),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                });
+            }
+        }
+
+        // Layer dimension mutation
+        if rng.gen::<f32>() < mutation_rate * 0.5 {
+            let idx = rng.gen_range(0..self.encoder_genes.layer_dims.len());
+            let old = self.encoder_genes.layer_dims[idx];
+            // Mutate by power of 2 steps
+            self.encoder_genes.layer_dims[idx] = if rng.gen_bool(0.5) {
+                (old * 2).min(1024)
+            } else {
+                (old / 2).max(32)
+            };
+            self.mutations.push(MutationRecord {
+                mutation_type: MutationType::PointMutation,
+                gene_path: format!("encoder.layer_dims[{}]", idx),
+                old_value: old.to_string(),
+                new_value: self.encoder_genes.layer_dims[idx].to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            });
+        }
+
+        // Latent space mutations
+        if rng.gen::<f32>() < mutation_rate {
+            let old = self.latent_genes.normalization;
+            self.latent_genes.normalization = NormalizationGene::random(rng);
+            if self.latent_genes.normalization != old {
+                self.mutations.push(MutationRecord {
+                    mutation_type: MutationType::PointMutation,
+                    gene_path: "latent.normalization".to_string(),
+                    old_value: format!("{:?}", old),
+                    new_value: format!("{:?}", self.latent_genes.normalization),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                });
+            }
+        }
+
+        // Sparsity target mutation
+        if rng.gen::<f32>() < mutation_rate {
+            let delta = rng.gen_range(-0.1..0.1);
+            self.latent_genes.sparsity_target =
+                (self.latent_genes.sparsity_target + delta).clamp(0.0, 0.8);
+        }
+
+        // Communication gene mutations
+        if rng.gen::<f32>() < mutation_rate {
+            self.comm_genes.speculation_depth = rng.gen_range(0..=6);
+        }
+
+        if rng.gen::<f32>() < mutation_rate * 0.3 {
+            self.comm_genes.error_correction = rng.gen_range(0..=3);
+        }
+    }
+
+    /// Crossover with another genome
+    pub fn crossover(&self, other: &Self, rng: &mut impl rand::Rng) -> Self {
+        let mut child = self.clone();
+        child.id = Uuid::new_v4();
+        child.generation = self.generation.max(other.generation) + 1;
+        child.parents = vec![self.id, other.id];
+        child.fitness = 0.0;
+        child.mutations.clear();
+
+        // Uniform crossover for encoder genes
+        if rng.gen_bool(0.5) {
+            child.encoder_genes.attention_heads = other.encoder_genes.attention_heads;
+        }
+        if rng.gen_bool(0.5) {
+            child.encoder_genes.skip_connections = other.encoder_genes.skip_connections;
+        }
+        if rng.gen_bool(0.5) {
+            child.encoder_genes.layer_norm = other.encoder_genes.layer_norm;
+        }
+
+        // Crossover layer dims (average or pick)
+        for i in 0..child
+            .encoder_genes
+            .layer_dims
+            .len()
+            .min(other.encoder_genes.layer_dims.len())
+        {
+            if rng.gen_bool(0.5) {
+                child.encoder_genes.layer_dims[i] = other.encoder_genes.layer_dims[i];
+            }
+        }
+
+        // Latent space crossover
+        if rng.gen_bool(0.5) {
+            child.latent_genes.base_dim = other.latent_genes.base_dim;
+            child.latent_genes.min_dim = other.latent_genes.min_dim;
+            child.latent_genes.max_dim = other.latent_genes.max_dim;
+        }
+        if rng.gen_bool(0.5) {
+            child.latent_genes.normalization = other.latent_genes.normalization;
+        }
+        if rng.gen_bool(0.5) {
+            child.latent_genes.quantization_bits = other.latent_genes.quantization_bits;
+        }
+
+        // Communication crossover
+        if rng.gen_bool(0.5) {
+            child.comm_genes.header_strategy = other.comm_genes.header_strategy;
+        }
+        if rng.gen_bool(0.5) {
+            child.comm_genes.batching = other.comm_genes.batching;
+        }
+        if rng.gen_bool(0.5) {
+            child.comm_genes.flow_control = other.comm_genes.flow_control.clone();
+        }
+
+        child.mutations.push(MutationRecord {
+            mutation_type: MutationType::Crossover,
+            gene_path: "genome".to_string(),
+            old_value: format!("{}", self.id),
+            new_value: format!("{} x {}", self.id, other.id),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        });
+
+        child
+    }
+}
+
+/// An instantiated protocol built from a genome
+pub struct EvolvedProtocol {
+    /// The genome this protocol was built from
+    pub genome: ProtocolGenome,
+    /// Neural encoder layer weights
+    encoder_weights: Vec<Vec<Vec<f32>>>,
+    /// Decoder weights (inverse of encoder)
+    decoder_weights: Vec<Vec<Vec<f32>>>,
+    /// Running statistics for adaptive normalization
+    running_mean: Vec<f32>,
+    running_var: Vec<f32>,
+    /// Message counter for morphology evolution
+    message_count: u64,
+    /// Current latent dimension (may vary)
+    current_dim: usize,
+    /// RNG for stochastic operations
+    rng: rand::rngs::StdRng,
+}
+
+impl EvolvedProtocol {
+    /// Build a protocol from a genome
+    pub fn from_genome(genome: ProtocolGenome) -> Self {
+        let seed = genome.id.as_u128() as u64;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+
+        let base_dim = genome.latent_genes.base_dim as usize;
+        let mut input_dim = 256; // Standard input chunk size
+
+        // Build encoder weights
+        let mut encoder_weights = Vec::new();
+        for (i, &dim) in genome.encoder_genes.layer_dims.iter().enumerate() {
+            let output_dim = if i == genome.encoder_genes.layer_dims.len() - 1 {
+                base_dim
+            } else {
+                dim as usize
+            };
+
+            // Xavier initialization
+            let scale = (2.0 / (input_dim + output_dim) as f32).sqrt();
+            let weights: Vec<Vec<f32>> = (0..output_dim)
+                .map(|_| {
+                    (0..input_dim)
+                        .map(|_| rng.gen::<f32>() * 2.0 * scale - scale)
+                        .collect()
+                })
+                .collect();
+            encoder_weights.push(weights);
+            input_dim = output_dim;
+        }
+
+        // Build decoder weights (reverse architecture)
+        let mut decoder_weights = Vec::new();
+        input_dim = base_dim;
+        for &dim in genome.encoder_genes.layer_dims.iter().rev() {
+            let output_dim = dim as usize;
+            let scale = (2.0 / (input_dim + output_dim) as f32).sqrt();
+            let weights: Vec<Vec<f32>> = (0..output_dim)
+                .map(|_| {
+                    (0..input_dim)
+                        .map(|_| rng.gen::<f32>() * 2.0 * scale - scale)
+                        .collect()
+                })
+                .collect();
+            decoder_weights.push(weights);
+            input_dim = output_dim;
+        }
+        // Final layer to original size
+        let scale = (2.0 / (input_dim + 256) as f32).sqrt();
+        let final_weights: Vec<Vec<f32>> = (0..256)
+            .map(|_| {
+                (0..input_dim)
+                    .map(|_| rng.gen::<f32>() * 2.0 * scale - scale)
+                    .collect()
+            })
+            .collect();
+        decoder_weights.push(final_weights);
+
+        Self {
+            genome,
+            encoder_weights,
+            decoder_weights,
+            running_mean: vec![0.0; base_dim],
+            running_var: vec![1.0; base_dim],
+            message_count: 0,
+            current_dim: base_dim,
+            rng,
+        }
+    }
+
+    /// Encode data into the evolved latent space
+    pub fn encode(&mut self, data: &[u8]) -> Vec<f32> {
+        // Pad or truncate to 256 bytes
+        let mut input: Vec<f32> = data.iter().take(256).map(|&b| b as f32 / 255.0).collect();
+        while input.len() < 256 {
+            input.push(0.0);
+        }
+
+        // Forward through encoder
+        let mut hidden = input;
+        for (i, weights) in self.encoder_weights.iter().enumerate() {
+            let activation = if i < self.genome.encoder_genes.activations.len() {
+                self.genome.encoder_genes.activations[i]
+            } else {
+                ActivationGene::GELU
+            };
+
+            hidden = self.forward_layer(weights, &hidden, activation);
+
+            // Apply layer norm if enabled
+            if self.genome.encoder_genes.layer_norm {
+                hidden = self.layer_norm(&hidden);
+            }
+        }
+
+        // Apply latent space normalization
+        hidden = self.normalize_latent(hidden);
+
+        // Apply quantization if enabled
+        if self.genome.latent_genes.quantization_bits > 0 {
+            hidden = self.quantize(&hidden, self.genome.latent_genes.quantization_bits);
+        }
+
+        // Apply sparsity if enabled
+        if self.genome.latent_genes.sparsity_target > 0.0 {
+            hidden = self.apply_sparsity(hidden);
+        }
+
+        self.message_count += 1;
+        hidden
+    }
+
+    /// Decode data from the evolved latent space
+    pub fn decode(&mut self, latent: &[f32]) -> Vec<u8> {
+        let mut hidden = latent.to_vec();
+
+        // Reverse quantization isn't needed (values are already continuous approximations)
+
+        // Forward through decoder
+        for (i, weights) in self.decoder_weights.iter().enumerate() {
+            let activation = if i < self.decoder_weights.len() - 1 {
+                // Use same activation as encoder (reversed)
+                let rev_idx = self
+                    .genome
+                    .encoder_genes
+                    .activations
+                    .len()
+                    .saturating_sub(i + 1);
+                if rev_idx < self.genome.encoder_genes.activations.len() {
+                    self.genome.encoder_genes.activations[rev_idx]
+                } else {
+                    ActivationGene::GELU
+                }
+            } else {
+                ActivationGene::Sigmoid // Final layer uses sigmoid for [0,1] output
+            };
+
+            hidden = self.forward_layer(weights, &hidden, activation);
+        }
+
+        // Convert back to bytes
+        hidden
+            .iter()
+            .map(|&x| (x.clamp(0.0, 1.0) * 255.0) as u8)
+            .collect()
+    }
+
+    fn forward_layer(
+        &self,
+        weights: &[Vec<f32>],
+        input: &[f32],
+        activation: ActivationGene,
+    ) -> Vec<f32> {
+        weights
+            .iter()
+            .map(|row| {
+                let sum: f32 = row.iter().zip(input.iter()).map(|(&w, &x)| w * x).sum();
+                activation.apply(sum)
+            })
+            .collect()
+    }
+
+    fn layer_norm(&self, x: &[f32]) -> Vec<f32> {
+        let mean: f32 = x.iter().sum::<f32>() / x.len() as f32;
+        let var: f32 = x.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / x.len() as f32;
+        let std = (var + 1e-5).sqrt();
+        x.iter().map(|&v| (v - mean) / std).collect()
+    }
+
+    fn normalize_latent(&mut self, mut x: Vec<f32>) -> Vec<f32> {
+        match self.genome.latent_genes.normalization {
+            NormalizationGene::None => x,
+            NormalizationGene::L1 => {
+                let sum: f32 = x.iter().map(|v| v.abs()).sum();
+                if sum > 0.0 {
+                    x.iter_mut().for_each(|v| *v /= sum);
+                }
+                x
+            }
+            NormalizationGene::L2 => {
+                let norm: f32 = x.iter().map(|v| v * v).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    x.iter_mut().for_each(|v| *v /= norm);
+                }
+                x
+            }
+            NormalizationGene::Spherical => {
+                let norm: f32 = x.iter().map(|v| v * v).sum::<f32>().sqrt();
+                if norm > 0.0 {
+                    x.iter_mut().for_each(|v| *v /= norm);
+                }
+                x
+            }
+            _ => self.layer_norm(&x),
+        }
+    }
+
+    fn quantize(&self, x: &[f32], bits: u8) -> Vec<f32> {
+        let levels = 2u32.pow(bits as u32) as f32;
+        x.iter()
+            .map(|&v| {
+                let normalized = (v + 1.0) / 2.0; // Map to [0,1]
+                let quantized = (normalized * levels).round() / levels;
+                quantized * 2.0 - 1.0 // Map back to [-1,1]
+            })
+            .collect()
+    }
+
+    fn apply_sparsity(&mut self, mut x: Vec<f32>) -> Vec<f32> {
+        let target_zeros = (x.len() as f32 * self.genome.latent_genes.sparsity_target) as usize;
+
+        // Sort by absolute value
+        let mut indexed: Vec<(usize, f32)> =
+            x.iter().enumerate().map(|(i, &v)| (i, v.abs())).collect();
+        indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        // Zero out smallest values
+        for (idx, _) in indexed.iter().take(target_zeros) {
+            x[*idx] = 0.0;
+        }
+
+        x
+    }
+
+    /// Get the current protocol ID
+    pub fn protocol_id(&self) -> Uuid {
+        self.genome.id
+    }
+
+    /// Get generation number
+    pub fn generation(&self) -> u32 {
+        self.genome.generation
+    }
+}
+
+/// Population of protocols undergoing evolution
+pub struct ProtocolPopulation {
+    /// Current population
+    pub genomes: Vec<ProtocolGenome>,
+    /// Best genome found so far
+    pub best: Option<ProtocolGenome>,
+    /// Population size
+    pub size: usize,
+    /// Mutation rate
+    pub mutation_rate: f32,
+    /// Elite fraction (preserved without mutation)
+    pub elite_fraction: f32,
+    /// Current generation
+    pub generation: u32,
+    /// Fitness history
+    pub fitness_history: Vec<f64>,
+    /// RNG
+    rng: rand::rngs::StdRng,
+}
+
+impl ProtocolPopulation {
+    /// Create a new random population
+    pub fn new(size: usize, mutation_rate: f32, seed: u64) -> Self {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        let genomes: Vec<ProtocolGenome> = (0..size)
+            .map(|_| ProtocolGenome::random(&mut rng))
+            .collect();
+
+        Self {
+            genomes,
+            best: None,
+            size,
+            mutation_rate,
+            elite_fraction: 0.1,
+            generation: 0,
+            fitness_history: vec![],
+            rng,
+        }
+    }
+
+    /// Evaluate fitness for all genomes using a fitness function
+    pub fn evaluate<F>(&mut self, fitness_fn: F)
+    where
+        F: Fn(&ProtocolGenome) -> f64,
+    {
+        for genome in &mut self.genomes {
+            genome.fitness = fitness_fn(genome);
+        }
+
+        // Update best
+        if let Some(best_genome) = self.genomes.iter().max_by(|a, b| {
+            a.fitness
+                .partial_cmp(&b.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) {
+            if self.best.is_none() || best_genome.fitness > self.best.as_ref().unwrap().fitness {
+                self.best = Some(best_genome.clone());
+            }
+        }
+
+        // Record average fitness
+        let avg_fitness: f64 =
+            self.genomes.iter().map(|g| g.fitness).sum::<f64>() / self.size as f64;
+        self.fitness_history.push(avg_fitness);
+    }
+
+    /// Evolve to the next generation
+    pub fn evolve(&mut self) {
+        // Sort by fitness (descending)
+        self.genomes.sort_by(|a, b| {
+            b.fitness
+                .partial_cmp(&a.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let elite_count = (self.size as f32 * self.elite_fraction) as usize;
+        let mut new_genomes = Vec::with_capacity(self.size);
+
+        // Keep elites
+        for genome in self.genomes.iter().take(elite_count) {
+            new_genomes.push(genome.clone());
+        }
+
+        // Fill rest with offspring
+        while new_genomes.len() < self.size {
+            // Tournament selection - get indices first to avoid borrow issues
+            let parent1_idx = self.tournament_select_idx();
+            let parent2_idx = self.tournament_select_idx();
+
+            // Clone parents to avoid borrow issues
+            let parent1 = self.genomes[parent1_idx].clone();
+            let parent2 = self.genomes[parent2_idx].clone();
+
+            // Crossover
+            let mut child = parent1.crossover(&parent2, &mut self.rng);
+            child.generation = self.generation + 1;
+
+            // Mutation
+            child.mutate(self.mutation_rate, &mut self.rng);
+
+            new_genomes.push(child);
+        }
+
+        self.genomes = new_genomes;
+        self.generation += 1;
+    }
+
+    fn tournament_select_idx(&mut self) -> usize {
+        let tournament_size = 3;
+        let mut best_idx = self.rng.gen_range(0..self.genomes.len());
+
+        for _ in 1..tournament_size {
+            let idx = self.rng.gen_range(0..self.genomes.len());
+            if self.genomes[idx].fitness > self.genomes[best_idx].fitness {
+                best_idx = idx;
+            }
+        }
+
+        best_idx
+    }
+
+    /// Get the best evolved protocol
+    pub fn best_protocol(&self) -> Option<EvolvedProtocol> {
+        self.best
+            .as_ref()
+            .map(|g| EvolvedProtocol::from_genome(g.clone()))
+    }
+
+    /// Run evolution for N generations
+    pub fn run<F>(&mut self, generations: u32, fitness_fn: F)
+    where
+        F: Fn(&ProtocolGenome) -> f64 + Copy,
+    {
+        for _ in 0..generations {
+            self.evaluate(fitness_fn);
+            self.evolve();
+        }
+    }
+}
+
+/// Fitness evaluation metrics for evolved protocols
+pub struct ProtocolFitnessMetrics {
+    /// Encoding throughput (bytes/sec)
+    pub throughput: f64,
+    /// Compression ratio (original/encoded size)
+    pub compression: f64,
+    /// Reconstruction accuracy (0-1)
+    pub accuracy: f64,
+    /// Latency (microseconds)
+    pub latency_us: f64,
+    /// Resistance to analysis (entropy of encoded messages)
+    pub entropy: f64,
+    /// Energy efficiency (operations per byte)
+    pub efficiency: f64,
+}
+
+impl ProtocolFitnessMetrics {
+    /// Calculate overall fitness from metrics
+    pub fn fitness(&self, weights: &ProtocolFitnessWeights) -> f64 {
+        weights.throughput * self.throughput.log10().max(0.0)
+            + weights.compression * self.compression.log10().max(0.0)
+            + weights.accuracy * self.accuracy
+            + weights.latency * (1.0 / (self.latency_us + 1.0).log10())
+            + weights.entropy * self.entropy
+            + weights.efficiency * self.efficiency.log10().max(0.0)
+    }
+}
+
+/// Weights for fitness function components
+pub struct ProtocolFitnessWeights {
+    pub throughput: f64,
+    pub compression: f64,
+    pub accuracy: f64,
+    pub latency: f64,
+    pub entropy: f64,
+    pub efficiency: f64,
+}
+
+impl Default for ProtocolFitnessWeights {
+    fn default() -> Self {
+        Self {
+            throughput: 1.0,
+            compression: 1.0,
+            accuracy: 2.0, // Accuracy is critical
+            latency: 1.0,
+            entropy: 0.5, // Nice to have
+            efficiency: 0.5,
+        }
+    }
+}
+
+/// Benchmark an evolved protocol
+pub fn benchmark_protocol(
+    genome: &ProtocolGenome,
+    test_data: &[Vec<u8>],
+) -> ProtocolFitnessMetrics {
+    let mut protocol = EvolvedProtocol::from_genome(genome.clone());
+
+    let start = std::time::Instant::now();
+    let mut total_original = 0usize;
+    let mut total_encoded = 0usize;
+    let mut total_errors = 0f64;
+    let mut all_encoded: Vec<Vec<f32>> = vec![];
+
+    for data in test_data {
+        total_original += data.len();
+
+        let encoded = protocol.encode(data);
+        total_encoded += encoded.len() * 4; // f32 = 4 bytes
+        all_encoded.push(encoded.clone());
+
+        let decoded = protocol.decode(&encoded);
+
+        // Calculate reconstruction error
+        let error: f64 = data
+            .iter()
+            .zip(decoded.iter())
+            .map(|(&a, &b)| (a as f64 - b as f64).powi(2))
+            .sum::<f64>()
+            / data.len() as f64;
+        total_errors += error.sqrt();
+    }
+
+    let elapsed = start.elapsed();
+    let throughput = total_original as f64 / elapsed.as_secs_f64();
+    let compression = total_original as f64 / total_encoded as f64;
+    let accuracy = 1.0 - (total_errors / test_data.len() as f64 / 255.0).min(1.0);
+    let latency_us = elapsed.as_micros() as f64 / test_data.len() as f64;
+
+    // Calculate entropy of encoded messages
+    let entropy = calculate_entropy(&all_encoded);
+
+    // Efficiency: lower is better, invert for fitness
+    let ops_per_byte = estimate_operations(genome) as f64 / total_original as f64;
+    let efficiency = 1.0 / ops_per_byte;
+
+    ProtocolFitnessMetrics {
+        throughput,
+        compression,
+        accuracy,
+        latency_us,
+        entropy,
+        efficiency,
+    }
+}
+
+fn calculate_entropy(encoded: &[Vec<f32>]) -> f64 {
+    // Approximate entropy from value distribution
+    let mut histogram = [0u32; 256];
+    let mut total = 0u32;
+
+    for vec in encoded {
+        for &v in vec {
+            let bucket = ((v.clamp(-1.0, 1.0) + 1.0) / 2.0 * 255.0) as usize;
+            histogram[bucket.min(255)] += 1;
+            total += 1;
+        }
+    }
+
+    if total == 0 {
+        return 0.0;
+    }
+
+    let mut entropy = 0.0;
+    for &count in &histogram {
+        if count > 0 {
+            let p = count as f64 / total as f64;
+            entropy -= p * p.log2();
+        }
+    }
+
+    entropy / 8.0 // Normalize to [0, 1]
+}
+
+fn estimate_operations(genome: &ProtocolGenome) -> u64 {
+    let mut ops = 0u64;
+    let mut dim = 256u64;
+
+    for &layer_dim in &genome.encoder_genes.layer_dims {
+        // Matrix multiply: dim * layer_dim multiplications + additions
+        ops += dim * layer_dim as u64 * 2;
+        // Activation function
+        ops += layer_dim as u64;
+        dim = layer_dim as u64;
+    }
+
+    // Latent space operations
+    ops += genome.latent_genes.base_dim as u64;
+
+    ops
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2200,5 +3171,138 @@ mod tests {
         // Frame version should evolve
         // The evolve function changes internal state
         assert!(morph.frame_version != initial_version || morph.header_size > 0);
+    }
+
+    #[test]
+    fn test_protocol_genome_random() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let genome = ProtocolGenome::random(&mut rng);
+        
+        assert!(genome.encoder_genes.num_layers >= 2);
+        assert!(genome.encoder_genes.num_layers <= 6);
+        assert!(!genome.encoder_genes.layer_dims.is_empty());
+        assert!(genome.latent_genes.base_dim >= 32);
+        assert_eq!(genome.generation, 0);
+    }
+
+    #[test]
+    fn test_protocol_genome_mutation() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let mut genome = ProtocolGenome::random(&mut rng);
+        let original_fitness = genome.fitness;
+        
+        // High mutation rate to ensure something changes
+        genome.mutate(1.0, &mut rng);
+        
+        // Fitness should still be 0 (not evaluated yet)
+        assert_eq!(genome.fitness, original_fitness);
+        // Mutations should be recorded
+        assert!(!genome.mutations.is_empty());
+    }
+
+    #[test]
+    fn test_protocol_genome_crossover() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let parent1 = ProtocolGenome::random(&mut rng);
+        let parent2 = ProtocolGenome::random(&mut rng);
+        
+        let child = parent1.crossover(&parent2, &mut rng);
+        
+        assert_ne!(child.id, parent1.id);
+        assert_ne!(child.id, parent2.id);
+        assert_eq!(child.generation, 1);
+        assert_eq!(child.parents.len(), 2);
+        assert!(child.parents.contains(&parent1.id));
+        assert!(child.parents.contains(&parent2.id));
+    }
+
+    #[test]
+    fn test_evolved_protocol_encode_decode() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let genome = ProtocolGenome::random(&mut rng);
+        let mut protocol = EvolvedProtocol::from_genome(genome);
+        
+        let original = b"Hello, evolved neural protocol!";
+        let encoded = protocol.encode(original);
+        
+        // Encoded should be in latent space
+        assert!(!encoded.is_empty());
+        
+        let decoded = protocol.decode(&encoded);
+        
+        // Decoded should be similar length
+        assert_eq!(decoded.len(), 256); // Padded to 256
+    }
+
+    #[test]
+    fn test_protocol_population_creation() {
+        let population = ProtocolPopulation::new(10, 0.1, 42);
+        
+        assert_eq!(population.genomes.len(), 10);
+        assert_eq!(population.size, 10);
+        assert_eq!(population.generation, 0);
+        assert!(population.best.is_none());
+    }
+
+    #[test]
+    fn test_protocol_population_evolution() {
+        let mut population = ProtocolPopulation::new(20, 0.1, 42);
+        
+        // Simple fitness function based on compression potential
+        let fitness_fn = |genome: &ProtocolGenome| -> f64 {
+            let dim_score = 1.0 / (genome.latent_genes.base_dim as f64 / 128.0);
+            let layer_score = genome.encoder_genes.num_layers as f64 / 4.0;
+            dim_score + layer_score
+        };
+        
+        // Evaluate initial population
+        population.evaluate(fitness_fn);
+        assert!(population.best.is_some());
+        
+        let initial_best_fitness = population.best.as_ref().unwrap().fitness;
+        
+        // Evolve for several generations
+        for _ in 0..5 {
+            population.evolve();
+            population.evaluate(fitness_fn);
+        }
+        
+        assert_eq!(population.generation, 5);
+        // Best should be maintained or improved
+        assert!(population.best.as_ref().unwrap().fitness >= initial_best_fitness * 0.9);
+    }
+
+    #[test]
+    fn test_activation_genes() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        
+        // Test all activation functions work
+        for _ in 0..20 {
+            let activation = ActivationGene::random(&mut rng);
+            let result = activation.apply(0.5);
+            assert!(!result.is_nan());
+            
+            let result_neg = activation.apply(-0.5);
+            assert!(!result_neg.is_nan());
+        }
+    }
+
+    #[test]
+    fn test_benchmark_protocol() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let genome = ProtocolGenome::random(&mut rng);
+        
+        // Create test data
+        let test_data: Vec<Vec<u8>> = (0..10)
+            .map(|i| vec![i as u8; 100])
+            .collect();
+        
+        let metrics = benchmark_protocol(&genome, &test_data);
+        
+        assert!(metrics.throughput > 0.0);
+        assert!(metrics.compression > 0.0);
+        assert!(metrics.accuracy >= 0.0 && metrics.accuracy <= 1.0);
+        assert!(metrics.latency_us > 0.0);
+        assert!(metrics.entropy >= 0.0);
     }
 }

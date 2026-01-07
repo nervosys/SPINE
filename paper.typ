@@ -1325,7 +1325,7 @@
 
   == Test Coverage
 
-  - 161 unit and integration tests
+  - 169 unit and integration tests
   - 16 crates with full API coverage
   - Criterion benchmarks for all hot paths
   - Property-based testing for protocol correctness
@@ -1364,7 +1364,7 @@
       [BBR Congestion], [Proven], [6], [State transitions],
       [Frame Codec], [Proven], [33], [Encode/decode/compress],
       [Network E2E], [Proven], [3], [Real TCP I/O benchmarks],
-      [Chameleon Protocol], [Proven], [5], [Latent morphology],
+      [Chameleon Protocol], [Proven], [13], [Latent morphology + evolution],
       [RLWE Crypto], [Proven], [12], [Ring ops, KEM, forward secrecy],
       [Swarm Consensus], [Proven], [4], [Network topology],
       [Swarm Scalability], [Proven], [8], [1000+ agents benchmarked],
@@ -1393,6 +1393,17 @@
   - Surprise-gated updates (verified numerically)
   - Memory consolidation across sequences
   - Variant switching (YAAD ↔ MONETA ↔ MEMORA)
+
+  === Evolvable Neural Protocols
+
+  Agents can evolve novel binary neural latent space communication protocols:
+
+  - *Genetic encoding*: Protocol architectures represented as genomes
+  - *Neural encoder evolution*: Layers, activations, attention heads mutate
+  - *Latent space adaptation*: Dimensionality, quantization, normalization evolve
+  - *Communication optimization*: Header strategies, batching, flow control genes
+  - *Fitness-driven selection*: Throughput, compression, accuracy, entropy metrics
+  - Population-based evolution with crossover, mutation, and elitism
 
   === RLM Context Handling
 
@@ -1504,9 +1515,9 @@
 
   == Unified Vision
 
-  The 16 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols communicate securely, transport moves data efficiently, clusters coordinate swarms, and unified memory provides distributed knowledge—all backed by quantum-resistant cryptography.
+  The 16 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, and unified memory provides distributed knowledge—all backed by quantum-resistant cryptography.
 
-  *16 crates. 161 tests. ~46,000 lines of Rust. The web, rebuilt for AI.*
+  *16 crates. 169 tests. ~47,000 lines of Rust. The web, rebuilt for AI.*
 
   The complete implementation is available as open-source code at github.com/nervosys/SPINE.
 
