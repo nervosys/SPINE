@@ -33,6 +33,7 @@
 - [x] Recursive Language Model: Infinite context (10M+ chars) via REPL environment per arXiv:2512.24601
 - [x] Unified Bioinspired Memory: Cohesive architecture integrating Titans/RLM via episodic, semantic, working, and collective memory subsystems with CRDT-based distributed single-source-of-truth
 - [x] Evolvable Neural Protocols: Genetic algorithm-based protocol evolution with fitness-driven selection
+- [x] Co-Evolutionary Arms Race: Red/Blue team adversarial protocol cryptography with attack/defense co-evolution
 
 ### Optimization Pass ✅
 - [x] **121 Clippy fixes**: Loop patterns, matches! macros, iterator optimizations, collapsed if-let
@@ -40,7 +41,7 @@
 - [x] **Single-pass cosine similarity**: 2.5x faster (9 GiB/s)
 - [x] **Iterator-based neural matmul**: Better LLVM vectorization
 - [x] **Mathematical proofs**: See OPTIMIZATIONS.md
-- [x] **169 tests passing**: Full verification coverage including security tests
+- [x] **183 tests passing**: Full verification coverage including security tests
 - [x] **30 style warnings**: Remaining are API design choices (no correctness impact)
 - [x] **TCP/IP Benchmark**: 514× lower latency, 610× higher throughput vs standard TCP
 

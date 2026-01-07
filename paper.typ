@@ -1364,7 +1364,7 @@
       [BBR Congestion], [Proven], [6], [State transitions],
       [Frame Codec], [Proven], [33], [Encode/decode/compress],
       [Network E2E], [Proven], [3], [Real TCP I/O benchmarks],
-      [Chameleon Protocol], [Proven], [13], [Latent morphology + evolution],
+      [Chameleon Protocol], [Proven], [27], [Latent morphology + arms race],
       [RLWE Crypto], [Proven], [12], [Ring ops, KEM, forward secrecy],
       [Swarm Consensus], [Proven], [4], [Network topology],
       [Swarm Scalability], [Proven], [8], [1000+ agents benchmarked],
@@ -1404,6 +1404,18 @@
   - *Communication optimization*: Header strategies, batching, flow control genes
   - *Fitness-driven selection*: Throughput, compression, accuracy, entropy metrics
   - Population-based evolution with crossover, mutation, and elitism
+
+  === Co-Evolutionary Arms Race
+
+  Neural implicit cryptography operates in an adversarial co-evolutionary context:
+
+  - *Red Team (Attackers)*: Evolve neural decoders, traffic analysis, side-channel attacks
+  - *Blue Team (Defenders)*: Evolve protocols with noise injection, key rotation, decorrelation
+  - *Adversarial Fitness*: Attack success rate vs. defense survival rate
+  - *Statistical Attacks*: Chi-squared, Kolmogorov-Smirnov, mutual information, spectral analysis
+  - *Defense Strategies*: Timing jitter, padding strategies, honey tokens, basis rotation
+  - *Equilibrium Detection*: Automatic detection of evolutionary stalemates
+  - Both teams improve through competitive pressure (Red Queen dynamics)
 
   === RLM Context Handling
 
@@ -1517,7 +1529,7 @@
 
   The 16 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, and unified memory provides distributed knowledge—all backed by quantum-resistant cryptography.
 
-  *16 crates. 169 tests. ~47,000 lines of Rust. The web, rebuilt for AI.*
+  *16 crates. 183 tests. ~48,000 lines of Rust. The web, rebuilt for AI.*
 
   The complete implementation is available as open-source code at github.com/nervosys/SPINE.
 
