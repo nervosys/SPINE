@@ -9,18 +9,12 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
-use spine_transport::{
-    buffer::RingBuffer,
-    congestion::BbrController,
-    frame::{FrameCodec, FrameFlags, FrameHeader},
-    Frame,
-};
+use spine_transport::{frame::FrameCodec, Frame, FrameFlags, FrameHeader};
 
 static PORT_COUNTER: AtomicU16 = AtomicU16::new(40000);
 
