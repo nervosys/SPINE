@@ -53,8 +53,6 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
-#![allow(dead_code)]
-
 pub mod channel;
 pub mod chunk;
 pub mod flow;

@@ -38,8 +38,6 @@
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
 
-#![allow(dead_code)]
-
 pub mod buffer;
 pub mod coalesce;
 pub mod congestion;

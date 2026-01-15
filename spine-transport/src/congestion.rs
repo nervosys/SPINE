@@ -79,6 +79,12 @@ pub struct BbrController {
     prev_btl_bw: f64,
 }
 
+impl Default for BbrController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct BwSample {
     bandwidth: f64,

@@ -27,13 +27,16 @@ use rustls_quic as quic_rustls; // rustls 0.23 for QUIC
 #[cfg(feature = "quic")]
 use std::net::SocketAddr;
 
-/// Chameleon Protocol: A moving-target defense system that uses latent space
-/// transformations for implicit encryption and compression.
-///
-/// Core Insight: High-dimensional vector spaces are inherently encrypted—
-/// the transformation matrix IS the key. By evolving the transformation
-/// based on message history, we create a protocol that is impossible to
-/// statically analyze.
+// =============================================================================
+// CHAMELEON PROTOCOL
+// =============================================================================
+//
+// A moving-target defense system using latent space transformations for
+// implicit encryption and compression.
+//
+// Core Insight: High-dimensional vector spaces are inherently encrypted—
+// the transformation matrix IS the key. By evolving the transformation
+// based on message history, we create a protocol impossible to analyze.
 
 // =============================================================================
 // SPECULATIVE DECODING ENGINE
@@ -3686,7 +3689,7 @@ impl CoevolutionaryArena {
     }
 
     /// Apply defensive measures to encoded data
-    fn apply_defense(&mut self, encoded: &mut Vec<f32>, defense: &DefenseGenes) {
+    fn apply_defense(&mut self, encoded: &mut [f32], defense: &DefenseGenes) {
         // Add noise
         if defense.noise_level > 0.0 {
             for v in encoded.iter_mut() {
@@ -3746,9 +3749,8 @@ impl CoevolutionaryArena {
 
         for (enc, orig) in encoded.iter().zip(original.iter()) {
             // Simulate decoding attempt
-            let decode_score = (complexity_ratio * 0.3 + ensemble_bonus + bidir_bonus)
-                .min(0.95)
-                .max(0.0);
+            let decode_score =
+                (complexity_ratio * 0.3 + ensemble_bonus + bidir_bonus).clamp(0.0, 0.95);
 
             // Information leaked is proportional to encoding entropy vs original entropy
             let enc_entropy: f64 = enc

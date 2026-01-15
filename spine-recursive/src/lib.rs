@@ -680,7 +680,7 @@ impl MockSubLlmDispatcher {
 impl SubLlmDispatcher for MockSubLlmDispatcher {
     async fn dispatch(&self, prompt: &str, context: &str, depth: usize) -> Result<String> {
         // Simulate processing delay proportional to context size
-        let delay_ms = (context.len() / 1000).max(10).min(100);
+        let delay_ms = (context.len() / 1000).clamp(10, 100);
         tokio::time::sleep(Duration::from_millis(delay_ms as u64)).await;
 
         // Generate mock response based on prompt type

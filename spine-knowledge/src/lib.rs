@@ -858,7 +858,7 @@ impl CollectiveMemory {
         let key = remote.key.clone();
         if let Some(mut local) = self.entries.get_mut(&key) {
             if remote.clock.happens_before(&local.clock) {
-                return;
+                // Remote is older, ignore
             } else if local.clock.happens_before(&remote.clock) {
                 *local = remote;
             } else {
