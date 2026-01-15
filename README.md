@@ -820,20 +820,20 @@ SPINE is engineered for maximum efficiency:
 
 ### Benchmark Results
 
-| Component                    | Metric      | Throughput       |
-| ---------------------------- | ----------- | ---------------- |
-| Latent Serialize (128-dim)   | 80 ns       | 6.0 GiB/s        |
-| Latent Serialize (512-dim)   | 108 ns      | 17.6 GiB/s       |
-| Latent Serialize (1024-dim)  | 143 ns      | **26.8 GiB/s**   |
-| Cosine Similarity (128-dim)  | 47 ns       | 10.1 GiB/s       |
-| Cosine Similarity (1024-dim) | 373 ns      | **10.2 GiB/s**   |
-| Frame Encode (8KB)           | 68 ns       | **110 GiB/s**    |
-| Frame Decode (8KB)           | 54 ns       | **141 GiB/s**    |
-| Zero-Copy Buffer (8KB)       | 131 ns      | 58 GiB/s         |
-| BBR Pacing Decision          | **275 ps**  | -                |
-| Batch Encode (64 frames)     | 2.5 µs      | 25.8 Melem/s     |
-| Backpressure Stream (10K)    | 2.1 ms      | 4.9 Melem/s      |
-| Priority Queue (10K)         | 1.9 ms      | 5.4 Melem/s      |
+| Component                    | Metric     | Throughput     |
+| ---------------------------- | ---------- | -------------- |
+| Latent Serialize (128-dim)   | 80 ns      | 6.0 GiB/s      |
+| Latent Serialize (512-dim)   | 108 ns     | 17.6 GiB/s     |
+| Latent Serialize (1024-dim)  | 143 ns     | **26.8 GiB/s** |
+| Cosine Similarity (128-dim)  | 47 ns      | 10.1 GiB/s     |
+| Cosine Similarity (1024-dim) | 373 ns     | **10.2 GiB/s** |
+| Frame Encode (8KB)           | 68 ns      | **110 GiB/s**  |
+| Frame Decode (8KB)           | 54 ns      | **141 GiB/s**  |
+| Zero-Copy Buffer (8KB)       | 131 ns     | 58 GiB/s       |
+| BBR Pacing Decision          | **275 ps** | -              |
+| Batch Encode (64 frames)     | 2.5 µs     | 25.8 Melem/s   |
+| Backpressure Stream (10K)    | 2.1 ms     | 4.9 Melem/s    |
+| Priority Queue (10K)         | 1.9 ms     | 5.4 Melem/s    |
 
 *Benchmarks run on release builds with LTO enabled. Results validated January 2026.*
 
@@ -841,27 +841,27 @@ SPINE is engineered for maximum efficiency:
 
 SPINE's transport layer significantly outperforms standard TCP operations:
 
-| Benchmark                   | Standard TCP | SPINE      | Speedup   |
-| --------------------------- | ------------ | ---------- | --------- |
-| **End-to-End (100 msgs)**   | 2.5 ms       | 20 µs      | **125×**  |
-| **Latency (64 bytes)**      | 18.9 µs      | 55 ns      | **343×**  |
-| **Latency (256 bytes)**     | 19.8 µs      | 56 ns      | **354×**  |
-| **Latency (1024 bytes)**    | 19.4 µs      | 78 ns      | **249×**  |
-| **Latency (4096 bytes)**    | 23.5 µs      | 94 ns      | **250×**  |
-| **Throughput (1KB)**        | 43 MiB/s     | 22.3 GiB/s | **531×**  |
-| **Throughput (8KB)**        | 359 MiB/s    | 58.3 GiB/s | **166×**  |
-| **Throughput (64KB)**       | 1.7 GiB/s    | 46 GiB/s   | **27×**   |
-| **Throughput (256KB)**      | 2.0 GiB/s    | 29 GiB/s   | **14×**   |
-| **Frame Encode (8KB)**      | -            | 68 ns      | 110 GiB/s |
-| **Frame Decode (8KB)**      | -            | 54 ns      | 141 GiB/s |
-| **Ring Buffer (16KB)**      | -            | 309 ns     | 49 GiB/s  |
-| **Serialization (4KB)**     | 21 ns (copy) | 48 ns      | 78 GiB/s  |
-| **Serialization (32KB)**    | 289 ns       | 449 ns     | 68 GiB/s  |
-| **BBR Congestion Ctrl**     | N/A          | 109 ns     | -         |
-| **Rate Limiter**            | N/A          | 31 ns      | -         |
-| **Alloc 10K bufs (slab)**   | 350 µs       | 408 µs     | -         |
-| **Alloc 10K (hierarchical)**| 350 µs       | 889 µs     | -         |
-| **Aggregator (100 frames)** | 620 ns       | 1.5 µs     | -         |
+| Benchmark                    | Standard TCP | SPINE      | Speedup   |
+| ---------------------------- | ------------ | ---------- | --------- |
+| **End-to-End (100 msgs)**    | 2.5 ms       | 20 µs      | **125×**  |
+| **Latency (64 bytes)**       | 18.9 µs      | 55 ns      | **343×**  |
+| **Latency (256 bytes)**      | 19.8 µs      | 56 ns      | **354×**  |
+| **Latency (1024 bytes)**     | 19.4 µs      | 78 ns      | **249×**  |
+| **Latency (4096 bytes)**     | 23.5 µs      | 94 ns      | **250×**  |
+| **Throughput (1KB)**         | 43 MiB/s     | 22.3 GiB/s | **531×**  |
+| **Throughput (8KB)**         | 359 MiB/s    | 58.3 GiB/s | **166×**  |
+| **Throughput (64KB)**        | 1.7 GiB/s    | 46 GiB/s   | **27×**   |
+| **Throughput (256KB)**       | 2.0 GiB/s    | 29 GiB/s   | **14×**   |
+| **Frame Encode (8KB)**       | -            | 68 ns      | 110 GiB/s |
+| **Frame Decode (8KB)**       | -            | 54 ns      | 141 GiB/s |
+| **Ring Buffer (16KB)**       | -            | 309 ns     | 49 GiB/s  |
+| **Serialization (4KB)**      | 21 ns (copy) | 48 ns      | 78 GiB/s  |
+| **Serialization (32KB)**     | 289 ns       | 449 ns     | 68 GiB/s  |
+| **BBR Congestion Ctrl**      | N/A          | 109 ns     | -         |
+| **Rate Limiter**             | N/A          | 31 ns      | -         |
+| **Alloc 10K bufs (slab)**    | 350 µs       | 408 µs     | -         |
+| **Alloc 10K (hierarchical)** | 350 µs       | 889 µs     | -         |
+| **Aggregator (100 frames)**  | 620 ns       | 1.5 µs     | -         |
 
 **Key Insights:**
 
