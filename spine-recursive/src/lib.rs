@@ -71,7 +71,7 @@ pub use llm_dispatchers::{
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use regex::Regex;
+
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -217,19 +217,29 @@ impl ContextVariable {
     }
 
     /// Get slice of content by character range
+    /// Note: start and end are byte offsets, not character offsets
     pub fn get_range(&self, start: usize, end: usize) -> Option<&str> {
         if end <= self.total_chars && start < end {
-            Some(&self.content[start..end])
+            // Use get() to safely handle UTF-8 boundary issues
+            self.content.get(start..end)
         } else {
             None
         }
     }
 
     /// Search content using regex and return matching chunks
+    ///
+    /// Note: Uses a size-limited regex builder to prevent ReDoS attacks.
+    /// Complex patterns may be rejected.
     pub fn search_regex(&self, pattern: &str) -> Result<Vec<(usize, String)>> {
-        let re = Regex::new(pattern).map_err(|e| RlmError::CodeExecutionFailed {
-            reason: format!("Invalid regex: {}", e),
-        })?;
+        // Build regex with size limits to prevent ReDoS attacks
+        let re = regex::RegexBuilder::new(pattern)
+            .size_limit(1024 * 1024) // 1 MiB compiled size limit
+            .dfa_size_limit(1024 * 1024) // 1 MiB DFA size limit
+            .build()
+            .map_err(|e| RlmError::CodeExecutionFailed {
+                reason: format!("Invalid or too complex regex: {}", e),
+            })?;
 
         let mut results = Vec::new();
         for (i, chunk) in (0..self.num_chunks()).filter_map(|i| self.get_chunk(i).map(|c| (i, c))) {
@@ -499,22 +509,38 @@ impl ReplEnvironment {
     pub async fn sub_llm_call(&self, prompt: &str, context_snippet: &str) -> Result<String> {
         let start = Instant::now();
 
-        // Check recursion depth
-        let depth = self.current_depth.fetch_add(1, Ordering::Relaxed);
-        if depth >= self.max_recursion_depth {
-            self.current_depth.fetch_sub(1, Ordering::Relaxed);
-            return Err(RlmError::RecursionDepthExceeded {
-                depth,
-                max_depth: self.max_recursion_depth,
-            });
+        // Check recursion depth with proper memory ordering
+        // Use Acquire ordering to ensure we see the latest value
+        loop {
+            let current = self.current_depth.load(Ordering::Acquire);
+            if current >= self.max_recursion_depth {
+                return Err(RlmError::RecursionDepthExceeded {
+                    depth: current,
+                    max_depth: self.max_recursion_depth,
+                });
+            }
+            // Try to increment atomically; if another thread beat us, retry
+            match self.current_depth.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
         }
 
         let result = self
             .sub_llm_dispatcher
-            .dispatch(prompt, context_snippet, depth)
+            .dispatch(
+                prompt,
+                context_snippet,
+                self.current_depth.load(Ordering::Relaxed) - 1,
+            )
             .await;
 
-        self.current_depth.fetch_sub(1, Ordering::Relaxed);
+        self.current_depth.fetch_sub(1, Ordering::Release);
         self.stats.sub_llm_calls.fetch_add(1, Ordering::Relaxed);
 
         let (output, success) = match &result {

@@ -316,6 +316,7 @@ impl HierarchicalAllocator {
     }
     
     /// Create with custom sizes
+    #[allow(clippy::too_many_arguments)]
     pub fn with_sizes(
         small_size: usize,
         small_count: usize,

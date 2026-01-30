@@ -63,7 +63,7 @@ impl FrameCodec {
         frames.iter().map(|f| self.encode(f)).collect()
     }
 
-    /// Decode a frame from the read buffer
+    /// Decode a frame from the read buffer (zero-copy where possible)
     pub fn decode(&mut self, data: &[u8]) -> TransportResult<Frame> {
         if data.len() < Self::HEADER_SIZE {
             return Err(TransportError::InvalidFrame(format!(
@@ -91,6 +91,39 @@ impl FrameCodec {
         }
 
         let payload = Bytes::copy_from_slice(&data[Self::HEADER_SIZE..total_len]);
+
+        Ok(Frame { header, payload })
+    }
+
+    /// Zero-copy decode from Bytes (avoids allocation when possible)
+    pub fn decode_zerocopy(&mut self, data: Bytes) -> TransportResult<Frame> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(TransportError::InvalidFrame(format!(
+                "Frame too short: {} bytes",
+                data.len()
+            )));
+        }
+
+        let header = Frame::parse_header(data[..Self::HEADER_SIZE].try_into().unwrap());
+
+        if header.length as usize > self.max_frame_size {
+            return Err(TransportError::MessageTooLarge {
+                size: header.length as usize,
+                max: self.max_frame_size,
+            });
+        }
+
+        let total_len = Self::HEADER_SIZE + header.length as usize;
+        if data.len() < total_len {
+            return Err(TransportError::InvalidFrame(format!(
+                "Incomplete frame: have {} need {}",
+                data.len(),
+                total_len
+            )));
+        }
+
+        // ZERO-COPY: slice the input Bytes instead of copying
+        let payload = data.slice(Self::HEADER_SIZE..total_len);
 
         Ok(Frame { header, payload })
     }

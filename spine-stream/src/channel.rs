@@ -60,6 +60,7 @@ pub struct BoundedReceiver<T> {
 
 impl<T: Send + 'static> BoundedChannel<T> {
     /// Create a new bounded channel with the given capacity
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(capacity: usize) -> (BoundedSender<T>, BoundedReceiver<T>) {
         let (tx, rx) = mpsc::channel(capacity);
         let semaphore = Arc::new(Semaphore::new(capacity));

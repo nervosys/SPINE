@@ -2812,6 +2812,7 @@ impl AgentDID {
     }
 
     /// Full DID string
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         format!("{}{}", self.method, self.identifier)
     }
@@ -3281,6 +3282,12 @@ pub enum TransactionStatus {
     Refunded,
 }
 
+impl Default for AgentMarketplace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AgentMarketplace {
     /// Create a new marketplace
     pub fn new() -> Self {
@@ -3632,6 +3639,12 @@ pub struct ConstraintParams {
     pub tolerance: Option<Duration>,
 }
 
+impl Default for TemporalReasoner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TemporalReasoner {
     /// Create a new temporal reasoner
     pub fn new() -> Self {
@@ -3891,6 +3904,12 @@ pub enum ContextPermission {
     Write,
     ReadWrite,
     Admin,
+}
+
+impl Default for ContextBridge {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ContextBridge {
@@ -7363,6 +7382,7 @@ pub enum LearningAlgorithm {
     EvolutionStrategy { population_size: usize, sigma: f64 },
 }
 
+#[allow(clippy::type_complexity)]
 /// Agent learning system
 pub struct AgentLearner {
     agent_id: Uuid,
@@ -8759,6 +8779,7 @@ pub enum ConversationState {
     Timeout,
 }
 
+#[allow(clippy::type_complexity)]
 /// Message broker for agent communication
 pub struct MessageBroker {
     conversations: DashMap<Uuid, Conversation>,
@@ -12056,11 +12077,7 @@ impl SocialSwarmNetwork {
                     assignments.push(TaskAssignment {
                         agent_id: agent,
                         role: role.clone(),
-                        subtask: format!(
-                            "Execute {} duties for: {}",
-                            format!("{:?}", role),
-                            task_description
-                        ),
+                        subtask: format!("Execute {:?} duties for: {}", role, task_description),
                         priority: 0.8,
                         dependencies: coordinator.map(|c| vec![c]).unwrap_or_default(),
                     });
@@ -12535,6 +12552,7 @@ impl NashEquilibriumSolver {
 
             let mut remaining = other_idx;
             let mut other_i = 0;
+            #[allow(clippy::needless_range_loop)]
             for p in 0..num_players {
                 if p != player && other_i < other_dims.len() {
                     action_profile[p] = remaining % other_dims[other_i];

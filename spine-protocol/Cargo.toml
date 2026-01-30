@@ -27,6 +27,9 @@ spine-neural = { path = "../spine-neural" }
 spine-crypto = { path = "../spine-crypto" }
 rustls.workspace = true
 tokio-rustls.workspace = true
+# High-performance binary serialization (5-10x faster than JSON)
+bincode = "1.3"
+bytemuck = { version = "1.14", features = ["derive"] }
 
 # QUIC transport (optional, for fallback/0-RTT connections)
 quinn = { version = "0.11", optional = true }

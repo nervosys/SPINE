@@ -1,0 +1,67 @@
+[package]
+name = "spine-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Ultra-low-level kernel primitives for SPINE agentic web stack"
+
+[features]
+default = ["simd"]
+simd = []
+avx2 = ["simd"]
+avx512 = ["simd"]
+neon = ["simd"]
+io-uring = ["dep:io-uring"]
+hugepages = []
+prefetch = []
+rdtsc = []
+
+[dependencies]
+# Core
+bytes = "1.5"
+crossbeam-utils = "0.8"
+crossbeam-queue = "0.3"
+parking_lot = "0.12"
+
+# Atomics and memory ordering
+atomic = "0.6"
+
+# Memory mapping
+memmap2 = "0.9"
+
+# SIMD (portable)
+wide = "0.7"
+
+# io_uring for Linux kernel bypass
+io-uring = { version = "0.6", optional = true }
+
+# Alignment and layout
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# Benchmarking intrinsics
+criterion = { version = "0.5", optional = true }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+# x86 intrinsics are in std::arch
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+# ARM NEON intrinsics are in std::arch
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_SystemInformation",
+    "Win32_Foundation",
+    "Win32_System_Kernel",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "kernel_bench"
+harness = false

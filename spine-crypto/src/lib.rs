@@ -84,7 +84,11 @@ impl PositionalEncoding {
     }
 
     pub fn get(&self, position: usize) -> &[f32] {
-        &self.encodings[position.min(self.max_len - 1)]
+        // Handle edge case: if max_len is 0, return empty slice (though this shouldn't happen)
+        if self.encodings.is_empty() {
+            return &[];
+        }
+        &self.encodings[position.min(self.max_len.saturating_sub(1))]
     }
 }
 
@@ -108,13 +112,18 @@ impl LayerNorm {
     }
 
     pub fn forward(&self, x: &[f32]) -> Vec<f32> {
-        let mean: f32 = x.iter().sum::<f32>() / x.len() as f32;
-        let var: f32 = x.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / x.len() as f32;
+        // Handle empty input to prevent division by zero
+        if x.is_empty() {
+            return Vec::new();
+        }
+        let n = x.len() as f32;
+        let mean: f32 = x.iter().sum::<f32>() / n;
+        let var: f32 = x.iter().map(|&v| (v - mean).powi(2)).sum::<f32>() / n;
         let std = (var + self.eps).sqrt();
 
         x.iter()
             .enumerate()
-            .map(|(i, &v)| self.gamma[i] * (v - mean) / std + self.beta[i])
+            .map(|(i, &v)| self.gamma[i % self.dim] * (v - mean) / std + self.beta[i % self.dim])
             .collect()
     }
 }
@@ -322,7 +331,10 @@ impl OutputProjection {
         probs
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| {
+                // Handle NaN: treat NaN as less than any number
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Less)
+            })
             .map(|(i, _)| i as u8)
             .unwrap_or(0)
     }

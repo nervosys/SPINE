@@ -16,15 +16,17 @@ members = [
     "spine-stream",
     "spine-recursive",
     "spine-knowledge",
+    "spine-kernel",
 ]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["SPINE Team"]
+authors = ["Nervosys LLC"]
 description = "A bioinspired agentic AI web stack"
-license = "MIT"
+license = "Apache-2.0"
+repository = "https://github.com/nervosys/SPINE"
 
 # =============================================================================
 # MAXIMUM OPTIMIZATION PROFILE

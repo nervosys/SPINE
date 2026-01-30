@@ -466,6 +466,7 @@ impl HealthMonitor {
 // RECONNECTING CONNECTION
 // =============================================================================
 
+#[allow(clippy::type_complexity)]
 /// Connection wrapper that automatically reconnects
 pub struct ReconnectingConnection<C: TransportBackend> {
     /// Current connection

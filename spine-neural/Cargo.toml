@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 description = "Neural network-based latent encoder for SPINE's Chameleon Protocol"
 
+[features]
+default = []
+simd = []    # Enable explicit SIMD optimizations
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -12,3 +16,4 @@ anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
 rand.workspace = true
+smallvec = { version = "1.11", features = ["const_generics", "union", "serde"] }

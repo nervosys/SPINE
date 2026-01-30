@@ -211,8 +211,11 @@ impl BbrController {
     }
 
     /// Get BDP (bandwidth-delay product)
-    pub fn bdp(&self) -> u32 {
-        (self.btl_bw * self.rt_prop.as_secs_f64()) as u32
+    /// Returns u64 to handle high bandwidth * long RTT scenarios without overflow
+    pub fn bdp(&self) -> u64 {
+        let bdp = self.btl_bw * self.rt_prop.as_secs_f64();
+        // Clamp to reasonable maximum (4 GiB) to prevent pathological values
+        (bdp as u64).min(4 * 1024 * 1024 * 1024)
     }
 
     /// Check if we can send more data
@@ -294,7 +297,7 @@ impl BbrController {
 
             BbrState::Drain => {
                 // Exit drain when inflight <= BDP
-                if self.inflight <= self.bdp() {
+                if u64::from(self.inflight) <= self.bdp() {
                     self.state = BbrState::ProbeBw;
                     self.pacing_gain = 1.0;
                     self.cwnd_gain = Self::STEADY_CWND_GAIN;
@@ -329,11 +332,17 @@ impl BbrController {
                 // Reduce cwnd to probe RTT
                 self.cwnd = Self::MIN_CWND;
 
-                // Exit after 200ms
-                if let Some(t) = self.probe_rtt_time {
-                    if t.elapsed() >= Duration::from_millis(200) {
+                // Exit after 200ms (or if probe_rtt_time wasn't set, set it now)
+                match self.probe_rtt_time {
+                    Some(t) if t.elapsed() >= Duration::from_millis(200) => {
                         self.state = BbrState::ProbeBw;
+                        self.probe_rtt_time = None; // Reset for next probe
                     }
+                    None => {
+                        // Safety: ensure probe_rtt_time is always set in ProbeRtt state
+                        self.probe_rtt_time = Some(Instant::now());
+                    }
+                    _ => {} // Still waiting
                 }
             }
         }

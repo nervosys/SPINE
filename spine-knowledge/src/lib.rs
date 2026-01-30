@@ -1012,15 +1012,23 @@ impl UnifiedMemory {
 
     /// Recall information (queries all memory systems)
     pub fn recall(&mut self, query: &str, max_results: usize) -> RecallResult {
-        let mut result = RecallResult::default();
-        result.episodes = self.episodic.retrieve(query, max_results);
-        if let Some((c, r)) = self.semantic.retrieve(query) {
-            result.concepts.push(c);
-            result.relations.extend(r);
-        }
-        if let Some(e) = self.collective.get(query) {
-            result.knowledge.push(e);
-        }
+        let episodes = self.episodic.retrieve(query, max_results);
+        let (concepts, relations) = if let Some((c, r)) = self.semantic.retrieve(query) {
+            (vec![c], r)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let knowledge = if let Some(e) = self.collective.get(query) {
+            vec![e]
+        } else {
+            Vec::new()
+        };
+        let result = RecallResult {
+            episodes,
+            concepts,
+            relations,
+            knowledge,
+        };
         for ep in result.episodes.iter().take(3) {
             self.working.add_context(
                 &ep.content,

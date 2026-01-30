@@ -96,3 +96,7 @@ harness = false
 [[bench]]
 name = "tcp_comparison"
 harness = false
+
+[[bench]]
+name = "traditional_comparison"
+harness = false
