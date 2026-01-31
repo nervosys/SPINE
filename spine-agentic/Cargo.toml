@@ -23,11 +23,11 @@ spine-compiler = { path = "../spine-compiler" }
 spine-knowledge = { path = "../spine-knowledge" }
 
 # Agent-specific
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5.5"
 petgraph = "0.6"
-url = { version = "2.5", features = ["serde"] }
+url = { version = "2", features = ["serde"] }
 regex = "1.10"
 futures = "0.3"
 
@@ -74,3 +74,6 @@ path = "examples/communication_demo.rs"
 [[example]]
 name = "neural_protocol_demo"
 path = "examples/neural_protocol_demo.rs"
+
+
+

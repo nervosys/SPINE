@@ -14,3 +14,6 @@ log.workspace = true
 # For HTML parsing, we might want scraper or html5ever later
 scraper = "0.18"
 ego-tree = "0.6"
+
+
+

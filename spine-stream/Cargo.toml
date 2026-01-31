@@ -1,6 +1,6 @@
 [package]
 name = "spine-stream"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "High-performance streaming layer for SPINE bioinspired agentic web stack"
 authors = ["Nervosys"]
@@ -8,14 +8,14 @@ license = "MIT"
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.48", features = ["full", "sync", "time", "io-util"] }
+tokio = { version = "1", features = ["full", "sync", "time", "io-util"] }
 tokio-stream = { version = "0.1", features = ["sync", "time"] }
 futures = "0.3"
 async-stream = "0.3"
 pin-project-lite = "0.2"
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 bincode = "1.3"
 bytes = "1.6"
@@ -33,7 +33,7 @@ crossbeam-channel = "0.5"
 # Utilities
 thiserror = "2.0"
 tracing = "0.1"
-uuid = { version = "1.16", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 quanta = "0.12"
 
 # Internal dependencies
@@ -53,3 +53,6 @@ default = ["backpressure", "multiplexing"]
 backpressure = []
 multiplexing = []
 priority-queues = []
+
+
+

@@ -14,4 +14,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
 dashmap = "5.5"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+
+

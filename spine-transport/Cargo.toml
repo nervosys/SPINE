@@ -8,7 +8,7 @@ description = "High-performance zero-copy transport layer for SPINE"
 [features]
 default = ["tcp", "quic"]
 tcp = []
-quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types", "dep:rustls-quic"]
+quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 io-uring = ["dep:tokio-uring", "dep:io-uring"]
 dpdk = []                                                                    # Future: kernel bypass networking
 
@@ -58,14 +58,10 @@ rand = "0.8"
 # QUIC (optional)
 quinn = { version = "0.11", optional = true }
 rcgen = { version = "0.12", optional = true }
-rustls-pki-types = { version = "1.0", optional = true }
-rustls-quic = { package = "rustls", version = "0.23", optional = true, default-features = false, features = [
-    "ring",
-    "std",
-] }
+rustls-pki-types = { version = "1", optional = true }
 
 # io_uring (Linux only, optional)
-tokio-uring = { version = "0.4", optional = true }
+tokio-uring = { version = "0.5", optional = true }
 io-uring = { version = "0.6", optional = true }
 
 # Connection pooling
@@ -76,7 +72,7 @@ quanta = "0.12"  # High-precision timestamps
 metrics = "0.21" # Metrics collection
 
 # Utilities
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 parking_lot = "0.12"                                   # Fast synchronization primitives
 crossbeam-channel = "0.5"                              # Lock-free channels
 crossbeam-queue = "0.3"                                # Lock-free queues
@@ -100,3 +96,6 @@ harness = false
 [[bench]]
 name = "traditional_comparison"
 harness = false
+
+
+

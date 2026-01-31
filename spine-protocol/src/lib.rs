@@ -26,7 +26,7 @@ use quinn::{ClientConfig, Connection as QuinnConnection, Endpoint, ServerConfig}
 #[cfg(feature = "quic")]
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 #[cfg(feature = "quic")]
-use rustls_quic as quic_rustls; // rustls 0.23 for QUIC
+use rustls as quic_rustls; // rustls 0.23 for QUIC (workspace)
 #[cfg(feature = "quic")]
 use std::net::SocketAddr;
 

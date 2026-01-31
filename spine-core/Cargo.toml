@@ -22,8 +22,8 @@ anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 reqwest.workspace = true
-dashmap = { version = "5.5", features = ["serde"] }
-uuid = { version = "1.4", features = ["v4"] }
+dashmap = { version = "6", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -37,3 +37,6 @@ axum = "0.6"
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
+
+
+

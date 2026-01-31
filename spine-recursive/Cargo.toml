@@ -11,7 +11,7 @@ license.workspace = true
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = "1.0"
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 rand = "0.8"
 thiserror = "1.0"
@@ -22,7 +22,7 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"
 
 # HTTP client for real LLM API dispatchers
-reqwest = { version = "0.11", features = [
+reqwest = { version = "0.12", features = [
     "json",
     "rustls-tls",
 ], default-features = false }
@@ -44,3 +44,6 @@ name = "rlm_demo"
 
 [[example]]
 name = "infinite_context"
+
+
+
