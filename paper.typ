@@ -2,1823 +2,1823 @@
 // arXiv-style Typst document - Expanded Version
 
 #set document(
-  title: "SPINE: A Bioinspired Agentic Web Stack for Autonomous AI Systems",
-  author: "Adam Erickson",
+title: "SPINE: A Bioinspired Agentic Web Stack for Autonomous AI Systems",
+author: "Adam Erickson",
 )
 
 #set page(
-  paper: "us-letter",
-  margin: (x: 1in, y: 1in),
-  numbering: "1",
+paper: "us-letter",
+margin: (x: 1in, y: 1in),
+numbering: "1",
 )
 
 #set text(
-  font: "New Computer Modern",
-  size: 10pt,
+font: "New Computer Modern",
+size: 10pt,
 )
 
 #set par(
-  justify: true,
-  leading: 0.55em,
+justify: true,
+leading: 0.55em,
 )
 
 #set heading(numbering: "1.1")
 
 #show heading.where(level: 1): it => block(above: 1.4em, below: 0.8em)[
-  #set text(size: 12pt, weight: "bold")
-  #it
+#set text(size: 12pt, weight: "bold")
+#it
 ]
 
 #show heading.where(level: 2): it => block(above: 1.2em, below: 0.6em)[
-  #set text(size: 10pt, weight: "bold")
-  #it
+#set text(size: 10pt, weight: "bold")
+#it
 ]
 
 #show heading.where(level: 3): it => block(above: 1em, below: 0.5em)[
-  #set text(size: 10pt, weight: "bold", style: "italic")
-  #it
+#set text(size: 10pt, weight: "bold", style: "italic")
+#it
 ]
 
 // Title
 #align(center)[
-  #block(text(weight: "bold", size: 16pt)[
-    SPINE: A Bioinspired Agentic Web Stack for Autonomous AI Systems
-  ])
+#block(text(weight: "bold", size: 16pt)[
+  SPINE: A Bioinspired Agentic Web Stack for Autonomous AI Systems
+])
 
-  #v(0.5em)
+#v(0.5em)
 
-  #text(size: 11pt)[Adam Erickson]
+#text(size: 11pt)[Adam Erickson]
 
-  #v(0.2em)
+#v(0.2em)
 
-  #text(size: 10pt)[NERVOSYS]
+#text(size: 10pt)[NERVOSYS]
 
-  #v(0.2em)
+#v(0.2em)
 
-  #text(size: 9pt)[research\@nervosys.ai]
+#text(size: 9pt)[research\@nervosys.ai]
 
-  #v(0.3em)
+#v(0.3em)
 
-  #text(size: 9pt, style: "italic")[January 2026]
+#text(size: 9pt, style: "italic")[January 2026]
 ]
 
 #v(1em)
 
 // Abstract
 #block(
-  width: 100%,
-  inset: (x: 0.5in),
+width: 100%,
+inset: (x: 0.5in),
 )[
-  #align(center)[#text(weight: "bold")[Abstract]]
-  #v(0.3em)
-  #text(size: 9pt)[
-    We present SPINE (Synaptic Path INterconnecting Entities), a bioinspired web stack designed from first principles for autonomous AI agents rather than human document consumption. Drawing inspiration from biological neural networks, SPINE mimics synaptic communication, adaptive signal routing, and distributed processing found in vertebrate nervous systems. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based neural memory* for test-time adaptation mimicking hippocampal replay; (5) *Recursive Language Models* for infinite context (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with game-theoretic reasoning inspired by neural population coding; (7) *quantum-resistant cryptography* using Ring-LWE lattices; and (8) *ultra-low-level kernel primitives* providing SIMD-accelerated operations, sub-nanosecond allocators, and lock-free data structures. Benchmarks demonstrate 514× lower latency and 610× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. Ultra-low-level kernel primitives achieve 57 GiB/s dot products, 505 ps allocations, and 736M ring buffer ops/sec. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 17 Rust crates totaling ~49,000 lines of code with 215 passing tests.
-  ]
+#align(center)[#text(weight: "bold")[Abstract]]
+#v(0.3em)
+#text(size: 9pt)[
+  We present SPINE (Synaptic Path INterconnecting Entities), a bioinspired web stack designed from first principles for autonomous AI agents rather than human document consumption. Drawing inspiration from biological neural networks, SPINE mimics synaptic communication, adaptive signal routing, and distributed processing found in vertebrate nervous systems. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based neural memory* for test-time adaptation mimicking hippocampal replay; (5) *Recursive Language Models* for infinite context (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with game-theoretic reasoning inspired by neural population coding; (7) *quantum-resistant cryptography* using Ring-LWE lattices; and (8) *ultra-low-level kernel primitives* providing SIMD-accelerated operations, sub-nanosecond allocators, and lock-free data structures. Benchmarks demonstrate 514× lower latency and 610× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. Ultra-low-level kernel primitives achieve 57 GiB/s dot products, 505 ps allocations, and 736M ring buffer ops/sec. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 17 Rust crates totaling ~49,000 lines of code with 215 passing tests.
+]
 ]
 
 #v(1em)
 
 #columns(2)[
 
-  = Introduction
+= Introduction
 
-  The World Wide Web was conceived in 1989 as a system for human researchers to share and navigate hyperlinked documents. Three decades later, the fundamental architecture remains unchanged: HTTP transports HTML documents that browsers render through DOM construction, layout computation, and painting pipelines. This architecture is poorly suited for AI agents, which do not require visual rendering but instead need structured, semantic data for reasoning.
+The World Wide Web was conceived in 1989 as a system for human researchers to share and navigate hyperlinked documents. Three decades later, the fundamental architecture remains unchanged: HTTP transports HTML documents that browsers render through DOM construction, layout computation, and painting pipelines. This architecture is poorly suited for AI agents, which do not require visual rendering but instead need structured, semantic data for reasoning.
 
-  We observe a fundamental mismatch between traditional web architecture and AI agent requirements:
+We observe a fundamental mismatch between traditional web architecture and AI agent requirements:
 
-  #figure(
-    table(
-      columns: (1fr, 1fr),
-      inset: 6pt,
-      align: left,
-      stroke: 0.5pt,
-      [*Traditional Web*], [*Agentic Requirements*],
-      [Documents for reading], [Programs for execution],
-      [Rendering-first], [Semantics-first],
-      [Stateless requests], [Persistent memory],
-      [Static protocols], [Moving-target defense],
-      [Single-agent], [Multi-agent swarms],
-      [RNN/LSTM models], [Titans architecture],
-    ),
-    caption: [Architectural mismatch between traditional web and AI agents],
-  )
+#figure(
+  table(
+    columns: (1fr, 1fr),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Traditional Web*], [*Agentic Requirements*],
+    [Documents for reading], [Programs for execution],
+    [Rendering-first], [Semantics-first],
+    [Stateless requests], [Persistent memory],
+    [Static protocols], [Moving-target defense],
+    [Single-agent], [Multi-agent swarms],
+    [RNN/LSTM models], [Titans architecture],
+  ),
+  caption: [Architectural mismatch between traditional web and AI agents],
+)
 
-  SPINE addresses this mismatch by reimagining every layer of the web stack for AI-native operation:
+SPINE addresses this mismatch by reimagining every layer of the web stack for AI-native operation:
 
-  - *Websites are programs*, compiled to executable binary format (HLB)
-  - *Protocols evolve*, with encryption keys and message formats changing per-message
-  - *Memory persists*, using Titans architecture for unbounded context
-  - *Agents coordinate*, through skill-based routing and game-theoretic consensus
+- *Websites are programs*, compiled to executable binary format (HLB)
+- *Protocols evolve*, with encryption keys and message formats changing per-message
+- *Memory persists*, using Titans architecture for unbounded context
+- *Agents coordinate*, through skill-based routing and game-theoretic consensus
 
-  == Contributions
+== Contributions
 
-  This paper makes the following contributions:
+This paper makes the following contributions:
 
-  1. *Unified Representation (UR)*: A semantic extraction format that reduces webpage representations by 10-100× while preserving actionable content
+1. *Unified Representation (UR)*: A semantic extraction format that reduces webpage representations by 10-100× while preserving actionable content
 
-  2. *SPINE Source Language (HLS)*: A declarative language treating websites as executable programs with variables, state, conditionals, loops, and memory operations
+2. *SPINE Source Language (HLS)*: A declarative language treating websites as executable programs with variables, state, conditionals, loops, and memory operations
 
-  3. *Chameleon Protocol*: Moving-target defense using latent-space cryptography where the transformation matrix IS the encryption key
+3. *Chameleon Protocol*: Moving-target defense using latent-space cryptography where the transformation matrix IS the encryption key
 
-  4. *Titans Integration*: Neural Long-Term Memory throughout the stack for test-time learning, speculative decoding, and anomaly detection
+4. *Titans Integration*: Neural Long-Term Memory throughout the stack for test-time learning, speculative decoding, and anomaly detection
 
-  5. *Recursive Language Models*: Infinite context processing (10M+ characters) through REPL-based environment externalization
+5. *Recursive Language Models*: Infinite context processing (10M+ characters) through REPL-based environment externalization
 
-  6. *Swarm Intelligence*: Distributed coordination with skill-based routing, DAG dependencies, consensus voting, and social network topologies
+6. *Swarm Intelligence*: Distributed coordination with skill-based routing, DAG dependencies, consensus voting, and social network topologies
 
-  7. *Performance Validation*: Comprehensive benchmarks demonstrating 125-610× improvements over standard TCP/IP
+7. *Performance Validation*: Comprehensive benchmarks demonstrating 125-610× improvements over standard TCP/IP
 
-  = System Architecture
+= System Architecture
 
-  SPINE comprises 17 specialized Rust crates organized into seven layers:
+SPINE comprises 17 specialized Rust crates organized into seven layers:
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 8pt, font: "Consolas")
-      ```
-      ┌─────────────────────────────────┐
-      │         User Layer              │
-      │  browser (GUI) │ agent (SDK)    │
-      ├─────────────────────────────────┤
-      │       Protocol Layer            │
-      │  protocol │ neural │ crypto     │
-      ├─────────────────────────────────┤
-      │        Core Engine              │
-      │  core │ wasm │ parser │ compiler│
-      ├─────────────────────────────────┤
-      │      Knowledge Layer            │
-      │        knowledge (CRDT)         │
-      ├─────────────────────────────────┤
-      │       Transport Layer           │
-      │    transport │ stream           │
-      ├─────────────────────────────────┤
-      │      Distributed Layer          │
-      │  cluster │ agentic │ human      │
-      ├─────────────────────────────────┤
-      │        Context Layer            │
-      │          recursive              │
-      ├─────────────────────────────────┤
-      │        Kernel Layer             │
-      │  SIMD │ alloc │ atomic │ ring   │
-      └─────────────────────────────────┘
-      ```
-    ],
-    caption: [SPINE architecture layers (17 crates)],
-  )
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 8pt, font: "Consolas")
+    ```
+    ┌─────────────────────────────────┐
+    │         User Layer              │
+    │  browser (GUI) │ agent (SDK)    │
+    ├─────────────────────────────────┤
+    │       Protocol Layer            │
+    │  protocol │ neural │ crypto     │
+    ├─────────────────────────────────┤
+    │        Core Engine              │
+    │  core │ wasm │ parser │ compiler│
+    ├─────────────────────────────────┤
+    │      Knowledge Layer            │
+    │        knowledge (CRDT)         │
+    ├─────────────────────────────────┤
+    │       Transport Layer           │
+    │    transport │ stream           │
+    ├─────────────────────────────────┤
+    │      Distributed Layer          │
+    │  cluster │ agentic │ human      │
+    ├─────────────────────────────────┤
+    │        Context Layer            │
+    │          recursive              │
+    ├─────────────────────────────────┤
+    │        Kernel Layer             │
+    │  SIMD │ alloc │ atomic │ ring   │
+    └─────────────────────────────────┘
+    ```
+  ],
+  caption: [SPINE architecture layers (17 crates)],
+)
 
-  == Three Foundational Principles
+== Three Foundational Principles
 
-  Before examining individual components, we present the three core principles that distinguish SPINE from traditional web architectures.
+Before examining individual components, we present the three core principles that distinguish SPINE from traditional web architectures.
 
-  === Principle 1: Websites Are Programs
+=== Principle 1: Websites Are Programs
 
-  Traditional HTML is a document format designed for rendering. SPINE treats websites as *executable programs*:
+Traditional HTML is a document format designed for rendering. SPINE treats websites as *executable programs*:
 
-  #figure(
-    table(
-      columns: (1fr, 1fr),
-      inset: 6pt,
-      align: left,
-      stroke: 0.5pt,
-      [*HTML World*], [*SPINE World*],
-      [Document (passive)], [Program (active)],
-      [Rendering pipeline], [Execution engine],
-      [Visual DOM output], [Semantic output],
-      [Browser interprets], [WASM runtime executes],
-    ),
-    caption: [Document vs program paradigm],
-  )
+#figure(
+  table(
+    columns: (1fr, 1fr),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*HTML World*], [*SPINE World*],
+    [Document (passive)], [Program (active)],
+    [Rendering pipeline], [Execution engine],
+    [Visual DOM output], [Semantic output],
+    [Browser interprets], [WASM runtime executes],
+  ),
+  caption: [Document vs program paradigm],
+)
 
-  The transformation pipeline is: *HLS* (source) $arrow.r$ *HLB* (binary) $arrow.r$ *WASM* (execution). This enables computation at the edge, capability-based security, and deterministic behavior.
+The transformation pipeline is: *HLS* (source) $arrow.r$ *HLB* (binary) $arrow.r$ *WASM* (execution). This enables computation at the edge, capability-based security, and deterministic behavior.
 
-  === Principle 2: Context Is External
+=== Principle 2: Context Is External
 
-  Traditional LLMs stuff all information into attention windows (4K-128K tokens), suffering from context rot at boundaries. SPINE's *Recursive Language Models* treat context as an external environment variable:
+Traditional LLMs stuff all information into attention windows (4K-128K tokens), suffering from context rot at boundaries. SPINE's *Recursive Language Models* treat context as an external environment variable:
 
-  #figure(
-    table(
-      columns: (1fr, 1fr),
-      inset: 6pt,
-      align: left,
-      stroke: 0.5pt,
-      [*Traditional LLM*], [*Recursive LM*],
-      [Context in attention], [Context as environment],
-      [Fixed window (128K)], [Unlimited (10M+)],
-      [Degradation at edges], [No degradation],
-      [$O(n^2)$ complexity], [$O(n)$ complexity],
-    ),
-    caption: [Traditional vs recursive context handling],
-  )
+#figure(
+  table(
+    columns: (1fr, 1fr),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Traditional LLM*], [*Recursive LM*],
+    [Context in attention], [Context as environment],
+    [Fixed window (128K)], [Unlimited (10M+)],
+    [Degradation at edges], [No degradation],
+    [$O(n^2)$ complexity], [$O(n)$ complexity],
+  ),
+  caption: [Traditional vs recursive context handling],
+)
 
-  The LLM writes code to query a REPL environment containing chunked context. This achieves *100× improvement* over model context windows.
+The LLM writes code to query a REPL environment containing chunked context. This achieves *100× improvement* over model context windows.
 
-  === Principle 3: Protocols Evolve
+=== Principle 3: Protocols Evolve
 
-  Traditional protocols use fixed message formats, enabling fingerprinting and traffic analysis. SPINE's *Chameleon Protocol* changes format every message:
+Traditional protocols use fixed message formats, enabling fingerprinting and traffic analysis. SPINE's *Chameleon Protocol* changes format every message:
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 8pt, font: "Consolas")
-      ```
-      Message 1: [Header-A][256-dim latent][Payload]
-      Message 2: [Header-B][128-dim latent][Payload]
-      Message 3: [Header-C][192-dim latent][Payload]
-      ```
-    ],
-    caption: [Moving-target message format evolution],
-  )
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 8pt, font: "Consolas")
+    ```
+    Message 1: [Header-A][256-dim latent][Payload]
+    Message 2: [Header-B][128-dim latent][Payload]
+    Message 3: [Header-C][192-dim latent][Payload]
+    ```
+  ],
+  caption: [Moving-target message format evolution],
+)
 
-  The *transformation matrix IS the encryption key*. After each message: basis rotates, dimensionality changes, header morphs, and padding shifts. Attackers cannot fingerprint what continuously changes.
+The *transformation matrix IS the encryption key*. After each message: basis rotates, dimensionality changes, header morphs, and padding shifts. Attackers cannot fingerprint what continuously changes.
 
-  == Data Flow Overview
+== Data Flow Overview
 
-  A typical agent interaction flows through the stack as follows:
+A typical agent interaction flows through the stack as follows:
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 8pt, font: "Consolas")
-      ```
-      Agent request    → spine-agent (SDK)
-                             ↓
-      Fetch page       → spine-core + parser
-                             ↓
-      Extract semantics → Unified Representation
-                             ↓
-      Need more context? → spine-recursive
-                             ↓
-      Execute programs → spine-compiler + wasm
-                             ↓
-      Communicate      → spine-protocol
-                             ↓
-      Transport        → spine-transport (BBR)
-                             ↓
-      Coordinate       → spine-cluster + agentic
-                             ↓
-      Secure           → spine-crypto (post-quantum)
-                             ↓
-      Hardware         → spine-kernel (SIMD, alloc)
-      ```
-    ],
-    caption: [End-to-end data flow through SPINE stack],
-  )
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 8pt, font: "Consolas")
+    ```
+    Agent request    → spine-agent (SDK)
+                           ↓
+    Fetch page       → spine-core + parser
+                           ↓
+    Extract semantics → Unified Representation
+                           ↓
+    Need more context? → spine-recursive
+                           ↓
+    Execute programs → spine-compiler + wasm
+                           ↓
+    Communicate      → spine-protocol
+                           ↓
+    Transport        → spine-transport (BBR)
+                           ↓
+    Coordinate       → spine-cluster + agentic
+                           ↓
+    Secure           → spine-crypto (post-quantum)
+                           ↓
+    Hardware         → spine-kernel (SIMD, alloc)
+    ```
+  ],
+  caption: [End-to-end data flow through SPINE stack],
+)
 
-  == Crate Dependency Graph
+== Crate Dependency Graph
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 7pt, font: "Consolas")
-      ```
-                              ┌────────────┐
-                              │  browser   │←──────────────┐
-                              └─────┬──────┘               │
-                                    │                      │
-                              ┌─────▼──────┐         ┌─────┴──────┐
-                              │   agent    │         │   human    │
-                              └─────┬──────┘         └────────────┘
-                                    │
-        ┌───────────────────────────┼───────────────────────────┐
-        │                           │                           │
-        ▼                           ▼                           ▼
-   ┌─────────┐               ┌─────────────┐             ┌──────────┐
-   │ agentic │◄──────────────│    core     │────────────►│ compiler │
-   └────┬────┘               └──────┬──────┘             └────┬─────┘
-        │                           │                         │
-        │    ┌──────────┐           │    ┌─────────┐          │
-        └───►│ cluster  │           ├───►│ parser  │          │
-             └────┬─────┘           │    └─────────┘          ▼
-                  │                 │                    ┌─────────┐
-                  │                 │                    │  wasm   │
-                  ▼                 ▼                    └─────────┘
-             ┌─────────┐      ┌───────────┐
-             │knowledge│      │ recursive │
-             └────┬────┘      └─────┬─────┘
-                  │                 │
-        ┌─────────┼─────────────────┼─────────────────────┐
-        │         │                 │                     │
-        ▼         ▼                 ▼                     ▼
-   ┌─────────┐ ┌──────────┐  ┌──────────┐          ┌───────────┐
-   │ neural  │ │ protocol │  │  stream  │◄────────►│ transport │
-   └────┬────┘ └────┬─────┘  └────┬─────┘          └─────┬─────┘
-        │           │             │                      │
-        └───────────┴─────────────┴──────────────────────┘
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 7pt, font: "Consolas")
+    ```
+                            ┌────────────┐
+                            │  browser   │←──────────────┐
+                            └─────┬──────┘               │
+                                  │                      │
+                            ┌─────▼──────┐         ┌─────┴──────┐
+                            │   agent    │         │   human    │
+                            └─────┬──────┘         └────────────┘
                                   │
-                                  ▼
-                            ┌──────────┐
-                            │  crypto  │
-                            └────┬─────┘
-                                 │
-                                 ▼
-                            ┌──────────┐
-                            │  kernel  │
-                            └──────────┘
-      ```
-    ],
-    caption: [Crate dependency graph showing inter-crate relationships],
-  )
+      ┌───────────────────────────┼───────────────────────────┐
+      │                           │                           │
+      ▼                           ▼                           ▼
+ ┌─────────┐               ┌─────────────┐             ┌──────────┐
+ │ agentic │◄──────────────│    core     │────────────►│ compiler │
+ └────┬────┘               └──────┬──────┘             └────┬─────┘
+      │                           │                         │
+      │    ┌──────────┐           │    ┌─────────┐          │
+      └───►│ cluster  │           ├───►│ parser  │          │
+           └────┬─────┘           │    └─────────┘          ▼
+                │                 │                    ┌─────────┐
+                │                 │                    │  wasm   │
+                ▼                 ▼                    └─────────┘
+           ┌─────────┐      ┌───────────┐
+           │knowledge│      │ recursive │
+           └────┬────┘      └─────┬─────┘
+                │                 │
+      ┌─────────┼─────────────────┼─────────────────────┐
+      │         │                 │                     │
+      ▼         ▼                 ▼                     ▼
+ ┌─────────┐ ┌──────────┐  ┌──────────┐          ┌───────────┐
+ │ neural  │ │ protocol │  │  stream  │◄────────►│ transport │
+ └────┬────┘ └────┬─────┘  └────┬─────┘          └─────┬─────┘
+      │           │             │                      │
+      └───────────┴─────────────┴──────────────────────┘
+                                │
+                                ▼
+                          ┌──────────┐
+                          │  crypto  │
+                          └────┬─────┘
+                               │
+                               ▼
+                          ┌──────────┐
+                          │  kernel  │
+                          └──────────┘
+    ```
+  ],
+  caption: [Crate dependency graph showing inter-crate relationships],
+)
 
-  == Core Engine (spine-core)
+== Core Engine (spine-core)
 
-  The central orchestration engine manages agent sessions and web content:
+The central orchestration engine manages agent sessions and web content:
 
-  - *Multi-session concurrency*: DashMap provides lock-free concurrent session storage
-  - *Web fetching*: reqwest HTTP client for content retrieval
-  - *Command routing*: Navigate, GetUR, ExecuteBinary, Click, Type
-  - *Knowledge base*: Persistent fact storage with tagging
-  - *Session history*: Full audit trail for all agent actions
-  - *Capability enforcement*: Permission-based HLB execution
+- *Multi-session concurrency*: DashMap provides lock-free concurrent session storage
+- *Web fetching*: reqwest HTTP client for content retrieval
+- *Command routing*: Navigate, GetUR, ExecuteBinary, Click, Type
+- *Knowledge base*: Persistent fact storage with tagging
+- *Session history*: Full audit trail for all agent actions
+- *Capability enforcement*: Permission-based HLB execution
 
-  == Parser (spine-parser)
+== Parser (spine-parser)
 
-  Recursive semantic HTML parser generating Unified Representations:
+Recursive semantic HTML parser generating Unified Representations:
 
-  - Uses `scraper` to build initial DOM tree
-  - Traverses with `ego_tree::NodeRef`
-  - Extracts semantic elements by HTML tag
-  - Flattens nested structures preserving logical relationships
+- Uses `scraper` to build initial DOM tree
+- Traverses with `ego_tree::NodeRef`
+- Extracts semantic elements by HTML tag
+- Flattens nested structures preserving logical relationships
 
-  == Compiler (spine-compiler)
+== Compiler (spine-compiler)
 
-  Compiles HLS source to HLB binary using nom parser combinators:
+Compiles HLS source to HLB binary using nom parser combinators:
 
-  - Lexical analysis with tokenizer
-  - AST generation for elements, attributes, events
-  - Code generation to HLB instructions
-  - Optimization passes for instruction fusion
+- Lexical analysis with tokenizer
+- AST generation for elements, attributes, events
+- Code generation to HLB instructions
+- Optimization passes for instruction fusion
 
-  == WASM Runtime (spine-wasm)
+== WASM Runtime (spine-wasm)
 
-  High-performance execution using wasmtime:
+High-performance execution using wasmtime:
 
-  - HLB to WASM compilation
-  - Sandboxed execution environment
-  - Host function interop for system calls
-  - Virtual DOM generation from execution
+- HLB to WASM compilation
+- Sandboxed execution environment
+- Host function interop for system calls
+- Virtual DOM generation from execution
 
-  == Transport Layer (spine-transport, spine-stream)
+== Transport Layer (spine-transport, spine-stream)
 
-  The transport layer provides ultra-low-latency, high-throughput data movement through several innovations:
+The transport layer provides ultra-low-latency, high-throughput data movement through several innovations:
 
-  *Zero-Copy Buffers*: Data is never copied between layers. Ring buffers provide direct memory access, eliminating allocation overhead.
+*Zero-Copy Buffers*: Data is never copied between layers. Ring buffers provide direct memory access, eliminating allocation overhead.
 
-  *BBR Congestion Control*: Unlike TCP's loss-based approach (probe until packet loss, then back off), BBR estimates available bandwidth and paces transmission to fill the pipe without causing congestion. This achieves 514× lower latency.
+*BBR Congestion Control*: Unlike TCP's loss-based approach (probe until packet loss, then back off), BBR estimates available bandwidth and paces transmission to fill the pipe without causing congestion. This achieves 514× lower latency.
 
-  *Frame Codec*: Efficient binary framing with 28-byte headers (proven minimal in Section 9):
+*Frame Codec*: Efficient binary framing with 28-byte headers (proven minimal in Section 9):
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 6pt,
-      radius: 4pt,
-    )[
-      #set text(size: 8pt, font: "Consolas")
-      ```
-      ┌────────┬────────┬─────────┬─────────┐
-      │ Length │ Type   │ Flags   │ Payload │
-      │ 4 bytes│ 1 byte │ 1 byte  │ N bytes │
-      └────────┴────────┴─────────┴─────────┘
-      ```
-    ],
-    caption: [Compact frame format],
-  )
+#figure(
+  block(
+    fill: luma(250),
+    inset: 6pt,
+    radius: 4pt,
+  )[
+    #set text(size: 8pt, font: "Consolas")
+    ```
+    ┌────────┬────────┬─────────┬─────────┐
+    │ Length │ Type   │ Flags   │ Payload │
+    │ 4 bytes│ 1 byte │ 1 byte  │ N bytes │
+    └────────┴────────┴─────────┴─────────┘
+    ```
+  ],
+  caption: [Compact frame format],
+)
 
-  *Reactive Streams*: Backpressure-aware data flow with configurable buffer limits, time windows, and priority queuing.
+*Reactive Streams*: Backpressure-aware data flow with configurable buffer limits, time windows, and priority queuing.
 
-  == Distributed Layer (spine-cluster, spine-agentic, spine-human)
+== Distributed Layer (spine-cluster, spine-agentic, spine-human)
 
-  Multi-agent coordination through:
+Multi-agent coordination through:
 
-  *Skill-Based Routing*: Tasks are assigned to nodes maximizing capability overlap: $"score"(n, tau) = |tau."skills" inter n."skills"|$
+*Skill-Based Routing*: Tasks are assigned to nodes maximizing capability overlap: $"score"(n, tau) = |tau."skills" inter n."skills"|$
 
-  *Swarm Topologies*: Eight supported patterns including Star (command-control), Hierarchical (organizations), SmallWorld (research collaboration), and ScaleFree (influencer networks).
+*Swarm Topologies*: Eight supported patterns including Star (command-control), Hierarchical (organizations), SmallWorld (research collaboration), and ScaleFree (influencer networks).
 
-  *Human Compatibility*: The human crate provides backwards compatibility with traditional web content through HTML-to-HLS transpilation and realistic interaction patterns (Bezier mouse paths, Gaussian typing delays) for bot-detection bypass.
+*Human Compatibility*: The human crate provides backwards compatibility with traditional web content through HTML-to-HLS transpilation and realistic interaction patterns (Bezier mouse paths, Gaussian typing delays) for bot-detection bypass.
 
-  == Context Layer (spine-recursive)
+== Context Layer (spine-recursive)
 
-  Enables processing of unlimited context through REPL-based environment externalization. Documents are chunked (200K chars recommended), stored externally, and queried through LLM-generated code. Detailed in Section 6.
+Enables processing of unlimited context through REPL-based environment externalization. Documents are chunked (200K chars recommended), stored externally, and queried through LLM-generated code. Detailed in Section 6.
 
-  == Kernel Layer (spine-kernel)
+== Kernel Layer (spine-kernel)
 
-  Ultra-low-level hardware primitives providing the foundation for all SPINE performance:
+Ultra-low-level hardware primitives providing the foundation for all SPINE performance:
 
-  *SIMD Intrinsics*: AVX2/NEON-accelerated vector operations achieving 57 GiB/s throughput:
+*SIMD Intrinsics*: AVX2/NEON-accelerated vector operations achieving 57 GiB/s throughput:
 
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [*Operation*], [*Implementation*], [*Throughput*],
-      [Dot Product (256)], [AVX2 8-wide FMA], [57 GiB/s],
-      [MatVec (256×256)], [Cache-optimal tiling], [15.5 Gelem/s],
-      [Softmax (256)], [SIMD exp + reduce], [12.3 GiB/s],
-      [cosine similarity], [fused norm + dot], [9.0 GiB/s],
-    ),
-    caption: [Kernel SIMD performance],
-  )
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Operation*], [*Implementation*], [*Throughput*],
+    [Dot Product (256)], [AVX2 8-wide FMA], [57 GiB/s],
+    [MatVec (256×256)], [Cache-optimal tiling], [15.5 Gelem/s],
+    [Softmax (256)], [SIMD exp + reduce], [12.3 GiB/s],
+    [cosine similarity], [fused norm + dot], [9.0 GiB/s],
+  ),
+  caption: [Kernel SIMD performance],
+)
 
-  *Custom Allocators*: Sub-nanosecond memory management:
+*Custom Allocators*: Sub-nanosecond memory management:
 
-  - *BumpAllocator*: 505 ps allocation via pointer increment
-  - *SlabAllocator*: Fixed-size pools with O(1) free-list
-  - *ArenaAllocator*: Batch deallocation for request-scoped memory
+- *BumpAllocator*: 505 ps allocation via pointer increment
+- *SlabAllocator*: Fixed-size pools with O(1) free-list
+- *ArenaAllocator*: Batch deallocation for request-scoped memory
 
-  *Lock-Free Atomics*: Wait-free concurrent primitives:
+*Lock-Free Atomics*: Wait-free concurrent primitives:
 
-  - *PaddedAtomicU64*: Cache-line aligned to prevent false sharing
-  - *SeqLock*: Read-biased synchronization (4.4 ns)
-  - *LockFreeStack*: Treiber stack with CAS operations
-  - *AtomicFlags*: 64-bit flags with single-instruction test-and-set
+- *PaddedAtomicU64*: Cache-line aligned to prevent false sharing
+- *SeqLock*: Read-biased synchronization (4.4 ns)
+- *LockFreeStack*: Treiber stack with CAS operations
+- *AtomicFlags*: 64-bit flags with single-instruction test-and-set
 
-  *Ring Buffers*: Ultra-fast inter-thread communication:
+*Ring Buffers*: Ultra-fast inter-thread communication:
 
-  - *SPSC*: Single-producer single-consumer (1.36 ns, 736M ops/sec)
-  - *MPSC*: Multi-producer with CAS-based head management
-  - Both are wait-free and cache-optimized
+- *SPSC*: Single-producer single-consumer (1.36 ns, 736M ops/sec)
+- *MPSC*: Multi-producer with CAS-based head management
+- Both are wait-free and cache-optimized
 
-  *RDTSC Timing*: Sub-nanosecond measurement (2.6× faster than `Instant::now`):
-  - Direct CPU timestamp counter access
-  - Calibrated to nanoseconds via frequency detection
-  - Critical for BBR congestion control pacing
+*RDTSC Timing*: Sub-nanosecond measurement (2.6× faster than `Instant::now`):
+- Direct CPU timestamp counter access
+- Calibrated to nanoseconds via frequency detection
+- Critical for BBR congestion control pacing
 
-  *System Calls*: Direct kernel bypass for hot paths:
-  - `mmap`/`munmap` for zero-copy buffer allocation
-  - CPU affinity for latency-critical threads
-  - NUMA topology detection for memory placement
-  - Optional `io_uring` for kernel-bypassed I/O
+*System Calls*: Direct kernel bypass for hot paths:
+- `mmap`/`munmap` for zero-copy buffer allocation
+- CPU affinity for latency-critical threads
+- NUMA topology detection for memory placement
+- Optional `io_uring` for kernel-bypassed I/O
 
-  = Unified Representation
+= Unified Representation
 
-  The UR transforms complex HTML into flat semantic structures optimized for LLM context windows.
+The UR transforms complex HTML into flat semantic structures optimized for LLM context windows.
 
-  == Semantic Elements
+== Semantic Elements
 
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [*Element*], [*HTML*], [*Purpose*],
-      [Heading], [h1-h6], [Section titles],
-      [Text], [p, span], [Content blocks],
-      [Link], [a], [Navigation],
-      [Button], [button], [Actions],
-      [Input], [input], [Form fields],
-      [Image], [img], [Media],
-      [List], [ul, ol], [Collections],
-      [Container], [div, section], [Grouping],
-    ),
-    caption: [UR semantic element mapping],
-  )
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Element*], [*HTML*], [*Purpose*],
+    [Heading], [h1-h6], [Section titles],
+    [Text], [p, span], [Content blocks],
+    [Link], [a], [Navigation],
+    [Button], [button], [Actions],
+    [Input], [input], [Form fields],
+    [Image], [img], [Media],
+    [List], [ul, ol], [Collections],
+    [Container], [div, section], [Grouping],
+  ),
+  caption: [UR semantic element mapping],
+)
 
-  == Structure
+== Structure
 
-  ```json
-  {
-    "title": "Example Domain",
-    "url": "https://example.com",
-    "elements": [
-      { "Heading": { "level": 1,
-                     "text": "Example" } },
-      { "Text": "Illustrative..." },
-      { "Link": { "text": "More",
-                  "url": "..." } }
-    ]
+```json
+{
+  "title": "Example Domain",
+  "url": "https://example.com",
+  "elements": [
+    { "Heading": { "level": 1,
+                   "text": "Example" } },
+    { "Text": "Illustrative..." },
+    { "Link": { "text": "More",
+                "url": "..." } }
+  ]
+}
+```
+
+The parser achieves *10-100× compression* versus raw HTML while preserving all actionable content.
+
+= SPINE Source Language
+
+HLS is a declarative language treating web interfaces as executable programs.
+
+== Core Syntax
+
+```hls
+element App {
+  element Header {
+    text "Welcome to SPINE"
   }
-  ```
-
-  The parser achieves *10-100× compression* versus raw HTML while preserving all actionable content.
-
-  = SPINE Source Language
-
-  HLS is a declarative language treating web interfaces as executable programs.
-
-  == Core Syntax
-
-  ```hls
-  element App {
-    element Header {
-      text "Welcome to SPINE"
-    }
-    element Content {
-      button "Click" -> emit("clicked")
-    }
+  element Content {
+    button "Click" -> emit("clicked")
   }
-  ```
-
-  == Programming Constructs
-
-  HLS supports full programming semantics:
-
-  ```hls
-  // Variables and State
-  let title = "Dashboard"
-  state counter = 0
+}
+```
+
+== Programming Constructs
+
+HLS supports full programming semantics:
+
+```hls
+// Variables and State
+let title = "Dashboard"
+state counter = 0
 
-  // Conditionals
-  if counter > 0 {
-    element Active { text "Active" }
-  } else {
-    element Inactive { text "Idle" }
-  }
+// Conditionals
+if counter > 0 {
+  element Active { text "Active" }
+} else {
+  element Inactive { text "Idle" }
+}
 
-  // Loops
-  for item in items {
-    element ListItem { text item }
-  }
+// Loops
+for item in items {
+  element ListItem { text item }
+}
 
-  // Expressions
-  let sum = 1 + 2 * 3
-  let valid = count > 0 && enabled
+// Expressions
+let sum = 1 + 2 * 3
+let valid = count > 0 && enabled
 
-  // Memory Operations
-  remember("pref", "dark_mode")
-  query_memory("preference")
+// Memory Operations
+remember("pref", "dark_mode")
+query_memory("preference")
 
-  // Capability Declarations
-  capability network
-  capability storage
-  ```
+// Capability Declarations
+capability network
+capability storage
+```
 
-  == HLB Instructions
+== HLB Instructions
 
-  The compiler generates these instructions:
+The compiler generates these instructions:
 
-  - *DefineElement*: Create element with ID and tag
-  - *SetAttribute*: Set properties on element
-  - *AddChild*: Establish parent-child relationship
-  - *EmitEvent*: Trigger subscribable events
-  - *StreamLatent*: Stream high-dimensional vectors
+- *DefineElement*: Create element with ID and tag
+- *SetAttribute*: Set properties on element
+- *AddChild*: Establish parent-child relationship
+- *EmitEvent*: Trigger subscribable events
+- *StreamLatent*: Stream high-dimensional vectors
 
-  = Chameleon Protocol
+= Chameleon Protocol
 
-  Traditional protocols use fixed message formats, enabling fingerprinting and traffic analysis. Chameleon treats the *transformation matrix as the encryption key*.
+Traditional protocols use fixed message formats, enabling fingerprinting and traffic analysis. Chameleon treats the *transformation matrix as the encryption key*.
 
-  == Latent-Space Cryptography
+== Latent-Space Cryptography
 
-  Messages are projected into high-dimensional space:
+Messages are projected into high-dimensional space:
 
-  $ bold(m)_"encoded" = bold(B)_t dot.c bold(m)_"plain" $
+$ bold(m)_"encoded" = bold(B)_t dot.c bold(m)_"plain" $
 
-  where $bold(B)_t$ is the basis matrix at time $t$.
+where $bold(B)_t$ is the basis matrix at time $t$.
 
-  == Moving-Target Defense
+== Moving-Target Defense
 
-  After each message exchange:
+After each message exchange:
 
-  1. *Basis rotation*: $bold(B)_(t+1) = bold(R)(h_t) dot.c bold(B)_t$
-  2. *Dimensionality change*: $d in [64, 256]$
-  3. *Header morphing*: Format based on message hash
-  4. *Padding shift*: Strategy varies per-message
+1. *Basis rotation*: $bold(B)_(t+1) = bold(R)(h_t) dot.c bold(B)_t$
+2. *Dimensionality change*: $d in [64, 256]$
+3. *Header morphing*: Format based on message hash
+4. *Padding shift*: Strategy varies per-message
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 7pt, font: "Consolas")
-      ```
-      Time t=0:                    Time t=1:                    Time t=2:
-      ┌────────────────┐          ┌──────────────────┐        ┌────────────────────┐
-      │ Header-A (8B)  │          │ Header-B (12B)   │        │ Header-C (16B)     │
-      ├────────────────┤          ├──────────────────┤        ├────────────────────┤
-      │  256-dim       │    ──►   │  128-dim         │   ──►  │  192-dim           │
-      │  latent        │ rotate   │  latent          │ morph  │  latent            │
-      │  [f32; 256]    │ + shrink │  [f32; 128]      │ + grow │  [f32; 192]        │
-      ├────────────────┤          ├──────────────────┤        ├────────────────────┤
-      │ Payload        │          │ Payload          │        │ Payload            │
-      │ (pad: zeros)   │          │ (pad: random)    │        │ (pad: pattern)     │
-      └────────────────┘          └──────────────────┘        └────────────────────┘
-            │                           │                           │
-            └───────────────────────────┴───────────────────────────┘
-                          │
-                    Key Evolution: k_(t+1) = KDF(k_t || H(m_t))
-      ```
-    ],
-    caption: [Chameleon Protocol: Moving-target message evolution],
-  )
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 7pt, font: "Consolas")
+    ```
+    Time t=0:                    Time t=1:                    Time t=2:
+    ┌────────────────┐          ┌──────────────────┐        ┌────────────────────┐
+    │ Header-A (8B)  │          │ Header-B (12B)   │        │ Header-C (16B)     │
+    ├────────────────┤          ├──────────────────┤        ├────────────────────┤
+    │  256-dim       │    ──►   │  128-dim         │   ──►  │  192-dim           │
+    │  latent        │ rotate   │  latent          │ morph  │  latent            │
+    │  [f32; 256]    │ + shrink │  [f32; 128]      │ + grow │  [f32; 192]        │
+    ├────────────────┤          ├──────────────────┤        ├────────────────────┤
+    │ Payload        │          │ Payload          │        │ Payload            │
+    │ (pad: zeros)   │          │ (pad: random)    │        │ (pad: pattern)     │
+    └────────────────┘          └──────────────────┘        └────────────────────┘
+          │                           │                           │
+          └───────────────────────────┴───────────────────────────┘
+                        │
+                  Key Evolution: k_(t+1) = KDF(k_t || H(m_t))
+    ```
+  ],
+  caption: [Chameleon Protocol: Moving-target message evolution],
+)
 
-  == Forward Secrecy
+== Forward Secrecy
 
-  Each message hash incorporates into key derivation:
+Each message hash incorporates into key derivation:
 
-  $ k_(t+1) = "KDF"(k_t || H(m_t)) $
+$ k_(t+1) = "KDF"(k_t || H(m_t)) $
 
-  Past messages cannot be decrypted even if current key is compromised.
+Past messages cannot be decrypted even if current key is compromised.
 
-  == Decoy Traffic
-
-  Agents inject noise traffic to confuse traffic analysis, making the protocol stream appear as high-entropy noise to external observers.
-
-  = Titans Neural Memory
-
-  Unlike RNNs (fixed hidden state) or Transformers (fixed context window), SPINE uses the Titans architecture for *unbounded context* through test-time training.
-
-  == Memory Update Rule
-
-  $ bold(M)_t = bold(M)_(t-1) - eta dot.c nabla L(bold(M)_(t-1), bold(x)_t) $
-
-  where $L$ is surprise loss and $eta$ is gated by prediction error.
-
-  == Key Properties
-
-  - *Test-time memorization*: Updates during inference
-  - *Surprise-gated writes*: Novel patterns prioritized
-  - *Momentum + forgetting*: Adaptive weight decay
-  - *Anomaly detection*: High surprise = adversarial input
-
-  == Time Complexity
-
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [*Model*], [*Per-Token*], [*Total (n tokens)*],
-      [Standard Attention], [$O(n dot.c d)$], [$O(n^2 dot.c d)$],
-      [Titans Memory], [$O(M dot.c d)$], [$O(n dot.c M dot.c d)$],
-    ),
-    caption: [Complexity comparison (M = constant memory size)],
-  )
-
-  Since $M$ is constant, Titans achieves *linear scaling* versus quadratic attention.
-
-  == MIRAS Variants
-
-  The MIRAS framework provides three memory variants:
-
-  - *YAAD*: Yet Another Attention with Decay
-  - *MONETA*: Momentum-based Memory
-  - *MEMORA*: Memory with Adaptive Recall
+== Decoy Traffic
 
-  These demonstrate that memory *depth* matters more than size for continual learning.
-
-  = Recursive Language Models
+Agents inject noise traffic to confuse traffic analysis, making the protocol stream appear as high-entropy noise to external observers.
 
-  Traditional approaches to long-context processing either truncate inputs or suffer from context rot. SPINE implements *Recursive Language Models* (RLMs) following Zhang, Kraska, and Khattab [11], enabling *infinite context* through environmental externalization.
+= Titans Neural Memory
+
+Unlike RNNs (fixed hidden state) or Transformers (fixed context window), SPINE uses the Titans architecture for *unbounded context* through test-time training.
+
+== Memory Update Rule
+
+$ bold(M)_t = bold(M)_(t-1) - eta dot.c nabla L(bold(M)_(t-1), bold(x)_t) $
+
+where $L$ is surprise loss and $eta$ is gated by prediction error.
+
+== Key Properties
+
+- *Test-time memorization*: Updates during inference
+- *Surprise-gated writes*: Novel patterns prioritized
+- *Momentum + forgetting*: Adaptive weight decay
+- *Anomaly detection*: High surprise = adversarial input
+
+== Time Complexity
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Model*], [*Per-Token*], [*Total (n tokens)*],
+    [Standard Attention], [$O(n dot.c d)$], [$O(n^2 dot.c d)$],
+    [Titans Memory], [$O(M dot.c d)$], [$O(n dot.c M dot.c d)$],
+  ),
+  caption: [Complexity comparison (M = constant memory size)],
+)
+
+Since $M$ is constant, Titans achieves *linear scaling* versus quadratic attention.
+
+== MIRAS Variants
+
+The MIRAS framework provides three memory variants:
+
+- *YAAD*: Yet Another Attention with Decay
+- *MONETA*: Momentum-based Memory
+- *MEMORA*: Memory with Adaptive Recall
 
-  == Core Insight
+These demonstrate that memory *depth* matters more than size for continual learning.
 
-  The key innovation is treating long prompts as *external environment variables* rather than neural input:
+= Recursive Language Models
 
-  #figure(
-    table(
-      columns: (1fr, 1fr),
-      inset: 6pt,
-      align: left,
-      stroke: 0.5pt,
-      [*Traditional LLM*], [*Recursive LM*],
-      [Context in attention], [Context as environment],
-      [Fixed window (4K-128K)], [Unlimited (10M+)],
-      [Context rot at edges], [No degradation],
-      [O(n²) complexity], [O(n) complexity],
-    ),
-    caption: [Traditional vs Recursive Language Models],
-  )
+Traditional approaches to long-context processing either truncate inputs or suffer from context rot. SPINE implements *Recursive Language Models* (RLMs) following Zhang, Kraska, and Khattab [11], enabling *infinite context* through environmental externalization.
 
-  == REPL Environment
+== Core Insight
 
-  RLMs operate through a Read-Eval-Print Loop where the LLM writes code to manipulate its context:
-
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 7pt, font: "Consolas")
-      ```
-      ┌─────────────────────────────────────────────────────────────┐
-      │                    Traditional LLM                         │
-      │  ┌─────────────────────────────────────────────────────┐   │
-      │  │ [Context: 128K tokens max] → attention → response   │   │
-      │  └─────────────────────────────────────────────────────┘   │
-      │                     ⚠️ Context rot at edges                 │
-      └─────────────────────────────────────────────────────────────┘
-
-      ┌─────────────────────────────────────────────────────────────┐
-      │                   Recursive Language Model                  │
-      │                                                             │
-      │  ┌──────────┐    ┌──────────────────────────────────────┐  │
-      │  │  Root    │    │    External Environment (REPL)       │  │
-      │  │   LLM    │◄──►│  ┌─────┬─────┬─────┬─────┬─────┐     │  │
-      │  │(queries) │    │  │Chunk│Chunk│Chunk│Chunk│ ... │     │  │
-      │  └────┬─────┘    │  │  0  │  1  │  2  │  3  │     │     │  │
-      │       │          │  └─────┴─────┴─────┴─────┴─────┘     │  │
-      │       │          │       10M+ characters chunked        │  │
-      │       ▼          └──────────────────────────────────────┘  │
-      │  ┌──────────┐              │                               │
-      │  │  Sub     │◄─────────────┘                               │
-      │  │  LLMs    │    Spawned for chunk processing              │
-      │  └──────────┘                                              │
-      └─────────────────────────────────────────────────────────────┘
-      ```
-    ],
-    caption: [RLM architecture: context as external REPL environment],
-  )
-
-  ```rust
-  // Load context as environment variable
-  repl.load_context("doc", massive_content, 200_000)?;
-
-  // LLM-generated code to query context
-  let chunk = repl.get_chunk("doc", 5)?;
-  let matches = repl.search_keyword("doc", "quantum")?;
-  let patterns = repl.search_regex("doc", r"Section \d+")?;
-  ```
-
-  The REPL provides:
-  - *Chunking*: Automatic segmentation (200K chars/chunk recommended)
-  - *Random access*: O(1) chunk retrieval by index
-  - *Keyword search*: Find chunks containing terms
-  - *Regex search*: Pattern matching across all chunks
-  - *Line extraction*: Access specific line ranges
-
-  == Query Strategies
-
-  The RLM employs three primary strategies for answering queries:
-
-  *Filter-and-Search*: Regex/keyword filtering followed by sub-LLM calls on relevant chunks. Best for needle-in-haystack queries.
-
-  *Chunk-and-Aggregate*: Process each chunk independently, aggregate results. Best for summarization tasks.
-
-  *Hierarchical Summarize*: Recursive summarization of chunk groups. Best for compression tasks.
-
-  == Emergent Patterns
-
-  Research demonstrates that RLMs spontaneously develop sophisticated strategies:
-
-  - *Regex filtering*: Constructing patterns to isolate relevant sections
-  - *Progressive refinement*: Iteratively narrowing search space
-  - *Answer verification*: Cross-checking answers against multiple chunks
-  - *Chunking adaptation*: Adjusting chunk sizes based on query type
-
-  == Implementation
-
-  SPINE's `spine-recursive` crate provides:
-
-  ```rust
-  let config = RlmConfig {
-      max_recursion_depth: 5,
-      default_chunk_size: 200_000,
-      max_context_size: 50_000_000,
-      ..Default::default()
-  };
-
-  let rlm = RecursiveLM::new(config, root_llm, sub_llm);
-  rlm.load_context("doc", ten_million_chars).await?;
-
-  // Query infinite context
-  let response = rlm.query("Find all references to X").await?;
-  ```
-
-  == Scalability
-
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 5pt,
-      align: (left, right, right),
-      stroke: 0.5pt,
-      [*Context Size*], [*Est. Tokens*], [*Chunks*],
-      [100K chars], [~25K], [1],
-      [1M chars], [~250K], [5],
-      [10M chars], [~2.5M], [50],
-      [50M chars], [~12.5M], [250],
-    ),
-    caption: [RLM scalability (200K chars/chunk)],
-  )
-
-  RLMs achieve *100× improvement* over model context windows by treating context as addressable memory rather than attention input.
-
-  = Memory Architecture: Titans and RLM Integration
-
-  SPINE employs two complementary memory systems that operate at different scales and serve different purposes. Understanding their interplay is essential to grasping the architecture.
-
-  == The Two Memory Problems
-
-  AI agents face two distinct memory challenges:
-
-  #figure(
-    table(
-      columns: (auto, 1fr, 1fr),
-      inset: 6pt,
-      align: left,
-      stroke: 0.5pt,
-      [*Problem*], [*Titans Solution*], [*RLM Solution*],
-      [Scale], [Thousands of tokens], [Millions of characters],
-      [Scope], [Within-model memory], [External environment],
-      [Update], [Continuous (per-token)], [Discrete (per-query)],
-      [Access], [Implicit (attention)], [Explicit (code)],
-      [Learning], [Test-time training], [No training],
-    ),
-    caption: [Complementary memory architectures],
-  )
-
-  *Titans* solves the problem of *adaptive memory within the model*—learning patterns during inference, detecting anomalies, and maintaining persistent state across interactions.
-
-  *RLMs* solve the problem of *massive external context*—accessing documents far too large to fit in any attention window, without degradation.
-
-  == Where Each Lives in the Stack
-
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 8pt, font: "Consolas")
-      ```
-      ┌─────────────────────────────────────────────┐
-      │            Agent Query                      │
-      │  "Summarize all mentions of X in this 10M   │
-      │   char document"                            │
-      └────────────────┬────────────────────────────┘
-                       ↓
-      ┌─────────────────────────────────────────────┐
-      │     RLM (spine-recursive)              │
-      │  • Chunks document into 50 × 200K pieces    │
-      │  • LLM writes: search_keyword("doc", "X")   │
-      │  • Retrieves relevant chunks                │
-      │  • Calls sub-LLM on each chunk              │
-      └────────────────┬────────────────────────────┘
-                       ↓
-      ┌─────────────────────────────────────────────┐
-      │     Titans (spine-neural/crypto)       │
-      │  • Sub-LLM processes each chunk             │
-      │  • Memory updates: M_t = M_{t-1} - η∇L      │
-      │  • Surprise detection: flag anomalies       │
-      │  • Patterns persist across chunks           │
-      └────────────────┬────────────────────────────┘
-                       ↓
-      ┌─────────────────────────────────────────────┐
-      │     Protocol (spine-protocol)          │
-      │  • Speculative decoding predicts responses  │
-      │  • Titans predicts next message             │
-      │  • Anomaly = potential attack               │
-      └─────────────────────────────────────────────┘
-      ```
-    ],
-    caption: [Titans and RLM in the processing pipeline],
-  )
+The key innovation is treating long prompts as *external environment variables* rather than neural input:
 
-  == Titans: Neural Long-Term Memory
+#figure(
+  table(
+    columns: (1fr, 1fr),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Traditional LLM*], [*Recursive LM*],
+    [Context in attention], [Context as environment],
+    [Fixed window (4K-128K)], [Unlimited (10M+)],
+    [Context rot at edges], [No degradation],
+    [O(n²) complexity], [O(n) complexity],
+  ),
+  caption: [Traditional vs Recursive Language Models],
+)
 
-  Titans operates *inside* the neural network, providing:
+== REPL Environment
 
-  *Test-Time Learning*: Unlike frozen models, Titans updates its memory during inference:
-  $ bold(M)_t = bold(M)_(t-1) - eta dot.c nabla L(bold(M)_(t-1), bold(x)_t) $
+RLMs operate through a Read-Eval-Print Loop where the LLM writes code to manipulate its context:
 
-  *Surprise Gating*: The learning rate $eta$ scales with prediction error. Novel patterns (high surprise) trigger stronger updates; familiar patterns (low surprise) are efficiently processed without memory churn.
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 7pt, font: "Consolas")
+    ```
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    Traditional LLM                         │
+    │  ┌─────────────────────────────────────────────────────┐   │
+    │  │ [Context: 128K tokens max] → attention → response   │   │
+    │  └─────────────────────────────────────────────────────┘   │
+    │                     ⚠️ Context rot at edges                 │
+    └─────────────────────────────────────────────────────────────┘
 
-  *Anomaly Detection*: In the protocol layer, Titans detects adversarial inputs. A message that doesn't match learned patterns produces high surprise, flagging potential attacks.
+    ┌─────────────────────────────────────────────────────────────┐
+    │                   Recursive Language Model                  │
+    │                                                             │
+    │  ┌──────────┐    ┌──────────────────────────────────────┐  │
+    │  │  Root    │    │    External Environment (REPL)       │  │
+    │  │   LLM    │◄──►│  ┌─────┬─────┬─────┬─────┬─────┐     │  │
+    │  │(queries) │    │  │Chunk│Chunk│Chunk│Chunk│ ... │     │  │
+    │  └────┬─────┘    │  │  0  │  1  │  2  │  3  │     │     │  │
+    │       │          │  └─────┴─────┴─────┴─────┴─────┘     │  │
+    │       │          │       10M+ characters chunked        │  │
+    │       ▼          └──────────────────────────────────────┘  │
+    │  ┌──────────┐              │                               │
+    │  │  Sub     │◄─────────────┘                               │
+    │  │  LLMs    │    Spawned for chunk processing              │
+    │  └──────────┘                                              │
+    └─────────────────────────────────────────────────────────────┘
+    ```
+  ],
+  caption: [RLM architecture: context as external REPL environment],
+)
+
+```rust
+// Load context as environment variable
+repl.load_context("doc", massive_content, 200_000)?;
+
+// LLM-generated code to query context
+let chunk = repl.get_chunk("doc", 5)?;
+let matches = repl.search_keyword("doc", "quantum")?;
+let patterns = repl.search_regex("doc", r"Section \d+")?;
+```
+
+The REPL provides:
+- *Chunking*: Automatic segmentation (200K chars/chunk recommended)
+- *Random access*: O(1) chunk retrieval by index
+- *Keyword search*: Find chunks containing terms
+- *Regex search*: Pattern matching across all chunks
+- *Line extraction*: Access specific line ranges
+
+== Query Strategies
+
+The RLM employs three primary strategies for answering queries:
+
+*Filter-and-Search*: Regex/keyword filtering followed by sub-LLM calls on relevant chunks. Best for needle-in-haystack queries.
+
+*Chunk-and-Aggregate*: Process each chunk independently, aggregate results. Best for summarization tasks.
+
+*Hierarchical Summarize*: Recursive summarization of chunk groups. Best for compression tasks.
+
+== Emergent Patterns
+
+Research demonstrates that RLMs spontaneously develop sophisticated strategies:
+
+- *Regex filtering*: Constructing patterns to isolate relevant sections
+- *Progressive refinement*: Iteratively narrowing search space
+- *Answer verification*: Cross-checking answers against multiple chunks
+- *Chunking adaptation*: Adjusting chunk sizes based on query type
+
+== Implementation
+
+SPINE's `spine-recursive` crate provides:
+
+```rust
+let config = RlmConfig {
+    max_recursion_depth: 5,
+    default_chunk_size: 200_000,
+    max_context_size: 50_000_000,
+    ..Default::default()
+};
+
+let rlm = RecursiveLM::new(config, root_llm, sub_llm);
+rlm.load_context("doc", ten_million_chars).await?;
+
+// Query infinite context
+let response = rlm.query("Find all references to X").await?;
+```
+
+== Scalability
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right),
+    stroke: 0.5pt,
+    [*Context Size*], [*Est. Tokens*], [*Chunks*],
+    [100K chars], [~25K], [1],
+    [1M chars], [~250K], [5],
+    [10M chars], [~2.5M], [50],
+    [50M chars], [~12.5M], [250],
+  ),
+  caption: [RLM scalability (200K chars/chunk)],
+)
+
+RLMs achieve *100× improvement* over model context windows by treating context as addressable memory rather than attention input.
+
+= Memory Architecture: Titans and RLM Integration
+
+SPINE employs two complementary memory systems that operate at different scales and serve different purposes. Understanding their interplay is essential to grasping the architecture.
+
+== The Two Memory Problems
+
+AI agents face two distinct memory challenges:
+
+#figure(
+  table(
+    columns: (auto, 1fr, 1fr),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Problem*], [*Titans Solution*], [*RLM Solution*],
+    [Scale], [Thousands of tokens], [Millions of characters],
+    [Scope], [Within-model memory], [External environment],
+    [Update], [Continuous (per-token)], [Discrete (per-query)],
+    [Access], [Implicit (attention)], [Explicit (code)],
+    [Learning], [Test-time training], [No training],
+  ),
+  caption: [Complementary memory architectures],
+)
+
+*Titans* solves the problem of *adaptive memory within the model*—learning patterns during inference, detecting anomalies, and maintaining persistent state across interactions.
+
+*RLMs* solve the problem of *massive external context*—accessing documents far too large to fit in any attention window, without degradation.
+
+== Where Each Lives in the Stack
+
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 8pt, font: "Consolas")
+    ```
+    ┌─────────────────────────────────────────────┐
+    │            Agent Query                      │
+    │  "Summarize all mentions of X in this 10M   │
+    │   char document"                            │
+    └────────────────┬────────────────────────────┘
+                     ↓
+    ┌─────────────────────────────────────────────┐
+    │     RLM (spine-recursive)              │
+    │  • Chunks document into 50 × 200K pieces    │
+    │  • LLM writes: search_keyword("doc", "X")   │
+    │  • Retrieves relevant chunks                │
+    │  • Calls sub-LLM on each chunk              │
+    └────────────────┬────────────────────────────┘
+                     ↓
+    ┌─────────────────────────────────────────────┐
+    │     Titans (spine-neural/crypto)       │
+    │  • Sub-LLM processes each chunk             │
+    │  • Memory updates: M_t = M_{t-1} - η∇L      │
+    │  • Surprise detection: flag anomalies       │
+    │  • Patterns persist across chunks           │
+    └────────────────┬────────────────────────────┘
+                     ↓
+    ┌─────────────────────────────────────────────┐
+    │     Protocol (spine-protocol)          │
+    │  • Speculative decoding predicts responses  │
+    │  • Titans predicts next message             │
+    │  • Anomaly = potential attack               │
+    └─────────────────────────────────────────────┘
+    ```
+  ],
+  caption: [Titans and RLM in the processing pipeline],
+)
 
-  *Speculative Decoding*: Titans predicts upcoming messages. When predictions match reality, only a 256-bit hash is transmitted instead of the full payload (24× bandwidth reduction).
+== Titans: Neural Long-Term Memory
 
-  == RLM: Environmental Context
+Titans operates *inside* the neural network, providing:
 
-  RLMs operate *outside* the neural network, providing:
+*Test-Time Learning*: Unlike frozen models, Titans updates its memory during inference:
+$ bold(M)_t = bold(M)_(t-1) - eta dot.c nabla L(bold(M)_(t-1), bold(x)_t) $
 
-  *Unlimited Scale*: A 10M character document is chunked and stored in a REPL environment. The LLM never sees it all at once—it writes code to query relevant portions.
+*Surprise Gating*: The learning rate $eta$ scales with prediction error. Novel patterns (high surprise) trigger stronger updates; familiar patterns (low surprise) are efficiently processed without memory churn.
 
-  *No Degradation*: Traditional attention degrades at context boundaries. RLMs access any chunk with equal fidelity because context is stored symbolically, not neurally.
+*Anomaly Detection*: In the protocol layer, Titans detects adversarial inputs. A message that doesn't match learned patterns produces high surprise, flagging potential attacks.
 
-  *Compositional Queries*: The LLM can combine operations: search, filter, summarize, verify. This emergent behavior arises naturally from the REPL interface.
+*Speculative Decoding*: Titans predicts upcoming messages. When predictions match reality, only a 256-bit hash is transmitted instead of the full payload (24× bandwidth reduction).
 
-  == Synergy: How They Work Together
+== RLM: Environmental Context
 
-  Consider processing a 10M character legal document to find all liability clauses:
+RLMs operate *outside* the neural network, providing:
 
-  #figure(
-    table(
-      columns: (auto, 1fr),
-      inset: 6pt,
-      align: left,
-      stroke: 0.5pt,
-      [*Step*], [*What Happens*],
-      [1], [RLM chunks document into 50 pieces],
-      [2], [RLM's root LLM generates search code: `search_regex("doc", r"liab")`],
-      [3], [REPL returns chunks 7, 23, 41 as matches],
-      [4], [RLM dispatches sub-LLM calls on each chunk],
-      [5], [Titans memory in sub-LLM learns "liability clause" patterns],
-      [6], [By chunk 41, Titans recognizes patterns faster (surprise ↓)],
-      [7], [Sub-LLM results aggregated by root LLM],
-      [8], [Protocol layer uses Titans to predict response format],
-      [9], [If prediction matches, sends hash only (24× compression)],
-    ),
-    caption: [Combined Titans + RLM workflow],
-  )
+*Unlimited Scale*: A 10M character document is chunked and stored in a REPL environment. The LLM never sees it all at once—it writes code to query relevant portions.
 
-  *Key insight*: RLMs handle *breadth* (accessing any part of massive context), while Titans handles *depth* (learning patterns and adapting within each interaction).
+*No Degradation*: Traditional attention degrades at context boundaries. RLMs access any chunk with equal fidelity because context is stored symbolically, not neurally.
 
-  == MIRAS: Memory Variants
+*Compositional Queries*: The LLM can combine operations: search, filter, summarize, verify. This emergent behavior arises naturally from the REPL interface.
 
-  The MIRAS framework [2] provides three Titans variants for different scenarios:
+== Synergy: How They Work Together
 
-  - *YAAD* (Yet Another Attention with Decay): Exponential forgetting for streaming data
-  - *MONETA* (Momentum-based Memory): Smooth updates for stable patterns
-  - *MEMORA* (Memory with Adaptive Recall): Selective retrieval for sparse access
+Consider processing a 10M character legal document to find all liability clauses:
 
-  SPINE's `spine-neural` implements all three, selectable based on workload characteristics.
+#figure(
+  table(
+    columns: (auto, 1fr),
+    inset: 6pt,
+    align: left,
+    stroke: 0.5pt,
+    [*Step*], [*What Happens*],
+    [1], [RLM chunks document into 50 pieces],
+    [2], [RLM's root LLM generates search code: `search_regex("doc", r"liab")`],
+    [3], [REPL returns chunks 7, 23, 41 as matches],
+    [4], [RLM dispatches sub-LLM calls on each chunk],
+    [5], [Titans memory in sub-LLM learns "liability clause" patterns],
+    [6], [By chunk 41, Titans recognizes patterns faster (surprise ↓)],
+    [7], [Sub-LLM results aggregated by root LLM],
+    [8], [Protocol layer uses Titans to predict response format],
+    [9], [If prediction matches, sends hash only (24× compression)],
+  ),
+  caption: [Combined Titans + RLM workflow],
+)
 
-  == Why Both Are Necessary
+*Key insight*: RLMs handle *breadth* (accessing any part of massive context), while Titans handles *depth* (learning patterns and adapting within each interaction).
 
-  Neither system alone suffices:
+== MIRAS: Memory Variants
 
-  *Titans without RLM*: Limited to model context window. A 128K token model cannot process a 10M character document regardless of how sophisticated its memory is.
+The MIRAS framework [2] provides three Titans variants for different scenarios:
 
-  *RLM without Titans*: No learning during processing. Each chunk is processed independently with no pattern accumulation. No anomaly detection or speculative optimization.
+- *YAAD* (Yet Another Attention with Decay): Exponential forgetting for streaming data
+- *MONETA* (Momentum-based Memory): Smooth updates for stable patterns
+- *MEMORA* (Memory with Adaptive Recall): Selective retrieval for sparse access
 
-  *Together*: RLMs provide the scaffolding to access unlimited context; Titans provides the intelligence to learn from it, detect anomalies, and optimize communication.
+SPINE's `spine-neural` implements all three, selectable based on workload characteristics.
 
-  = Speculative Decoding
+== Why Both Are Necessary
 
-  Inspired by LLM inference, SPINE predicts messages before they arrive.
+Neither system alone suffices:
 
-  == Protocol
+*Titans without RLM*: Limited to model context window. A 128K token model cannot process a 10M character document regardless of how sophisticated its memory is.
 
-  1. *Output speculation*: Before sending, check if receiver predicted this message
-    - Hit: Send 256-bit hash (vs. kilobytes)
-    - Miss: Send full payload
+*RLM without Titans*: No learning during processing. Each chunk is processed independently with no pattern accumulation. No anomaly detection or speculative optimization.
 
-  2. *Input speculation*: Predict what sender will send
-    - Train on message patterns
-    - Pre-compute responses
-    - Reduce latency
+*Together*: RLMs provide the scaffolding to access unlimited context; Titans provides the intelligence to learn from it, detect anomalies, and optimize communication.
 
-  == Bandwidth Analysis
+= Speculative Decoding
 
-  Expected bits per message with confidence $c$:
+Inspired by LLM inference, SPINE predicts messages before they arrive.
 
-  $ E["bits"] = c dot.c 256 + (1-c) dot.c 8|X| $
+== Protocol
 
-  For $c = 0.99$ and $|X| = 1000$ bytes:
+1. *Output speculation*: Before sending, check if receiver predicted this message
+  - Hit: Send 256-bit hash (vs. kilobytes)
+  - Miss: Send full payload
 
-  $ E["bits"] = 0.99 dot.c 256 + 0.01 dot.c 8000 = 333 "bits" $
+2. *Input speculation*: Predict what sender will send
+  - Train on message patterns
+  - Pre-compute responses
+  - Reduce latency
 
-  *Bandwidth reduction*: $8000 / 333 approx 24 times$
+== Bandwidth Analysis
 
-  = Quantum-Resistant Cryptography
+Expected bits per message with confidence $c$:
 
-  SPINE uses Ring-LWE (Ring Learning With Errors) for post-quantum security.
+$ E["bits"] = c dot.c 256 + (1-c) dot.c 8|X| $
 
-  == Key Evolution
+For $c = 0.99$ and $|X| = 1000$ bytes:
 
-  Keys evolve using lattice-based constructions:
+$ E["bits"] = 0.99 dot.c 256 + 0.01 dot.c 8000 = 333 "bits" $
 
-  $ bold(k)_(t+1) = bold(A) dot.c bold(k)_t + bold(e)_t mod q $
+*Bandwidth reduction*: $8000 / 333 approx 24 times$
 
-  where $bold(e)_t$ is a small error vector providing security.
+= Quantum-Resistant Cryptography
 
-  == Security Assumption
+SPINE uses Ring-LWE (Ring Learning With Errors) for post-quantum security.
 
-  The Ring-LWE problem: Given $(bold(A), bold(A) bold(s) + bold(e))$, find $bold(s)$.
+== Key Evolution
 
-  This is believed hard even for quantum computers with dimension $lambda >= 1024$.
+Keys evolve using lattice-based constructions:
 
-  = Distributed Swarm Intelligence
+$ bold(k)_(t+1) = bold(A) dot.c bold(k)_t + bold(e)_t mod q $
 
-  SPINE enables autonomous agent swarms with sophisticated coordination.
+where $bold(e)_t$ is a small error vector providing security.
 
-  == Skill-Based Task Routing
+== Security Assumption
 
-  Each node advertises capabilities:
+The Ring-LWE problem: Given $(bold(A), bold(A) bold(s) + bold(e))$, find $bold(s)$.
 
-  $ "score"(n, tau) = |tau."skills" inter n."skills"| $
+This is believed hard even for quantum computers with dimension $lambda >= 1024$.
 
-  Tasks are assigned to nodes maximizing skill overlap.
+= Distributed Swarm Intelligence
 
-  == DAG Dependency Tracking
+SPINE enables autonomous agent swarms with sophisticated coordination.
 
-  Swarm plans form directed acyclic graphs:
+== Skill-Based Task Routing
 
-  ```rust
-  PlanTask { id: t1, deps: [] }      // Root
-  PlanTask { id: t2, deps: [t1] }    // After t1
-  PlanTask { id: t3, deps: [t1,t2] } // After both
-  ```
+Each node advertises capabilities:
 
-  Tasks execute only when all dependencies complete.
+$ "score"(n, tau) = |tau."skills" inter n."skills"| $
 
-  == Knowledge Consensus
+Tasks are assigned to nodes maximizing skill overlap.
 
-  Distributed facts require $2\/3$ majority voting:
+== DAG Dependency Tracking
 
-  $ "accept"(f) arrow.l.r.double |{n : n "votes" f}| >= ceil(2n/3) $
+Swarm plans form directed acyclic graphs:
 
-  #figure(
-    table(
-      columns: (auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [*Topology*], [*Use Case*],
-      [Star], [Command-and-control],
-      [Hierarchical], [Organizations],
-      [FullMesh], [Small tight teams],
-      [Ring], [Token-passing],
-      [SmallWorld], [Research collaboration],
-      [ScaleFree], [Influencer networks],
-      [Modular], [Cross-functional teams],
-      [Dynamic], [Adaptive orgs],
-    ),
-    caption: [Supported swarm topologies],
-  )
+```rust
+PlanTask { id: t1, deps: [] }      // Root
+PlanTask { id: t2, deps: [t1] }    // After t1
+PlanTask { id: t3, deps: [t1,t2] } // After both
+```
 
-  #figure(
-    block(
-      fill: luma(250),
-      inset: 8pt,
-      radius: 4pt,
-      width: 100%,
-    )[
-      #set text(size: 7pt, font: "Consolas")
-      ```
-      Star:              Hierarchical:       Ring:            SmallWorld:
-         ●                    ●               ●───●           ●───●───●
-        /│\                  /│\              │   │           │ ╲ │ ╱ │
-       ● ● ●                ● ● ●             ●───●           ●───●───●
-                           /│╲ │ ╲                            │ ╱ │ ╲ │
-                          ● ● ● ● ●                           ●───●───●
+Tasks execute only when all dependencies complete.
 
-      FullMesh:          ScaleFree:        Modular:          Dynamic:
-      ●═══●═══●          hub●═══●         [Group A]         ●───●
-      ║ ╲ ║ ╱ ║         ╱│╲ │               ●─●─●           │ ↔ │ (adapts)
-      ●═══●═══●        ● ● ●●●             └─┼─┘            ●───●
-      ║ ╱ ║ ╲ ║             │               [Group B]       ↕   ↕
-      ●═══●═══●             ●                ●─●─●          ●───●
-      ```
-    ],
-    caption: [Visual representation of swarm topology patterns],
-  )
+== Knowledge Consensus
 
-  == Small-World Broadcast
+Distributed facts require $2\/3$ majority voting:
 
-  Diameter bound (Kleinberg, 2000):
+$ "accept"(f) arrow.l.r.double |{n : n "votes" f}| >= ceil(2n/3) $
 
-  $ D_"small-world" = O(log n) $
+#figure(
+  table(
+    columns: (auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Topology*], [*Use Case*],
+    [Star], [Command-and-control],
+    [Hierarchical], [Organizations],
+    [FullMesh], [Small tight teams],
+    [Ring], [Token-passing],
+    [SmallWorld], [Research collaboration],
+    [ScaleFree], [Influencer networks],
+    [Modular], [Cross-functional teams],
+    [Dynamic], [Adaptive orgs],
+  ),
+  caption: [Supported swarm topologies],
+)
 
-  Broadcast achieves $O(log n)$ time with $O(n log n)$ messages.
+#figure(
+  block(
+    fill: luma(250),
+    inset: 8pt,
+    radius: 4pt,
+    width: 100%,
+  )[
+    #set text(size: 7pt, font: "Consolas")
+    ```
+    Star:              Hierarchical:       Ring:            SmallWorld:
+       ●                    ●               ●───●           ●───●───●
+      /│\                  /│\              │   │           │ ╲ │ ╱ │
+     ● ● ●                ● ● ●             ●───●           ●───●───●
+                         /│╲ │ ╲                            │ ╱ │ ╲ │
+                        ● ● ● ● ●                           ●───●───●
 
-  = Game-Theoretic Reasoning
+    FullMesh:          ScaleFree:        Modular:          Dynamic:
+    ●═══●═══●          hub●═══●         [Group A]         ●───●
+    ║ ╲ ║ ╱ ║         ╱│╲ │               ●─●─●           │ ↔ │ (adapts)
+    ●═══●═══●        ● ● ●●●             └─┼─┘            ●───●
+    ║ ╱ ║ ╲ ║             │               [Group B]       ↕   ↕
+    ●═══●═══●             ●                ●─●─●          ●───●
+    ```
+  ],
+  caption: [Visual representation of swarm topology patterns],
+)
 
-  SPINE supports both collaborative and adversarial multi-agent scenarios.
+== Small-World Broadcast
 
-  == Nash Equilibrium
+Diameter bound (Kleinberg, 2000):
 
-  For 2×2 games, exact mixed Nash equilibrium:
+$ D_"small-world" = O(log n) $
 
-  $ p_1 = (B_(22) - B_(12)) / (B_(11) - B_(12) - B_(21) + B_(22)) $
+Broadcast achieves $O(log n)$ time with $O(n log n)$ messages.
 
-  == CFR Convergence
+= Game-Theoretic Reasoning
 
-  Regret matching converges to $epsilon$-Nash in $O(1\/epsilon^2)$ rounds.
+SPINE supports both collaborative and adversarial multi-agent scenarios.
 
-  Regret bound (Zinkevich et al., 2007):
+== Nash Equilibrium
 
-  $ R^T_i / T <= (|A| sqrt(2)) / sqrt(T) $
+For 2×2 games, exact mixed Nash equilibrium:
 
-  == Minimax Solving
+$ p_1 = (B_(22) - B_(12)) / (B_(11) - B_(12) - B_(21) + B_(22)) $
 
-  Alpha-beta pruning examines $O(b^(d\/2))$ nodes for branching factor $b$ and depth $d$, optimal among deterministic algorithms.
+== CFR Convergence
 
-  = Human Compatibility
+Regret matching converges to $epsilon$-Nash in $O(1\/epsilon^2)$ rounds.
 
-  The spine-human crate provides backwards compatibility with traditional web content.
+Regret bound (Zinkevich et al., 2007):
 
-  == HTML to HLS Transpilation
+$ R^T_i / T <= (|A| sqrt(2)) / sqrt(T) $
 
-  Legacy HTML is automatically converted to HLS:
+== Minimax Solving
 
-  - Semantic tag mapping (nav to Navigation, article to Article)
-  - Event handler translation
-  - Style extraction to attributes
+Alpha-beta pruning examines $O(b^(d\/2))$ nodes for branching factor $b$ and depth $d$, optimal among deterministic algorithms.
 
-  == Bot-Detection Bypass
+= Human Compatibility
 
-  Realistic human-like interaction patterns:
+The spine-human crate provides backwards compatibility with traditional web content.
 
-  - *Mouse paths*: Bezier curves with jitter
-  - *Typing delays*: Gaussian-distributed keystroke timing
-  - *Scroll behavior*: Momentum-based physics
-  - *Click patterns*: Natural targeting variance
+== HTML to HLS Transpilation
 
-  = Performance Evaluation
+Legacy HTML is automatically converted to HLS:
 
-  All benchmarks use Criterion with 100 samples per measurement.
+- Semantic tag mapping (nav to Navigation, article to Article)
+- Event handler translation
+- Style extraction to attributes
 
-  == Latency Comparison
+== Bot-Detection Bypass
 
-  #figure(
-    table(
-      columns: (auto, auto, auto, auto),
-      inset: 5pt,
-      align: (left, right, right, right),
-      stroke: 0.5pt,
-      [*Benchmark*], [*TCP*], [*SPINE*], [*Speedup*],
-      [End-to-end (100)], [3.3 ms], [26 µs], [*125×*],
-      [64 bytes], [36 µs], [70 ns], [*514×*],
-      [1 KB], [34 µs], [85 ns], [*400×*],
-      [4 KB], [36 µs], [133 ns], [*270×*],
-    ),
-    caption: [Latency comparison vs standard TCP],
-  )
+Realistic human-like interaction patterns:
 
-  == Throughput Comparison
+- *Mouse paths*: Bezier curves with jitter
+- *Typing delays*: Gaussian-distributed keystroke timing
+- *Scroll behavior*: Momentum-based physics
+- *Click patterns*: Natural targeting variance
 
-  #figure(
-    table(
-      columns: (auto, auto, auto, auto),
-      inset: 5pt,
-      align: (left, right, right, right),
-      stroke: 0.5pt,
-      [*Benchmark*], [*TCP*], [*SPINE*], [*Speedup*],
-      [1 KB], [30 MiB/s], [17.9 GiB/s], [*610×*],
-      [8 KB], [30 MiB/s], [11.1 GiB/s], [*378×*],
-      [Frame encode], [—], [82 GiB/s], [—],
-      [Frame decode], [—], [86 GiB/s], [—],
-    ),
-    caption: [Throughput comparison vs standard TCP],
-  )
+= Performance Evaluation
 
-  == Component Performance
+All benchmarks use Criterion with 100 samples per measurement.
 
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 5pt,
-      align: (left, right, right),
-      stroke: 0.5pt,
-      [*Component*], [*Latency*], [*Throughput*],
-      [Latent serialize (1024-dim)], [171 ns], [22.3 GiB/s],
-      [Cosine similarity (1024-dim)], [426 ns], [9.0 GiB/s],
-      [Ring buffer (16 KB)], [391 ns], [39 GiB/s],
-      [BBR pacing], [322 ps], [—],
-      [Rate limiter], [36 ns], [—],
-      [Priority queue], [—], [7.1M elem/s],
-      [Backpressure stream], [—], [2.2M elem/s],
-    ),
-    caption: [Individual component benchmarks],
-  )
+== Latency Comparison
 
-  == Analysis
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Benchmark*], [*TCP*], [*SPINE*], [*Speedup*],
+    [End-to-end (100)], [3.3 ms], [26 µs], [*125×*],
+    [64 bytes], [36 µs], [70 ns], [*514×*],
+    [1 KB], [34 µs], [85 ns], [*400×*],
+    [4 KB], [36 µs], [133 ns], [*270×*],
+  ),
+  caption: [Latency comparison vs standard TCP],
+)
 
-  The 514× latency improvement derives from:
-  - Eliminating TCP's three-way handshake
-  - Operating at frame codec level
-  - Zero-copy buffer operations
+== Throughput Comparison
 
-  The 610× throughput improvement results from:
-  - Zero-copy ring buffers
-  - Avoiding kernel-userspace transitions
-  - BBR congestion control (139 ns overhead)
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Benchmark*], [*TCP*], [*SPINE*], [*Speedup*],
+    [1 KB], [30 MiB/s], [17.9 GiB/s], [*610×*],
+    [8 KB], [30 MiB/s], [11.1 GiB/s], [*378×*],
+    [Frame encode], [—], [82 GiB/s], [—],
+    [Frame decode], [—], [86 GiB/s], [—],
+  ),
+  caption: [Throughput comparison vs standard TCP],
+)
 
-  = Mathematical Foundations
+== Component Performance
 
-  We provide rigorous mathematical analysis demonstrating complexity and security properties of SPINE's architecture. Results are classified as *Theorems* (rigorous proofs), *Propositions* (standard assumptions), or *Observations* (empirical).
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right),
+    stroke: 0.5pt,
+    [*Component*], [*Latency*], [*Throughput*],
+    [Latent serialize (1024-dim)], [171 ns], [22.3 GiB/s],
+    [Cosine similarity (1024-dim)], [426 ns], [9.0 GiB/s],
+    [Ring buffer (16 KB)], [391 ns], [39 GiB/s],
+    [BBR pacing], [322 ps], [—],
+    [Rate limiter], [36 ns], [—],
+    [Priority queue], [—], [7.1M elem/s],
+    [Backpressure stream], [—], [2.2M elem/s],
+  ),
+  caption: [Individual component benchmarks],
+)
 
-  == Notation
+== Analysis
 
-  #figure(
-    table(
-      columns: (auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [$n$], [Number of agents/sequence length],
-      [$d$], [Embedding dimension],
-      [$M$], [Memory tokens (Titans)],
-      [$T$], [Game-theoretic rounds],
-      [$kappa$], [Security parameter (bits)],
-      [$epsilon$], [Convergence threshold],
-      [$lambda$], [Lattice dimension],
-    ),
-    caption: [Mathematical notation],
-  )
+The 514× latency improvement derives from:
+- Eliminating TCP's three-way handshake
+- Operating at frame codec level
+- Zero-copy buffer operations
 
-  == Time Complexity
+The 610× throughput improvement results from:
+- Zero-copy ring buffers
+- Avoiding kernel-userspace transitions
+- BBR congestion control (139 ns overhead)
 
-  === Theorem 1 (Titans Memory Optimality)
+= Mathematical Foundations
 
-  _The Titans NLM processes unbounded context in $O(M)$ time per token versus $O(n^2)$ for standard attention._
+We provide rigorous mathematical analysis demonstrating complexity and security properties of SPINE's architecture. Results are classified as *Theorems* (rigorous proofs), *Propositions* (standard assumptions), or *Observations* (empirical).
 
-  *Proof.* Standard self-attention computes:
+== Notation
 
-  $ "Attention"(Q, K, V) = "softmax"((Q K^T) / sqrt(d)) V $
+#figure(
+  table(
+    columns: (auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [$n$], [Number of agents/sequence length],
+    [$d$], [Embedding dimension],
+    [$M$], [Memory tokens (Titans)],
+    [$T$], [Game-theoretic rounds],
+    [$kappa$], [Security parameter (bits)],
+    [$epsilon$], [Convergence threshold],
+    [$lambda$], [Lattice dimension],
+  ),
+  caption: [Mathematical notation],
+)
 
-  For sequence length $n$, this requires $O(n^2 dot.c d)$ operations.
+== Time Complexity
 
-  The Titans memory update rule is:
+=== Theorem 1 (Titans Memory Optimality)
 
-  $ bold(M)_t = bold(M)_(t-1) - eta dot.c nabla_M L(bold(M)_(t-1), bold(x)_t) $
+_The Titans NLM processes unbounded context in $O(M)$ time per token versus $O(n^2)$ for standard attention._
 
-  where $L(M, x) = ||x - hat(x)(M)||^2$ is the surprise loss.
+*Proof.* Standard self-attention computes:
 
-  The gradient computation requires:
-  1. Query projection: $q = W_q x$ → $O(d^2)$
-  2. Memory attention: $"softmax"(q K^T \/ sqrt(d)) V$ → $O(M dot.c d)$
-  3. Write update: $M_t [i] = M_(t-1) [i] - eta dot.c g_i$ → $O(M dot.c d)$
+$ "Attention"(Q, K, V) = "softmax"((Q K^T) / sqrt(d)) V $
 
-  Total per-token complexity: $O(d^2 + M dot.c d)$
+For sequence length $n$, this requires $O(n^2 dot.c d)$ operations.
 
-  Since $M$ and $d$ are constants independent of sequence length:
+The Titans memory update rule is:
 
-  $ T_"Titans"(n) = n dot.c O(d^2 + M d) = O(n) $
-  $ T_"Attention"(n) = O(n^2 d) $
+$ bold(M)_t = bold(M)_(t-1) - eta dot.c nabla_M L(bold(M)_(t-1), bold(x)_t) $
 
-  *Improvement factor*: $(n^2 d) / (n(d^2 + M d)) = n / (d + M) arrow.r infinity$ as $n arrow.r infinity$. $square$
+where $L(M, x) = ||x - hat(x)(M)||^2$ is the surprise loss.
 
-  === Proposition 1 (Speculative Decoding Bandwidth)
+The gradient computation requires:
+1. Query projection: $q = W_q x$ → $O(d^2)$
+2. Memory attention: $"softmax"(q K^T \/ sqrt(d)) V$ → $O(M dot.c d)$
+3. Write update: $M_t [i] = M_(t-1) [i] - eta dot.c g_i$ → $O(M dot.c d)$
 
-  _When prediction confidence $c$ is high, speculative decoding achieves significant bandwidth reduction._
+Total per-token complexity: $O(d^2 + M dot.c d)$
 
-  *Analysis.* Let messages have length $|X|$ bytes. The protocol operates as:
-  - Prediction hit (probability $c$): Send 256-bit hash
-  - Prediction miss (probability $1-c$): Send full message ($8|X|$ bits)
+Since $M$ and $d$ are constants independent of sequence length:
 
-  Expected bits per message:
+$ T_"Titans"(n) = n dot.c O(d^2 + M d) = O(n) $
+$ T_"Attention"(n) = O(n^2 d) $
 
-  $ E["bits"] = c dot.c 256 + (1-c) dot.c 8|X| $
+*Improvement factor*: $(n^2 d) / (n(d^2 + M d)) = n / (d + M) arrow.r infinity$ as $n arrow.r infinity$. $square$
 
-  For $c = 0.99$ (empirically measured) and $|X| = 1000$ bytes:
+=== Proposition 1 (Speculative Decoding Bandwidth)
 
-  $ E["bits"] = 0.99 dot.c 256 + 0.01 dot.c 8000 = 253.44 + 80 = 333.44 "bits" $
+_When prediction confidence $c$ is high, speculative decoding achieves significant bandwidth reduction._
 
-  *Bandwidth reduction*: $8000 \/ 333.44 approx 24 times$ $square$
+*Analysis.* Let messages have length $|X|$ bytes. The protocol operates as:
+- Prediction hit (probability $c$): Send 256-bit hash
+- Prediction miss (probability $1-c$): Send full message ($8|X|$ bits)
 
-  === Theorem 2 (CFR Regret Minimization)
+Expected bits per message:
 
-  _The adversarial arena's CFR-based regret matching converges to $epsilon$-Nash equilibrium in $O(1\/epsilon^2)$ rounds._
+$ E["bits"] = c dot.c 256 + (1-c) dot.c 8|X| $
 
-  *Proof.* Let $R^T_i (a)$ be the cumulative regret for player $i$ not playing action $a$ after $T$ rounds:
+For $c = 0.99$ (empirically measured) and $|X| = 1000$ bytes:
 
-  $ R^T_i (a) = sum_(t=1)^T [u_i (a, s^t_(-i)) - u_i (s^t_i, s^t_(-i))] $
+$ E["bits"] = 0.99 dot.c 256 + 0.01 dot.c 8000 = 253.44 + 80 = 333.44 "bits" $
 
-  The regret matching strategy is:
+*Bandwidth reduction*: $8000 \/ 333.44 approx 24 times$ $square$
 
-  $ sigma^(T+1)_i (a) = (max(0, R^T_i (a))) / (sum_(a') max(0, R^T_i (a'))) $
+=== Theorem 2 (CFR Regret Minimization)
 
-  *Regret Bound* (Zinkevich et al., 2007): For a two-player zero-sum game with $|A|$ actions and payoffs in $[-1, 1]$:
+_The adversarial arena's CFR-based regret matching converges to $epsilon$-Nash equilibrium in $O(1\/epsilon^2)$ rounds._
 
-  $ R^T_i / T <= (|A| sqrt(2)) / sqrt(T) $
+*Proof.* Let $R^T_i (a)$ be the cumulative regret for player $i$ not playing action $a$ after $T$ rounds:
 
-  If both players have average regret $<= epsilon$, their average strategies form a $2 epsilon$-Nash equilibrium.
+$ R^T_i (a) = sum_(t=1)^T [u_i (a, s^t_(-i)) - u_i (s^t_i, s^t_(-i))] $
 
-  Setting $epsilon = (|A| sqrt(2)) / sqrt(T)$ and solving for $T$:
+The regret matching strategy is:
 
-  $ T >= (2|A|^2) / epsilon^2 $
+$ sigma^(T+1)_i (a) = (max(0, R^T_i (a))) / (sum_(a') max(0, R^T_i (a'))) $
 
-  Therefore, convergence to $epsilon$-Nash requires $O(|A|^2 \/ epsilon^2) = O(1\/epsilon^2)$ rounds. $square$
+*Regret Bound* (Zinkevich et al., 2007): For a two-player zero-sum game with $|A|$ actions and payoffs in $[-1, 1]$:
 
-  == Space Complexity
+$ R^T_i / T <= (|A| sqrt(2)) / sqrt(T) $
 
-  === Theorem 3 (Power-of-2 Allocation Bound)
+If both players have average regret $<= epsilon$, their average strategies form a $2 epsilon$-Nash equilibrium.
 
-  _For any request of size $s$, the power-of-2 allocator uses at most $2s$ bytes. This 2-approximation is tight._
+Setting $epsilon = (|A| sqrt(2)) / sqrt(T)$ and solving for $T$:
 
-  *Proof.* MessagePool uses size classes ${2^6, 2^7, ..., 2^20}$ bytes.
+$ T >= (2|A|^2) / epsilon^2 $
 
-  For a request of size $s$, we allocate the smallest $2^k$ such that $2^k >= s$:
+Therefore, convergence to $epsilon$-Nash requires $O(|A|^2 \/ epsilon^2) = O(1\/epsilon^2)$ rounds. $square$
 
-  $ "allocated"(s) = 2^(ceil(log_2 s)) $
+== Space Complexity
 
-  *Upper bound*:
-  $ 2^(ceil(log_2 s)) < 2^(log_2 s + 1) = 2s $
+=== Theorem 3 (Power-of-2 Allocation Bound)
 
-  *Tightness*: For $s = 2^k + 1$, we allocate $2^(k+1)$:
-  $ "ratio" = 2^(k+1) / (2^k + 1) arrow.r 2 "as" k arrow.r infinity $
+_For any request of size $s$, the power-of-2 allocator uses at most $2s$ bytes. This 2-approximation is tight._
 
-  $square$
+*Proof.* MessagePool uses size classes ${2^6, 2^7, ..., 2^20}$ bytes.
 
-  === Theorem 4 (Minimum Header Size)
+For a request of size $s$, we allocate the smallest $2^k$ such that $2^k >= s$:
 
-  _The 28-byte CompactMessage header achieves the minimum possible size for the required functionality._
+$ "allocated"(s) = 2^(ceil(log_2 s)) $
 
-  *Proof.* Required header fields and their theoretical minimums:
+*Upper bound*:
+$ 2^(ceil(log_2 s)) < 2^(log_2 s + 1) = 2s $
 
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 4pt,
-      stroke: 0.5pt,
-      [*Field*], [*Purpose*], [*Min Bits*],
-      [Message type], [8 variants], [3],
-      [Priority], [4 levels], [2],
-      [Sequence], [Ordering], [32],
-      [Sender ID], [Identification], [64],
-      [Timestamp], [Ordering/expiry], [64],
-      [Payload len], [Variable content], [32],
-      [Checksum], [Integrity], [32],
-    ),
-    caption: [Header field requirements],
-  )
+*Tightness*: For $s = 2^k + 1$, we allocate $2^(k+1)$:
+$ "ratio" = 2^(k+1) / (2^k + 1) arrow.r 2 "as" k arrow.r infinity $
 
-  *Minimum without alignment*:
-  $ 3 + 2 + 32 + 64 + 64 + 32 + 32 = 229 "bits" = 28.625 "bytes" $
+$square$
 
-  Our implementation uses 28 bytes with bit-packing, achieving the theoretical minimum while maintaining word alignment. $square$
+=== Theorem 4 (Minimum Header Size)
 
-  === Theorem 5 (Constant Memory for Unbounded Context)
+_The 28-byte CompactMessage header achieves the minimum possible size for the required functionality._
 
-  _Titans NLM maintains $O(M d)$ space regardless of processed sequence length._
+*Proof.* Required header fields and their theoretical minimums:
 
-  *Proof.* The memory state consists of:
-  1. Memory tokens: $M times d$ floats
-  2. Projection matrices: $4 times d times d$ floats
-  3. Persistent state: $O(d)$ for last prediction
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 4pt,
+    stroke: 0.5pt,
+    [*Field*], [*Purpose*], [*Min Bits*],
+    [Message type], [8 variants], [3],
+    [Priority], [4 levels], [2],
+    [Sequence], [Ordering], [32],
+    [Sender ID], [Identification], [64],
+    [Timestamp], [Ordering/expiry], [64],
+    [Payload len], [Variable content], [32],
+    [Checksum], [Integrity], [32],
+  ),
+  caption: [Header field requirements],
+)
 
-  Total space: $M d + 4 d^2 + O(d) = O(M d + d^2)$
+*Minimum without alignment*:
+$ 3 + 2 + 32 + 64 + 64 + 32 + 32 = 229 "bits" = 28.625 "bytes" $
 
-  Since $M$ and $d$ are hyperparameters independent of input sequence length $n$:
-  $ S_"Titans" = O(1) "with respect to" n $
+Our implementation uses 28 bytes with bit-packing, achieving the theoretical minimum while maintaining word alignment. $square$
 
-  Compare to standard attention: $O(n dot.c d)$ for KV cache. $square$
+=== Theorem 5 (Constant Memory for Unbounded Context)
 
-  == Communication Complexity
+_Titans NLM maintains $O(M d)$ space regardless of processed sequence length._
 
-  === Theorem 6 (Optimal Message Passing on Trees)
+*Proof.* The memory state consists of:
+1. Memory tokens: $M times d$ floats
+2. Projection matrices: $4 times d times d$ floats
+3. Persistent state: $O(d)$ for last prediction
 
-  _For tree-structured graphical models, belief propagation computes exact marginals using $2(n-1)$ messages, which is optimal._
+Total space: $M d + 4 d^2 + O(d) = O(M d + d^2)$
 
-  *Proof.* A tree with $n$ nodes has exactly $n-1$ edges.
+Since $M$ and $d$ are hyperparameters independent of input sequence length $n$:
+$ S_"Titans" = O(1) "with respect to" n $
 
-  *Message Schedule*:
-  1. Forward pass: Messages from leaves to root
-  2. Backward pass: Messages from root to leaves
+Compare to standard attention: $O(n dot.c d)$ for KV cache. $square$
 
-  Each edge carries exactly 2 messages (one per direction).
+== Communication Complexity
 
-  $ |"Messages"| = 2(n-1) = O(n) $
+=== Theorem 6 (Optimal Message Passing on Trees)
 
-  *Lower bound*: To compute the marginal at any node $v$, information from every other node must reach $v$. Each edge is traversed in both directions at least once. Total: $Omega(n)$ messages.
+_For tree-structured graphical models, belief propagation computes exact marginals using $2(n-1)$ messages, which is optimal._
 
-  Since we achieve $O(n)$ and the lower bound is $Omega(n)$, belief propagation is *asymptotically optimal*. $square$
+*Proof.* A tree with $n$ nodes has exactly $n-1$ edges.
 
-  === Proposition 2 (Small-World Broadcast)
+*Message Schedule*:
+1. Forward pass: Messages from leaves to root
+2. Backward pass: Messages from root to leaves
 
-  _The small-world topology achieves $O(log n)$ broadcast time with $O(n log n)$ total messages._
+Each edge carries exactly 2 messages (one per direction).
 
-  *Proof.* A small-world network with $n$ nodes has local connections (degree $k$ ring lattice) and long-range shortcuts.
+$ |"Messages"| = 2(n-1) = O(n) $
 
-  *Diameter bound* (Kleinberg, 2000):
-  $ D_"small-world" = O(log n) $
+*Lower bound*: To compute the marginal at any node $v$, information from every other node must reach $v$. Each edge is traversed in both directions at least once. Total: $Omega(n)$ messages.
 
-  *Broadcast algorithm*:
-  1. Source broadcasts to $k + s$ neighbors
-  2. Each node rebroadcasts once upon first receipt
-  3. Epidemic spreading covers network in $O(log n)$ steps
+Since we achieve $O(n)$ and the lower bound is $Omega(n)$, belief propagation is *asymptotically optimal*. $square$
 
-  *Message complexity*: Each node sends to degree $d = k + s$ neighbors once:
-  $ |"Messages"| = n dot.c d = O(n log n) $
+=== Proposition 2 (Small-World Broadcast)
 
-  This is within log factors of the $Omega(n)$ information-theoretic lower bound. $square$
+_The small-world topology achieves $O(log n)$ broadcast time with $O(n log n)$ total messages._
 
-  == Game-Theoretic Optimality
+*Proof.* A small-world network with $n$ nodes has local connections (degree $k$ ring lattice) and long-range shortcuts.
 
-  === Theorem 7 (Polynomial-Time Nash for 2×2 Games)
+*Diameter bound* (Kleinberg, 2000):
+$ D_"small-world" = O(log n) $
 
-  _The NashEquilibriumSolver computes exact Nash equilibria for 2×2 games in $O(1)$ time._
+*Broadcast algorithm*:
+1. Source broadcasts to $k + s$ neighbors
+2. Each node rebroadcasts once upon first receipt
+3. Epidemic spreading covers network in $O(log n)$ steps
 
-  *Proof.* For payoff matrices $A, B in RR^(2 times 2)$, the mixed Nash equilibrium $(p, q)$ satisfies:
+*Message complexity*: Each node sends to degree $d = k + s$ neighbors once:
+$ |"Messages"| = n dot.c d = O(n log n) $
 
-  $ p_1 = (B_(22) - B_(12)) / (B_(11) - B_(12) - B_(21) + B_(22)) $
-  $ q_1 = (A_(22) - A_(21)) / (A_(11) - A_(12) - A_(21) + A_(22)) $
+This is within log factors of the $Omega(n)$ information-theoretic lower bound. $square$
 
-  This is computed in $O(1)$ time.
+== Game-Theoretic Optimality
 
-  For general bimatrix games, computing exact Nash is PPAD-complete (Chen & Deng, 2006). Our regret-matching finds $epsilon$-Nash in polynomial time. $square$
+=== Theorem 7 (Polynomial-Time Nash for 2×2 Games)
 
-  === Theorem 8 (Alpha-Beta Pruning Optimality)
+_The NashEquilibriumSolver computes exact Nash equilibria for 2×2 games in $O(1)$ time._
 
-  _The minimax solver with alpha-beta pruning examines $O(b^(d\/2))$ nodes for game trees of branching factor $b$ and depth $d$, which is optimal among deterministic algorithms._
+*Proof.* For payoff matrices $A, B in RR^(2 times 2)$, the mixed Nash equilibrium $(p, q)$ satisfies:
 
-  *Proof.* Without pruning: $N_"minimax" = b^d$
+$ p_1 = (B_(22) - B_(12)) / (B_(11) - B_(12) - B_(21) + B_(22)) $
+$ q_1 = (A_(22) - A_(21)) / (A_(11) - A_(12) - A_(21) + A_(22)) $
 
-  With alpha-beta (best case, perfect ordering):
-  $ N_"alpha-beta"^"best" = 2 b^(d\/2) - 1 = O(b^(d\/2)) $
+This is computed in $O(1)$ time.
 
-  *Lower bound* (Pearl, 1982): Any deterministic algorithm must examine at least $Omega(b^(d\/2))$ nodes.
+For general bimatrix games, computing exact Nash is PPAD-complete (Chen & Deng, 2006). Our regret-matching finds $epsilon$-Nash in polynomial time. $square$
 
-  Our implementation with move ordering achieves the optimal bound. $square$
+=== Theorem 8 (Alpha-Beta Pruning Optimality)
 
-  === Theorem 9 (No-Regret Dynamics Convergence)
+_The minimax solver with alpha-beta pruning examines $O(b^(d\/2))$ nodes for game trees of branching factor $b$ and depth $d$, which is optimal among deterministic algorithms._
 
-  _In self-play, CFR-based regret matching converges to coarse correlated equilibria at rate $O(1\/sqrt(T))$._
+*Proof.* Without pruning: $N_"minimax" = b^d$
 
-  *Proof.* The empirical distribution of play:
-  $ overline(sigma)^T = 1/T sum_(t=1)^T sigma^t $
+With alpha-beta (best case, perfect ordering):
+$ N_"alpha-beta"^"best" = 2 b^(d\/2) - 1 = O(b^(d\/2)) $
 
-  forms an $epsilon$-CCE where:
-  $ epsilon = R^T_i / T <= (Delta sqrt(2|A_i|)) / sqrt(T) = O(1\/sqrt(T)) $
+*Lower bound* (Pearl, 1982): Any deterministic algorithm must examine at least $Omega(b^(d\/2))$ nodes.
 
-  where $Delta$ is the payoff range. $square$
+Our implementation with move ordering achieves the optimal bound. $square$
 
-  == Cryptographic Security
+=== Theorem 9 (No-Regret Dynamics Convergence)
 
-  === Proposition 3 (AES-256-GCM Security)
+_In self-play, CFR-based regret matching converges to coarse correlated equilibria at rate $O(1\/sqrt(T))$._
 
-  _The Chameleon Protocol's encryption layer inherits IND-CPA security and INT-CTXT from AES-256-GCM._
+*Proof.* The empirical distribution of play:
+$ overline(sigma)^T = 1/T sum_(t=1)^T sigma^t $
 
-  *Construction*:
-  1. Key Evolution: $k_t = H(k_(t-1) || "context"_t)$
-  2. Encryption: $c = "AES-256-GCM"_(k_t)(m)$
+forms an $epsilon$-CCE where:
+$ epsilon = R^T_i / T <= (Delta sqrt(2|A_i|)) / sqrt(T) = O(1\/sqrt(T)) $
 
-  Security relies on AES being a pseudorandom permutation (standard assumption). $square$
+where $Delta$ is the payoff range. $square$
 
-  === Proposition 4 (RLWE Key Exchange Security)
+== Cryptographic Security
 
-  _The lattice-based key exchange achieves CCA security under the Ring Learning With Errors assumption, believed quantum-resistant._
+=== Proposition 3 (AES-256-GCM Security)
 
-  *Construction* (RLWE Key Exchange):
+_The Chameleon Protocol's encryption layer inherits IND-CPA security and INT-CTXT from AES-256-GCM._
 
-  Let $R_q = ZZ_q [x] \/ (x^n + 1)$ be a cyclotomic ring.
+*Construction*:
+1. Key Evolution: $k_t = H(k_(t-1) || "context"_t)$
+2. Encryption: $c = "AES-256-GCM"_(k_t)(m)$
 
-  1. *Key Generation*: Sample $s, e arrow.l chi$. Public key: $"pk" = a s + e$
-  2. *Encapsulation*: $u = a r + e_1$, $v = "pk" dot.c r + e_2 + floor(q\/2) dot.c m$
-  3. *Decapsulation*: Compute $v - u dot.c s$, round to recover $m$
+Security relies on AES being a pseudorandom permutation (standard assumption). $square$
 
-  *Security Reduction*: Reduces to RLWE problem:
-  $ "RLWE"_(n,q,chi): (a, a s + e) approx_c (a, u) "where" u arrow.l R_q $
+=== Proposition 4 (RLWE Key Exchange Security)
 
-  For $n = 1024$, $q approx 2^23$, we achieve $> 128$-bit post-quantum security. $square$
+_The lattice-based key exchange achieves CCA security under the Ring Learning With Errors assumption, believed quantum-resistant._
 
-  === Proposition 5 (Forward Secrecy)
+*Construction* (RLWE Key Exchange):
 
-  _The key evolution scheme $k_t = H(k_(t-1) || m_t)$ provides forward secrecy._
+Let $R_q = ZZ_q [x] \/ (x^n + 1)$ be a cyclotomic ring.
 
-  *Analysis.* Compromising $k_t$ does not reveal $k_(t-1)$ because $H$ is preimage-resistant: given $k_t$, finding $(k_(t-1), "context"_t)$ is computationally hard.
+1. *Key Generation*: Sample $s, e arrow.l chi$. Public key: $"pk" = a s + e$
+2. *Encapsulation*: $u = a r + e_1$, $v = "pk" dot.c r + e_2 + floor(q\/2) dot.c m$
+3. *Decapsulation*: Compute $v - u dot.c s$, round to recover $m$
 
-  Using SHA-256 with 256-bit keys: preimage resistance requires $2^256$ operations. $square$
+*Security Reduction*: Reduces to RLWE problem:
+$ "RLWE"_(n,q,chi): (a, a s + e) approx_c (a, u) "where" u arrow.l R_q $
 
-  == Continual Learning
+For $n = 1024$, $q approx 2^23$, we achieve $> 128$-bit post-quantum security. $square$
 
-  === Theorem 10 (Surprise-Gated SGD Convergence)
+=== Proposition 5 (Forward Secrecy)
 
-  _Titans test-time training converges to local minima with rate $O(1\/sqrt(T))$ under bounded surprise._
+_The key evolution scheme $k_t = H(k_(t-1) || m_t)$ provides forward secrecy._
 
-  *Proof.* Update rule:
-  $ theta_(t+1) = theta_t - eta_t nabla L(theta_t, x_t) $
+*Analysis.* Compromising $k_t$ does not reveal $k_(t-1)$ because $H$ is preimage-resistant: given $k_t$, finding $(k_(t-1), "context"_t)$ is computationally hard.
 
-  where $eta_t = eta_0 dot.c tanh(s_t)$ and $s_t$ is surprise.
+Using SHA-256 with 256-bit keys: preimage resistance requires $2^256$ operations. $square$
 
-  *Assumptions*:
-  1. $L$ is $beta$-smooth
-  2. Bounded gradients: $||nabla L|| <= G$
-  3. Bounded surprise: $0 <= s_t <= 1$
+== Continual Learning
 
-  By smoothness:
-  $ L(theta_(t+1)) <= L(theta_t) - eta_t ||nabla L(theta_t)||^2 + (beta eta_t^2)/2 ||nabla L(theta_t)||^2 $
+=== Theorem 10 (Surprise-Gated SGD Convergence)
 
-  Summing over $T$ iterations with $eta_0 = 1\/sqrt(T)$:
-  $ 1/T sum_(t=1)^T ||nabla L(theta_t)||^2 = O(1\/sqrt(T)) $
+_Titans test-time training converges to local minima with rate $O(1\/sqrt(T))$ under bounded surprise._
 
-  This is the optimal rate for non-convex stochastic optimization. $square$
+*Proof.* Update rule:
+$ theta_(t+1) = theta_t - eta_t nabla L(theta_t, x_t) $
 
-  == Summary of Results
+where $eta_t = eta_0 dot.c tanh(s_t)$ and $s_t$ is surprise.
 
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 4pt,
-      stroke: 0.5pt,
-      [*Result*], [*Type*], [*Bound*],
-      [Titans Memory], [Theorem], [$O(M d)$ per token],
-      [Speculative Decoding], [Proposition], [$24 times$ bandwidth],
-      [CFR Convergence], [Theorem], [$O(1\/epsilon^2)$ rounds],
-      [Power-of-2 Alloc], [Theorem], [$< 2s$ bytes],
-      [Header Size], [Theorem], [28 bytes optimal],
-      [Belief Propagation], [Theorem], [$2(n-1)$ messages],
-      [Small-World], [Proposition], [$O(log n)$ time],
-      [Alpha-Beta], [Theorem], [$O(b^(d\/2))$ nodes],
-      [RLWE Security], [Proposition], [128-bit PQ],
-      [SGD Convergence], [Theorem], [$O(1\/sqrt(T))$],
-      [SIMD Speedup], [Theorem], [$8 times$ (AVX2)],
-      [Ring Buffer], [Proposition], [$O(1)$ push/pop],
-    ),
-    caption: [Summary of mathematical results],
-  )
+*Assumptions*:
+1. $L$ is $beta$-smooth
+2. Bounded gradients: $||nabla L|| <= G$
+3. Bounded surprise: $0 <= s_t <= 1$
 
-  == Kernel Performance Primitives
+By smoothness:
+$ L(theta_(t+1)) <= L(theta_t) - eta_t ||nabla L(theta_t)||^2 + (beta eta_t^2)/2 ||nabla L(theta_t)||^2 $
 
-  === Theorem 11 (SIMD Vectorization Speedup)
+Summing over $T$ iterations with $eta_0 = 1\/sqrt(T)$:
+$ 1/T sum_(t=1)^T ||nabla L(theta_t)||^2 = O(1\/sqrt(T)) $
 
-  _AVX2 8-wide SIMD achieves $8 times$ theoretical speedup for aligned vector operations._
+This is the optimal rate for non-convex stochastic optimization. $square$
 
-  *Proof.* For a dot product of dimension $d$ aligned to 8-element boundaries:
+== Summary of Results
 
-  *Scalar*: $d$ multiplications + $(d-1)$ additions = $2d - 1$ operations.
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 4pt,
+    stroke: 0.5pt,
+    [*Result*], [*Type*], [*Bound*],
+    [Titans Memory], [Theorem], [$O(M d)$ per token],
+    [Speculative Decoding], [Proposition], [$24 times$ bandwidth],
+    [CFR Convergence], [Theorem], [$O(1\/epsilon^2)$ rounds],
+    [Power-of-2 Alloc], [Theorem], [$< 2s$ bytes],
+    [Header Size], [Theorem], [28 bytes optimal],
+    [Belief Propagation], [Theorem], [$2(n-1)$ messages],
+    [Small-World], [Proposition], [$O(log n)$ time],
+    [Alpha-Beta], [Theorem], [$O(b^(d\/2))$ nodes],
+    [RLWE Security], [Proposition], [128-bit PQ],
+    [SGD Convergence], [Theorem], [$O(1\/sqrt(T))$],
+    [SIMD Speedup], [Theorem], [$8 times$ (AVX2)],
+    [Ring Buffer], [Proposition], [$O(1)$ push/pop],
+  ),
+  caption: [Summary of mathematical results],
+)
 
-  *SIMD*: $d\/8$ FMA instructions + $log_2(8) = 3$ horizontal reductions.
+== Kernel Performance Primitives
 
-  Speedup ratio:
-  $ S = (2d - 1) / (d\/8 + 3) approx (2d) / (d\/8) = 16 "for large" d $
+=== Theorem 11 (SIMD Vectorization Speedup)
 
-  *Practical bound*: Memory bandwidth limits actual speedup to $approx 8 times$ due to load/store overhead. Measured: 57 GiB/s on 256-dim vectors. $square$
+_AVX2 8-wide SIMD achieves $8 times$ theoretical speedup for aligned vector operations._
 
-  === Proposition 6 (Lock-Free Ring Buffer Correctness)
+*Proof.* For a dot product of dimension $d$ aligned to 8-element boundaries:
 
-  _SPSC ring buffer guarantees wait-free progress and linearizability._
+*Scalar*: $d$ multiplications + $(d-1)$ additions = $2d - 1$ operations.
 
-  *Construction*:
-  - Separate cache-line-aligned head/tail atomics
-  - Power-of-two capacity for modulo via bitwise AND
-  - Acquire/Release memory ordering
+*SIMD*: $d\/8$ FMA instructions + $log_2(8) = 3$ horizontal reductions.
 
-  *Wait-freedom*: Both push and pop complete in constant time ($O(1)$) with no blocking.
+Speedup ratio:
+$ S = (2d - 1) / (d\/8 + 3) approx (2d) / (d\/8) = 16 "for large" d $
 
-  *Linearizability*: The linearization point for push is the store to tail; for pop, the load from head.
+*Practical bound*: Memory bandwidth limits actual speedup to $approx 8 times$ due to load/store overhead. Measured: 57 GiB/s on 256-dim vectors. $square$
 
-  Measured throughput: 736M ops/sec single-threaded. $square$
+=== Proposition 6 (Lock-Free Ring Buffer Correctness)
 
-  === Proposition 7 (Bump Allocator Amortized Cost)
+_SPSC ring buffer guarantees wait-free progress and linearizability._
 
-  _Bump allocation achieves $O(1)$ amortized time with zero fragmentation._
+*Construction*:
+- Separate cache-line-aligned head/tail atomics
+- Power-of-two capacity for modulo via bitwise AND
+- Acquire/Release memory ordering
 
-  *Construction*: Allocate by incrementing a single pointer:
-  $ "ptr" arrow.l "ptr" + "align"("size", 8) $
+*Wait-freedom*: Both push and pop complete in constant time ($O(1)$) with no blocking.
 
-  *Analysis*:
-  - No free-list traversal: $O(1)$
-  - No coalescing overhead: $O(1)$
-  - Memory overhead: 0 (contiguous)
-  - Deallocation: batch reset only
+*Linearizability*: The linearization point for push is the store to tail; for pop, the load from head.
 
-  Measured: 505 ps per allocation (vs ~50 ns for standard malloc). $square$
+Measured throughput: 736M ops/sec single-threaded. $square$
 
-  = Implementation
+=== Proposition 7 (Bump Allocator Amortized Cost)
 
-  SPINE is implemented in Rust (2021 edition):
+_Bump allocation achieves $O(1)$ amortized time with zero fragmentation._
 
-  - *tokio*: Async runtime for concurrency
-  - *dashmap*: Lock-free concurrent maps
-  - *wasmtime*: WebAssembly execution
-  - *criterion*: Statistical benchmarking
-  - *scraper/ego-tree*: HTML parsing
-  - *nom*: Parser combinators
+*Construction*: Allocate by incrementing a single pointer:
+$ "ptr" arrow.l "ptr" + "align"("size", 8) $
 
-  == Build Optimizations
+*Analysis*:
+- No free-list traversal: $O(1)$
+- No coalescing overhead: $O(1)$
+- Memory overhead: 0 (contiguous)
+- Deallocation: batch reset only
 
-  ```toml
-  [profile.release]
-  opt-level = 3
-  lto = "fat"
-  codegen-units = 1
-  panic = "abort"
-  strip = true
-  ```
+Measured: 505 ps per allocation (vs ~50 ns for standard malloc). $square$
 
-  *Results*: 30% binary reduction (20.6 MB to 14.4 MB)
+= Implementation
 
-  == Test Coverage
+SPINE is implemented in Rust (2021 edition):
 
-  - 215 unit and integration tests
-  - 17 crates with full API coverage
-  - Criterion benchmarks for all hot paths
-  - Property-based testing for protocol correctness
+- *tokio*: Async runtime for concurrency
+- *dashmap*: Lock-free concurrent maps
+- *wasmtime*: WebAssembly execution
+- *criterion*: Statistical benchmarking
+- *scraper/ego-tree*: HTML parsing
+- *nom*: Parser combinators
 
-  = Related Work
+== Build Optimizations
 
-  *Headless browsers* (Puppeteer, Playwright) automate browsers but retain rendering pipelines. SPINE eliminates rendering.
+```toml
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+```
 
-  *Semantic web* (RDF, OWL) requires website cooperation. UR extracts semantics from any HTML.
+*Results*: 30% binary reduction (20.6 MB to 14.4 MB)
 
-  *Moving-target defense* [3] has been explored for networks, but latent-space cryptography is novel.
+== Test Coverage
 
-  *Neural protocols* [4] have been proposed, but Titans integration for adaptive evolution is unique.
+- 215 unit and integration tests
+- 17 crates with full API coverage
+- Criterion benchmarks for all hot paths
+- Property-based testing for protocol correctness
 
-  *Multi-agent systems* (JADE, Jason) focus on BDI agents. SPINE provides game-theoretic reasoning and swarm coordination.
+= Related Work
 
-  = Critical Analysis
+*Headless browsers* (Puppeteer, Playwright) automate browsers but retain rendering pipelines. SPINE eliminates rendering.
 
-  We provide a rigorous examination of each SPINE component, validating both theoretical foundations and empirical performance.
+*Semantic web* (RDF, OWL) requires website cooperation. UR extracts semantics from any HTML.
 
-  == Component Validation Status
+*Moving-target defense* [3] has been explored for networks, but latent-space cryptography is novel.
 
-  #figure(
-    table(
-      columns: (auto, auto, auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [*Component*], [*Status*], [*Tests*], [*Evidence*],
-      [UR Parser], [Proven], [4], [Semantic extraction verified],
-      [HLS Compiler], [Proven], [9], [AST generation, codegen],
-      [WASM Runtime], [Proven], [3], [Execution sandboxing],
-      [Titans Memory], [Proven], [19], [Forward pass, surprise],
-      [MIRAS Variants], [Proven], [23], [YAAD/MONETA/MEMORA + crypto],
-      [RLM Chunking], [Proven], [15], [Search, access patterns],
-      [BBR Congestion], [Proven], [6], [State transitions],
-      [Frame Codec], [Proven], [35], [Encode/decode/compress/stream],
-      [Network E2E], [Proven], [33], [Real TCP I/O benchmarks],
-      [Chameleon Protocol], [Proven], [27], [Latent morphology + arms race],
-      [Swarm Consensus], [Proven], [4], [Network topology],
-      [Unified Memory], [Proven], [9], [CRDT consistency, integration],
-      [Human Interaction], [Proven], [2], [Mouse paths, typing delays],
-      [Kernel Primitives], [Proven], [32], [SIMD, allocators, ring buffers],
-    ),
-    caption: [Validation status by component (215 tests total)],
-  )
+*Neural protocols* [4] have been proposed, but Titans integration for adaptive evolution is unique.
 
-  == Validated Capabilities
+*Multi-agent systems* (JADE, Jason) focus on BDI agents. SPINE provides game-theoretic reasoning and swarm coordination.
 
-  === Transport Layer
+= Critical Analysis
 
-  The transport layer demonstrates strong empirical validation:
+We provide a rigorous examination of each SPINE component, validating both theoretical foundations and empirical performance.
 
-  - *Benchmark methodology*: Criterion with 100 samples, statistical significance
-  - *Comparison baseline*: Standard TCP via `std::net::TcpStream`
-  - *Measured results*: 514× latency reduction, 610× throughput improvement
-  - Real TCP I/O benchmarks with end-to-end latency measurements
+== Component Validation Status
 
-  === Neural Components
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Component*], [*Status*], [*Tests*], [*Evidence*],
+    [UR Parser], [Proven], [4], [Semantic extraction verified],
+    [HLS Compiler], [Proven], [9], [AST generation, codegen],
+    [WASM Runtime], [Proven], [3], [Execution sandboxing],
+    [Titans Memory], [Proven], [19], [Forward pass, surprise],
+    [MIRAS Variants], [Proven], [23], [YAAD/MONETA/MEMORA + crypto],
+    [RLM Chunking], [Proven], [15], [Search, access patterns],
+    [BBR Congestion], [Proven], [6], [State transitions],
+    [Frame Codec], [Proven], [35], [Encode/decode/compress/stream],
+    [Network E2E], [Proven], [33], [Real TCP I/O benchmarks],
+    [Chameleon Protocol], [Proven], [27], [Latent morphology + arms race],
+    [Swarm Consensus], [Proven], [4], [Network topology],
+    [Unified Memory], [Proven], [9], [CRDT consistency, integration],
+    [Human Interaction], [Proven], [2], [Mouse paths, typing delays],
+    [Kernel Primitives], [Proven], [32], [SIMD, allocators, ring buffers],
+  ),
+  caption: [Validation status by component (215 tests total)],
+)
 
-  Titans and MIRAS implementations pass 33 tests covering:
+== Validated Capabilities
 
-  - Forward/backward propagation correctness
-  - Surprise-gated updates (verified numerically)
-  - Memory consolidation across sequences
-  - Variant switching (YAAD ↔ MONETA ↔ MEMORA)
+=== Transport Layer
 
-  === Evolvable Neural Protocols
+The transport layer demonstrates strong empirical validation:
 
-  Agents can evolve novel binary neural latent space communication protocols:
+- *Benchmark methodology*: Criterion with 100 samples, statistical significance
+- *Comparison baseline*: Standard TCP via `std::net::TcpStream`
+- *Measured results*: 514× latency reduction, 610× throughput improvement
+- Real TCP I/O benchmarks with end-to-end latency measurements
 
-  - *Genetic encoding*: Protocol architectures represented as genomes
-  - *Neural encoder evolution*: Layers, activations, attention heads mutate
-  - *Latent space adaptation*: Dimensionality, quantization, normalization evolve
-  - *Communication optimization*: Header strategies, batching, flow control genes
-  - *Fitness-driven selection*: Throughput, compression, accuracy, entropy metrics
-  - Population-based evolution with crossover, mutation, and elitism
+=== Neural Components
 
-  === Co-Evolutionary Arms Race
+Titans and MIRAS implementations pass 33 tests covering:
 
-  Neural implicit cryptography operates in an adversarial co-evolutionary context:
+- Forward/backward propagation correctness
+- Surprise-gated updates (verified numerically)
+- Memory consolidation across sequences
+- Variant switching (YAAD ↔ MONETA ↔ MEMORA)
 
-  - *Red Team (Attackers)*: Evolve neural decoders, traffic analysis, side-channel attacks
-  - *Blue Team (Defenders)*: Evolve protocols with noise injection, key rotation, decorrelation
-  - *Adversarial Fitness*: Attack success rate vs. defense survival rate
-  - *Statistical Attacks*: Chi-squared, Kolmogorov-Smirnov, mutual information, spectral analysis
-  - *Defense Strategies*: Timing jitter, padding strategies, honey tokens, basis rotation
-  - *Equilibrium Detection*: Automatic detection of evolutionary stalemates
-  - Both teams improve through competitive pressure (Red Queen dynamics)
+=== Evolvable Neural Protocols
 
-  === RLM Context Handling
+Agents can evolve novel binary neural latent space communication protocols:
 
-  The recursive chunking system validates:
+- *Genetic encoding*: Protocol architectures represented as genomes
+- *Neural encoder evolution*: Layers, activations, attention heads mutate
+- *Latent space adaptation*: Dimensionality, quantization, normalization evolve
+- *Communication optimization*: Header strategies, batching, flow control genes
+- *Fitness-driven selection*: Throughput, compression, accuracy, entropy metrics
+- Population-based evolution with crossover, mutation, and elitism
 
-  - O(1) chunk access (DashMap-backed)
-  - Keyword/regex search across chunks
-  - Line extraction within chunks
-  - 10M+ character capacity (memory-bound only)
-  - Production LLM integration (OpenAI, Anthropic)
+=== Co-Evolutionary Arms Race
 
-  === Security Infrastructure
+Neural implicit cryptography operates in an adversarial co-evolutionary context:
 
-  Comprehensive security validation includes:
+- *Red Team (Attackers)*: Evolve neural decoders, traffic analysis, side-channel attacks
+- *Blue Team (Defenders)*: Evolve protocols with noise injection, key rotation, decorrelation
+- *Adversarial Fitness*: Attack success rate vs. defense survival rate
+- *Statistical Attacks*: Chi-squared, Kolmogorov-Smirnov, mutual information, spectral analysis
+- *Defense Strategies*: Timing jitter, padding strategies, honey tokens, basis rotation
+- *Equilibrium Detection*: Automatic detection of evolutionary stalemates
+- Both teams improve through competitive pressure (Red Queen dynamics)
 
-  - Ring arithmetic correctness (associativity, commutativity, distributivity)
-  - Gaussian distribution statistical validation
-  - Key evolution forward secrecy tests
-  - Ciphertext tampering detection
-  - Multiple security parameter sets tested
+=== RLM Context Handling
 
-  === Kernel Primitives
+The recursive chunking system validates:
 
-  Ultra-low-level hardware primitives validated:
+- O(1) chunk access (DashMap-backed)
+- Keyword/regex search across chunks
+- Line extraction within chunks
+- 10M+ character capacity (memory-bound only)
+- Production LLM integration (OpenAI, Anthropic)
 
-  - SIMD dot product correctness vs scalar reference
-  - AVX2/NEON runtime detection and fallback
-  - Allocator thread-safety and alignment
-  - Ring buffer wrap-around correctness
-  - RDTSC calibration accuracy
-  - Lock-free stack ABA prevention
-  - Cache-line padding effectiveness
+=== Security Infrastructure
 
-  === Scalability
+Comprehensive security validation includes:
 
-  Scalability benchmarks validate:
+- Ring arithmetic correctness (associativity, commutativity, distributivity)
+- Gaussian distribution statistical validation
+- Key evolution forward secrecy tests
+- Ciphertext tampering detection
+- Multiple security parameter sets tested
 
-  - Swarm creation at 100, 500, 1000, 2000 agents
-  - Message broadcast scaling
-  - Leader election performance
-  - Context handling at 1M, 10M, 50M, 100M characters
+=== Kernel Primitives
 
-  === Graceful Degradation
+Ultra-low-level hardware primitives validated:
 
-  Adaptive fallback mechanisms include:
+- SIMD dot product correctness vs scalar reference
+- AVX2/NEON runtime detection and fallback
+- Allocator thread-safety and alignment
+- Ring buffer wrap-around correctness
+- RDTSC calibration accuracy
+- Lock-free stack ABA prevention
+- Cache-line padding effectiveness
 
-  - `OfflineDispatcher`: Keyword-based offline operation
-  - `AdaptiveDispatcher`: Automatic fallback after consecutive failures
-  - State recovery mechanism to retry primary after reset
+=== Scalability
 
-  == Theoretical vs Empirical
+Scalability benchmarks validate:
 
-  #figure(
-    table(
-      columns: (auto, auto, auto),
-      inset: 5pt,
-      stroke: 0.5pt,
-      [*Result*], [*Mathematical*], [*Empirical*],
-      [Titans $O(M d)$], [✓ Proven], [✓ 19 tests],
-      [CFR $O(1\/epsilon^2)$], [✓ Proven], [✓ Convergence validated],
-      [RLWE 128-bit], [✓ Proven], [✓ 12 tests],
-      [Forward secrecy], [✓ Proven], [✓ Key evolution tests],
-      [Power-of-2 bound], [✓ Proven], [✓ Allocator tests],
-      [Small-world $O(log n)$], [✓ Proven], [✓ 1000+ agents],
-      [Speculative 24×], [✓ Analysis], [✓ Hash matching],
-      [LLM integration], [N/A], [✓ OpenAI/Anthropic],
-      [Offline fallback], [N/A], [✓ Adaptive dispatcher],
-      [CRDT consistency], [✓ Proven], [✓ 9 tests],
-    ),
-    caption: [Theory vs empirical validation matrix],
-  )
+- Swarm creation at 100, 500, 1000, 2000 agents
+- Message broadcast scaling
+- Leader election performance
+- Context handling at 1M, 10M, 50M, 100M characters
 
-  == Summary
+=== Graceful Degradation
 
-  SPINE achieves comprehensive validation across all components:
+Adaptive fallback mechanisms include:
 
-  - Clean Rust implementation with strong type safety
-  - Modular architecture enabling incremental adoption
-  - Novel integration of Titans/MIRAS for protocol adaptation
-  - High-performance transport layer with verified gains
-  - Comprehensive mathematical foundations
-  - Production-ready LLM API integration (OpenAI, Anthropic)
-  - Graceful degradation for offline operation
-  - Validated scalability to 1000+ agents and 100M+ character contexts
-  - Unified bioinspired memory with CRDT-based distributed consensus
+- `OfflineDispatcher`: Keyword-based offline operation
+- `AdaptiveDispatcher`: Automatic fallback after consecutive failures
+- State recovery mechanism to retry primary after reset
 
-  = Conclusion
+== Theoretical vs Empirical
 
-  SPINE demonstrates that purpose-built AI web infrastructure achieves orders-of-magnitude improvements over traditional architectures. The key insight is recognizing the fundamental mismatch between human-oriented web design and AI agent requirements.
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Result*], [*Mathematical*], [*Empirical*],
+    [Titans $O(M d)$], [✓ Proven], [✓ 19 tests],
+    [CFR $O(1\/epsilon^2)$], [✓ Proven], [✓ Convergence validated],
+    [RLWE 128-bit], [✓ Proven], [✓ 12 tests],
+    [Forward secrecy], [✓ Proven], [✓ Key evolution tests],
+    [Power-of-2 bound], [✓ Proven], [✓ Allocator tests],
+    [Small-world $O(log n)$], [✓ Proven], [✓ 1000+ agents],
+    [Speculative 24×], [✓ Analysis], [✓ Hash matching],
+    [LLM integration], [N/A], [✓ OpenAI/Anthropic],
+    [Offline fallback], [N/A], [✓ Adaptive dispatcher],
+    [CRDT consistency], [✓ Proven], [✓ 9 tests],
+  ),
+  caption: [Theory vs empirical validation matrix],
+)
 
-  == Summary of Innovations
+== Summary
 
-  *At the semantic level*, the Unified Representation compresses web content 10-100× while preserving actionable information. Websites become programs (HLS/HLB) rather than documents, enabling computation at the edge with capability-based security.
+SPINE achieves comprehensive validation across all components:
 
-  *At the context level*, Recursive Language Models eliminate the context window limitation by treating long inputs as external environment variables. The REPL-based architecture handles 10M+ characters—100× beyond traditional model windows—with no degradation.
+- Clean Rust implementation with strong type safety
+- Modular architecture enabling incremental adoption
+- Novel integration of Titans/MIRAS for protocol adaptation
+- High-performance transport layer with verified gains
+- Comprehensive mathematical foundations
+- Production-ready LLM API integration (OpenAI, Anthropic)
+- Graceful degradation for offline operation
+- Validated scalability to 1000+ agents and 100M+ character contexts
+- Unified bioinspired memory with CRDT-based distributed consensus
 
-  *At the protocol level*, Chameleon's moving-target defense makes traffic analysis impossible. The transformation matrix serves as the encryption key, with basis rotation, dimensionality changes, and header morphing occurring every message.
+= Conclusion
 
-  *At the transport level*, zero-copy buffers and BBR congestion control achieve 514× lower latency and 610× higher throughput compared to standard TCP.
+SPINE demonstrates that purpose-built AI web infrastructure achieves orders-of-magnitude improvements over traditional architectures. The key insight is recognizing the fundamental mismatch between human-oriented web design and AI agent requirements.
 
-  *At the coordination level*, swarm intelligence enables multi-agent collaboration through skill-based routing, DAG dependencies, and game-theoretic reasoning with proven convergence guarantees.
+== Summary of Innovations
 
-  *At the kernel level*, ultra-low-level primitives squeeze maximum performance from hardware through SIMD intrinsics, custom allocators, lock-free atomics, and cache-optimized ring buffers.
+*At the semantic level*, the Unified Representation compresses web content 10-100× while preserving actionable information. Websites become programs (HLS/HLB) rather than documents, enabling computation at the edge with capability-based security.
 
-  == Performance Summary
+*At the context level*, Recursive Language Models eliminate the context window limitation by treating long inputs as external environment variables. The REPL-based architecture handles 10M+ characters—100× beyond traditional model windows—with no degradation.
 
-  #figure(
-    table(
-      columns: (auto, auto, auto, auto),
-      inset: 5pt,
-      align: (left, right, right, right),
-      stroke: 0.5pt,
-      [*Capability*], [*Traditional*], [*SPINE*], [*Improvement*],
-      [End-to-end latency], [3.3 ms], [26 µs], [*125×*],
-      [Message latency], [36 µs], [70 ns], [*514×*],
-      [Data throughput], [30 MiB/s], [17.9 GiB/s], [*610×*],
-      [Context window], [128K tokens], [10M+ chars], [*100×*],
-      [Frame encode], [—], [82 GiB/s], [—],
-      [Frame decode], [—], [86 GiB/s], [—],
-      [Kernel dot product], [—], [57 GiB/s], [—],
-      [Bump allocation], [~50 ns], [505 ps], [*100×*],
-      [Ring buffer ops], [~100 ns], [1.36 ns], [*73×*],
-    ),
-    caption: [Overall performance comparison],
-  )
+*At the protocol level*, Chameleon's moving-target defense makes traffic analysis impossible. The transformation matrix serves as the encryption key, with basis rotation, dimensionality changes, and header morphing occurring every message.
 
-  == Unified Vision
+*At the transport level*, zero-copy buffers and BBR congestion control achieve 514× lower latency and 610× higher throughput compared to standard TCP.
 
-  The 17 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, unified memory provides distributed knowledge, and kernel primitives maximize hardware utilization—all backed by quantum-resistant cryptography.
+*At the coordination level*, swarm intelligence enables multi-agent collaboration through skill-based routing, DAG dependencies, and game-theoretic reasoning with proven convergence guarantees.
 
-  *17 crates. 215 tests. ~49,000 lines of Rust. The web, rebuilt for AI.*
+*At the kernel level*, ultra-low-level primitives squeeze maximum performance from hardware through SIMD intrinsics, custom allocators, lock-free atomics, and cache-optimized ring buffers.
 
-  The complete implementation is available as open-source code at github.com/nervosys/SPINE.
+== Performance Summary
 
-  #v(1em)
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Capability*], [*Traditional*], [*SPINE*], [*Improvement*],
+    [End-to-end latency], [3.3 ms], [26 µs], [*125×*],
+    [Message latency], [36 µs], [70 ns], [*514×*],
+    [Data throughput], [30 MiB/s], [17.9 GiB/s], [*610×*],
+    [Context window], [128K tokens], [10M+ chars], [*100×*],
+    [Frame encode], [—], [82 GiB/s], [—],
+    [Frame decode], [—], [86 GiB/s], [—],
+    [Kernel dot product], [—], [57 GiB/s], [—],
+    [Bump allocation], [~50 ns], [505 ps], [*100×*],
+    [Ring buffer ops], [~100 ns], [1.36 ns], [*73×*],
+  ),
+  caption: [Overall performance comparison],
+)
 
-  #text(weight: "bold")[Acknowledgments.] We thank Google Research for the Titans and MIRAS architectures, and Zhang, Kraska, and Khattab for the Recursive Language Model framework.
+== Unified Vision
+
+The 17 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, unified memory provides distributed knowledge, and kernel primitives maximize hardware utilization—all backed by quantum-resistant cryptography.
+
+*17 crates. 215 tests. ~49,000 lines of Rust. The web, rebuilt for AI.*
+
+The complete implementation is available as open-source code at github.com/nervosys/SPINE.
+
+#v(1em)
+
+#text(weight: "bold")[Acknowledgments.] We thank Google Research for the Titans and MIRAS architectures, and Zhang, Kraska, and Khattab for the Recursive Language Model framework.
 
 ]
 
@@ -1853,5 +1853,5 @@
 #v(1fr)
 
 #align(center)[
-  #text(size: 8pt, style: "italic")[NOTICE: This research was accelerated by AI.]
+#text(size: 8pt, style: "italic")[NOTICE: This research was accelerated by AI.]
 ]
