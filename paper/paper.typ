@@ -78,7 +78,7 @@ inset: (x: 0.5in),
 
 #v(1em)
 
-#columns(2)[
+
 
 = Introduction
 
@@ -1819,8 +1819,6 @@ The complete implementation is available as open-source code at github.com/nervo
 #v(1em)
 
 #text(weight: "bold")[Acknowledgments.] We thank Google Research for the Titans and MIRAS architectures, and Zhang, Kraska, and Khattab for the Recursive Language Model framework.
-
-]
 
 #pagebreak()
 
