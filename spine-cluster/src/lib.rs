@@ -1,6 +1,9 @@
 // Allow dead code for cluster coordination APIs
 #![allow(dead_code)]
 
+pub mod sybil;
+pub use sybil::{NodeReputation, StakeWeightedConsensus};
+
 // =============================================================================
 // SPINE CLUSTER - Distributed Agent Coordination
 // =============================================================================

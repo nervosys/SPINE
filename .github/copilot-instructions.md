@@ -1,6 +1,18 @@
 <!-- Use this file to provide workspace-specific custom instructions to Copilot. For more details, visit https://code.visualstudio.com/docs/copilot/copilot-customization#_use-a-githubcopilotinstructionsmd-file -->
 
-## Project Status: COMPLETE & OPTIMIZED ✅
+## Project Status: AGENTIC WEB STACK 1.0 ✅
+
+**SPINE** is now a **headless semantic browser with adaptive encryption** - not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.
+
+### Architecture Fix (v1.1)
+- [x] **Honest Framing**: "Headless semantic browser" not "new web stack"
+- [x] **Threat Model**: THREAT_MODEL.md with 4 adversary tiers, explicit security assumptions
+- [x] **X3DH Key Exchange**: Proper initial trust establishment (no pre-shared secrets)
+- [x] **Security Levels**: Standard (X25519), Hardened (X25519+RLWE), PostQuantum (RLWE-only)
+- [x] **Sybil Resistance**: Stake-weighted voting, node reputation, proof-of-work for identity
+- [x] **Titans Clarification**: "Anomaly detection + pattern adaptation" not "learning"
+- [x] **RLM Qualification**: "Extended context retrieval" with reasoning tradeoff documented
+- [x] **Legacy Web Bridge**: spine-human reframed as compatibility layer
 
 ### Core Features
 - [x] Verify that the copilot-instructions.md file in the .github directory is created.
@@ -41,7 +53,8 @@
 - [x] **Single-pass cosine similarity**: 2.5x faster (9 GiB/s)
 - [x] **Iterator-based neural matmul**: Better LLVM vectorization
 - [x] **Mathematical proofs**: See OPTIMIZATIONS.md
-- [x] **183 tests passing**: Full verification coverage including security tests
+- [x] **215 tests passing**: Full verification coverage including security tests
+- [x] **218 tests passing**: +3 Sybil resistance tests after v1.1 architecture fix
 - [x] **30 style warnings**: Remaining are API design choices (no correctness impact)
 - [x] **TCP/IP Benchmark**: 514× lower latency, 610× higher throughput vs standard TCP
 
@@ -64,7 +77,6 @@
 - [x] **RDTSC timing**: Sub-nanosecond measurement (2.6× faster than Instant::now)
 - [x] **Direct syscalls**: mmap/munmap, CPU affinity, NUMA info, thread priority
 - [x] **io_uring support**: Linux kernel bypass I/O (optional feature)
-- [x] **215 tests passing**: Full workspace verification
 
 ### Weakness Remediation ✅
 - [x] **W1**: Realistic network benchmarks with actual TCP I/O
@@ -96,10 +108,10 @@
 - `spine-agentic`: Advanced agentic AI framework with swarm intelligence
 - `spine-compiler`: HLS → HLB compiler
 - `spine-wasm`: WebAssembly runtime
-- `spine-cluster`: Distributed coordination
+- `spine-cluster`: Distributed coordination with Sybil resistance
 - `spine-neural`: Neural network-based encoding with MIRAS variants
-- `spine-crypto`: Titans prediction + quantum cryptography
-- `spine-human`: Bot-detection bypass with realistic interaction
+- `spine-crypto`: Titans prediction + quantum cryptography + X3DH key exchange
+- `spine-human`: Legacy web bridge for bot-detection bypass
 - `spine-browser`: Cross-platform GUI browser with egui
 - `spine-transport`: High-performance zero-copy transport layer with BBR congestion control
 - `spine-stream`: Reactive streaming with multiplexing, flow control, and priority queuing
