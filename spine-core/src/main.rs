@@ -31,6 +31,9 @@ struct Session {
     current_html: Option<String>,
     /// Cached VDOM from last ExecuteBinary
     current_vdom: Option<VirtualDom>,
+    /// Cached parsed UnifiedRepresentation (invalidated on navigation)
+    #[serde(skip)]
+    cached_ur: Option<spine_parser::UnifiedRepresentation>,
     last_command: Option<BrowserCommand>,
     needs_morph: bool,
     /// Reactive state variables
@@ -49,6 +52,7 @@ impl Session {
             current_url: None,
             current_html: None,
             current_vdom: None,
+            cached_ur: None,
             last_command: None,
             needs_morph: false,
             state: std::collections::HashMap::new(),
@@ -89,39 +93,40 @@ struct BrowserState {
     proposals: DashMap<Uuid, KnowledgeProposal>,
     plans: DashMap<Uuid, spine_protocol::SwarmPlan>,
     client: reqwest::Client,
-    encoder: Mutex<NeuralLatentEncoder>,
+    /// RwLock allows concurrent encoder reads (multiple sessions encoding in parallel)
+    encoder: tokio::sync::RwLock<NeuralLatentEncoder>,
     cluster: Mutex<ClusterNode>,
     agentic_runtime: Arc<spine_agentic::AgenticWebRuntime>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
+    /// Cached WasmRuntime (expensive to create, safe to reuse)
+    wasm_runtime: spine_wasm::WasmRuntime,
+    /// Cached NeuralProtocol per domain (avoids re-allocating neural weights per request)
+    neural_protocols: DashMap<String, spine_agentic::NeuralProtocol>,
 }
 
 impl BrowserState {
     async fn save_sessions(&self) -> anyhow::Result<()> {
         let dir = std::path::Path::new("sessions");
-        if !dir.exists() {
-            std::fs::create_dir_all(dir)?;
-        }
+        tokio::fs::create_dir_all(dir).await.ok();
         
         for entry in self.sessions.iter() {
             let id = entry.key();
             let session = entry.value();
             let path = dir.join(format!("{}.json", id));
             let json = serde_json::to_string(session)?;
-            std::fs::write(path, json)?;
+            tokio::fs::write(path, json).await?;
         }
 
         // Save knowledge base
         let kb_dir = std::path::Path::new("knowledge");
-        if !kb_dir.exists() {
-            std::fs::create_dir_all(kb_dir)?;
-        }
+        tokio::fs::create_dir_all(kb_dir).await.ok();
         for entry in self.knowledge_base.iter() {
             let id = entry.key();
             let entries = entry.value();
             let path = kb_dir.join(format!("{}.json", id));
             let json = serde_json::to_string(entries)?;
-            std::fs::write(path, json)?;
+            tokio::fs::write(path, json).await?;
         }
 
         Ok(())
@@ -219,13 +224,15 @@ async fn handle_command(
                         session.current_url = Some(url);
                         session.current_html = Some(html);
                         session.current_binary = Some(hlb);
-                        session.current_vdom = None; // Reset VDOM on navigation
+                        session.current_vdom = None;
+                        session.cached_ur = None; // Invalidate cached UR on navigation
                     } else {
                         // Create new session if it doesn't exist
                         let session = Session {
                             current_url: Some(url),
                             current_html: Some(html),
                             current_vdom: None,
+                            cached_ur: None,
                             last_command: None,
                             needs_morph: false,
                             state: std::collections::HashMap::new(),
@@ -249,28 +256,24 @@ async fn handle_command(
             }
         }
         BrowserCommand::GetUR => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(html) = &session.current_html {
-                    match spine_parser::parse_html(html) {
-                        Ok(ur) => {
-                            // Include VDOM tree and UR representations if available
-                            let vdom_tree = session.current_vdom.as_ref().map(|v| v.to_tree());
-                            let vdom_ur = session.current_vdom.as_ref().map(|v| v.to_ur());
-                            Response {
-                                id: request_id,
-                                result: Some(serde_json::json!({
-                                    "parsed_ur": serde_json::to_value(&ur).unwrap(),
-                                    "vdom_tree": vdom_tree,
-                                    "vdom_ur": vdom_ur,
-                                })),
-                                error: None,
-                            }
-                        },
-                        Err(e) => Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(e.to_string()),
-                        },
+            if let Some(mut session) = state.sessions.get_mut(session_id) {
+                // Populate cache on first access (avoids re-parsing on repeated GetUR calls)
+                if session.cached_ur.is_none() {
+                    if let Some(html) = session.current_html.clone() {
+                        session.cached_ur = spine_parser::parse_html(&html).ok();
+                    }
+                }
+                if let Some(ur) = &session.cached_ur {
+                    let vdom_tree = session.current_vdom.as_ref().map(|v| v.to_tree());
+                    let vdom_ur = session.current_vdom.as_ref().map(|v| v.to_ur());
+                    Response {
+                        id: request_id,
+                        result: Some(serde_json::json!({
+                            "parsed_ur": serde_json::to_value(ur).unwrap(),
+                            "vdom_tree": vdom_tree,
+                            "vdom_ur": vdom_ur,
+                        })),
+                        error: None,
                     }
                 } else {
                     Response {
@@ -334,8 +337,7 @@ async fn handle_command(
                 session.current_binary = Some(bin.clone());
             }
 
-            let wasm_runtime = WasmRuntime::new().expect("Failed to initialize WASM runtime");
-            let result = wasm_runtime.execute(&bin).expect("Failed to execute HLB in WASM");
+            let result = state.wasm_runtime.execute(&bin).expect("Failed to execute HLB in WASM");
             
             latent_to_stream = result.latent_streams.clone();
             
@@ -528,7 +530,7 @@ async fn handle_command(
                     match spine_parser::parse_html(html) {
                         Ok(ur) => {
                             let ur_json = serde_json::to_string(&ur).unwrap_or_default();
-                            let mut encoder = state.encoder.lock().await;
+                            let mut encoder = state.encoder.write().await;
                             let latent_vector = encoder.encode(ur_json.as_bytes());
                             Response {
                                 id: request_id,
@@ -564,7 +566,7 @@ async fn handle_command(
         }
         BrowserCommand::Morph => {
             info!("Triggering protocol morphing for session {}", session_id);
-            let mut encoder = state.encoder.lock().await;
+            let mut encoder = state.encoder.write().await;
             let seed = rand::random::<u64>();
             encoder.evolve(seed);
             Response {
@@ -839,7 +841,9 @@ async fn handle_command(
                 _ => spine_agentic::ProtocolDomain::BulkData,
             };
             
-            let mut protocol = spine_agentic::NeuralProtocol::new(1000.0, 5.0);
+            let mut protocol = state.neural_protocols
+                .entry(domain.clone())
+                .or_insert_with(|| spine_agentic::NeuralProtocol::new(1000.0, 5.0));
             match protocol.transmit(&data, domain_enum).await {
                 Ok(stats) => Response {
                     id: request_id,
@@ -922,10 +926,12 @@ async fn main() -> Result<()> {
         proposals: DashMap::new(),
         plans: DashMap::new(),
         client: reqwest::Client::new(),
-        encoder: Mutex::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)), // Standard 256-dim latent space
+        encoder: tokio::sync::RwLock::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)),
         cluster: Mutex::new(cluster_node),
         agentic_runtime,
         rate_limits: DashMap::new(),
+        wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
+        neural_protocols: DashMap::new(),
     });
 
     // Load persisted sessions

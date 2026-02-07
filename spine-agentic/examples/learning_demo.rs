@@ -1,6 +1,6 @@
 //! Learning & Adaptation Demo
 //! 
-//! Demonstrates the learning systems in hyperlight-agentic:
+//! Demonstrates the learning systems in spine-agentic:
 //! - Agent reinforcement learning with Q-learning
 //! - Skill library with transfer learning
 //! - Meta-learning for rapid adaptation

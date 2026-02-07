@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     // 2. Store some knowledge
     println!("Storing knowledge about SPINE...");
     client.store_knowledge(
-        "hyperlight_version", 
+        "spine_version", 
         json!("0.1.0-alpha"), 
         vec!["metadata".to_string(), "version".to_string()]
     ).await?;

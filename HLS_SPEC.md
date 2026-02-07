@@ -408,7 +408,7 @@ fn generate(node: AstNode, parent_id: Option<u32>) -> Vec<Instruction> {
 ```hls
 element App {
   element Header {
-    text "Hello, Hyperlight!"
+    text "Hello, SPINE!"
   }
 }
 ```
@@ -418,7 +418,7 @@ element App {
 [
     Instruction::DefineElement { id: 1, tag: "App" },
     Instruction::DefineElement { id: 2, tag: "Header" },
-    Instruction::SetAttribute { id: 2, key: "text", value: "Hello, Hyperlight!" },
+    Instruction::SetAttribute { id: 2, key: "text", value: "Hello, SPINE!" },
     Instruction::AddChild { parent_id: 1, child_id: 2 },
 ]
 ```
@@ -584,6 +584,6 @@ Common errors:
 
 ## References
 
-- [Hyperlight Architecture](ARCHITECTURE.md)
+- [SPINE Architecture](ARCHITECTURE.md)
 - [HLB Instruction Set](spine-protocol/src/lib.rs)
 - [Compiler Implementation](spine-compiler/src/lib.rs)

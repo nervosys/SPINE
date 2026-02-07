@@ -4,7 +4,7 @@ This document provides a deep dive into the technical architecture of the SPINE 
 
 ## System Overview
 
-SPINE is a **headless browser engine** designed exclusively for AI agents. It consists of fourteen core crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
+SPINE is a **headless semantic browser with adaptive encryption** designed for AI agents. It consists of seventeen core crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -36,8 +36,8 @@ SPINE is a **headless browser engine** designed exclusively for AI agents. It co
        │                          │
 ┌──────▼────────────┐      ┌──────▼──────────────┐
 │  Parser Layer     │      │  Compiler Layer     │
-│ (hyperlight-      │      │ (hyperlight-        │
-│  parser)          │      │  compiler)          │
+│ (spine-parser)    │      │ (spine-compiler)    │
+│                   │      │                     │
 │                   │      │                     │
 │ HTML → UR         │      │ HLS → HLB           │
 │ (Recursive        │      │ (nom-based parser)  │
@@ -49,7 +49,7 @@ SPINE is a **headless browser engine** designed exclusively for AI agents. It co
                    │
 ┌──────────────────▼───────────────────────────────────────┐
 │                Compatibility Layer                       │
-│  (spine-human: HTML/CSS/JS → HLS Transpiler)        │
+│  (spine-human: Legacy Web Bridge)                    │
 │  • Backwards compatibility for traditional web          │
 └──────────────────────────────────────────────────────────┘
                    │
@@ -195,8 +195,9 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 **Encryption Layer**:
 
 - Algorithm: AES-256-GCM (Authenticated Encryption with Associated Data)
-- Key Exchange: Pre-shared keys (for now; future: Diffie-Hellman or TLS)
-- Nonce Management: Currently fixed (⚠️ INSECURE for production); will be randomized per message
+- Key Exchange: X3DH (Extended Triple Diffie-Hellman) for initial trust establishment
+- Security Levels: Standard (X25519), Hardened (X25519+RLWE), PostQuantum (RLWE-only)
+- Forward Secrecy: Double Ratchet with hash-chain key evolution
 
 **Compression Layer**:
 
@@ -321,7 +322,7 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 
 ### 6. spine-cluster
 
-**Purpose**: Distributed coordination layer for scaling Hyperlight across multiple nodes.
+**Purpose**: Distributed coordination layer for scaling SPINE across multiple nodes.
 
 **Key Features**:
 
@@ -348,11 +349,11 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 | Forgets over long sequences  | Unbounded context via memory consolidation  |
 | No anomaly detection         | Surprise-gated writes for novelty detection |
 
-**Titans + MIRAS for Continual Learning**:
+**Titans + MIRAS for Anomaly Detection + Pattern Adaptation**:
 
-SPINE uses the [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) because an Agentic Web Stack requires **continual learning**—the ability to adapt to new patterns without offline retraining:
+SPINE uses the [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) because a headless semantic browser requires **continual adaptation**—the ability to detect anomalies and adapt to new patterns without offline retraining:
 
-- **Test-Time Memorization**: Memory updates occur *during inference*, not just training. When the protocol encounters a new communication pattern, it learns instantly.
+- **Test-Time Memorization**: Memory updates occur *during inference*, not just training. When the protocol encounters a new communication pattern, it adapts instantly.
 - **Surprise-Based Gating**: The gradient magnitude acts as a "surprise metric"—routine data is ignored, novel/anomalous data is prioritized for permanent storage.
 - **Momentum**: Captures not just immediate surprises but also relevant follow-up context.
 - **Adaptive Forgetting**: Weight decay prevents memory overflow during unbounded sessions.
@@ -361,7 +362,7 @@ SPINE uses the [Titans + MIRAS framework](https://research.google/blog/titans-mi
 This is essential for:
 1. Protocol evolution (Chameleon must continuously adapt to resist fingerprinting)
 2. Real-time anomaly detection (surprise scores identify attacks)
-3. Agent learning (each interaction improves future predictions)
+3. Agent adaptation (each interaction improves future predictions)
 
 ### 8. spine-crypto
 
@@ -385,7 +386,7 @@ This is essential for:
 
 ### 9. spine-agent
 
-**Purpose**: High-level SDK for building AI agents that interact with Hyperlight.
+**Purpose**: High-level SDK for building AI agents that interact with SPINE.
 
 **API Design Philosophy**:
 
@@ -423,7 +424,7 @@ client.handler.send_message(&Message::Request(Request {
 
 ### 10. spine-human
 
-**Purpose**: Transpiler for legacy web content (HTML/CSS/JS) into Hyperlight-native HLS/HLB.
+**Purpose**: Legacy web bridge (compatibility layer) for traditional web content, transpiling HTML/CSS/JS into SPINE-native HLS/HLB.
 
 **Key Responsibilities**:
 
@@ -495,49 +496,45 @@ pub struct ExecutionResult {
 ```
 
 
-### 8. spine-neural
+### 12. spine-kernel
 
-**Purpose**: Neural network-based latent space encoding for the Chameleon Protocol using **Titans architecture**.
+**Purpose**: Ultra-low-level hardware primitives for the agentic web.
 
-**Key Responsibilities**:
-- Variational Autoencoder (VAE) for projecting message patterns into latent space.
-- **Titans (Neural Long-Term Memory)** for temporal state tracking with test-time training.
-- Multi-Head Attention for identifying critical message features.
-- Dynamic latent space evolution (morphing) to prevent traffic analysis.
-- **Surprise detection** for anomaly-aware protocol adaptation.
+**Key Components**:
+- **SIMD Intrinsics**: AVX2/NEON dot product (57 GiB/s), softmax, matrix-vector multiply (15.5 Gelem/s).
+- **Custom Allocators**: BumpAllocator (505 ps), SlabAllocator, ArenaAllocator.
+- **Lock-Free Atomics**: PaddedAtomicU64, SeqLock, LockFreeStack, AtomicFlags (4.4 ns).
+- **Ring Buffers**: SPSC/MPSC wait-free queues (1.36 ns per op, 700M ops/sec).
+- **RDTSC Timing**: Sub-nanosecond measurement (2.6× faster than `Instant::now`).
+- **Direct Syscalls**: mmap/munmap, CPU affinity, NUMA info, thread priority.
+- **io_uring Support**: Linux kernel bypass I/O (optional feature).
 
-### 9. spine-crypto
+### 13. spine-recursive
 
-**Purpose**: Advanced cryptography and predictive modeling.
+**Purpose**: Recursive Language Model for extended context retrieval (10M+ chars) based on arXiv:2512.24601.
 
-**Key Responsibilities**:
-- **Titans-based** byte-level message prediction for speculative decoding.
-- Anomaly detection via surprise-gated memory updates.
-- Quantum-resistant lattice-based key exchange (RLWE).
-- Secure seed generation for Chameleon protocol evolution.
+**Important**: Provides extended context retrieval with a documented reasoning tradeoff — trades reasoning depth for context breadth.
 
-### 10. spine-cluster
+**Key Components**:
+- REPL-based environment externalization for unbounded context windows.
+- Multiple LLM dispatchers (OpenAI, Anthropic, load-balanced).
+- Graceful degradation (OfflineDispatcher, AdaptiveDispatcher).
 
-**Purpose**: Distributed orchestration and scaling.
+### 14. spine-knowledge
 
-**Key Responsibilities**:
-- Consistent hashing for session affinity across nodes.
-- Heartbeat-based node discovery and health monitoring.
-- Leader election and capability discovery.
+**Purpose**: Unified bioinspired memory with CRDT-based distributed knowledge base.
 
-### 11. spine-human
-
-**Purpose**: Web compatibility transpiler.
-
-**Key Responsibilities**:
-- Transpiling standard HTML/CSS/JS into Hyperlight Script (HLS).
-- Enabling traditional web content to run on the AI-native SPINE stack.
+**Memory Hierarchy**:
+- **Episodic Memory** (hippocampus): Event-based temporal memory.
+- **Semantic Memory** (neocortex): Fact storage and retrieval.
+- **Working Memory** (prefrontal cortex): Active task context.
+- **Collective Memory** (social brain): Swarm-wide shared knowledge via CRDTs.
 
 ## Advanced Features
 
 ### Titans Speculative Decoding
 
-Hyperlight reduces perceived latency by predicting the next likely messages in a sequence using Neural Long-Term Memory.
+SPINE reduces perceived latency by predicting the next likely messages in a sequence using Neural Long-Term Memory.
 1. The `TitansPredictor` analyzes historical message patterns with persistent memory.
 2. The `ProtocolHandler` pre-computes responses for predicted requests.
 3. If the agent's next request matches a prediction, the response is served with zero-bandwidth reconstruction from the local cache.
@@ -545,7 +542,7 @@ Hyperlight reduces perceived latency by predicting the next likely messages in a
 
 ### MIRAS-Adaptive Encoding
 
-The MIRAS framework (Memory, Inference, Retrieval, and Storage) provides **continual learning** variants that automatically adapt to traffic patterns:
+The MIRAS framework (Memory, Inference, Retrieval, and Storage) provides **anomaly detection + pattern adaptation** variants that automatically adapt to traffic patterns:
 
 **MIRAS Variants**:
 
@@ -617,16 +614,16 @@ A moving-target defense protocol that hides communication patterns in latent spa
 
 - ✅ AES-256-GCM encryption
 - ✅ Zstd compression
-- ⚠️ Pre-shared keys (not recommended for production)
-- ⚠️ Fixed nonces (vulnerable to replay attacks)
+- ✅ X3DH key exchange (proper initial trust, no pre-shared secrets)
+- ✅ Security Levels: Standard (X25519), Hardened (X25519+RLWE), PostQuantum (RLWE-only)
+- ✅ Sybil resistance: Stake-weighted voting, node reputation, proof-of-work for identity
+- ✅ Quantum-resistant RLWE lattice cryptography with forward-secure evolution
+- ✅ TLS 1.3 for transport security
 
 ### Production Requirements
 
-- [ ] TLS 1.3 for transport security
-- [ ] Proper key derivation (HKDF)
-- [ ] Randomized nonces per message
 - [ ] Certificate-based authentication
-- [ ] Rate limiting and DoS protection
+- [ ] Real-time session monitoring dashboard
 
 ## Future Enhancements
 
@@ -645,12 +642,13 @@ A moving-target defense protocol that hides communication patterns in latent spa
 ### 3. Security Hardening
 
 - [x] TLS 1.3 for transport security
+- [x] X3DH key exchange
+- [x] Sybil resistance
 - [ ] Certificate-based authentication
-- [ ] Rate limiting and DoS protection
 
 ## Conclusion
 
-Hyperlight represents a paradigm shift in how AI agents interact with the web. By eliminating rendering overhead and providing structured, semantic representations, it enables agents to operate at speeds and scales previously impossible with traditional browsers.
+SPINE provides a streamlined tool for AI agents to interact with the web. By eliminating rendering overhead and providing structured, semantic representations, it enables agents to operate at speeds and scales previously impossible with traditional browsers.
 
 ---
 
@@ -658,7 +656,7 @@ Hyperlight represents a paradigm shift in how AI agents interact with the web. B
 
 ### Vision: Beyond the Human Web
 
-The traditional web was designed for humans: point, click, read, scroll. SPINE's **Agentic Web Stack** reimagines the web for AI agents as first-class citizens. This is not an evolution of the human web—it's a parallel universe where agents navigate by meaning, communicate in latent space, and form swarms for collective intelligence.
+The traditional web was designed for humans: point, click, read, scroll. SPINE is a **headless semantic browser with adaptive encryption** — not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -671,7 +669,7 @@ The traditional web was designed for humans: point, click, read, scroll. SPINE's
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 4: Agent Cognition                                       │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
-│  │ Goals       │ │ Planning    │ │ Learning    │               │
+│  │ Goals       │ │ Planning    │ │ Adaptation  │               │
 │  │ Intentions  │ │ Reasoning   │ │ Memory      │               │
 │  └─────────────┘ └─────────────┘ └─────────────┘               │
 ├─────────────────────────────────────────────────────────────────┤
@@ -723,7 +721,7 @@ Agents maintain persistent knowledge with embedding-based retrieval for similari
 ### Integration with SPINE stack
 
 | Agentic Layer   | SPINE Component | Purpose                                        |
-| --------------- | -------------------- | ---------------------------------------------- |
+| --------------- | --------------- | ---------------------------------------------- |
 | Transport       | spine-protocol  | QUIC/TCP with Chameleon encryption             |
 | Neural Encoding | spine-neural    | VAE + MIRAS latent projections                 |
 | Prediction      | spine-crypto    | Titans predictor for speculative communication |
@@ -740,7 +738,7 @@ Every agent has a cryptographic identity following W3C DID standards:
 let did = AgentDID::generate("ResearchAgent");
 did.add_service(ServiceEndpoint {
     service_type: ServiceType::AgentMessaging,
-    endpoint: "wss://agent.hyperlight.net/msg".into(),
+    endpoint: "wss://agent.spine.example/msg".into(),
     protocols: vec!["chameleon-v1".into()],
 });
 let signature = did.sign(message);
@@ -844,7 +842,7 @@ With the Agentic Web Stack, SPINE enables:
 1. **Semantic Navigation**: Find resources by meaning, not addresses
 2. **Latent Communication**: Messages carry neural embeddings
 3. **Collective Problem-Solving**: Swarms tackle complex tasks
-4. **Continuous Learning**: MIRAS-based perpetual memory
+4. **Anomaly Detection + Pattern Adaptation**: MIRAS-based pattern recognition
 5. **Autonomous Operation**: Multi-step workflow execution
 6. **Decentralized Identity**: Cryptographic agent identities (W3C DID)
 7. **Protocol Agility**: Negotiate optimal communication protocols

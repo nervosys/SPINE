@@ -1,4 +1,4 @@
-# Mathematical Analysis of Hyperlight Architecture
+# Mathematical Analysis of SPINE Architecture
 
 ## Complexity and Security Properties
 

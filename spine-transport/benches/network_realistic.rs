@@ -4,7 +4,7 @@
 //! - Real TCP socket I/O (not just in-memory)
 //! - Latency under concurrent load
 //! - Throughput with network overhead
-//! - Comparison with and without Hyperlight optimizations
+//! - Comparison with and without SPINE optimizations
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::io::{Read, Write};
@@ -30,8 +30,8 @@ fn get_port() -> u16 {
 // REALISTIC END-TO-END BENCHMARKS
 // =============================================================================
 
-/// Hyperlight-optimized TCP server with frame codec + BBR pacing
-fn spawn_hyperlight_server(port: u16) -> thread::JoinHandle<()> {
+/// SPINE-optimized TCP server with frame codec + BBR pacing
+fn spawn_SPINE_server(port: u16) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
 
@@ -138,13 +138,13 @@ fn bench_e2e_latency(c: &mut Criterion) {
             });
         });
 
-        // Hyperlight with frame codec over TCP
+        // SPINE with frame codec over TCP
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_framed_tcp", size),
+            BenchmarkId::new("SPINE_framed_tcp", size),
             size,
             |b, &size| {
                 let port = get_port();
-                let _server = spawn_hyperlight_server(port);
+                let _server = spawn_SPINE_server(port);
                 thread::sleep(Duration::from_millis(100));
 
                 let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
@@ -207,13 +207,13 @@ fn bench_e2e_throughput(c: &mut Criterion) {
             });
         });
 
-        // Hyperlight framed TCP
+        // SPINE framed TCP
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_framed", size),
+            BenchmarkId::new("SPINE_framed", size),
             size,
             |b, &size| {
                 let port = get_port();
-                let _server = spawn_hyperlight_server(port);
+                let _server = spawn_SPINE_server(port);
                 thread::sleep(Duration::from_millis(100));
 
                 let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();

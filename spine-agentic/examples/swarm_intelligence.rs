@@ -3,7 +3,7 @@
 //! Demonstrates collective intelligence through agent swarms that coordinate
 //! to solve complex problems no single agent could handle alone.
 //!
-//! Run: cargo run --example swarm_intelligence -p hyperlight-agentic
+//! Run: cargo run --example swarm_intelligence -p spine-agentic
 
 use spine_agentic::{
     create_agent_system, create_agent_with_capabilities,

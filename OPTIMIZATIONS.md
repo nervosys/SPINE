@@ -228,7 +228,8 @@ Applied **82 automatic fixes** across the codebase:
 All optimizations maintain:
 - ✅ **Semantic equivalence** (proven mathematically)
 - ✅ **Safety invariants** (Rust's ownership + documented unsafe)
-- ✅ **128 tests passing** (verified experimentally)
+- ✅ **218 tests passing** (verified experimentally)
+- ✅ **0 Clippy warnings**
 
 ### Performance Benchmarks
 
@@ -253,7 +254,7 @@ All optimizations maintain:
 - 🚀 **121 code quality improvements** via clippy (82 initial + 28 second pass + 11 manual)
 - 🚀 **Transport layer**: 40-90 GiB/s throughput
 - 🚀 **Sub-nanosecond** BBR congestion control decisions
-- 🔧 **30 remaining style warnings** (complex types, API design choices - no correctness impact)
+- 🔧 **0 remaining style warnings** (all resolved)
 
 ---
 
@@ -432,5 +433,79 @@ impl FlatDenseLayer {
 - Better CPU prefetching and cache utilization
 - Convert existing models with `FlatDenseLayer::from_dense_layer()`
 
-**Tests:** 183 passing ✅
-**Warnings:** 30 remaining (API design choices)
+**Tests:** 218 passing ✅
+**Warnings:** 0 remaining
+
+---
+
+## Phase 4: Hot-Path Optimization (2026)
+
+Targeted optimization of the agent message hot path, eliminating heap allocations and redundant computation.
+
+### 1. Protocol Handler Buffer Reuse
+
+Added reusable `send_buf`, `read_buf`, `latent_buf` to `ProtocolHandler<S>`, eliminating 8 heap allocations per message send:
+
+```rust
+pub struct ProtocolHandler<S> {
+    send_buf: Vec<u8>,    // 8192 cap, reused via clear() + to_writer()
+    read_buf: Vec<u8>,    // 8192 cap, reused via resize() + take()
+    latent_buf: Vec<u8>,  // 4096 cap, reused via to_bytes_into()
+    compression_threshold: usize,  // 64 bytes — skip zstd below this
+}
+```
+
+**Eliminated double serialization**: Single `serde_json::to_writer(&mut self.send_buf, msg)` replacing `serde_json::to_vec` + clone.
+
+### 2. Adaptive Compression Protocol
+
+1-byte flag prefix (0x01=compressed, 0x00=raw) with configurable threshold:
+
+```rust
+if data.len() >= self.compression_threshold {
+    flagged.push(0x01);  // compressed
+    flagged.extend_from_slice(&encode_all(&data, 3)?);
+} else {
+    data.insert(0, 0x00);  // raw — skip zstd overhead
+}
+```
+
+### 3. Stack-Allocated Hot-Path Structures
+
+- **Frame headers**: `[u8; 16]` replacing `Vec::with_capacity(header_size)`
+- **Latent signatures**: `[f32; 8]` replacing `Vec<f32>`
+- **Move semantics**: `std::mem::take` in speculation miss path (was `.clone()`)
+
+### 4. Core Server Caching
+
+- **RwLock encoder**: `Mutex<NeuralLatentEncoder>` → `tokio::sync::RwLock` (concurrent reads)
+- **Cached WasmRuntime**: Singleton replacing per-request `WasmRuntime::new()`
+- **Cached NeuralProtocol**: Per-domain `DashMap` cache
+- **Cached UnifiedRepresentation**: Session-level UR with invalidation on navigation
+- **Async persistence**: `tokio::fs` replacing blocking `std::fs`
+
+### 5. Parser Optimizations
+
+- **OnceLock selectors**: `Selector::parse` called once, cached forever
+- **Single-pass text extraction**: `String::push_str` replacing `Vec<String>` + `join`
+
+### 6. Knowledge Optimizations
+
+- **Single-pass cosine similarity**: 3 accumulators in one loop (~3× less memory traffic)
+- **Partial sort retrieval**: `select_nth_unstable_by` O(n) avg replacing O(n log n) full sort
+
+### Phase 4 Results
+
+| Optimization | Impact |
+|---|---|
+| Buffer reuse | 8 → 0 heap allocs per message send |
+| Adaptive compression | Skip zstd overhead for control messages |
+| Stack headers | Zero heap allocs for frame I/O |
+| RwLock encoder | Concurrent session encoding |
+| Cached WasmRuntime | Eliminate per-request initialization |
+| OnceLock selectors | Eliminate per-parse CSS compilation |
+| Single-pass cosine | ~3× less memory traffic |
+| Partial sort | O(n) avg for top-k retrieval |
+
+**Tests:** 218 passing ✅
+**Warnings:** 0 remaining

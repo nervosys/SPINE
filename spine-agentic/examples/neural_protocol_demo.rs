@@ -32,7 +32,7 @@ async fn demo_neural_transmission() {
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     let mut protocol = NeuralProtocol::new(1000.0, 2.0); // 1Gbps, 2ms latency
-    let data = "Hyperlight: The future of the agentic web is neural.".as_bytes();
+    let data = "SPINE: The future of the agentic web is neural.".as_bytes();
     
     println!("  Original Data: \"{}\"", String::from_utf8_lossy(data));
     println!("  Data Size: {} bytes", data.len());

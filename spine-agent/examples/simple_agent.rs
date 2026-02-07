@@ -7,7 +7,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║   Hyperlight: Advanced HLS Compiler + Virtual DOM Runtime    ║");
+    println!("║   SPINE: Advanced HLS Compiler + Virtual DOM Runtime         ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
     
     println!("[INIT] Connecting to SPINE Browser...");
@@ -125,6 +125,6 @@ async fn main() -> Result<()> {
     let search_results = client.search("Protocol").await?;
     println!("    ✓ Search complete. Results: {}\n", search_results);
     
-    println!("[DONE] Hyperlight Agent demonstration complete.");
+    println!("[DONE] SPINE Agent demonstration complete.");
     Ok(())
 }

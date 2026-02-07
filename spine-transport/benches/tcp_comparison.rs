@@ -91,9 +91,9 @@ fn bench_tcp_latency(c: &mut Criterion) {
             });
         });
 
-        // Hyperlight frame encode/decode (simulated processing)
+        // SPINE frame encode/decode (simulated processing)
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_frame", size),
+            BenchmarkId::new("SPINE_frame", size),
             size,
             |b, &size| {
                 let mut codec = FrameCodec::new(size * 2);
@@ -141,9 +141,9 @@ fn bench_throughput(c: &mut Criterion) {
             });
         });
 
-        // Hyperlight with zero-copy buffers
+        // SPINE with zero-copy buffers
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_zerocopy", size),
+            BenchmarkId::new("SPINE_zerocopy", size),
             size,
             |b, &size| {
                 let ring = RingBuffer::new(size * 4);
@@ -161,9 +161,9 @@ fn bench_throughput(c: &mut Criterion) {
             },
         );
 
-        // Hyperlight frame codec
+        // SPINE frame codec
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_frame_codec", size),
+            BenchmarkId::new("SPINE_frame_codec", size),
             size,
             |b, &size| {
                 let mut codec = FrameCodec::new(size * 2);
@@ -197,9 +197,9 @@ fn bench_allocation(c: &mut Criterion) {
             });
         });
 
-        // Hyperlight slab allocator
+        // SPINE slab allocator
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_slab", count),
+            BenchmarkId::new("SPINE_slab", count),
             count,
             |b, &count| {
                 b.iter(|| {
@@ -214,9 +214,9 @@ fn bench_allocation(c: &mut Criterion) {
             },
         );
 
-        // Hyperlight hierarchical allocator
+        // SPINE hierarchical allocator
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_hierarchical", count),
+            BenchmarkId::new("SPINE_hierarchical", count),
             count,
             |b, &count| {
                 b.iter(|| {
@@ -257,9 +257,9 @@ fn bench_aggregation(c: &mut Criterion) {
             },
         );
 
-        // Hyperlight frame aggregator
+        // SPINE frame aggregator
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_aggregator", frame_count),
+            BenchmarkId::new("SPINE_aggregator", frame_count),
             frame_count,
             |b, &count| {
                 let frames: Vec<Frame> = (0..count).map(|_| make_frame(100)).collect();
@@ -275,9 +275,9 @@ fn bench_aggregation(c: &mut Criterion) {
             },
         );
 
-        // Hyperlight vectored buffer
+        // SPINE vectored buffer
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_vectored", frame_count),
+            BenchmarkId::new("SPINE_vectored", frame_count),
             frame_count,
             |b, &count| {
                 let chunks: Vec<Vec<u8>> = (0..count).map(|i| vec![i as u8; 100]).collect();
@@ -310,8 +310,8 @@ fn bench_congestion_control(c: &mut Criterion) {
         });
     });
 
-    // Hyperlight BBR congestion control
-    group.bench_function("hyperlight_bbr", |b| {
+    // SPINE BBR congestion control
+    group.bench_function("SPINE_bbr", |b| {
         let mut bbr = BbrController::new();
 
         b.iter(|| {
@@ -321,8 +321,8 @@ fn bench_congestion_control(c: &mut Criterion) {
         });
     });
 
-    // Hyperlight rate limiter
-    group.bench_function("hyperlight_rate_limiter", |b| {
+    // SPINE rate limiter
+    group.bench_function("SPINE_rate_limiter", |b| {
         let mut limiter = RateLimiter::new(1_000_000_000, 10_000_000); // 1 Gbps, 10MB burst
 
         b.iter(|| {
@@ -350,8 +350,8 @@ fn bench_connection_pool(c: &mut Criterion) {
         });
     });
 
-    // Hyperlight pool config creation (pool itself needs async runtime)
-    group.bench_function("hyperlight_pool_config", |b| {
+    // SPINE pool config creation (pool itself needs async runtime)
+    group.bench_function("SPINE_pool_config", |b| {
         b.iter(|| {
             let config = PoolConfig::default();
             black_box(config);
@@ -383,9 +383,9 @@ fn bench_serialization(c: &mut Criterion) {
             });
         });
 
-        // Hyperlight frame codec
+        // SPINE frame codec
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_codec", size),
+            BenchmarkId::new("SPINE_codec", size),
             size,
             |b, &size| {
                 let codec = FrameCodec::new(size * 2);
@@ -398,9 +398,9 @@ fn bench_serialization(c: &mut Criterion) {
             },
         );
 
-        // Hyperlight frame builder (optimized)
+        // SPINE frame builder (optimized)
         group.bench_with_input(
-            BenchmarkId::new("hyperlight_builder", size),
+            BenchmarkId::new("SPINE_builder", size),
             size,
             |b, &size| {
                 let data = vec![0xABu8; size];
@@ -448,8 +448,8 @@ fn bench_end_to_end(c: &mut Criterion) {
         });
     });
 
-    // Hyperlight optimized pipeline
-    group.bench_function("hyperlight_100_msgs", |b| {
+    // SPINE optimized pipeline
+    group.bench_function("SPINE_100_msgs", |b| {
         let mut codec = FrameCodec::new(payload_size * 2);
         let ring = RingBuffer::new(payload_size * 4);
         let frame = make_frame(payload_size);

@@ -8720,7 +8720,7 @@ impl Performative {
             conversation_id: Uuid::new_v4(),
             reply_to: None,
             language: "json".to_string(),
-            ontology: "hyperlight-agentic".to_string(),
+            ontology: "spine-agentic".to_string(),
             protocol: None,
             timestamp: Utc::now(),
             expires: None,

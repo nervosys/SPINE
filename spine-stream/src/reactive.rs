@@ -272,8 +272,17 @@ where
                 Poll::Pending => {
                     // No items available
                     if !this.batch.is_empty() {
-                        // We have items and are waiting for more
-                        // TODO: Register deadline waker
+                        // We have items and are waiting for more — register a
+                        // waker so the executor re-polls us when the deadline
+                        // expires, ensuring partial batches are emitted on time.
+                        if let Some(deadline) = *this.deadline {
+                            let waker = cx.waker().clone();
+                            let delay = deadline.saturating_duration_since(Instant::now());
+                            tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                waker.wake();
+                            });
+                        }
                         return Poll::Pending;
                     }
                     return Poll::Pending;

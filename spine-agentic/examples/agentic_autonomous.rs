@@ -3,7 +3,7 @@
 //! Demonstrates an autonomous agent using behavior trees to perform complex
 //! multi-step tasks without human intervention.
 //!
-//! Run: cargo run --example autonomous_agent -p hyperlight-agentic
+//! Run: cargo run --example autonomous_agent -p spine-agentic
 
 use spine_agentic::{
     create_agent_system, Action, Condition, Goal, ResourceLocator,

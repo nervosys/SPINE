@@ -10,7 +10,7 @@ pub use sybil::{NodeReputation, StakeWeightedConsensus};
 //
 // This module provides distributed coordination for SPINE agents:
 //
-// 1. Service Discovery - Agents can find available Hyperlight nodes
+// 1. Service Discovery - Agents can find available SPINE nodes
 // 2. Load Balancing - Distribute requests across cluster nodes
 // 3. Session Affinity - Route requests to the node holding session state
 // 4. Failover - Automatic recovery when nodes fail

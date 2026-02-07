@@ -26,7 +26,7 @@ use std::collections::HashMap;
 #[tokio::main]
 async fn main() {
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║       HYPERLIGHT AGENT COMMUNICATION PROTOCOLS DEMO          ║");
+    println!("║       SPINE AGENT COMMUNICATION PROTOCOLS DEMO                  ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 
     demo_speech_acts_and_broker().await;

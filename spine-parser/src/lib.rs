@@ -1,14 +1,29 @@
 use scraper::{Html, Selector, node::Node};
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
-#[derive(Debug, Serialize, Deserialize)]
+// Cached selectors: Selector::parse is expensive — compile once, reuse forever
+static TITLE_SELECTOR: OnceLock<Selector> = OnceLock::new();
+static BODY_SELECTOR: OnceLock<Selector> = OnceLock::new();
+
+#[inline]
+fn title_selector() -> &'static Selector {
+    TITLE_SELECTOR.get_or_init(|| Selector::parse("title").unwrap())
+}
+
+#[inline]
+fn body_selector() -> &'static Selector {
+    BODY_SELECTOR.get_or_init(|| Selector::parse("body").unwrap())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnifiedRepresentation {
     pub title: String,
     pub elements: Vec<Element>,
     pub metadata: std::collections::HashMap<String, String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Element {
     Text(String),
     Heading { level: u8, text: String },
@@ -23,17 +38,15 @@ pub enum Element {
 pub fn parse_html(html: &str) -> anyhow::Result<UnifiedRepresentation> {
     let document = Html::parse_document(html);
     
-    // Extract title
-    let title_selector = Selector::parse("title").unwrap();
+    // Use cached selectors (avoids re-compiling CSS selectors on every call)
     let title = document
-        .select(&title_selector)
+        .select(title_selector())
         .next()
         .map(|e| e.text().collect::<String>())
         .unwrap_or_else(|| "No Title".to_string());
 
     let mut elements = Vec::new();
-    let body_selector = Selector::parse("body").unwrap();
-    if let Some(body) = document.select(&body_selector).next() {
+    if let Some(body) = document.select(body_selector()).next() {
         for child in body.children() {
             if let Some(el) = parse_node(child) {
                 elements.push(el);
@@ -48,19 +61,22 @@ pub fn parse_html(html: &str) -> anyhow::Result<UnifiedRepresentation> {
     })
 }
 
+/// Single-pass text extraction: collects descendant text into a String directly
+/// without intermediate Vec<String> + join.
 fn get_text(node: ego_tree::NodeRef<Node>) -> String {
-    node.descendants()
-        .filter_map(|n| {
-            if let Node::Text(t) = n.value() {
-                Some(t.to_string())
-            } else {
-                None
+    let mut result = String::new();
+    for n in node.descendants() {
+        if let Node::Text(t) = n.value() {
+            let trimmed = t.trim();
+            if !trimmed.is_empty() {
+                if !result.is_empty() {
+                    result.push(' ');
+                }
+                result.push_str(trimmed);
             }
-        })
-        .collect::<Vec<_>>()
-        .join("")
-        .trim()
-        .to_string()
+        }
+    }
+    result
 }
 
 fn parse_node(node: ego_tree::NodeRef<Node>) -> Option<Element> {

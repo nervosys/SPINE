@@ -2,11 +2,11 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-215%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-218%20passing-brightgreen.svg)](#testing)
 
-**SPINE** (Synaptic Path INterconnecting Entities) is a **bioinspired agentic web stack** designed as an alternative to the traditional TCP/IP web architecture. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
+**SPINE** (Synaptic Path INterconnecting Entities) is a **headless semantic browser with adaptive encryption** — not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
 
-> *"The web was designed for humans reading documents. SPINE is designed for AI systems executing programs—like a digital nervous system for the agentic web."*
+> *"SPINE is a headless semantic browser — a digital nervous system that lets AI agents efficiently extract meaning from the web and coordinate securely."*
 
 ## Why "SPINE"?
 
@@ -18,11 +18,11 @@ The name SPINE reflects the bioinspired principles at its core:
 - **Moving-Target Defense**: Chameleon Protocol inspired by biological camouflage
 - **Memory Consolidation**: MIRAS variants implementing continual learning like hippocampal replay
 
-## Why a New Web Stack?
+## Why a Headless Semantic Browser?
 
-The traditional web stack (HTTP/HTML/CSS/JS) was designed in the 1990s for humans browsing hyperlinked documents. It's fundamentally misaligned with how AI agents operate:
+The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents need different capabilities. SPINE provides an efficient semantic layer on top of the existing web:
 
-| Traditional Web                        | SPINE Agentic Web                        |
+| Traditional Browsing                   | SPINE Semantic Browsing                  |
 | -------------------------------------- | ---------------------------------------- |
 | Documents for human reading            | Programs for AI execution                |
 | Rendering-first (DOM → Layout → Paint) | Semantics-first (UR extraction)          |
@@ -65,8 +65,8 @@ SPINE is composed of 17 specialized crates organized into a cohesive bioinspired
 ### Intelligence Layer
 
 - **`spine-neural`**: **Titans architecture** (Neural Long-Term Memory) with MIRAS variants for adaptive protocol encoding.
-- **`spine-crypto`**: **Titans-based speculative decoding** and quantum-resistant lattice cryptography.
-- **`spine-recursive`**: **Recursive Language Model** for infinite context (10M+ chars) via REPL environment per arXiv:2512.24601.
+- **`spine-crypto`**: **Titans-based speculative decoding**, X3DH key exchange, and quantum-resistant lattice cryptography with three security levels (Standard, Hardened, PostQuantum).
+- **`spine-recursive`**: **Recursive Language Model** for extended context retrieval (10M+ chars) via REPL environment per arXiv:2512.24601. Note: trades reasoning depth for context breadth.
 - **`spine-knowledge`**: **Unified bioinspired memory** with episodic (hippocampus), semantic (neocortex), working (prefrontal cortex), and collective (social brain) subsystems. CRDT-based distributed single-source-of-truth.
 
 ### Agent Layer
@@ -74,7 +74,7 @@ SPINE is composed of 17 specialized crates organized into a cohesive bioinspired
 - **`spine-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the SPINE stack.
 - **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities.
 - **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
-- **`spine-human`**: Bot-detection bypass with realistic mouse paths, typing delays, and human-like interaction patterns.
+- **`spine-human`**: Legacy web bridge (compatibility layer) with realistic mouse paths, typing delays, and human-like interaction patterns.
 
 ### Application Layer
 
@@ -103,11 +103,11 @@ let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 
 > **Why Titans + MIRAS for Continual Learning?**
 > 
-> SPINE is designed as a **continual learning system** where agents must adapt to evolving web content, new communication patterns, and adversarial conditions in real-time—without offline retraining.
+> SPINE is designed as a **continual adaptation system** where agents must respond to evolving web content, new communication patterns, and adversarial conditions in real-time—without offline retraining.
 > 
 > The [Titans + MIRAS framework](https://research.google/blog/titans-miras-helping-ai-have-long-term-memory/) from Google Research is uniquely suited for this because:
 > 
-> 1. **Test-Time Memorization**: Unlike static models that require retraining, Titans updates its memory *while running*. When an agent encounters a new website structure or protocol variation, it learns immediately.
+> 1. **Test-Time Memorization**: Unlike static models that require retraining, Titans updates its memory *while running*. When an agent encounters a new website structure or protocol variation, it adapts immediately.
 > 
 > 2. **Surprise-Based Prioritization**: The "surprise metric" (gradient magnitude) acts as a filter—routine, expected patterns are efficiently ignored while novel or anomalous inputs are prioritized for permanent storage. This mirrors how humans remember unexpected events.
 > 
@@ -117,7 +117,7 @@ let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 > 
 > 5. **Efficiency**: Combines RNN-like O(1) inference speed with Transformer-like expressive power—critical for real-time agent communication.
 > 
-> This makes Titans ideal for an Agentic Web Stack where protocols must continuously evolve to resist fingerprinting, agents must learn from every interaction, and security requires instant anomaly detection.
+> This makes Titans ideal for a headless semantic browser where protocols must continuously evolve to resist fingerprinting, agents must adapt to every interaction, and security requires instant anomaly detection.
 
 ### Titans-Based Speculative Decoding
 
@@ -645,17 +645,17 @@ client.handler.send_message(&Message::Request(Request {
 
 ## Architecture
 
-SPINE eliminates traditional browser rendering pipelines (DOM → Layout → Paint) and replaces them with a multi-layered stack optimized for both AI and humans.
+SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE stack
+### The SPINE Stack (17 Crates)
 
-1. **User Layer**: `spine-browser` (GUI) provides a human-friendly interface.
-2. **Compatibility Layer**: `spine-human` transpiles legacy web content into AI-native formats.
-3. **Agent Layer**: `spine-agent` (SDK) enables autonomous interaction.
-4. **Core Layer**: `spine-core` orchestrates sessions and fetches content.
-5. **Execution Layer**: `spine-compiler` and `spine-wasm` run websites as programs.
-6. **Intelligence Layer**: `spine-neural` and `spine-crypto` provide secure, predictive communication.
-7. **Infrastructure Layer**: `spine-cluster` enables distributed scaling.
+1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
+2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
+3. **Transport Layer**: `spine-protocol` (Chameleon Protocol), `spine-transport` (zero-copy I/O, BBR), `spine-stream` (reactive streaming, multiplexing).
+4. **Intelligence Layer**: `spine-neural` (Titans architecture), `spine-crypto` (X3DH, quantum-resistant crypto), `spine-recursive` (extended context retrieval), `spine-knowledge` (CRDT-based distributed memory).
+5. **Agent Layer**: `spine-agent` (SDK), `spine-agentic` (swarm intelligence), `spine-cluster` (distributed coordination with Sybil resistance).
+6. **Compatibility Layer**: `spine-human` — legacy web bridge for bot-detection bypass.
+7. **Application Layer**: `spine-browser` — cross-platform GUI browser.
 
 ### Semantic Extraction Pipeline
 
@@ -1027,23 +1027,23 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (215 tests)
+### Test Summary (218 tests)
 
-| Crate           | Tests | Description                             |
-| --------------- | ----- | --------------------------------------- |
-| spine-kernel    | 32    | SIMD, allocators, atomics, ring buffers |
-| spine-stream    | 35    | Reactive streams, multiplexing, flow    |
-| spine-transport | 33    | Zero-copy I/O, BBR, connection pooling  |
-| spine-protocol  | 27    | Chameleon protocol, co-evolution        |
-| spine-crypto    | 23    | RLWE, Titans predictor, MIRAS           |
-| spine-neural    | 19    | VAE, attention, memory variants         |
-| spine-recursive | 15    | Infinite context, LLM dispatchers       |
-| spine-knowledge | 9     | Episodic, semantic, collective memory   |
-| spine-compiler  | 9     | HLS parsing, compilation, optimization  |
-| spine-cluster   | 4     | Load balancing, session management      |
-| spine-agentic   | 4     | Agent creation, knowledge graph         |
-| spine-wasm      | 3     | HLB → WASM compilation and execution    |
-| spine-human     | 2     | Human interaction patterns              |
+| Crate           | Tests | Description                                          |
+| --------------- | ----- | ---------------------------------------------------- |
+| spine-kernel    | 32    | SIMD, allocators, atomics, ring buffers              |
+| spine-stream    | 35    | Reactive streams, multiplexing, flow                 |
+| spine-transport | 33    | Zero-copy I/O, BBR, connection pooling               |
+| spine-protocol  | 27    | Chameleon protocol, co-evolution                     |
+| spine-crypto    | 23    | RLWE, Titans predictor, MIRAS                        |
+| spine-neural    | 19    | VAE, attention, memory variants                      |
+| spine-recursive | 15    | Infinite context, LLM dispatchers                    |
+| spine-knowledge | 9     | Episodic, semantic, collective memory                |
+| spine-compiler  | 9     | HLS parsing, compilation, optimization               |
+| spine-cluster   | 7     | Load balancing, session management, Sybil resistance |
+| spine-agentic   | 4     | Agent creation, knowledge graph                      |
+| spine-wasm      | 3     | HLB → WASM compilation and execution                 |
+| spine-human     | 2     | Human interaction patterns                           |
 
 ### Benchmarks
 

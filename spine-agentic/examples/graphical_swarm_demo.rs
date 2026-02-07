@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 fn main() {
     println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║     HYPERLIGHT GRAPHICAL MODEL SWARM OPTIMIZATION DEMO          ║");
+    println!("║     SPINE GRAPHICAL MODEL SWARM OPTIMIZATION DEMO               ║");
     println!("╚══════════════════════════════════════════════════════════════════╝\n");
 
     // Demo all graphical model types

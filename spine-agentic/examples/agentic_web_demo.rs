@@ -3,7 +3,7 @@
 //! Demonstrates the revolutionary agentic web stack where AI agents are first-class
 //! citizens of the web.
 //!
-//! Run: cargo run --example agentic_web_demo -p hyperlight-agentic
+//! Run: cargo run --example agentic_web_demo -p spine-agentic
 
 use spine_agentic::{
     create_agent, create_agent_with_capabilities,

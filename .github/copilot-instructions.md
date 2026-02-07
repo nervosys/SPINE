@@ -55,7 +55,7 @@
 - [x] **Mathematical proofs**: See OPTIMIZATIONS.md
 - [x] **215 tests passing**: Full verification coverage including security tests
 - [x] **218 tests passing**: +3 Sybil resistance tests after v1.1 architecture fix
-- [x] **30 style warnings**: Remaining are API design choices (no correctness impact)
+- [x] **0 Clippy warnings**: All style issues resolved
 - [x] **TCP/IP Benchmark**: 514× lower latency, 610× higher throughput vs standard TCP
 
 ### Phase 2 Optimization Pass ✅
@@ -84,6 +84,24 @@
 - [x] **W3**: Comprehensive RLWE security tests (12 new tests)
 - [x] **W4**: Scalability benchmarks (1000+ agents, 100M+ chars)
 - [x] **W5**: Graceful degradation (OfflineDispatcher, AdaptiveDispatcher)
+
+### Phase 4: Hot-Path Optimization ✅
+- [x] **Protocol buffer reuse**: Reusable send_buf/read_buf/latent_buf eliminating 8 heap allocs per message
+- [x] **Eliminated double serialization**: Single `serde_json::to_writer` pass (was serialize-then-serialize)
+- [x] **Adaptive compression**: 1-byte flag protocol (0x01=zstd, 0x00=raw), skip compression < 64 bytes
+- [x] **Stack-allocated headers**: `[u8; 16]` frame headers replacing `Vec::with_capacity`
+- [x] **Stack-allocated signatures**: `[f32; 8]` latent signatures replacing `Vec<f32>`
+- [x] **Move instead of clone**: `std::mem::take` in speculation miss path
+- [x] **Core server RwLock**: Concurrent encoder reads (Mutex → RwLock)
+- [x] **Cached WasmRuntime**: Singleton replacing per-request `WasmRuntime::new()`
+- [x] **Cached NeuralProtocol**: Per-domain DashMap cache replacing per-request allocation
+- [x] **Cached UnifiedRepresentation**: Session-level UR cache (invalidated on navigation)
+- [x] **Async file I/O**: `tokio::fs` replacing blocking `std::fs` in session persistence
+- [x] **Parser OnceLock selectors**: Compile-once CSS selectors for title/body
+- [x] **Single-pass text extraction**: Direct String::push_str replacing Vec<String> + join
+- [x] **Single-pass cosine similarity**: 3 accumulators in one loop (~3× less memory traffic)
+- [x] **Partial sort retrieval**: `select_nth_unstable_by` O(n) avg replacing O(n log n) full sort
+- [x] **Reactive stream deadline**: BatchingStream waker registration for partial batch emission
 
 ### Performance Benchmarks
 | Component | Throughput |

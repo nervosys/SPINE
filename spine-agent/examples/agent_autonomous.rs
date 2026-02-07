@@ -6,7 +6,7 @@ async fn main() -> Result<()> {
     env_logger::init();
     
     println!("╔══════════════════════════════════════════════════════════════╗");
-    println!("║   Hyperlight: Autonomous Agentic Navigation Demo              ║");
+    println!("║   SPINE: Autonomous Agentic Navigation Demo                   ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
     
     println!("[INIT] Connecting to SPINE Browser...");

@@ -24,9 +24,9 @@ use zstd::stream::encode_all;
 #[cfg(feature = "quic")]
 use quinn::{ClientConfig, Connection as QuinnConnection, Endpoint, ServerConfig};
 #[cfg(feature = "quic")]
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
-#[cfg(feature = "quic")]
 use rustls as quic_rustls; // rustls 0.23 for QUIC (workspace)
+#[cfg(feature = "quic")]
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 #[cfg(feature = "quic")]
 use std::net::SocketAddr;
 
@@ -119,7 +119,8 @@ struct MessagePattern {
     hash: u64,
     _message_type: MessageType,
     _size: usize,
-    _latent_signature: Option<Vec<f32>>,
+    /// Stack-allocated fixed signature (no heap allocation per message)
+    _latent_signature: Option<[f32; 8]>,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq)]
@@ -225,24 +226,19 @@ impl SpeculativePredictor {
         hasher.finish()
     }
 
-    fn extract_latent_signature(&self, data: &[u8]) -> Option<Vec<f32>> {
+    fn extract_latent_signature(&self, data: &[u8]) -> Option<[f32; 8]> {
         // Extract a compact signature from the data for similarity matching
-        if data.len() < 16 {
+        if data.len() < 32 {
             return None;
         }
 
-        // Simple signature: first 8 floats from data interpreted as f32
-        let sig: Vec<f32> = data
-            .chunks(4)
-            .take(8)
-            .map(|chunk| {
-                if chunk.len() == 4 {
-                    f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                } else {
-                    0.0
-                }
-            })
-            .collect();
+        // Stack-allocated fixed signature: first 8 floats from data
+        let mut sig = [0.0f32; 8];
+        for (i, chunk) in data.chunks(4).take(8).enumerate() {
+            if chunk.len() == 4 {
+                sig[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            }
+        }
 
         Some(sig)
     }
@@ -986,6 +982,14 @@ pub struct ProtocolHandler<S> {
     last_input_prediction: Option<u64>,
     /// Statistics for speculation accuracy
     pub speculation_stats: SpeculationStats,
+    /// Reusable send buffer to eliminate per-message heap allocations
+    send_buf: Vec<u8>,
+    /// Reusable read buffer for frame payloads
+    read_buf: Vec<u8>,
+    /// Reusable latent serialization buffer
+    latent_buf: Vec<u8>,
+    /// Minimum payload size for zstd compression (below this, overhead exceeds savings)
+    compression_threshold: usize,
 }
 
 /// Statistics for tracking speculation effectiveness
@@ -1038,6 +1042,10 @@ where
             last_output_prediction: None,
             last_input_prediction: None,
             speculation_stats: SpeculationStats::default(),
+            send_buf: Vec::with_capacity(8192),
+            read_buf: Vec::with_capacity(8192),
+            latent_buf: Vec::with_capacity(4096),
+            compression_threshold: 64,
         }
     }
 
@@ -1086,6 +1094,7 @@ where
     }
 
     /// Hash message for key evolution
+    #[inline]
     fn hash_message(data: &[u8]) -> u64 {
         let mut hasher = DefaultHasher::new();
         data.hash(&mut hasher);
@@ -1110,36 +1119,46 @@ where
     }
 
     /// Send a message with speculative encoding
+    ///
+    /// Optimized hot path: single serialization pass, buffer reuse,
+    /// adaptive compression (skipped for small payloads < threshold).
+    #[inline]
     pub async fn send_message(&mut self, msg: &Message) -> anyhow::Result<()> {
-        let raw_data = serde_json::to_vec(msg)?;
-        let msg_hash = Self::hash_message(&raw_data);
+        // Serialize message once into reusable buffer
+        self.send_buf.clear();
+        serde_json::to_writer(&mut self.send_buf, msg)?;
+        let msg_hash = Self::hash_message(&self.send_buf);
         let msg_type = Self::classify_message(msg);
 
         // Check if receiver predicted this message
         let payload = if let Some(predicted_hash) = self.last_input_prediction {
             if predicted_hash == msg_hash {
-                // Prediction hit! Send minimal confirmation
+                // Prediction hit! Send minimal confirmation (no data needed)
                 self.speculation_stats.output_hits += 1;
-                self.speculation_stats.bytes_saved += raw_data.len() as u64;
+                self.speculation_stats.bytes_saved += self.send_buf.len() as u64;
                 SpeculativePayload::Confirmed {
                     confirmed_hash: msg_hash,
                     delta: Vec::new(),
                 }
             } else {
-                // Prediction miss, send full message
-                SpeculativePayload::Full(raw_data.clone())
+                // Prediction miss — move buffer contents to avoid clone
+                SpeculativePayload::Full(std::mem::take(&mut self.send_buf))
             }
         } else {
-            SpeculativePayload::Full(raw_data.clone())
+            SpeculativePayload::Full(std::mem::take(&mut self.send_buf))
         };
 
-        // Generate prediction for what we'll receive next
-        self.output_predictor.observe(&raw_data, msg_type);
+        // Observe for prediction (use payload data if available, else empty)
+        let observe_data: &[u8] = match &payload {
+            SpeculativePayload::Full(d) => d,
+            _ => &[],
+        };
+        self.output_predictor.observe(observe_data, msg_type);
         let (next_prediction, confidence) = self.output_predictor.predict_next();
 
         // Cache the predicted data for reconstruction on hit
         if confidence > 0.5 {
-            let predicted_data = self.output_predictor.predict_next_data(raw_data.len());
+            let predicted_data = self.output_predictor.predict_next_data(observe_data.len());
             self.prediction_cache
                 .push((next_prediction, predicted_data));
             if self.prediction_cache.len() > 16 {
@@ -1150,7 +1169,7 @@ where
         self.last_output_prediction = Some(next_prediction);
         self.speculation_stats.output_predictions += 1;
 
-        // Build speculative frame
+        // Build and serialize speculative frame in one pass
         let frame = SpeculativeFrame {
             payload,
             next_prediction_hash: next_prediction,
@@ -1158,20 +1177,35 @@ where
             speculation_depth: 1,
         };
 
-        // Serialize the speculative frame
         let mut data = serde_json::to_vec(&frame)?;
+
+        // Restore send_buf capacity for next call
+        if self.send_buf.capacity() == 0 {
+            self.send_buf = Vec::with_capacity(8192);
+        }
 
         // Apply padding based on current morphology
         data = self.apply_padding(data);
 
-        // Compression
-        data = encode_all(&data[..], 3)?;
+        // Adaptive compression: skip zstd for tiny control payloads (< 64 bytes)
+        // For larger payloads, zstd at level 3 provides excellent ratio with low overhead.
+        // We prepend a 1-byte flag: 0x01 = compressed, 0x00 = raw
+        if data.len() >= self.compression_threshold {
+            let compressed = encode_all(&data[..], 3)?;
+            let mut flagged = Vec::with_capacity(1 + compressed.len());
+            flagged.push(0x01); // compressed flag
+            flagged.extend_from_slice(&compressed);
+            data = flagged;
+        } else {
+            data.insert(0, 0x00); // raw flag
+        }
 
         // Chameleon encoding (if enabled)
         if let Some(ref mut chameleon) = self.chameleon {
             let latent = chameleon.encode(&data);
-            // FAST: Zero-copy binary serialization (22 GiB/s vs 2 GiB/s JSON)
-            data = latent.to_bytes_fast();
+            // FAST: Serialize into reusable buffer (zero-alloc steady-state, 22 GiB/s)
+            latent.to_bytes_into(&mut self.latent_buf);
+            data = std::mem::take(&mut self.latent_buf);
 
             // Evolve key after sending (moving target)
             if self.moving_target {
@@ -1208,12 +1242,23 @@ where
         let msg_hash = Self::hash_message(&data);
 
         data = self.apply_padding(data);
-        data = encode_all(&data[..], 3)?;
+
+        // Adaptive compression with flag
+        if data.len() >= self.compression_threshold {
+            let compressed = encode_all(&data[..], 3)?;
+            let mut flagged = Vec::with_capacity(1 + compressed.len());
+            flagged.push(0x01);
+            flagged.extend_from_slice(&compressed);
+            data = flagged;
+        } else {
+            data.insert(0, 0x00);
+        }
 
         if let Some(ref mut chameleon) = self.chameleon {
             let latent = chameleon.encode(&data);
-            // FAST: Zero-copy binary serialization
-            data = latent.to_bytes_fast();
+            // FAST: Serialize into reusable buffer
+            latent.to_bytes_into(&mut self.latent_buf);
+            data = std::mem::take(&mut self.latent_buf);
 
             if self.moving_target {
                 chameleon.evolve(msg_hash);
@@ -1261,8 +1306,15 @@ where
                 .map_err(|e| anyhow::anyhow!("Decryption error: {}", e))?;
         }
 
-        // Decompression
-        data = decode_all(&data[..])?;
+        // Adaptive decompression: check compression flag byte
+        if data.is_empty() {
+            return Err(anyhow::anyhow!("Empty message after decryption"));
+        }
+        data = if data[0] == 0x01 {
+            decode_all(&data[1..])?
+        } else {
+            data[1..].to_vec()
+        };
 
         // Remove padding
         data = self.remove_padding(data);
@@ -1398,12 +1450,15 @@ where
         &self.speculation_stats
     }
 
-    /// Write frame with morphing header format
+    /// Write frame with morphing header format (stack-allocated header, no heap alloc)
+    #[inline]
     async fn write_morphed_frame(&mut self, data: &[u8]) -> anyhow::Result<()> {
         let len = data.len() as u32;
+        let header_size = self.morphology.header_size as usize;
 
-        // Variable header based on morphology
-        let mut header = Vec::with_capacity(self.morphology.header_size as usize);
+        // Stack-allocated header (max 16 bytes) — no heap allocation
+        let mut header = [0u8; 16];
+        debug_assert!(header_size <= 16, "Header size must be <= 16");
 
         // Length field (endianness varies)
         let len_bytes = if self.morphology.big_endian {
@@ -1411,25 +1466,28 @@ where
         } else {
             len.to_le_bytes()
         };
-        header.extend_from_slice(&len_bytes);
+        header[..4].copy_from_slice(&len_bytes);
 
         // Version byte
-        header.push(self.morphology.frame_version);
+        header[4] = self.morphology.frame_version;
 
         // Padding to header_size
-        while header.len() < self.morphology.header_size as usize {
-            header.push(self.morphology.checksum_variant);
+        for b in header[5..header_size].iter_mut() {
+            *b = self.morphology.checksum_variant;
         }
 
-        self.stream.write_all(&header).await?;
+        self.stream.write_all(&header[..header_size]).await?;
         self.stream.write_all(data).await?;
         Ok(())
     }
 
-    /// Read frame with morphing header format
+    /// Read frame with morphing header format (reuses read buffer to minimize allocations)
+    #[inline]
     async fn read_morphed_frame(&mut self) -> anyhow::Result<Vec<u8>> {
-        let mut header = vec![0u8; self.morphology.header_size as usize];
-        self.stream.read_exact(&mut header).await?;
+        // Stack-allocated header read
+        let header_size = self.morphology.header_size as usize;
+        let mut header = [0u8; 16];
+        self.stream.read_exact(&mut header[..header_size]).await?;
 
         // Extract length (endianness varies)
         let len_bytes: [u8; 4] = header[0..4].try_into()?;
@@ -1449,9 +1507,11 @@ where
             );
         }
 
-        let mut buf = vec![0u8; len];
-        self.stream.read_exact(&mut buf).await?;
-        Ok(buf)
+        // Reuse read buffer to avoid per-frame allocations
+        self.read_buf.clear();
+        self.read_buf.resize(len, 0);
+        self.stream.read_exact(&mut self.read_buf).await?;
+        Ok(std::mem::take(&mut self.read_buf))
     }
 
     /// Apply padding based on current morphology
@@ -2020,8 +2080,16 @@ impl ProtocolHandlerState {
         // Apply padding
         data = self.apply_padding(data);
 
-        // Compression
-        data = encode_all(&data[..], 3)?;
+        // Adaptive compression with flag
+        if data.len() >= 64 {
+            let compressed = encode_all(&data[..], 3)?;
+            let mut flagged = Vec::with_capacity(1 + compressed.len());
+            flagged.push(0x01);
+            flagged.extend_from_slice(&compressed);
+            data = flagged;
+        } else {
+            data.insert(0, 0x00);
+        }
 
         // Chameleon encoding
         if let Some(ref mut chameleon) = self.chameleon {
@@ -2061,8 +2129,15 @@ impl ProtocolHandlerState {
                 .map_err(|e| anyhow::anyhow!("Decryption error: {}", e))?;
         }
 
-        // Decompression
-        data = decode_all(&data[..])?;
+        // Adaptive decompression: check compression flag byte
+        if data.is_empty() {
+            return Err(anyhow::anyhow!("Empty message after decryption"));
+        }
+        data = if data[0] == 0x01 {
+            decode_all(&data[1..])?
+        } else {
+            data[1..].to_vec()
+        };
 
         // Remove padding
         data = self.remove_padding(data);

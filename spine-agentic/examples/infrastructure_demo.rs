@@ -19,7 +19,7 @@ use tokio::time::sleep;
 #[tokio::main]
 async fn main() {
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("                    HYPERLIGHT INFRASTRUCTURE DEMO                  ");
+    println!("                    SPINE INFRASTRUCTURE DEMO                       ");
     println!("═══════════════════════════════════════════════════════════════════\n");
 
     // Demo 1: Agent Versioning & Migrations
@@ -550,7 +550,7 @@ async fn demo_federation() {
             id: Uuid::new_v4(),
             did: None,
             capabilities: capabilities.clone(),
-            federation: "hyperlight-local".into(),
+            federation: "spine-local".into(),
             endpoints: vec!["wss://local.SPINE.net/agent".into()],
             trust_level: TrustLevel::Trusted,
             last_seen: Utc::now(),
@@ -581,12 +581,12 @@ async fn demo_federation() {
     }
     
     // Establish trust links
-    federation.establish_trust("hyperlight-local", "research-net", TrustLevel::Trusted, true);
-    federation.establish_trust("hyperlight-local", "enterprise-net", TrustLevel::Verified, false);
+    federation.establish_trust("spine-local", "research-net", TrustLevel::Trusted, true);
+    federation.establish_trust("spine-local", "enterprise-net", TrustLevel::Verified, false);
     
     println!("\n  Established trust links:");
-    println!("    • hyperlight-local ↔ research-net (Trusted, bidirectional)");
-    println!("    • hyperlight-local → enterprise-net (Verified, one-way)");
+    println!("    • spine-local ↔ research-net (Trusted, bidirectional)");
+    println!("    • spine-local → enterprise-net (Verified, one-way)");
     
     // Find agents across federations
     println!("\n  Finding agents with ContentExtraction capability:");
