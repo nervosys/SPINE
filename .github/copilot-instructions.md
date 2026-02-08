@@ -5,6 +5,7 @@
 **SPINE** is now a **headless semantic browser with adaptive encryption** - not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.
 
 ### Architecture Fix (v1.1)
+
 - [x] **Honest Framing**: "Headless semantic browser" not "new web stack"
 - [x] **Threat Model**: THREAT_MODEL.md with 4 adversary tiers, explicit security assumptions
 - [x] **X3DH Key Exchange**: Proper initial trust establishment (no pre-shared secrets)
@@ -15,6 +16,7 @@
 - [x] **Legacy Web Bridge**: spine-human reframed as compatibility layer
 
 ### Core Features
+
 - [x] Verify that the copilot-instructions.md file in the .github directory is created.
 - [x] Clarify Project Requirements: Rust-based bioinspired agentic AI web stack named SPINE.
 - [x] Scaffold the Project: Initialized Rust workspace with core, parser, protocol, and agent crates.
@@ -29,6 +31,7 @@
 - [x] Expand Agent API: Created high-level AgentClient API and example.
 
 ### Advanced Features
+
 - [x] HLS Compiler: Full language with variables, state, conditionals, loops, expressions, and functions
 - [x] Virtual DOM Runtime: HLB execution with UR generation and reactive re-rendering
 - [x] Chameleon Protocol: Latent-space cryptography with moving-target defense
@@ -48,6 +51,7 @@
 - [x] Co-Evolutionary Arms Race: Red/Blue team adversarial protocol cryptography with attack/defense co-evolution
 
 ### Optimization Pass ✅
+
 - [x] **121 Clippy fixes**: Loop patterns, matches! macros, iterator optimizations, collapsed if-let
 - [x] **Zero-copy serialization**: 12x faster latent vector encoding (22 GiB/s)
 - [x] **Single-pass cosine similarity**: 2.5x faster (9 GiB/s)
@@ -59,6 +63,7 @@
 - [x] **TCP/IP Benchmark**: 514× lower latency, 610× higher throughput vs standard TCP
 
 ### Phase 2 Optimization Pass ✅
+
 - [x] **SIMD-friendly math**: Unrolled dot products with 8-wide accumulators for AVX2
 - [x] **Neural scratch buffers**: Zero-allocation TitansMemory forward pass (25-40% faster)
 - [x] **Fast rsqrt**: Quake III-style inverse square root for attention scaling
@@ -69,6 +74,7 @@
 - [x] **Flattened matmul**: Row-major weight layout eliminating pointer chasing
 
 ### Phase 3: Kernel Primitives ✅
+
 - [x] **spine-kernel crate**: Ultra-low-level hardware primitives for agentic web
 - [x] **SIMD intrinsics**: AVX2/NEON dot product (57 GiB/s), softmax, matmul (15.5 Gelem/s)
 - [x] **Custom allocators**: BumpAllocator (505 ps), SlabAllocator, ArenaAllocator
@@ -79,6 +85,7 @@
 - [x] **io_uring support**: Linux kernel bypass I/O (optional feature)
 
 ### Weakness Remediation ✅
+
 - [x] **W1**: Realistic network benchmarks with actual TCP I/O
 - [x] **W2**: Real LLM dispatchers (OpenAI, Anthropic, load-balanced)
 - [x] **W3**: Comprehensive RLWE security tests (12 new tests)
@@ -86,6 +93,7 @@
 - [x] **W5**: Graceful degradation (OfflineDispatcher, AdaptiveDispatcher)
 
 ### Phase 4: Hot-Path Optimization ✅
+
 - [x] **Protocol buffer reuse**: Reusable send_buf/read_buf/latent_buf eliminating 8 heap allocs per message
 - [x] **Eliminated double serialization**: Single `serde_json::to_writer` pass (was serialize-then-serialize)
 - [x] **Adaptive compression**: 1-byte flag protocol (0x01=zstd, 0x00=raw), skip compression < 64 bytes
@@ -104,20 +112,22 @@
 - [x] **Reactive stream deadline**: BatchingStream waker registration for partial batch emission
 
 ### Performance Benchmarks
-| Component | Throughput |
-|-----------|------------|
-| Latent Serialize (1024-dim) | 22.3 GiB/s |
-| Cosine Similarity | 9.0 GiB/s |
-| Frame Encode (8KB) | 80 GiB/s |
-| Frame Decode (8KB) | 90 GiB/s |
-| BBR Pacing Decision | 335 ps |
-| **Kernel Dot Product (256)** | **57 GiB/s** |
-| **Kernel MatVec (256×256)** | **15.5 Gelem/s** |
-| **Bump Allocator** | **505 ps** |
-| **SPSC Ring Push/Pop** | **1.36 ns** |
-| **RDTSC Read** | **9.3 ns** |
+
+| Component                    | Throughput       |
+| ---------------------------- | ---------------- |
+| Latent Serialize (1024-dim)  | 22.3 GiB/s       |
+| Cosine Similarity            | 9.0 GiB/s        |
+| Frame Encode (8KB)           | 80 GiB/s         |
+| Frame Decode (8KB)           | 90 GiB/s         |
+| BBR Pacing Decision          | 335 ps           |
+| **Kernel Dot Product (256)** | **57 GiB/s**     |
+| **Kernel MatVec (256×256)**  | **15.5 Gelem/s** |
+| **Bump Allocator**           | **505 ps**       |
+| **SPSC Ring Push/Pop**       | **1.36 ns**      |
+| **RDTSC Read**               | **9.3 ns**       |
 
 ### Workspace Structure (17 crates)
+
 - `spine-kernel`: Ultra-low-level hardware primitives (SIMD, allocators, atomics, ring buffers, RDTSC timing)
 - `spine-core`: Multi-session orchestration engine
 - `spine-parser`: Recursive semantic HTML parser

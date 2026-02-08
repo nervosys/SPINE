@@ -496,16 +496,16 @@ if data.len() >= self.compression_threshold {
 
 ### Phase 4 Results
 
-| Optimization | Impact |
-|---|---|
-| Buffer reuse | 8 → 0 heap allocs per message send |
+| Optimization         | Impact                                  |
+| -------------------- | --------------------------------------- |
+| Buffer reuse         | 8 → 0 heap allocs per message send      |
 | Adaptive compression | Skip zstd overhead for control messages |
-| Stack headers | Zero heap allocs for frame I/O |
-| RwLock encoder | Concurrent session encoding |
-| Cached WasmRuntime | Eliminate per-request initialization |
-| OnceLock selectors | Eliminate per-parse CSS compilation |
-| Single-pass cosine | ~3× less memory traffic |
-| Partial sort | O(n) avg for top-k retrieval |
+| Stack headers        | Zero heap allocs for frame I/O          |
+| RwLock encoder       | Concurrent session encoding             |
+| Cached WasmRuntime   | Eliminate per-request initialization    |
+| OnceLock selectors   | Eliminate per-parse CSS compilation     |
+| Single-pass cosine   | ~3× less memory traffic                 |
+| Partial sort         | O(n) avg for top-k retrieval            |
 
 **Tests:** 218 passing ✅
 **Warnings:** 0 remaining
