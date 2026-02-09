@@ -59,7 +59,7 @@ leading: 0.55em,
 
 #v(0.3em)
 
-#text(size: 9pt, style: "italic")[February 2026 (v1.1)]
+#text(size: 9pt, style: "italic")[February 2026 (v1.2)]
 ]
 
 #v(1em)
@@ -1196,6 +1196,143 @@ The 620× throughput improvement results from:
 - Avoiding kernel-userspace transitions
 - BBR congestion control (139 ns overhead)
 
+== Hot-Path Optimization
+
+Four optimization phases systematically eliminated overhead from SPINE's critical paths.
+
+=== Phase 1: Static Analysis
+
+121 Clippy-identified improvements: loop-to-iterator conversions, `matches!` macro adoption, collapsed `if-let` chains, and iterator-based neural matrix multiplication for better LLVM auto-vectorization.
+
+=== Phase 2: Data Representation
+
+- *Binary LatentVector*: `bytemuck`/`bincode` replacing JSON serialization (7--22× faster)
+- *Zero-copy frame decode*: `Bytes` slicing without allocation (30% decode speedup)
+- *SIMD-friendly math*: 8-wide accumulators for AVX2 dot products
+- *FlatDenseLayer*: Cache-optimal row-major weight storage eliminating pointer chasing (20--30% inference speedup)
+- *Neural scratch buffers*: Zero-allocation Titans forward pass (25--40% faster)
+
+=== Phase 3: Kernel Primitives
+
+The `spine-kernel` crate provides hardware-level primitives:
+
+- AVX2/NEON SIMD intrinsics (57 GiB/s dot products)
+- BumpAllocator at 505 ps, SlabAllocator, ArenaAllocator
+- Lock-free SPSC/MPSC ring buffers (1.36 ns, 700M ops/sec)
+- RDTSC sub-nanosecond timing (2.6× faster than `Instant::now`)
+- Direct syscalls for `mmap`, CPU affinity, NUMA topology
+
+=== Phase 4: Allocation Elimination
+
+The final pass targeted per-message heap allocations and redundant computation:
+
+*Protocol layer* (`spine-protocol`):
+- Reusable `send_buf`/`read_buf`/`latent_buf` per connection, eliminating 8 heap allocations per message
+- Single-pass `serde_json::to_writer` replacing double serialization (serialize-then-serialize)
+- Adaptive compression with 1-byte flag protocol (`0x01`=zstd, `0x00`=raw), skipping payloads under 64 bytes
+- Stack-allocated frame headers (`[u8; 16]`) and latent signatures (`[f32; 8]`) replacing `Vec`
+- `std::mem::take` replacing `clone` in speculation miss path
+
+*Core engine* (`spine-core`):
+- `RwLock` encoder for concurrent session reads (was `Mutex`)
+- Cached `WasmRuntime` singleton (was per-request `WasmRuntime::new()`)
+- Per-domain `NeuralProtocol` cache via `DashMap` (was per-request allocation)
+- Session-level `UnifiedRepresentation` cache (invalidated on navigation)
+- `tokio::fs` async file I/O for session persistence (was blocking `std::fs`)
+
+*Parser* (`spine-parser`):
+- `OnceLock<Selector>` for CSS selectors (compile once, reuse forever)
+- Single-pass `String::push_str` text extraction (was `Vec<String>` + `join`)
+
+*Knowledge* (`spine-knowledge`):
+- Single-pass cosine similarity with 3 accumulators (~3× less memory traffic)
+- `select_nth_unstable_by` partial sort for top-$k$ retrieval ($O(n)$ average vs $O(n log n)$ full sort)
+
+*Streaming* (`spine-stream`):
+- `BatchingStream` waker registration for deadline-based partial batch emission
+
+=== Optimization Impact
+
+#figure(
+  table(
+    columns: (auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Optimization*], [*Before*], [*After*],
+    [Latent serialize], [1.8 GiB/s (JSON)], [22.3 GiB/s (binary)],
+    [Frame decode], [~60 GiB/s], [86 GiB/s (zero-copy)],
+    [Neural forward pass], [Baseline], [25--40% faster (scratch bufs)],
+    [Per-message allocs], [8 heap allocs], [0 (buffer reuse)],
+    [Cosine similarity], [Two-pass], [Single-pass (3× less traffic)],
+    [Top-$k$ retrieval], [$O(n log n)$], [$O(n)$ avg],
+    [CSS selector compile], [Per-parse], [Once (OnceLock)],
+  ),
+  caption: [Phase 1--4 optimization impact summary],
+)
+
+= Security Architecture
+
+SPINE employs defense-in-depth with explicit adversary modeling and graduated security levels.
+
+== Adversary Model
+
+We define four adversary tiers with escalating capabilities:
+
+#figure(
+  table(
+    columns: (auto, 1fr, 1fr),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Tier*], [*Capabilities*], [*Mitigations*],
+    [1: Passive], [Packet capture, timing analysis], [TLS 1.3, latent encoding, Chameleon],
+    [2: Active MITM], [Packet injection, replay], [X3DH key exchange, forward secrecy, MACs],
+    [3: Compromised Node], [Full access to one node], [Sybil resistance, reputation, key rotation],
+    [4: Nation-State], [Quantum computing], [Optional RLWE, hybrid X25519+RLWE],
+  ),
+  caption: [Adversary tiers and mitigations],
+)
+
+== X3DH Key Exchange
+
+Initial trust establishment uses Extended Triple Diffie-Hellman (X3DH), adapted from the Signal Protocol:
+
+1. *Identity keys*: Long-lived Ed25519 keys registered with a directory service
+2. *Signed pre-keys*: Medium-term X25519 keys signed by identity key
+3. *Ephemeral keys*: Per-session X25519 keys for forward secrecy
+
+The shared secret derives from three DH computations:
+$ S = "KDF"("DH"("IK"_A, "SPK"_B) || "DH"("EK"_A, "IK"_B) || "DH"("EK"_A, "SPK"_B)) $
+
+This ensures mutual authentication and forward secrecy without requiring both parties online simultaneously. *Assumption*: the directory service is honest (standard in Signal-type systems).
+
+== Sybil Resistance
+
+Distributed consensus is vulnerable to Sybil attacks where an adversary creates many fake identities. SPINE employs three complementary defenses:
+
+*Stake-weighted voting*: Nodes must stake tokens proportional to desired voting power. The consensus threshold requires $2/3$ majority by stake weight:
+$ "accept"(f) arrow.l.r.double sum_(n in "voters"(f)) "stake"(n) >= 2/3 sum_(n in N) "stake"(n) $
+
+*Node reputation*: New nodes begin with minimal influence. Reputation accrues through correct predictions and honest behavior, decays through detected misbehavior.
+
+*Proof-of-work for identity*: Creating a new identity requires solving a computational puzzle, making mass identity creation expensive.
+
+== Security Levels
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    stroke: 0.5pt,
+    [*Level*], [*Key Exchange*], [*Encryption*], [*Use Case*],
+    [Standard], [X25519], [ChaCha20-Poly1305], [Most applications],
+    [Hardened], [X25519 + RLWE], [ChaCha20-Poly1305], [High-value targets],
+    [PostQuantum], [RLWE only], [ChaCha20-Poly1305], [Future-proofing],
+  ),
+  caption: [Graduated security levels],
+)
+
+*Explicit limitations*: RLWE quantum resistance is conjectured, not proven. The system provides no anonymity guarantees (IP addresses visible to peers). Side-channel resistance is incomplete (timing attacks remain possible).
+
 = Mathematical Foundations
 
 We provide rigorous mathematical analysis demonstrating complexity and security properties of SPINE's architecture. Results are classified as *Theorems* (rigorous proofs), *Propositions* (standard assumptions), or *Observations* (empirical).
@@ -1577,6 +1714,8 @@ SPINE is implemented in Rust (2021 edition):
 - *criterion*: Statistical benchmarking
 - *scraper/ego-tree*: HTML parsing
 - *nom*: Parser combinators
+- *bytemuck/bincode*: Zero-copy binary serialization
+- *zstd*: Adaptive payload compression
 
 == Build Optimizations
 
@@ -1591,12 +1730,26 @@ strip = true
 
 *Results*: 30% binary reduction (20.6 MB to 14.4 MB)
 
+== Optimization Methodology
+
+Four optimization phases were applied systematically:
+
+1. *Static analysis*: 121 Clippy fixes (iterator patterns, match simplification)
+2. *Data representation*: Binary serialization, zero-copy framing, SIMD-friendly layouts
+3. *Kernel primitives*: SIMD intrinsics, custom allocators, lock-free ring buffers
+4. *Hot-path elimination*: Buffer reuse, caching, single-pass algorithms, stack allocation
+
+Each phase was validated against the full test suite (218 tests) with 0 regressions and 0 Clippy warnings.
+
 == Test Coverage
 
 - 218 unit and integration tests
 - 17 crates with full API coverage
 - Criterion benchmarks for all hot paths
 - Property-based testing for protocol correctness
+- 12 dedicated RLWE security tests
+- 3 Sybil resistance tests
+- Real TCP I/O benchmarks (not simulated)
 
 = Related Work
 
@@ -1847,6 +2000,10 @@ The complete implementation is available as open-source code at github.com/nervo
 [10] #text(style: "italic")[wasmtime: A Fast and Secure Runtime for WebAssembly.] Bytecode Alliance, 2024.
 
 [11] #text(style: "italic")[Recursive Language Models.] Zhang, Kraska, Khattab. arXiv:2512.24601, 2025.
+
+[12] #text(style: "italic")[The Sybil Attack.] Douceur, IPTPS, 2002.
+
+[13] #text(style: "italic")[The X3DH Key Agreement Protocol.] Marlinspike, Perrin. Signal Foundation, 2016.
 
 #v(1fr)
 
