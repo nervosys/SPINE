@@ -2,78 +2,78 @@
 // arXiv-style Typst document - Expanded Version
 
 #set document(
-title: "SPINE: A Headless Semantic Browser with Adaptive Encryption for AI Agents",
-author: "Adam Erickson",
+  title: "SPINE: A Headless Semantic Browser with Adaptive Encryption for AI Agents",
+  author: "Adam Erickson",
 )
 
 #set page(
-paper: "us-letter",
-margin: (x: 1in, y: 1in),
-numbering: "1",
+  paper: "us-letter",
+  margin: (x: 1in, y: 1in),
+  numbering: "1",
 )
 
 #set text(
-font: "New Computer Modern",
-size: 10pt,
+  font: "New Computer Modern",
+  size: 10pt,
 )
 
 #set par(
-justify: true,
-leading: 0.55em,
+  justify: true,
+  leading: 0.55em,
 )
 
 #set heading(numbering: "1.1")
 
 #show heading.where(level: 1): it => block(above: 1.4em, below: 0.8em)[
-#set text(size: 12pt, weight: "bold")
-#it
+  #set text(size: 12pt, weight: "bold")
+  #it
 ]
 
 #show heading.where(level: 2): it => block(above: 1.2em, below: 0.6em)[
-#set text(size: 10pt, weight: "bold")
-#it
+  #set text(size: 10pt, weight: "bold")
+  #it
 ]
 
 #show heading.where(level: 3): it => block(above: 1em, below: 0.5em)[
-#set text(size: 10pt, weight: "bold", style: "italic")
-#it
+  #set text(size: 10pt, weight: "bold", style: "italic")
+  #it
 ]
 
 // Title
 #align(center)[
-#block(text(weight: "bold", size: 16pt)[
-  SPINE: A Headless Semantic Browser with Adaptive Encryption for AI Agents
-])
+  #block(text(weight: "bold", size: 16pt)[
+    SPINE: A Headless Semantic Browser with Adaptive Encryption for AI Agents
+  ])
 
-#v(0.5em)
+  #v(0.5em)
 
-#text(size: 11pt)[Adam Erickson]
+  #text(size: 11pt)[Adam Erickson]
 
-#v(0.2em)
+  #v(0.2em)
 
-#text(size: 10pt)[NERVOSYS]
+  #text(size: 10pt)[NERVOSYS]
 
-#v(0.2em)
+  #v(0.2em)
 
-#text(size: 9pt)[research\@nervosys.ai]
+  #text(size: 9pt)[research\@nervosys.ai]
 
-#v(0.3em)
+  #v(0.3em)
 
-#text(size: 9pt, style: "italic")[February 2026 (v1.2)]
+  #text(size: 9pt, style: "italic")[February 2026 (v1.2)]
 ]
 
 #v(1em)
 
 // Abstract
 #block(
-width: 100%,
-inset: (x: 0.5in),
+  width: 100%,
+  inset: (x: 0.5in),
 )[
-#align(center)[#text(weight: "bold")[Abstract]]
-#v(0.3em)
-#text(size: 9pt)[
-  We present SPINE (Synaptic Path INterconnecting Entities), a *headless semantic browser with adaptive encryption* designed for autonomous AI agents. SPINE is not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based anomaly detection* for pattern adaptation (not learning new concepts); (5) *Recursive Language Models* for extended context retrieval (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with Sybil-resistant stake-weighted consensus; (7) *optional quantum-resistant cryptography* using Ring-LWE lattices (security conjectured); and (8) *ultra-low-level kernel primitives* providing SIMD-accelerated operations, sub-nanosecond allocators, and lock-free data structures. Benchmarks demonstrate 533× lower latency and 620× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. Ultra-low-level kernel primitives achieve 56 GiB/s dot products, 420 ps allocations, and 920M ring buffer ops/sec. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 17 Rust crates totaling ~54,000 lines of code with 218 passing tests.
-]
+  #align(center)[#text(weight: "bold")[Abstract]]
+  #v(0.3em)
+  #text(size: 9pt)[
+    We present SPINE (Synaptic Path INterconnecting Entities), a *headless semantic browser with adaptive encryption* designed for autonomous AI agents. SPINE is not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based anomaly detection* for pattern adaptation (not learning new concepts); (5) *Recursive Language Models* for extended context retrieval (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with Sybil-resistant stake-weighted consensus; (7) *optional quantum-resistant cryptography* using Ring-LWE lattices (security conjectured); and (8) *ultra-low-level kernel primitives* providing SIMD-accelerated operations, sub-nanosecond allocators, and lock-free data structures. Benchmarks demonstrate 533× lower latency and 620× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. Ultra-low-level kernel primitives achieve 56 GiB/s dot products, 420 ps allocations, and 920M ring buffer ops/sec. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 17 Rust crates totaling ~54,000 lines of code with 218 passing tests.
+  ]
 ]
 
 #v(1em)
@@ -288,49 +288,49 @@ A typical agent interaction flows through the stack as follows:
   )[
     #set text(size: 7pt, font: "Consolas")
     ```
-                            ┌────────────┐
-                            │  browser   │←──────────────┐
-                            └─────┬──────┘               │
-                                  │                      │
-                            ┌─────▼──────┐         ┌─────┴──────┐
-                            │   agent    │         │   human    │
-                            └─────┬──────┘         └────────────┘
+                               ┌────────────┐
+                               │  browser   │←──────────────┐
+                               └─────┬──────┘               │
+                                     │                      │
+                               ┌─────▼──────┐         ┌─────┴──────┐
+                               │   agent    │         │   human    │
+                               └─────┬──────┘         └────────────┘
+                                     │
+         ┌───────────────────────────┼───────────────────────────┐
+         │                           │                           │
+         ▼                           ▼                           ▼
+    ┌─────────┐               ┌─────────────┐             ┌──────────┐
+    │ agentic │◄──────────────│    core     │────────────►│ compiler │
+    └────┬────┘               └──────┬──────┘             └────┬─────┘
+         │                           │                         │
+         │    ┌──────────┐           │    ┌─────────┐          │
+         └───►│ cluster  │           ├───►│ parser  │          │
+              └────┬─────┘           │    └─────────┘          ▼
+                   │                 │                    ┌─────────┐
+                   │                 │                    │  wasm   │
+                   ▼                 ▼                    └─────────┘
+              ┌─────────┐      ┌───────────┐
+              │knowledge│      │ recursive │
+              └────┬────┘      └─────┬─────┘
+                   │                 │
+         ┌─────────┼─────────────────┼─────────────────────┐
+         │         │                 │                     │
+         ▼         ▼                 ▼                     ▼
+    ┌─────────┐ ┌──────────┐  ┌──────────┐          ┌───────────┐
+    │ neural  │ │ protocol │  │  stream  │◄────────►│ transport │
+    └────┬────┘ └────┬─────┘  └────┬─────┘          └─────┬─────┘
+         │           │             │                      │
+         └───────────┴─────────────┴──────────────────────┘
+                                   │
+                                   ▼
+                             ┌──────────┐
+                             │  crypto  │
+                             └────┬─────┘
                                   │
-      ┌───────────────────────────┼───────────────────────────┐
-      │                           │                           │
-      ▼                           ▼                           ▼
- ┌─────────┐               ┌─────────────┐             ┌──────────┐
- │ agentic │◄──────────────│    core     │────────────►│ compiler │
- └────┬────┘               └──────┬──────┘             └────┬─────┘
-      │                           │                         │
-      │    ┌──────────┐           │    ┌─────────┐          │
-      └───►│ cluster  │           ├───►│ parser  │          │
-           └────┬─────┘           │    └─────────┘          ▼
-                │                 │                    ┌─────────┐
-                │                 │                    │  wasm   │
-                ▼                 ▼                    └─────────┘
-           ┌─────────┐      ┌───────────┐
-           │knowledge│      │ recursive │
-           └────┬────┘      └─────┬─────┘
-                │                 │
-      ┌─────────┼─────────────────┼─────────────────────┐
-      │         │                 │                     │
-      ▼         ▼                 ▼                     ▼
- ┌─────────┐ ┌──────────┐  ┌──────────┐          ┌───────────┐
- │ neural  │ │ protocol │  │  stream  │◄────────►│ transport │
- └────┬────┘ └────┬─────┘  └────┬─────┘          └─────┬─────┘
-      │           │             │                      │
-      └───────────┴─────────────┴──────────────────────┘
-                                │
-                                ▼
-                          ┌──────────┐
-                          │  crypto  │
-                          └────┬─────┘
-                               │
-                               ▼
-                          ┌──────────┐
-                          │  kernel  │
-                          └──────────┘
+                                  ▼
+                             ┌──────────┐
+                             │  kernel  │
+                             └──────────┘
     ```
   ],
   caption: [Crate dependency graph showing inter-crate relationships],
@@ -2008,7 +2008,7 @@ The complete implementation is available as open-source code at github.com/nervo
 #v(1fr)
 
 #align(center)[
-#text(size: 8pt, style: "italic")[NOTICE: This research was accelerated by AI.]
+  #text(size: 8pt, style: "italic")[NOTICE: This research was accelerated by AI.]
 ]
 
 
