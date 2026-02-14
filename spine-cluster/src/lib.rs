@@ -2,7 +2,9 @@
 #![allow(dead_code)]
 
 pub mod sybil;
+pub mod marketplace;
 pub use sybil::{NodeReputation, StakeWeightedConsensus};
+pub use marketplace::*;
 
 // =============================================================================
 // SPINE CLUSTER - Distributed Agent Coordination

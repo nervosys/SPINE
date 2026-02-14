@@ -44,7 +44,9 @@ pub mod congestion;
 pub mod connection;
 pub mod frame;
 pub mod metrics;
+pub mod plugin;
 pub mod pool;
+pub mod websocket;
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub mod uring;
@@ -55,7 +57,9 @@ pub use congestion::*;
 pub use connection::*;
 pub use frame::*;
 pub use metrics::*;
+pub use plugin::*;
 pub use pool::*;
+pub use websocket::*;
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub use uring::*;

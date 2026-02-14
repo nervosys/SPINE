@@ -10,6 +10,7 @@ use spine_parser::parse_html;
 use spine_wasm::WasmRuntime;
 use spine_neural::NeuralLatentEncoder;
 use spine_cluster::{ClusterNode, NodeCapabilities};
+use spine_transport::WebSocketStream;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use dashmap::DashMap;
@@ -1321,7 +1322,47 @@ async fn main() -> Result<()> {
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = TcpListener::bind(&addr).await?;
-    info!("Listening on {}", addr);
+    info!("TCP listening on {}", addr);
+
+    // WebSocket listener on port+1
+    let ws_port: u16 = port.parse::<u16>().unwrap() + 1;
+    let ws_addr = format!("127.0.0.1:{}", ws_port);
+    let ws_listener = TcpListener::bind(&ws_addr).await?;
+    info!("WebSocket listening on ws://{}", ws_addr);
+
+    // QUIC listener on port+2
+    #[cfg(feature = "quic")]
+    let quic_port: u16 = port.parse::<u16>().unwrap() + 2;
+    #[cfg(feature = "quic")]
+    {
+        let quic_addr: std::net::SocketAddr = format!("127.0.0.1:{}", quic_port).parse().unwrap();
+        let quic_builder = spine_protocol::QuicEndpointBuilder::new();
+        let quic_endpoint = quic_builder.build_server(quic_addr)?;
+        info!("QUIC listening on {}", quic_addr);
+
+        let quic_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            while let Some(incoming) = quic_endpoint.accept().await {
+                let quic_state = Arc::clone(&quic_state);
+                tokio::spawn(async move {
+                    match incoming.await {
+                        Ok(connection) => {
+                            info!("New QUIC connection from {}", connection.remote_address());
+                            match connection.accept_bi().await {
+                                Ok((send, recv)) => {
+                                    let stream = spine_transport::QuicStream::new(send, recv);
+                                    let mut handler = ProtocolHandler::new(stream);
+                                    handle_session(&mut handler, quic_state).await;
+                                }
+                                Err(e) => error!("QUIC stream accept failed: {}", e),
+                            }
+                        }
+                        Err(e) => error!("QUIC connection failed: {}", e),
+                    }
+                });
+            }
+        });
+    }
 
     // TLS setup
     let tls_acceptor = if std::env::var("SPINE_TLS").unwrap_or_default() == "1" {
@@ -1341,28 +1382,51 @@ async fn main() -> Result<()> {
     };
 
     loop {
-        let (socket, addr) = listener.accept().await?;
-        let span = span!(Level::INFO, "connection", remote_addr = %addr);
-        let _enter = span.enter();
-        info!("New connection from {}", addr);
+        tokio::select! {
+            // Accept TCP connections
+            result = listener.accept() => {
+                let (socket, addr) = result?;
+                let span = span!(Level::INFO, "connection", remote_addr = %addr, transport = "tcp");
+                let _enter = span.enter();
+                info!("New TCP connection from {}", addr);
 
-        let state = Arc::clone(&state);
-        let tls_acceptor = tls_acceptor.clone();
-        
-        tokio::spawn(async move {
-            if let Some(acceptor) = tls_acceptor {
-                match acceptor.accept(socket).await {
-                    Ok(tls_stream) => {
-                        let mut handler = ProtocolHandler::new(tls_stream);
+                let state = Arc::clone(&state);
+                let tls_acceptor = tls_acceptor.clone();
+
+                tokio::spawn(async move {
+                    if let Some(acceptor) = tls_acceptor {
+                        match acceptor.accept(socket).await {
+                            Ok(tls_stream) => {
+                                let mut handler = ProtocolHandler::new(tls_stream);
+                                handle_session(&mut handler, state).await;
+                            }
+                            Err(e) => error!("TLS handshake failed: {}", e),
+                        }
+                    } else {
+                        let mut handler = ProtocolHandler::new(socket);
                         handle_session(&mut handler, state).await;
                     }
-                    Err(e) => error!("TLS handshake failed: {}", e),
-                }
-            } else {
-                let mut handler = ProtocolHandler::new(socket);
-                handle_session(&mut handler, state).await;
+                });
             }
-        });
+
+            // Accept WebSocket connections
+            result = ws_listener.accept() => {
+                let (socket, addr) = result?;
+                info!("New WebSocket connection from {}", addr);
+
+                let state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    match spine_transport::WebSocketServerBridge::accept(socket).await {
+                        Ok(bridge) => {
+                            let stream = WebSocketStream::new(bridge);
+                            let mut handler = ProtocolHandler::new(stream);
+                            handle_session(&mut handler, state).await;
+                        }
+                        Err(e) => error!("WebSocket upgrade failed: {}", e),
+                    }
+                });
+            }
+        }
     }
 }
 

@@ -755,6 +755,12 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Zero-Copy Message Pooling** (power-of-2 size classes for efficient reuse)
 - [x] **Compact Binary Protocol** (28-byte headers, minimal overhead)
 - [x] **Full LTO Optimization** (30% binary size reduction)
+- [x] **Transport Plugin System** (composable pipeline: metrics, rate-limiting, logging, tagging, size-limiting)
+- [x] **WebSocket Bridge** (client/server `AsyncRead+AsyncWrite` adapters for `ProtocolHandler`)
+- [x] **Multi-Transport Server** (`tokio::select!` TCP + WebSocket + QUIC accept loop)
+- [x] **Agent `connect_ws()`** (WebSocket transport for `AgentClient`)
+- [x] **QUIC Server Integration** (feature-gated `quinn` endpoint)
+- [x] **Agent Capability Marketplace** (decentralized registry, discovery, bidding, contracts, reputation, audit log)
 
 ## Adversarial Multi-Agent Intelligence
 

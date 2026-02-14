@@ -105,6 +105,27 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
     }
 }
 
+impl AgentClient<spine_transport::WebSocketClientStream> {
+    /// Connect to a SPINE server over WebSocket.
+    ///
+    /// `url` should be a `ws://` or `wss://` URL, e.g. `ws://127.0.0.1:3001`.
+    pub async fn connect_ws(url: &str) -> anyhow::Result<Self> {
+        let bridge = spine_transport::WebSocketBridge::connect(url)
+            .await
+            .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
+        let stream = spine_transport::WebSocketClientStream::new(bridge);
+        let handler = ProtocolHandler::new(stream);
+        Ok(Self {
+            handler,
+            request_counter: 0,
+            latent_tx: None,
+            event_tx: None,
+            human_engine: None,
+            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
+        })
+    }
+}
+
 impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,

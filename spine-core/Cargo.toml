@@ -15,6 +15,7 @@ spine-neural = { path = "../spine-neural" }
 spine-human = { path = "../spine-human" }
 spine-cluster = { path = "../spine-cluster" }
 spine-agentic = { path = "../spine-agentic" }
+spine-transport = { path = "../spine-transport" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -38,5 +39,5 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
 
-
-
+[features]
+quic = []

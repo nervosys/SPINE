@@ -10,7 +10,7 @@ default = ["tcp", "quic"]
 tcp = []
 quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 io-uring = ["dep:tokio-uring", "dep:io-uring"]
-dpdk = []                                                                    # Future: kernel bypass networking
+dpdk = []                                                 # Future: kernel bypass networking
 
 [dependencies]
 # Core async runtime
@@ -73,9 +73,12 @@ metrics = "0.21" # Metrics collection
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
-parking_lot = "0.12"                                   # Fast synchronization primitives
-crossbeam-channel = "0.5"                              # Lock-free channels
-crossbeam-queue = "0.3"                                # Lock-free queues
+parking_lot = "0.12"                                 # Fast synchronization primitives
+crossbeam-channel = "0.5"                            # Lock-free channels
+crossbeam-queue = "0.3"                              # Lock-free queues
+
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 # Internal dependencies
 spine-protocol = { path = "../spine-protocol" }
@@ -96,6 +99,3 @@ harness = false
 [[bench]]
 name = "traditional_comparison"
 harness = false
-
-
-

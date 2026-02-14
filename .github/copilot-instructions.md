@@ -111,6 +111,18 @@
 - [x] **Partial sort retrieval**: `select_nth_unstable_by` O(n) avg replacing O(n log n) full sort
 - [x] **Reactive stream deadline**: BatchingStream waker registration for partial batch emission
 
+### Phase 5: Protocol Evolution ✅
+
+- [x] **Transport plugin system**: Composable `TransportPlugin` trait with ordered pipeline (forward-send, reverse-recv)
+- [x] **Built-in plugins**: MetricsPlugin, RateLimiterPlugin, TaggingPlugin, LoggingPlugin, SizeLimiterPlugin
+- [x] **WebSocket bridge**: Client/server bridges with `AsyncRead + AsyncWrite` adapters for ProtocolHandler
+- [x] **WebSocket client stream**: `WebSocketClientStream` for agent→server connections over ws://wss://
+- [x] **Multi-transport server**: `tokio::select!` accept loop for TCP + WebSocket (+ QUIC via feature flag)
+- [x] **Agent `connect_ws()`**: WebSocket transport for `AgentClient` alongside existing TCP/TLS
+- [x] **QUIC server integration**: Conditional QUIC listener with `quinn` endpoint (feature-gated)
+- [x] **Agent capability marketplace**: Decentralized registry with discovery, bidding, contracts, reputation, audit log
+- [x] **245 tests passing**: +27 tests (14 marketplace + 10 plugin + 2 WebSocket + 1 transport)
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
@@ -136,12 +148,12 @@
 - `spine-agentic`: Advanced agentic AI framework with swarm intelligence
 - `spine-compiler`: HLS → HLB compiler
 - `spine-wasm`: WebAssembly runtime
-- `spine-cluster`: Distributed coordination with Sybil resistance
+- `spine-cluster`: Distributed coordination with Sybil resistance + agent capability marketplace
 - `spine-neural`: Neural network-based encoding with MIRAS variants
 - `spine-crypto`: Titans prediction + quantum cryptography + X3DH key exchange
 - `spine-human`: Legacy web bridge for bot-detection bypass
 - `spine-browser`: Cross-platform GUI browser with egui
-- `spine-transport`: High-performance zero-copy transport layer with BBR congestion control
+- `spine-transport`: High-performance zero-copy transport with BBR congestion, WebSocket bridge, plugin system
 - `spine-stream`: Reactive streaming with multiplexing, flow control, and priority queuing
 - `spine-recursive`: Recursive Language Model for infinite context (10M+ chars) based on arXiv:2512.24601
 - `spine-knowledge`: Unified bioinspired memory (episodic/semantic/working/collective) with CRDT-based distributed knowledge base

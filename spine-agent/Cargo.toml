@@ -13,6 +13,7 @@ spine-wasm = { path = "../spine-wasm" }
 spine-cluster = { path = "../spine-cluster" }
 spine-human = { path = "../spine-human" }
 spine-agentic = { path = "../spine-agentic" }
+spine-transport = { path = "../spine-transport" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -24,6 +25,3 @@ tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
 rustls-native-certs = "0.6"
 uuid = { version = "1", features = ["v4", "serde"] }
-
-
-
