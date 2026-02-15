@@ -36,6 +36,58 @@ impl AgentClient<TcpStream> {
             neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
+
+    /// Connect with exponential backoff retry.
+    ///
+    /// Retries up to `max_retries` times, starting with `base_delay` and doubling
+    /// each attempt (capped at 60 seconds). Returns the connected client or the
+    /// last connection error.
+    ///
+    /// # Example
+    /// ```no_run
+    /// # async fn demo() {
+    /// let client = spine_agent::AgentClient::connect_with_retry(
+    ///     "127.0.0.1:8080", 5, std::time::Duration::from_millis(500)
+    /// ).await.unwrap();
+    /// # }
+    /// ```
+    pub async fn connect_with_retry(
+        addr: &str,
+        max_retries: u32,
+        base_delay: std::time::Duration,
+    ) -> anyhow::Result<Self> {
+        let mut delay = base_delay;
+        let max_delay = std::time::Duration::from_secs(60);
+
+        for attempt in 0..=max_retries {
+            match Self::connect(addr).await {
+                Ok(client) => {
+                    if attempt > 0 {
+                        eprintln!("[spine-agent] Reconnected on attempt {}", attempt + 1);
+                    }
+                    return Ok(client);
+                }
+                Err(e) => {
+                    if attempt == max_retries {
+                        return Err(anyhow::anyhow!(
+                            "Failed to connect after {} attempts: {}",
+                            max_retries + 1,
+                            e
+                        ));
+                    }
+                    eprintln!(
+                        "[spine-agent] Connection attempt {} failed: {}. Retrying in {:?}...",
+                        attempt + 1,
+                        e,
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(max_delay);
+                }
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {

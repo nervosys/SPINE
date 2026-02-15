@@ -35,6 +35,7 @@ opentelemetry_sdk.workspace = true
 prometheus.workspace = true
 lazy_static.workspace = true
 axum = "0.6"
+toml = "0.8"
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true

@@ -19,9 +19,11 @@ use serde::{Serialize, Deserialize};
 use axum::{routing::get, Router};
 use prometheus::{Encoder, TextEncoder};
 
+mod config;
 mod vdom;
 mod telemetry;
 mod tls;
+use config::SpineConfig;
 use vdom::VirtualDom;
 use telemetry::*;
 use tls::*;
@@ -104,6 +106,16 @@ struct BrowserState {
     wasm_runtime: spine_wasm::WasmRuntime,
     /// Cached NeuralProtocol per domain (avoids re-allocating neural weights per request)
     neural_protocols: DashMap<String, spine_agentic::NeuralProtocol>,
+    /// Active connection count per IP address
+    connections_per_ip: DashMap<std::net::IpAddr, std::sync::atomic::AtomicUsize>,
+    /// Total active connection count
+    active_connections: std::sync::atomic::AtomicUsize,
+    /// Server start time for uptime calculation
+    start_time: std::time::Instant,
+    /// Shutdown signal: when true, stop accepting new connections
+    shutting_down: std::sync::atomic::AtomicBool,
+    /// Server configuration
+    config: SpineConfig,
 }
 
 impl BrowserState {
@@ -891,20 +903,24 @@ async fn handle_command(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let config = SpineConfig::load();
     init_telemetry("spine-core")?;
     info!("Starting SPINE Agentic Browser...");
+    info!("Config: host={}, port={}, max_sessions={}, tls={}",
+        config.server.host, config.server.port,
+        config.server.max_sessions, config.tls.enabled);
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let cluster_port = port.parse::<u16>().unwrap() + 1000;
-    let cluster_addr = format!("127.0.0.1:{}", cluster_port).parse().unwrap();
+    let port = config.server.port;
+    let cluster_port = port + config.cluster.port_offset;
+    let cluster_addr = format!("{}:{}", config.server.host, cluster_port).parse().unwrap();
     
     let capabilities = NodeCapabilities {
         supports_wasm: true,
         supports_chameleon: true,
         supports_speculation: true,
-        max_sessions: 100,
-        region: Some("us-west".to_string()),
-        skills: vec!["research".to_string(), "synthesis".to_string(), "scraping".to_string()],
+        max_sessions: config.server.max_sessions,
+        region: Some(config.cluster.region.clone()),
+        skills: config.cluster.skills.clone(),
     };
 
     let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
@@ -933,6 +949,11 @@ async fn main() -> Result<()> {
         rate_limits: DashMap::new(),
         wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
         neural_protocols: DashMap::new(),
+        connections_per_ip: DashMap::new(),
+        active_connections: std::sync::atomic::AtomicUsize::new(0),
+        start_time: std::time::Instant::now(),
+        shutting_down: std::sync::atomic::AtomicBool::new(false),
+        config: config.clone(),
     });
 
     // Load persisted sessions
@@ -944,8 +965,9 @@ async fn main() -> Result<()> {
 
     // Start session persistence task
     let persistence_state = state.clone();
+    let persist_secs = config.server.persistence_interval_secs;
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(persist_secs));
         loop {
             interval.tick().await;
             if let Err(e) = persistence_state.save_sessions().await {
@@ -956,8 +978,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start metrics server
+    // Start metrics & health server
     let metrics_state = state.clone();
+    let health_state = state.clone();
+    let ready_state = state.clone();
     let metrics_app = Router::new()
         .route("/metrics", get(|| async {
             let encoder = TextEncoder::new();
@@ -965,6 +989,52 @@ async fn main() -> Result<()> {
             let mut buffer = vec![];
             encoder.encode(&metric_families, &mut buffer).unwrap();
             String::from_utf8(buffer).unwrap()
+        }))
+        .route("/health", get(move || {
+            let state = health_state.clone();
+            async move {
+                let uptime = state.start_time.elapsed().as_secs();
+                let active = state.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                let sessions = state.sessions.len();
+                let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
+
+                let status = if shutting_down { "draining" } else { "healthy" };
+                let code = if shutting_down { 503u16 } else { 200 };
+
+                let body = serde_json::json!({
+                    "status": status,
+                    "uptime_secs": uptime,
+                    "active_connections": active,
+                    "sessions": sessions,
+                    "version": env!("CARGO_PKG_VERSION"),
+                });
+
+                (
+                    axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::OK),
+                    axum::response::Json(body),
+                )
+            }
+        }))
+        .route("/ready", get(move || {
+            let state = ready_state.clone();
+            async move {
+                let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
+                let sessions = state.sessions.len();
+                let max = state.config.server.max_sessions;
+                let ready = !shutting_down && sessions < max;
+
+                let body = serde_json::json!({
+                    "ready": ready,
+                    "sessions": sessions,
+                    "max_sessions": max,
+                });
+
+                let code = if ready { 200u16 } else { 503 };
+                (
+                    axum::http::StatusCode::from_u16(code).unwrap_or(axum::http::StatusCode::OK),
+                    axum::response::Json(body),
+                )
+            }
         }))
         .route("/dashboard", get(move || {
             let state = metrics_state.clone();
@@ -986,9 +1056,10 @@ async fn main() -> Result<()> {
             }
         }));
 
+    let metrics_port = config.server.metrics_port;
     tokio::spawn(async move {
-        let addr = "0.0.0.0:9090".parse().unwrap();
-        info!("Metrics & Dashboard server listening on {}", addr);
+        let addr: std::net::SocketAddr = format!("0.0.0.0:{}", metrics_port).parse().unwrap();
+        info!("Health & metrics server on http://{}", addr);
         axum::Server::bind(&addr)
             .serve(metrics_app.into_make_service())
             .await
@@ -1320,22 +1391,22 @@ async fn main() -> Result<()> {
         }
     });
 
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("{}:{}", config.server.host, port);
     let listener = TcpListener::bind(&addr).await?;
     info!("TCP listening on {}", addr);
 
-    // WebSocket listener on port+1
-    let ws_port: u16 = port.parse::<u16>().unwrap() + 1;
-    let ws_addr = format!("127.0.0.1:{}", ws_port);
+    // WebSocket listener on port + offset
+    let ws_port = port + config.server.ws_port_offset;
+    let ws_addr = format!("{}:{}", config.server.host, ws_port);
     let ws_listener = TcpListener::bind(&ws_addr).await?;
     info!("WebSocket listening on ws://{}", ws_addr);
 
-    // QUIC listener on port+2
+    // QUIC listener on port + offset
     #[cfg(feature = "quic")]
-    let quic_port: u16 = port.parse::<u16>().unwrap() + 2;
+    let quic_port = port + config.server.quic_port_offset;
     #[cfg(feature = "quic")]
     {
-        let quic_addr: std::net::SocketAddr = format!("127.0.0.1:{}", quic_port).parse().unwrap();
+        let quic_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, quic_port).parse().unwrap();
         let quic_builder = spine_protocol::QuicEndpointBuilder::new();
         let quic_endpoint = quic_builder.build_server(quic_addr)?;
         info!("QUIC listening on {}", quic_addr);
@@ -1364,33 +1435,147 @@ async fn main() -> Result<()> {
         });
     }
 
-    // TLS setup
-    let tls_acceptor = if std::env::var("SPINE_TLS").unwrap_or_default() == "1" {
-        let cert_path = std::path::Path::new("certs/cert.pem");
-        let key_path = std::path::Path::new("certs/key.pem");
-        let ca_path = std::path::Path::new("certs/ca.pem");
+    // TLS setup (uses config with env-var override)
+    let tls_acceptor = if config.tls.enabled {
+        let cert_path = std::path::Path::new(&config.tls.cert_path);
+        let key_path = std::path::Path::new(&config.tls.key_path);
+        let ca_path = std::path::Path::new(&config.tls.ca_path);
         let ca_opt = if ca_path.exists() { Some(ca_path) } else { None };
-        
+
         if cert_path.exists() && key_path.exists() {
             Some(create_tls_acceptor(cert_path, key_path, ca_opt)?)
         } else {
-            info!("TLS enabled but certs not found at certs/. Falling back to plain TCP.");
+            info!("TLS enabled but certs not found at {}. Falling back to plain TCP.", config.tls.cert_path);
             None
         }
     } else {
         None
     };
 
+    // Watchdog: periodically reap idle sessions
+    let watchdog_state = Arc::clone(&state);
+    let watchdog_secs = config.server.session_watchdog_secs;
+    let idle_timeout = std::time::Duration::from_secs(config.server.idle_timeout_secs);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(watchdog_secs));
+        loop {
+            interval.tick().await;
+            let now = std::time::Instant::now();
+            let mut reaped = 0u32;
+            let ids_to_remove: Vec<String> = watchdog_state.sessions.iter()
+                .filter_map(|entry| {
+                    let session = entry.value();
+                    // Sessions with no recent command and past idle timeout
+                    if session.last_command.is_some() {
+                        // We don't have per-session timestamps yet, use a heuristic:
+                        // sessions in autonomous mode are kept alive
+                        if session.autonomous_mode { return None; }
+                    }
+                    // For now, reap sessions that have no URL and no commands (abandoned)
+                    if session.current_url.is_none() && session.last_command.is_none() && session.history.is_empty() {
+                        Some(entry.key().clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for id in ids_to_remove {
+                watchdog_state.sessions.remove(&id);
+                SESSIONS_ACTIVE.dec();
+                reaped += 1;
+            }
+            if reaped > 0 {
+                info!("Watchdog: reaped {} idle sessions, {} remaining", reaped, watchdog_state.sessions.len());
+            }
+            let _ = now; // suppress unused warning for future per-session timestamps
+            let _ = idle_timeout;
+        }
+    });
+
+    // Graceful shutdown signal
+    let shutdown_state = Arc::clone(&state);
+    let shutdown_timeout = std::time::Duration::from_secs(config.server.shutdown_timeout_secs);
+    let shutdown_notify = Arc::new(tokio::sync::Notify::new());
+    let shutdown_notify_signal = Arc::clone(&shutdown_notify);
+    tokio::spawn(async move {
+        // Wait for Ctrl+C
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            error!("Failed to listen for ctrl_c: {}", e);
+            return;
+        }
+        info!("Shutdown signal received — draining connections...");
+        shutdown_state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Save sessions before shutdown
+        if let Err(e) = shutdown_state.save_sessions().await {
+            error!("Failed to save sessions during shutdown: {}", e);
+        } else {
+            info!("Sessions persisted successfully");
+        }
+
+        // Wait for active connections to drain (up to timeout)
+        let deadline = tokio::time::Instant::now() + shutdown_timeout;
+        loop {
+            let active = shutdown_state.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+            if active == 0 {
+                info!("All connections drained");
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                warn!("Shutdown timeout — {} connections still active, forcing exit", active);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+
+        info!("SPINE server shut down");
+        shutdown_notify_signal.notify_one();
+    });
+
+    let max_per_ip = config.server.max_connections_per_ip;
+
     loop {
         tokio::select! {
+            // Shutdown gate
+            _ = shutdown_notify.notified() => {
+                info!("Accept loop terminated by shutdown signal");
+                break;
+            }
+
             // Accept TCP connections
             result = listener.accept() => {
                 let (socket, addr) = result?;
+
+                // Enforce per-IP connection limit
+                let ip = addr.ip();
+                let current = {
+                    let entry = state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
+                    entry.value().load(std::sync::atomic::Ordering::Relaxed)
+                };
+                if current >= max_per_ip {
+                    warn!("Per-IP limit reached for {} ({}/{}), rejecting", ip, current, max_per_ip);
+                    drop(socket);
+                    continue;
+                }
+
+                // Check shutdown flag
+                if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Rejecting connection during shutdown");
+                    drop(socket);
+                    continue;
+                }
+
                 let span = span!(Level::INFO, "connection", remote_addr = %addr, transport = "tcp");
                 let _enter = span.enter();
                 info!("New TCP connection from {}", addr);
 
-                let state = Arc::clone(&state);
+                // Track connection
+                state.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0))
+                    .value().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                let conn_state = Arc::clone(&state);
                 let tls_acceptor = tls_acceptor.clone();
 
                 tokio::spawn(async move {
@@ -1398,36 +1583,68 @@ async fn main() -> Result<()> {
                         match acceptor.accept(socket).await {
                             Ok(tls_stream) => {
                                 let mut handler = ProtocolHandler::new(tls_stream);
-                                handle_session(&mut handler, state).await;
+                                handle_session(&mut handler, conn_state.clone()).await;
                             }
                             Err(e) => error!("TLS handshake failed: {}", e),
                         }
                     } else {
                         let mut handler = ProtocolHandler::new(socket);
-                        handle_session(&mut handler, state).await;
+                        handle_session(&mut handler, conn_state.clone()).await;
                     }
+                    // Decrement counters on disconnect
+                    conn_state.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    conn_state.connections_per_ip.entry(ip).and_modify(|v| { v.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); });
                 });
             }
 
             // Accept WebSocket connections
             result = ws_listener.accept() => {
                 let (socket, addr) = result?;
+
+                let ip = addr.ip();
+                let current = {
+                    let entry = state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
+                    entry.value().load(std::sync::atomic::Ordering::Relaxed)
+                };
+                if current >= max_per_ip {
+                    warn!("Per-IP limit reached for {} (WS), rejecting", ip);
+                    drop(socket);
+                    continue;
+                }
+                if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
+                    drop(socket);
+                    continue;
+                }
+
                 info!("New WebSocket connection from {}", addr);
 
-                let state = Arc::clone(&state);
+                state.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0))
+                    .value().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                let conn_state = Arc::clone(&state);
                 tokio::spawn(async move {
                     match spine_transport::WebSocketServerBridge::accept(socket).await {
                         Ok(bridge) => {
                             let stream = WebSocketStream::new(bridge);
                             let mut handler = ProtocolHandler::new(stream);
-                            handle_session(&mut handler, state).await;
+                            handle_session(&mut handler, conn_state.clone()).await;
                         }
                         Err(e) => error!("WebSocket upgrade failed: {}", e),
                     }
+                    conn_state.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    conn_state.connections_per_ip.entry(ip).and_modify(|v| { v.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); });
                 });
             }
         }
     }
+
+    // Final session save on clean shutdown
+    if let Err(e) = state.save_sessions().await {
+        error!("Failed to save sessions on exit: {}", e);
+    }
+    info!("Server exited cleanly");
+    Ok(())
 }
 
 async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>) 
@@ -1447,7 +1664,7 @@ where
                 info!("Received request: {:?}", req);
                 
                 // 1. Check session limit for new sessions
-                if session_id.is_none() && state.sessions.len() >= 1000 {
+                if session_id.is_none() && state.sessions.len() >= state.config.server.max_sessions {
                     let _ = handler.send_message(&Message::Response(Response {
                         id: req.id,
                         result: None,

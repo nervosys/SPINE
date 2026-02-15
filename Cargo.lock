@@ -5387,6 +5387,7 @@ dependencies = [
  "spine-wasm",
  "tokio",
  "tokio-rustls",
+ "toml",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

@@ -123,6 +123,19 @@
 - [x] **Agent capability marketplace**: Decentralized registry with discovery, bidding, contracts, reputation, audit log
 - [x] **245 tests passing**: +27 tests (14 marketplace + 10 plugin + 2 WebSocket + 1 transport)
 
+### Phase 6: Production Hardening ✅
+
+- [x] **Configuration management**: TOML/env-based `SpineConfig` with layered overrides (`spine.toml` → env vars → defaults)
+- [x] **Health check endpoints**: `/health` (status, uptime, connections), `/ready` (session capacity), `/metrics` (Prometheus)
+- [x] **Graceful shutdown**: `tokio::signal::ctrl_c` handler with connection draining and configurable timeout
+- [x] **Connection limits**: Per-IP max connections enforcement, active connection tracking, reject during shutdown
+- [x] **Watchdog timer**: Background task reaping abandoned/idle sessions on configurable interval
+- [x] **Agent auto-reconnect**: `AgentClient::connect_with_retry()` with exponential backoff (capped at 60s)
+- [x] **Session persistence**: Automatic save on shutdown, config-driven persistence interval
+- [x] **SESSIONS_ACTIVE gauge**: Counter → IntGauge for accurate session tracking
+- [x] **Config-driven server**: All ports, hosts, timeouts, limits, TLS paths from config
+- [x] **249 tests passing**: +4 tests (3 config + 1 telemetry)
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
