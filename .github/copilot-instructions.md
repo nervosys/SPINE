@@ -158,6 +158,16 @@
 - [x] **Container images**: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway
 - [x] **329 tests passing**: +8 tests, 0 failures, 0 clippy warnings
 
+### Phase 9: GPU & Scale ✅
+
+- [x] **GPU-accelerated neural encoding** (`spine-gpu`): ComputeBackend trait, CpuBackend (SIMD 8-wide), WgpuBackend (WGSL shaders), GpuAccelerator auto-backend
+- [x] **Kubernetes operator** (`spine-k8s`): SpineClusterSpec CRD, CPU/memory/connection autoscaling, StatefulSet/Service/HPA manifests
+- [x] **Raft consensus** (`spine-cluster/raft`): Leader election, log replication, heartbeats, KvStateMachine, snapshot/restore
+- [x] **Persistent storage** (`spine-storage`): StorageBackend trait, InMemory/SQLite (WAL)/RocksDB (column families), TypedStorage wrapper
+- [x] **Tiered caching** (`spine-cache`): L1 in-memory LRU (TTL, byte limits), L2 file-backed, L3 remote trait, TieredCache with promotion-on-hit
+- [x] **Storage-knowledge integration**: PersistentKnowledge adapter for episodes, concepts, relations, entries
+- [x] **349 tests passing**: +20 tests, 0 failures, 0 clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
@@ -173,7 +183,7 @@
 | **SPSC Ring Push/Pop**       | **1.36 ns**      |
 | **RDTSC Read**               | **9.3 ns**       |
 
-### Workspace Structure (21 crates)
+### Workspace Structure (25 crates)
 
 - `spine-kernel`: Ultra-low-level hardware primitives (SIMD, allocators, atomics, ring buffers, RDTSC timing)
 - `spine-core`: Multi-session orchestration engine
@@ -194,5 +204,9 @@
 - `spine-knowledge`: Unified bioinspired memory (episodic/semantic/working/collective) with CRDT-based distributed knowledge base
 - `spine-cli`: CLI tool with init, connect, query, deploy, benchmark, status commands
 - `spine-gateway`: REST API gateway with OpenAPI/Swagger UI (axum + utoipa)
+- `spine-gpu`: GPU compute abstraction (CpuBackend SIMD, WgpuBackend WGSL shaders)
+- `spine-storage`: Persistent storage (InMemory, SQLite WAL, RocksDB LSM)
+- `spine-cache`: Tiered caching (L1 LRU, L2 file-backed, L3 remote)
+- `spine-k8s`: Kubernetes operator CRD, autoscaler, manifest generators
 - `spine-python`*: Python bindings via PyO3 + maturin (excluded from default build)
 - `spine-js`*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build)

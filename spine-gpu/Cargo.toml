@@ -1,0 +1,28 @@
+[package]
+name = "spine-gpu"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "GPU-accelerated neural encoding for SPINE"
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+bytemuck = { version = "1", features = ["derive"] }
+
+# wgpu for cross-platform GPU compute (Vulkan/Metal/DX12/WebGPU)
+wgpu = { version = "23", optional = true }
+pollster = { version = "0.4", optional = true }
+
+# CUDA support via cudarc (optional)
+# cudarc = { version = "0.12", optional = true }
+
+[features]
+default = ["cpu"]
+cpu = []
+wgpu-backend = ["dep:wgpu", "dep:pollster"]
+# cuda = ["dep:cudarc"]
+
+[dev-dependencies]
+env_logger = { workspace = true }

@@ -2,7 +2,7 @@
 
 > **Headless semantic browser with adaptive encryption for AI agents**
 >
-> 21 Rust crates · 329 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 349 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -143,15 +143,17 @@
 - [x] Container images: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway
 - [x] 329 tests passing (+8 from Phase 8)
 
+### Phase 9 — GPU & Scale ✅
+
+- [x] **GPU-accelerated neural encoding** (`spine-gpu`): ComputeBackend trait, CpuBackend (SIMD-friendly 8-wide), WgpuBackend (WGSL shaders), GpuAccelerator with auto-backend selection
+- [x] **Kubernetes operator** (`spine-k8s`): SpineClusterSpec CRD, CPU/memory/connection-based autoscaling, StatefulSet/Service/HPA manifest generators
+- [x] **Raft consensus** (`spine-cluster/raft`): Full Raft with leader election, log replication, heartbeats, KvStateMachine, snapshot/restore, in-process test cluster
+- [x] **Persistent storage** (`spine-storage`): StorageBackend trait, InMemoryBackend, SqliteBackend (WAL mode), RocksDbBackend (column families), TypedStorage generic wrapper
+- [x] **Tiered caching** (`spine-cache`): L1 in-memory LRU (TTL, byte limits, eviction), L2 file-backed, L3 remote trait, TieredCache with promotion-on-hit and write-through
+- [x] **Storage-knowledge integration**: PersistentKnowledge adapter for episode, concept, relation, and entry persistence
+- [x] 349 tests passing (+20 from Phase 9)
+
 ## Planned
-
-### Phase 9 — GPU & Scale
-
-- [ ] GPU-accelerated neural encoding (CUDA/Vulkan compute shaders)
-- [ ] Horizontal auto-scaling with Kubernetes operator
-- [ ] Distributed consensus upgrade: Raft/BFT for cluster state
-- [ ] Persistent storage backend (RocksDB/SQLite for knowledge base)
-- [ ] Tiered caching: L1 in-memory, L2 mmap'd, L3 remote
 
 ### Phase 10 — Formal Verification & Audit
 
@@ -180,7 +182,7 @@
 
 ---
 
-## Workspace (21 crates)
+## Workspace (25 crates)
 
 | Crate             | Purpose                                                         |
 | ----------------- | --------------------------------------------------------------- |
@@ -203,6 +205,10 @@
 | `spine-knowledge` | Bioinspired memory (episodic/semantic/working/collective, CRDT) |
 | `spine-cli`       | CLI tool: init, connect, query, deploy, benchmark, status       |
 | `spine-gateway`   | REST API gateway with OpenAPI/Swagger UI (axum + utoipa)        |
+| `spine-gpu`       | GPU compute: CpuBackend (SIMD), WgpuBackend (WGSL shaders)     |
+| `spine-storage`   | Persistent storage: InMemory, SQLite (WAL), RocksDB (LSM)       |
+| `spine-cache`     | Tiered caching: L1 LRU, L2 file-backed, L3 remote              |
+| `spine-k8s`       | Kubernetes operator: CRD, autoscaler, manifest generators       |
 | `spine-python`*   | Python bindings via PyO3 + maturin                              |
 | `spine-js`*       | TypeScript/WASM bindings via wasm-bindgen + wasm-pack           |
 

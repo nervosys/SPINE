@@ -3,8 +3,10 @@
 
 pub mod sybil;
 pub mod marketplace;
+pub mod raft;
 pub use sybil::{NodeReputation, StakeWeightedConsensus};
 pub use marketplace::*;
+pub use raft::{RaftNode, RaftCluster, RaftConfig, RaftCommand, RaftRole, RaftStatus};
 
 // =============================================================================
 // SPINE CLUSTER - Distributed Agent Coordination

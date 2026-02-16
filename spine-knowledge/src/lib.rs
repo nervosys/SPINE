@@ -406,7 +406,11 @@ impl EpisodicMemory {
             nb2 += y * y;
         }
         let denom = na2.sqrt() * nb2.sqrt();
-        if denom > 0.0 { dot / denom } else { 0.0 }
+        if denom > 0.0 {
+            dot / denom
+        } else {
+            0.0
+        }
     }
 
     pub fn stats(&self) -> EpisodicStats {
