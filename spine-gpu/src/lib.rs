@@ -580,12 +580,13 @@ fn main(
                 ..Default::default()
             });
 
-            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: None,
-            }))
-            .ok_or_else(|| anyhow::anyhow!("No suitable GPU adapter found"))?;
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    force_fallback_adapter: false,
+                    compatible_surface: None,
+                }))
+                .ok_or_else(|| anyhow::anyhow!("No suitable GPU adapter found"))?;
 
             let adapter_info = adapter.get_info();
             let limits = adapter.limits();
@@ -671,21 +672,27 @@ fn main(
             cols: usize,
             output: &mut [f32],
         ) -> Result<()> {
-            let weights_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("weights"),
-                contents: bytemuck::cast_slice(weights),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            let input_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("input"),
-                contents: bytemuck::cast_slice(input),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            let bias_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("bias"),
-                contents: bytemuck::cast_slice(bias),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
+            let weights_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("weights"),
+                    contents: bytemuck::cast_slice(weights),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+            let input_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("input"),
+                    contents: bytemuck::cast_slice(input),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+            let bias_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("bias"),
+                    contents: bytemuck::cast_slice(bias),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
             let output_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("output"),
                 size: (rows * 4) as u64,
@@ -693,21 +700,38 @@ fn main(
                 mapped_at_creation: false,
             });
             let params: [u32; 2] = [rows as u32, cols as u32];
-            let params_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("params"),
-                contents: bytemuck::cast_slice(&params),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
+            let params_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("params"),
+                    contents: bytemuck::cast_slice(&params),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
 
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("matvec_bg"),
                 layout: &self.matvec_bind_group_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: weights_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: input_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: bias_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: output_buf.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 4, resource: params_buf.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: weights_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: input_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: bias_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: output_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: params_buf.as_entire_binding(),
+                    },
                 ],
             });
 

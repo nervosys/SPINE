@@ -19,8 +19,8 @@
 //! ```
 
 use crate::{
-    CollectiveMemory, EpisodicMemory, Episode, KnowledgeEntry,
-    SemanticConcept, SemanticMemory, SemanticRelation,
+    CollectiveMemory, Episode, EpisodicMemory, KnowledgeEntry, SemanticConcept, SemanticMemory,
+    SemanticRelation,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -93,7 +93,10 @@ impl PersistentKnowledge {
             })
             .collect();
         let count = pairs.len();
-        let refs: Vec<(&[u8], &[u8])> = pairs.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
         self.backend.batch_put(NS_EPISODES, &refs)?;
         Ok(count)
     }
@@ -227,8 +230,8 @@ impl PersistenceStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use spine_storage::InMemoryBackend;
     use crate::KnowledgeValue;
+    use spine_storage::InMemoryBackend;
 
     #[test]
     fn test_save_load_knowledge_entry() {
@@ -269,11 +272,8 @@ mod tests {
         let backend = Box::new(InMemoryBackend::new());
         let pk = PersistentKnowledge::new(backend);
 
-        let entry = KnowledgeEntry::new_text(
-            "delete_me".to_string(),
-            "value".to_string(),
-            Uuid::new_v4(),
-        );
+        let entry =
+            KnowledgeEntry::new_text("delete_me".to_string(), "value".to_string(), Uuid::new_v4());
 
         pk.save_knowledge_entry(&entry).unwrap();
         assert!(pk.load_knowledge_entry("delete_me").unwrap().is_some());
@@ -288,7 +288,10 @@ mod tests {
         let pk = PersistentKnowledge::new(backend);
 
         pk.save_metadata("version", "1.0").unwrap();
-        assert_eq!(pk.load_metadata("version").unwrap(), Some("1.0".to_string()));
+        assert_eq!(
+            pk.load_metadata("version").unwrap(),
+            Some("1.0".to_string())
+        );
         assert!(pk.load_metadata("missing").unwrap().is_none());
     }
 
@@ -297,11 +300,7 @@ mod tests {
         let backend = Box::new(InMemoryBackend::new());
         let pk = PersistentKnowledge::new(backend);
 
-        let entry = KnowledgeEntry::new_text(
-            "k1".to_string(),
-            "v1".to_string(),
-            Uuid::new_v4(),
-        );
+        let entry = KnowledgeEntry::new_text("k1".to_string(), "v1".to_string(), Uuid::new_v4());
         pk.save_knowledge_entry(&entry).unwrap();
 
         let stats = pk.total_persisted().unwrap();

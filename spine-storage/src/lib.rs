@@ -126,10 +126,7 @@ impl<B: StorageBackend> TypedStorage<B> {
         let entries = self.backend.scan(&self.namespace, None)?;
         let mut result = Vec::new();
         for (key, value) in entries {
-            if let (Ok(k), Ok(v)) = (
-                String::from_utf8(key),
-                serde_json::from_slice::<T>(&value),
-            ) {
+            if let (Ok(k), Ok(v)) = (String::from_utf8(key), serde_json::from_slice::<T>(&value)) {
                 result.push((k, v));
             }
         }
@@ -166,15 +163,18 @@ impl Default for InMemoryBackend {
 
 impl StorageBackend for InMemoryBackend {
     fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let data = self.data.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        Ok(data
-            .get(namespace)
-            .and_then(|ns| ns.get(key))
-            .cloned())
+        let data = self
+            .data
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        Ok(data.get(namespace).and_then(|ns| ns.get(key)).cloned())
     }
 
     fn put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<()> {
-        let mut data = self.data.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut data = self
+            .data
+            .write()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         data.entry(namespace.to_string())
             .or_default()
             .insert(key.to_vec(), value.to_vec());
@@ -182,7 +182,10 @@ impl StorageBackend for InMemoryBackend {
     }
 
     fn delete(&self, namespace: &str, key: &[u8]) -> Result<()> {
-        let mut data = self.data.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut data = self
+            .data
+            .write()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         if let Some(ns) = data.get_mut(namespace) {
             ns.remove(key);
         }
@@ -190,7 +193,10 @@ impl StorageBackend for InMemoryBackend {
     }
 
     fn scan(&self, namespace: &str, prefix: Option<&[u8]>) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-        let data = self.data.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let data = self
+            .data
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let Some(ns) = data.get(namespace) else {
             return Ok(Vec::new());
         };
@@ -207,7 +213,10 @@ impl StorageBackend for InMemoryBackend {
     }
 
     fn keys(&self, namespace: &str) -> Result<Vec<Vec<u8>>> {
-        let data = self.data.read().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let data = self
+            .data
+            .read()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         Ok(data
             .get(namespace)
             .map(|ns| ns.keys().cloned().collect())
@@ -215,7 +224,10 @@ impl StorageBackend for InMemoryBackend {
     }
 
     fn clear(&self, namespace: &str) -> Result<()> {
-        let mut data = self.data.write().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut data = self
+            .data
+            .write()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         data.remove(namespace);
         Ok(())
     }
@@ -282,7 +294,13 @@ pub mod sqlite {
         fn sanitize_namespace(namespace: &str) -> String {
             let sanitized: String = namespace
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             format!("ns_{}", sanitized)
         }
@@ -290,7 +308,10 @@ pub mod sqlite {
 
     impl StorageBackend for SqliteBackend {
         fn get(&self, namespace: &str, key: &[u8]) -> Result<Option<Vec<u8>>> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -302,7 +323,10 @@ pub mod sqlite {
         }
 
         fn put(&self, namespace: &str, key: &[u8], value: &[u8]) -> Result<()> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -317,7 +341,10 @@ pub mod sqlite {
         }
 
         fn delete(&self, namespace: &str, key: &[u8]) -> Result<()> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -329,7 +356,10 @@ pub mod sqlite {
         }
 
         fn scan(&self, namespace: &str, prefix: Option<&[u8]>) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -355,8 +385,7 @@ pub mod sqlite {
                     }
                 }
                 None => {
-                    let mut stmt =
-                        conn.prepare(&format!("SELECT key, value FROM {}", table))?;
+                    let mut stmt = conn.prepare(&format!("SELECT key, value FROM {}", table))?;
                     let rows = stmt.query_map([], |row| {
                         Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
                     })?;
@@ -370,7 +399,10 @@ pub mod sqlite {
         }
 
         fn keys(&self, namespace: &str) -> Result<Vec<Vec<u8>>> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -384,7 +416,10 @@ pub mod sqlite {
         }
 
         fn batch_put(&self, namespace: &str, entries: &[(&[u8], &[u8])]) -> Result<()> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -403,7 +438,10 @@ pub mod sqlite {
         }
 
         fn count(&self, namespace: &str) -> Result<usize> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             self.ensure_table(&conn, namespace)?;
             let table = Self::sanitize_namespace(namespace);
 
@@ -415,7 +453,10 @@ pub mod sqlite {
         }
 
         fn clear(&self, namespace: &str) -> Result<()> {
-            let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
             let table = Self::sanitize_namespace(namespace);
             conn.execute(&format!("DROP TABLE IF EXISTS {}", table), [])?;
             Ok(())
@@ -451,9 +492,7 @@ pub mod rocks {
             opts.set_write_buffer_size(64 * 1024 * 1024); // 64 MB
 
             let db = DB::open(&opts, path)?;
-            Ok(Self {
-                db: Mutex::new(db),
-            })
+            Ok(Self { db: Mutex::new(db) })
         }
 
         fn cf_name(namespace: &str) -> String {
@@ -594,14 +633,20 @@ mod tests {
     fn run_backend_tests(backend: &dyn StorageBackend) {
         // Put and get
         backend.put("test", b"key1", b"value1").unwrap();
-        assert_eq!(backend.get("test", b"key1").unwrap(), Some(b"value1".to_vec()));
+        assert_eq!(
+            backend.get("test", b"key1").unwrap(),
+            Some(b"value1".to_vec())
+        );
 
         // Non-existent key
         assert_eq!(backend.get("test", b"missing").unwrap(), None);
 
         // Overwrite
         backend.put("test", b"key1", b"value2").unwrap();
-        assert_eq!(backend.get("test", b"key1").unwrap(), Some(b"value2".to_vec()));
+        assert_eq!(
+            backend.get("test", b"key1").unwrap(),
+            Some(b"value2".to_vec())
+        );
 
         // Delete
         backend.delete("test", b"key1").unwrap();
@@ -657,10 +702,7 @@ mod tests {
     fn test_batch_put() {
         let backend = InMemoryBackend::new();
         backend
-            .batch_put(
-                "batch",
-                &[(b"k1", b"v1"), (b"k2", b"v2"), (b"k3", b"v3")],
-            )
+            .batch_put("batch", &[(b"k1", b"v1"), (b"k2", b"v2"), (b"k3", b"v3")])
             .unwrap();
 
         assert_eq!(backend.count("batch").unwrap(), 3);
@@ -706,10 +748,7 @@ mod tests {
     fn test_sqlite_batch_put() {
         let backend = sqlite::SqliteBackend::in_memory().unwrap();
         backend
-            .batch_put(
-                "batch",
-                &[(b"k1", b"v1"), (b"k2", b"v2"), (b"k3", b"v3")],
-            )
+            .batch_put("batch", &[(b"k1", b"v1"), (b"k2", b"v2"), (b"k3", b"v3")])
             .unwrap();
 
         assert_eq!(backend.count("batch").unwrap(), 3);

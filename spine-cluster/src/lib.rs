@@ -1,12 +1,12 @@
 // Allow dead code for cluster coordination APIs
 #![allow(dead_code)]
 
-pub mod sybil;
 pub mod marketplace;
 pub mod raft;
-pub use sybil::{NodeReputation, StakeWeightedConsensus};
+pub mod sybil;
 pub use marketplace::*;
-pub use raft::{RaftNode, RaftCluster, RaftConfig, RaftCommand, RaftRole, RaftStatus};
+pub use raft::{RaftCluster, RaftCommand, RaftConfig, RaftNode, RaftRole, RaftStatus};
+pub use sybil::{NodeReputation, StakeWeightedConsensus};
 
 // =============================================================================
 // SPINE CLUSTER - Distributed Agent Coordination

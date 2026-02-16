@@ -114,23 +114,13 @@ pub enum RaftCommand {
         address: String,
     },
     /// Remove a node from the cluster.
-    RemoveNode {
-        node_id: RaftNodeId,
-    },
+    RemoveNode { node_id: RaftNodeId },
     /// Update cluster configuration.
-    UpdateConfig {
-        key: String,
-        value: String,
-    },
+    UpdateConfig { key: String, value: String },
     /// Store a key-value pair in the distributed state.
-    Put {
-        key: String,
-        value: Vec<u8>,
-    },
+    Put { key: String, value: Vec<u8> },
     /// Delete a key from the distributed state.
-    Delete {
-        key: String,
-    },
+    Delete { key: String },
     /// Session assignment to a node.
     AssignSession {
         session_id: String,
@@ -287,8 +277,7 @@ impl StateMachine for KvStateMachine {
     }
 
     fn restore(&mut self, snapshot: &[u8]) -> Result<(), String> {
-        let v: serde_json::Value =
-            serde_json::from_slice(snapshot).map_err(|e| e.to_string())?;
+        let v: serde_json::Value = serde_json::from_slice(snapshot).map_err(|e| e.to_string())?;
         if let Some(nodes) = v.get("nodes") {
             self.nodes = serde_json::from_value(nodes.clone()).unwrap_or_default();
         }
@@ -765,15 +754,11 @@ impl RaftNode {
     /// Handle an incoming Raft message.
     pub async fn handle_message(&self, envelope: RaftEnvelope) -> Result<(), String> {
         match envelope.message {
-            RaftMessage::RequestVote(req) => {
-                self.handle_request_vote(envelope.from, req).await
-            }
+            RaftMessage::RequestVote(req) => self.handle_request_vote(envelope.from, req).await,
             RaftMessage::RequestVoteResponse(resp) => {
                 self.handle_request_vote_response(envelope.from, resp).await
             }
-            RaftMessage::AppendEntries(req) => {
-                self.handle_append_entries(envelope.from, req).await
-            }
+            RaftMessage::AppendEntries(req) => self.handle_append_entries(envelope.from, req).await,
             RaftMessage::AppendEntriesResponse(resp) => {
                 self.handle_append_entries_response(envelope.from, resp)
                     .await
@@ -805,8 +790,7 @@ impl RaftNode {
         let mut vote_granted = false;
 
         if req.term >= state.current_term {
-            let can_vote =
-                state.voted_for.is_none() || state.voted_for == Some(req.candidate_id);
+            let can_vote = state.voted_for.is_none() || state.voted_for == Some(req.candidate_id);
             let last_log_index = state.log.last().map_or(0, |e| e.index);
             let last_log_term = state.log.last().map_or(0, |e| e.term);
 
@@ -1085,7 +1069,9 @@ impl RaftCluster {
             Arc::new(RwLock::new(HashMap::new()));
 
         for (i, id) in ids.iter().enumerate() {
-            let peers: Vec<RaftNodeId> = ids.iter().enumerate()
+            let peers: Vec<RaftNodeId> = ids
+                .iter()
+                .enumerate()
                 .filter(|(j, _)| *j != i)
                 .map(|(_, id)| *id)
                 .collect();
@@ -1254,11 +1240,16 @@ mod tests {
     async fn test_raft_single_node_election() {
         let (tx, mut rx) = mpsc::channel(100);
         let id = Uuid::new_v4();
-        let node = RaftNode::new(id, vec![], tx, RaftConfig {
-            election_timeout_min: 1,
-            election_timeout_max: 2,
-            ..Default::default()
-        });
+        let node = RaftNode::new(
+            id,
+            vec![],
+            tx,
+            RaftConfig {
+                election_timeout_min: 1,
+                election_timeout_max: 2,
+                ..Default::default()
+            },
+        );
 
         // Wait for election timeout
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1274,20 +1265,28 @@ mod tests {
     async fn test_raft_submit_command() {
         let (tx, mut rx) = mpsc::channel(100);
         let id = Uuid::new_v4();
-        let node = RaftNode::new(id, vec![], tx, RaftConfig {
-            election_timeout_min: 1,
-            election_timeout_max: 2,
-            ..Default::default()
-        });
+        let node = RaftNode::new(
+            id,
+            vec![],
+            tx,
+            RaftConfig {
+                election_timeout_min: 1,
+                election_timeout_max: 2,
+                ..Default::default()
+            },
+        );
 
         tokio::time::sleep(Duration::from_millis(10)).await;
         node.tick().await.unwrap();
         assert_eq!(node.role().await, RaftRole::Leader);
 
-        let index = node.submit_command(RaftCommand::Put {
-            key: "test".to_string(),
-            value: b"value".to_vec(),
-        }).await.unwrap();
+        let index = node
+            .submit_command(RaftCommand::Put {
+                key: "test".to_string(),
+                value: b"value".to_vec(),
+            })
+            .await
+            .unwrap();
 
         // Log should have noop + put
         assert!(node.log_length().await >= 2);
@@ -1315,13 +1314,19 @@ mod tests {
     #[tokio::test]
     async fn test_raft_log_replication() {
         let cluster = RaftCluster::new(3).await;
-        let leader = cluster.wait_for_leader(Duration::from_secs(5)).await.unwrap();
+        let leader = cluster
+            .wait_for_leader(Duration::from_secs(5))
+            .await
+            .unwrap();
 
         // Submit a command
-        leader.submit_command(RaftCommand::Put {
-            key: "replicated".to_string(),
-            value: b"data".to_vec(),
-        }).await.unwrap();
+        leader
+            .submit_command(RaftCommand::Put {
+                key: "replicated".to_string(),
+                value: b"data".to_vec(),
+            })
+            .await
+            .unwrap();
 
         // Tick a few times for replication
         for _ in 0..50 {
@@ -1331,7 +1336,11 @@ mod tests {
 
         // All nodes should have the log entry
         for node in cluster.nodes() {
-            assert!(node.log_length().await >= 1, "Node {} should have log entries", node.id);
+            assert!(
+                node.log_length().await >= 1,
+                "Node {} should have log entries",
+                node.id
+            );
         }
     }
 

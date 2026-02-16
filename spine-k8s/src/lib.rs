@@ -851,7 +851,8 @@ mod tests {
     fn test_deployment_with_env_vars() {
         let mut spec = SpineClusterSpec::default();
         spec.env.insert("RUST_LOG".to_string(), "info".to_string());
-        spec.env.insert("SPINE_PORT".to_string(), "3000".to_string());
+        spec.env
+            .insert("SPINE_PORT".to_string(), "3000".to_string());
 
         let manifest = generate_deployment_manifest("test", "default", &spec);
         let containers = &manifest["spec"]["template"]["spec"]["containers"];

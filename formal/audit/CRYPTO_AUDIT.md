@@ -13,18 +13,18 @@
 
 This audit covers all cryptographic code in the SPINE workspace:
 
-| Crate | Component | Lines | Risk |
-|-------|-----------|-------|------|
-| `spine-protocol` | AES-256-GCM encryption | ~60 | **Low** |
-| `spine-protocol` | ChameleonKey (latent-space crypto) | ~200 | **High** |
-| `spine-protocol` | ProtocolMorphology (MTD) | ~80 | **Medium** |
-| `spine-crypto` | RLWE key generation/KEM | ~300 | **Critical** |
-| `spine-crypto` | QuantumKeyEvolution (ratchet) | ~120 | **High** |
-| `spine-crypto` | Titans predictor (message prediction) | ~800 | **Low** |
-| `spine-cluster` | Sybil resistance (stake/PoW) | ~150 | **Medium** |
-| `spine-kernel` | Custom allocators (`unsafe`) | ~300 | **High** |
-| `spine-kernel` | SIMD intrinsics (`unsafe`) | ~200 | **Medium** |
-| `spine-kernel` | Lock-free data structures | ~200 | **High** |
+| Crate            | Component                             | Lines | Risk         |
+| ---------------- | ------------------------------------- | ----- | ------------ |
+| `spine-protocol` | AES-256-GCM encryption                | ~60   | **Low**      |
+| `spine-protocol` | ChameleonKey (latent-space crypto)    | ~200  | **High**     |
+| `spine-protocol` | ProtocolMorphology (MTD)              | ~80   | **Medium**   |
+| `spine-crypto`   | RLWE key generation/KEM               | ~300  | **Critical** |
+| `spine-crypto`   | QuantumKeyEvolution (ratchet)         | ~120  | **High**     |
+| `spine-crypto`   | Titans predictor (message prediction) | ~800  | **Low**      |
+| `spine-cluster`  | Sybil resistance (stake/PoW)          | ~150  | **Medium**   |
+| `spine-kernel`   | Custom allocators (`unsafe`)          | ~300  | **High**     |
+| `spine-kernel`   | SIMD intrinsics (`unsafe`)            | ~200  | **Medium**   |
+| `spine-kernel`   | Lock-free data structures             | ~200  | **High**     |
 
 ---
 
@@ -220,28 +220,28 @@ This is a linear congruential generator, which is predictable given a short sequ
 
 ## 3. Formal Verification Coverage
 
-| Artifact | Tool | Status | Properties Verified |
-|----------|------|--------|-------------------|
-| `formal/tla/ChameleonProtocol.tla` | TLC | Ready | Synchronized evolution, epoch monotonicity, eventual delivery |
-| `formal/tamarin/SpineKeyExchange.spthy` | Tamarin | Ready | Session key secrecy (3 levels), PFS, KCI resistance, agreement |
-| `spine-kernel/src/kani_harnesses.rs` | Kani | Ready | 15 harnesses: allocator safety, ring buffer correctness, SIMD equivalence |
-| `formal/misra/MISRA_COMPLIANCE.md` | Manual | Ready | MISRA C:2012 deviation analysis for allocator primitives |
+| Artifact                                | Tool    | Status | Properties Verified                                                       |
+| --------------------------------------- | ------- | ------ | ------------------------------------------------------------------------- |
+| `formal/tla/ChameleonProtocol.tla`      | TLC     | Ready  | Synchronized evolution, epoch monotonicity, eventual delivery             |
+| `formal/tamarin/SpineKeyExchange.spthy` | Tamarin | Ready  | Session key secrecy (3 levels), PFS, KCI resistance, agreement            |
+| `spine-kernel/src/kani_harnesses.rs`    | Kani    | Ready  | 15 harnesses: allocator safety, ring buffer correctness, SIMD equivalence |
+| `formal/misra/MISRA_COMPLIANCE.md`      | Manual  | Ready  | MISRA C:2012 deviation analysis for allocator primitives                  |
 
 ---
 
 ## 4. Recommendations Priority
 
-| Priority | Finding | Effort | Impact |
-|----------|---------|--------|--------|
-| **P0** | C1: Fix RLWE KEM (reconciliation or ML-KEM) | 3-5 days | Enables actual PQ key agreement |
-| **P0** | C2: Replace XOR with AEAD | 1-2 days | Achieves confidentiality + integrity |
-| **P1** | H1: Implement X3DH | 3-5 days | Eliminates pre-shared secret requirement |
-| **P1** | H2: Double Ratchet key evolution | 2-3 days | Forward secrecy tied to message content |
-| **P2** | H3: SeqLock writer guard | 1 day | Prevents misuse |
-| **P2** | H4: Epoch-based reclamation | 2 days | Eliminates ABA vulnerability |
-| **P3** | M1: HMAC-based morphology | 1 day | Unpredictable MTD |
-| **P3** | M4: Upgrade RLWE parameters | 1 day | NIST-compliant security level |
-| **P4** | L1-L3: Nonce/compression/timing | 1-2 days | Defense in depth |
+| Priority | Finding                                     | Effort   | Impact                                   |
+| -------- | ------------------------------------------- | -------- | ---------------------------------------- |
+| **P0**   | C1: Fix RLWE KEM (reconciliation or ML-KEM) | 3-5 days | Enables actual PQ key agreement          |
+| **P0**   | C2: Replace XOR with AEAD                   | 1-2 days | Achieves confidentiality + integrity     |
+| **P1**   | H1: Implement X3DH                          | 3-5 days | Eliminates pre-shared secret requirement |
+| **P1**   | H2: Double Ratchet key evolution            | 2-3 days | Forward secrecy tied to message content  |
+| **P2**   | H3: SeqLock writer guard                    | 1 day    | Prevents misuse                          |
+| **P2**   | H4: Epoch-based reclamation                 | 2 days   | Eliminates ABA vulnerability             |
+| **P3**   | M1: HMAC-based morphology                   | 1 day    | Unpredictable MTD                        |
+| **P3**   | M4: Upgrade RLWE parameters                 | 1 day    | NIST-compliant security level            |
+| **P4**   | L1-L3: Nonce/compression/timing             | 1-2 days | Defense in depth                         |
 
 ---
 
@@ -261,25 +261,25 @@ Estimated audit effort: 2–3 weeks for a team of 2 cryptography specialists + 1
 
 ## Appendix A: Test Coverage for Crypto Modules
 
-| Module | Unit Tests | Property Tests | Fuzz Targets | Integration |
-|--------|:---------:|:-------------:|:------------:|:-----------:|
-| AES-256-GCM | 3 | 2 | 0 | 4 |
-| ChameleonKey | 5 | 3 | 1 | 4 |
-| RLWE KEM | 12 | 4 | 1 | 0 |
-| Key Evolution | 6 | 2 | 0 | 0 |
-| Morphology | 4 | 2 | 1 | 4 |
-| Sybil PoW | 3 | 0 | 0 | 0 |
-| **Total** | **33** | **13** | **3** | **12** |
+| Module        | Unit Tests | Property Tests | Fuzz Targets | Integration |
+| ------------- | :--------: | :------------: | :----------: | :---------: |
+| AES-256-GCM   |     3      |       2        |      0       |      4      |
+| ChameleonKey  |     5      |       3        |      1       |      4      |
+| RLWE KEM      |     12     |       4        |      1       |      0      |
+| Key Evolution |     6      |       2        |      0       |      0      |
+| Morphology    |     4      |       2        |      1       |      4      |
+| Sybil PoW     |     3      |       0        |      0       |      0      |
+| **Total**     |   **33**   |     **13**     |    **3**     |   **12**    |
 
 ## Appendix B: Dependency Audit
 
-| Crate | Version | Known CVEs | Audit Status |
-|-------|---------|-----------|-------------|
-| `aes-gcm` | 0.10 | None | RustCrypto — widely reviewed |
-| `sha2` | 0.10 | None | RustCrypto — widely reviewed |
-| `rand` | 0.8 | None | Standard Rust CSPRNG |
-| `zstd` | 0.13 | None | Binding to libzstd (Facebook) |
-| `bytemuck` | 1.14 | None | Safe transmute library |
-| `x25519-dalek` | (not yet) | N/A | Recommended for X3DH implementation |
-| `ed25519-dalek` | (not yet) | N/A | Recommended for identity signatures |
-| `pqcrypto` | (not yet) | N/A | Recommended for production RLWE |
+| Crate           | Version   | Known CVEs | Audit Status                        |
+| --------------- | --------- | ---------- | ----------------------------------- |
+| `aes-gcm`       | 0.10      | None       | RustCrypto — widely reviewed        |
+| `sha2`          | 0.10      | None       | RustCrypto — widely reviewed        |
+| `rand`          | 0.8       | None       | Standard Rust CSPRNG                |
+| `zstd`          | 0.13      | None       | Binding to libzstd (Facebook)       |
+| `bytemuck`      | 1.14      | None       | Safe transmute library              |
+| `x25519-dalek`  | (not yet) | N/A        | Recommended for X3DH implementation |
+| `ed25519-dalek` | (not yet) | N/A        | Recommended for identity signatures |
+| `pqcrypto`      | (not yet) | N/A        | Recommended for production RLWE     |
