@@ -17,7 +17,10 @@ members = [
     "spine-recursive",
     "spine-knowledge",
     "spine-kernel",
+    "spine-cli",
+    "spine-gateway",
 ]
+exclude = ["spine-python", "spine-js"]
 resolver = "2"
 
 [workspace.package]
@@ -70,7 +73,9 @@ opentelemetry-otlp = "0.14"
 opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
 prometheus = "0.13"
 lazy_static = "1.4"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+] }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
-

@@ -2,7 +2,7 @@
 
 > **Headless semantic browser with adaptive encryption for AI agents**
 >
-> 17 Rust crates · 245 tests · 0 warnings · Apache 2.0
+> 21 Rust crates · 329 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -107,10 +107,6 @@
 - [x] Agent capability marketplace: registry, discovery, bidding, contracts, reputation, audit log
 - [x] 245 tests passing (+27 from Phase 5)
 
----
-
-## In Progress
-
 ### Phase 6 — Production Hardening
 
 - [x] **Configuration management**: TOML/env-based `SpineConfig` with layered overrides (`spine.toml` → env vars → defaults)
@@ -124,9 +120,6 @@
 - [x] **Config-driven server**: All ports, hosts, timeouts, limits, TLS paths from config
 - [x] 249 tests passing (+4 from Phase 6)
 
----
-
-## Completed
 
 ### Phase 7 — Testing & Verification
 
@@ -139,15 +132,18 @@
 - [x] **Bug fixes from testing**: header_size minimum bound, morphology evolution ordering, bytemuck alignment fallback
 - [x] **321 tests passing**: +72 tests, 0 failures, 0 clippy warnings
 
-## Planned
-### Phase 8 — Developer Ecosystem
+### Phase 8 — Developer Ecosystem ✅
 
-- [ ] `spine` CLI tool: init, connect, query, deploy, benchmark
-- [ ] Agent SDK cookbook: 10+ real-world examples
-- [ ] OpenAPI/gRPC gateway for non-Rust clients
-- [ ] Language bindings: Python (`pyo3`), TypeScript (WASM), Go (CGo)
-- [ ] Documentation site with mdBook
-- [ ] Container images: Dockerfile + docker-compose for multi-node setup
+- [x] `spine` CLI tool: init, connect (REPL), query, deploy, benchmark, status — 6 commands with clap derive
+- [x] Agent SDK cookbook: 12 examples — simple, encrypted, batch scraper, HLS executor, latent analysis, session transfer, reconnect, WebSocket, swarm, knowledge, web intelligence, autonomous
+- [x] OpenAPI gateway (spine-gateway): REST API with axum + utoipa, Swagger UI, session management, health/ready/metrics
+- [x] Python bindings (spine-python): PyO3 classes for PyClient, PyUnifiedRepresentation, PySpineBinary with maturin build
+- [x] TypeScript WASM bindings (spine-js): wasm-bindgen for parseHtml, compileHls with wasm-pack build
+- [x] Documentation site: 18-page mdBook covering architecture, SDK, CLI, gateway, internals, contributing
+- [x] Container images: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway
+- [x] 329 tests passing (+8 from Phase 8)
+
+## Planned
 
 ### Phase 9 — GPU & Scale
 
@@ -184,7 +180,7 @@
 
 ---
 
-## Workspace (17 crates)
+## Workspace (21 crates)
 
 | Crate             | Purpose                                                         |
 | ----------------- | --------------------------------------------------------------- |
@@ -205,3 +201,9 @@
 | `spine-stream`    | Reactive streams, multiplexing, flow control, priority queuing  |
 | `spine-recursive` | Recursive Language Model (10M+ chars, arXiv:2512.24601)         |
 | `spine-knowledge` | Bioinspired memory (episodic/semantic/working/collective, CRDT) |
+| `spine-cli`       | CLI tool: init, connect, query, deploy, benchmark, status       |
+| `spine-gateway`   | REST API gateway with OpenAPI/Swagger UI (axum + utoipa)        |
+| `spine-python`*   | Python bindings via PyO3 + maturin                              |
+| `spine-js`*       | TypeScript/WASM bindings via wasm-bindgen + wasm-pack           |
+
+\* Excluded from default workspace build (requires Python/wasm32 toolchains)

@@ -1,0 +1,129 @@
+# =============================================================================
+# SPINE Multi-Node Docker Compose
+# =============================================================================
+# Services:
+#   spine-node-1, spine-node-2, spine-node-3  — Core servers (cluster)
+#   spine-gateway                              — REST API gateway
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Core Server Node 1 (primary)
+  # ---------------------------------------------------------------------------
+  spine-node-1:
+    build: .
+    container_name: spine-node-1
+    environment:
+      - SPINE_SERVER_HOST=0.0.0.0
+      - SPINE_SERVER_PORT=8080
+      - SPINE_SERVER_METRICS_PORT=9090
+      - SPINE_LOGGING_LEVEL=info
+      - SPINE_LOGGING_FORMAT=json
+      - SPINE_CLUSTER_REGION=local
+      - RUST_LOG=info
+    ports:
+      - "8080:8080"     # TCP
+      - "8081:8081"     # WebSocket
+      - "9090:9090"     # Metrics
+    volumes:
+      - node1-sessions:/app/sessions
+    healthcheck:
+      test: ["CMD", "spine", "status", "127.0.0.1:8080"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - spine-net
+
+  # ---------------------------------------------------------------------------
+  # Core Server Node 2
+  # ---------------------------------------------------------------------------
+  spine-node-2:
+    build: .
+    container_name: spine-node-2
+    environment:
+      - SPINE_SERVER_HOST=0.0.0.0
+      - SPINE_SERVER_PORT=8080
+      - SPINE_SERVER_METRICS_PORT=9090
+      - SPINE_LOGGING_LEVEL=info
+      - SPINE_LOGGING_FORMAT=json
+      - SPINE_CLUSTER_REGION=local
+      - RUST_LOG=info
+    ports:
+      - "8082:8080"     # TCP (mapped to 8082 on host)
+      - "8083:8081"     # WebSocket
+      - "9091:9090"     # Metrics
+    volumes:
+      - node2-sessions:/app/sessions
+    healthcheck:
+      test: ["CMD", "spine", "status", "127.0.0.1:8080"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - spine-net
+
+  # ---------------------------------------------------------------------------
+  # Core Server Node 3
+  # ---------------------------------------------------------------------------
+  spine-node-3:
+    build: .
+    container_name: spine-node-3
+    environment:
+      - SPINE_SERVER_HOST=0.0.0.0
+      - SPINE_SERVER_PORT=8080
+      - SPINE_SERVER_METRICS_PORT=9090
+      - SPINE_LOGGING_LEVEL=info
+      - SPINE_LOGGING_FORMAT=json
+      - SPINE_CLUSTER_REGION=local
+      - RUST_LOG=info
+    ports:
+      - "8084:8080"     # TCP
+      - "8085:8081"     # WebSocket
+      - "9092:9090"     # Metrics
+    volumes:
+      - node3-sessions:/app/sessions
+    healthcheck:
+      test: ["CMD", "spine", "status", "127.0.0.1:8080"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - spine-net
+
+  # ---------------------------------------------------------------------------
+  # REST API Gateway
+  # ---------------------------------------------------------------------------
+  spine-gateway:
+    build: .
+    container_name: spine-gateway
+    entrypoint: ["spine-gateway"]
+    environment:
+      - SPINE_SERVER_HOST=spine-node-1
+      - SPINE_SERVER_PORT=8080
+      - SPINE_SERVER_METRICS_PORT=9090
+      - SPINE_LOGGING_LEVEL=info
+      - RUST_LOG=info
+    ports:
+      - "9100:9091"     # Gateway API + Swagger UI
+    depends_on:
+      spine-node-1:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - spine-net
+
+volumes:
+  node1-sessions:
+  node2-sessions:
+  node3-sessions:
+
+networks:
+  spine-net:
+    driver: bridge

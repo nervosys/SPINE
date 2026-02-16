@@ -1,0 +1,22 @@
+[package]
+name = "spine-js"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "TypeScript/JavaScript WASM bindings for the SPINE agentic web stack"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+spine-parser = { path = "../spine-parser" }
+spine-compiler = { path = "../spine-compiler" }
+spine-protocol = { path = "../spine-protocol" }
+
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = "0.6"
+js-sys = "0.3"

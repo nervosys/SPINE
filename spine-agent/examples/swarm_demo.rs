@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -130,11 +129,11 @@ fn main() {
             .map(|t| t.id)
             .collect();
 
-        let mut any_pending = false;
+        let mut _any_pending = false;
         
         for task in tasks.iter_mut() {
             if task.status == TaskStatus::Pending && task.assigned_to.is_none() {
-                any_pending = true;
+                _any_pending = true;
                 
                 // Check dependencies
                 let deps_met = task.dependencies.iter().all(|dep_id| {

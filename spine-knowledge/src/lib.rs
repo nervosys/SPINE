@@ -1242,8 +1242,13 @@ mod tests {
     #[test]
     fn test_episodic() {
         let mut ep = EpisodicMemory::new(256);
-        let _ = ep.store("Surprising event!", HashMap::new());
-        assert!(ep.stats().episode_count >= 0);
+        let result = ep.store("Surprising event!", HashMap::new());
+        // store() returns Some only if surprise exceeds threshold
+        if result.is_some() {
+            assert_eq!(ep.stats().episode_count, 1);
+        } else {
+            assert_eq!(ep.stats().episode_count, 0);
+        }
     }
 
     #[test]

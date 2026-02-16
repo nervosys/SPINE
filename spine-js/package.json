@@ -1,0 +1,19 @@
+{
+  "name": "spine-js",
+  "version": "1.0.0",
+  "description": "TypeScript/JavaScript WASM bindings for the SPINE agentic web stack",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/nervosys/SPINE",
+  "main": "pkg/spine_js.js",
+  "types": "pkg/spine_js.d.ts",
+  "files": ["pkg/"],
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg",
+    "build:node": "wasm-pack build --target nodejs --out-dir pkg-node",
+    "test": "wasm-pack test --node"
+  },
+  "keywords": ["spine", "wasm", "ai", "web", "agent"],
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

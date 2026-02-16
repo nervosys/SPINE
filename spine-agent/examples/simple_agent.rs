@@ -1,5 +1,4 @@
 use spine_agent::{AgentClient, Compiler};
-use spine_protocol::{BrowserCommand, Message};
 use anyhow::Result;
 
 #[tokio::main]

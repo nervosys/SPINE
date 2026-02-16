@@ -136,7 +136,7 @@
 - [x] **Config-driven server**: All ports, hosts, timeouts, limits, TLS paths from config
 - [x] **249 tests passing**: +4 tests (3 config + 1 telemetry)
 
-### Phase 7: Testing & Verification
+### Phase 7: Testing & Verification ✅
 
 - [x] **Property-based testing**: proptest for protocol, parser, transport, and crypto (41 properties across 4 crates)
 - [x] **Fuzz testing**: 5 cargo-fuzz targets for parser HTML, latent vectors, frame decode, message deser, frame headers
@@ -146,6 +146,17 @@
 - [x] **Chaos testing**: 13 tests (random disconnects, corrupted headers, truncated messages, rapid reconnect, floods)
 - [x] **Bug fixes from testing**: header_size minimum bound, morphology evolution ordering, bytemuck alignment fallback
 - [x] **321 tests passing**: +72 tests, 0 failures, 0 clippy warnings
+
+### Phase 8: Developer Ecosystem ✅
+
+- [x] **spine CLI tool**: init, connect (REPL), query, deploy, benchmark, status — 6 commands with clap derive
+- [x] **Agent SDK cookbook**: 12 examples — simple, encrypted, batch scraper, HLS executor, latent analysis, session transfer, reconnect, WebSocket, swarm, knowledge, web intelligence, autonomous
+- [x] **OpenAPI gateway** (spine-gateway): REST API with axum + utoipa, Swagger UI, session management, health/ready/metrics
+- [x] **Python bindings** (spine-python): PyO3 classes for PyClient, PyUnifiedRepresentation, PySpineBinary with maturin build
+- [x] **TypeScript WASM bindings** (spine-js): wasm-bindgen for parseHtml, compileHls with wasm-pack build
+- [x] **Documentation site**: 18-page mdBook covering architecture, SDK, CLI, gateway, internals, contributing
+- [x] **Container images**: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway
+- [x] **329 tests passing**: +8 tests, 0 failures, 0 clippy warnings
 
 ### Performance Benchmarks
 
@@ -162,7 +173,7 @@
 | **SPSC Ring Push/Pop**       | **1.36 ns**      |
 | **RDTSC Read**               | **9.3 ns**       |
 
-### Workspace Structure (17 crates)
+### Workspace Structure (21 crates)
 
 - `spine-kernel`: Ultra-low-level hardware primitives (SIMD, allocators, atomics, ring buffers, RDTSC timing)
 - `spine-core`: Multi-session orchestration engine
@@ -181,3 +192,7 @@
 - `spine-stream`: Reactive streaming with multiplexing, flow control, and priority queuing
 - `spine-recursive`: Recursive Language Model for infinite context (10M+ chars) based on arXiv:2512.24601
 - `spine-knowledge`: Unified bioinspired memory (episodic/semantic/working/collective) with CRDT-based distributed knowledge base
+- `spine-cli`: CLI tool with init, connect, query, deploy, benchmark, status commands
+- `spine-gateway`: REST API gateway with OpenAPI/Swagger UI (axum + utoipa)
+- `spine-python`*: Python bindings via PyO3 + maturin (excluded from default build)
+- `spine-js`*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build)

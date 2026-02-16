@@ -1,0 +1,20 @@
+[book]
+title = "SPINE Documentation"
+authors = ["Nervosys LLC"]
+description = "Documentation for the SPINE agentic web stack"
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "coal"
+git-repository-url = "https://github.com/nervosys/SPINE"
+edit-url-template = "https://github.com/nervosys/SPINE/edit/master/docs/{path}"
+additional-css = []
+additional-js = []
+no-section-label = false

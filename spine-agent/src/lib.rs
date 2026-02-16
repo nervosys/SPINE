@@ -12,6 +12,8 @@ use tokio_rustls::TlsConnector;
 
 // Re-export the compiler for convenience
 pub use spine_compiler::Compiler;
+// Re-export WebSocket stream for CLI and external consumers
+pub use spine_transport::WebSocketClientStream;
 
 pub struct AgentClient<S> {
     /// Public handler for advanced protocol operations (Chameleon, Speculation, etc.)

@@ -1,0 +1,23 @@
+[package]
+name = "spine-python"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Python bindings for the SPINE agentic web stack"
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "spine_python"
+crate-type = ["cdylib"]
+
+[dependencies]
+spine-agent = { path = "../spine-agent" }
+spine-protocol = { path = "../spine-protocol" }
+spine-parser = { path = "../spine-parser" }
+spine-compiler = { path = "../spine-compiler" }
+spine-transport = { path = "../spine-transport" }
+
+pyo3 = { version = "0.22", features = ["extension-module"] }
+tokio = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,36 @@
+[package]
+name = "spine-gateway"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "OpenAPI REST gateway for SPINE — exposes agentic web APIs to non-Rust clients"
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "spine-gateway"
+path = "src/main.rs"
+
+[dependencies]
+spine-agent = { path = "../spine-agent" }
+spine-protocol = { path = "../spine-protocol" }
+spine-parser = { path = "../spine-parser" }
+spine-compiler = { path = "../spine-compiler" }
+spine-core = { path = "../spine-core" }
+spine-transport = { path = "../spine-transport" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+tracing = { workspace = true }
+
+axum = { version = "0.7", features = ["json"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+utoipa = { version = "4", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "5"

@@ -145,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
     // Initialize SPINE components
     let _runtime = AgenticWebRuntime::new(AgentProfile::new("web_intelligence"));
     let _knowledge = KnowledgeGraph::new();
-    let chameleon = ChameleonKey::new(&[0u8; 32]);
+    let _chameleon = ChameleonKey::new(&[0u8; 32]);
 
     let cold_start = start.elapsed();
 
