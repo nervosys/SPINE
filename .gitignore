@@ -14,3 +14,5 @@ Thumbs.db
 
 # Debug
 *.pdb
+exit_code.txt
+test_results.txt

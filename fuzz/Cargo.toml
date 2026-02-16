@@ -1,0 +1,46 @@
+[package]
+name = "spine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+spine-protocol = { path = "../spine-protocol" }
+spine-parser = { path = "../spine-parser" }
+spine-transport = { path = "../spine-transport" }
+spine-crypto = { path = "../spine-crypto" }
+serde_json = "1.0"
+bytes = "1.5"
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "fuzz_parse_html"
+path = "fuzz_targets/fuzz_parse_html.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_latent_vector"
+path = "fuzz_targets/fuzz_latent_vector.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_frame_decode"
+path = "fuzz_targets/fuzz_frame_decode.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_message_deser"
+path = "fuzz_targets/fuzz_message_deser.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_frame_header"
+path = "fuzz_targets/fuzz_frame_header.rs"
+doc = false

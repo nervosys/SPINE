@@ -126,17 +126,20 @@
 
 ---
 
-## Planned
+## Completed
 
 ### Phase 7 — Testing & Verification
 
-- [ ] Property-based testing with `proptest` for protocol invariants
-- [ ] Fuzz testing with `cargo-fuzz` for parser and protocol layers
-- [ ] Integration test harness: multi-node cluster in-process tests
-- [ ] Coverage tracking with `cargo-llvm-cov` (target: >80%)
-- [ ] Deterministic replay for debugging distributed scenarios
-- [ ] Chaos testing: random disconnects, packet loss, clock skew
+- [x] **Property-based testing**: proptest for protocol, parser, transport, and crypto (41 properties across 4 crates)
+- [x] **Fuzz testing**: 5 cargo-fuzz targets for parser HTML, latent vectors, frame decode, message deser, frame headers
+- [x] **Integration test harness**: 11 multi-session in-process tests (plaintext, encrypted, chameleon, concurrent, stress)
+- [x] **Coverage tracking**: scripts/coverage.sh with HTML/JSON/LCOV modes via cargo-llvm-cov
+- [x] **Deterministic replay**: TraceLog, ReplayVerifier, TraceSummary in spine-protocol/src/replay.rs
+- [x] **Chaos testing**: 13 tests — random disconnects, corrupted headers, truncated messages, rapid reconnect, floods
+- [x] **Bug fixes from testing**: header_size minimum bound, morphology evolution ordering, bytemuck alignment fallback
+- [x] **321 tests passing**: +72 tests, 0 failures, 0 clippy warnings
 
+## Planned
 ### Phase 8 — Developer Ecosystem
 
 - [ ] `spine` CLI tool: init, connect, query, deploy, benchmark

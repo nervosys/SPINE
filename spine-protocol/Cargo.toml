@@ -36,6 +36,6 @@ quinn = { version = "0.11", optional = true }
 rcgen = { version = "0.12", optional = true }
 rustls-pki-types = { version = "1", optional = true }
 
-
-
-
+[dev-dependencies]
+proptest = "1.4"
+tokio-test = "0.4"

@@ -15,5 +15,5 @@ log.workspace = true
 scraper = "0.18"
 ego-tree = "0.6"
 
-
-
+[dev-dependencies]
+proptest = "1.4"

@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Top-level configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SpineConfig {
     pub server: ServerConfig,
@@ -103,16 +103,6 @@ pub struct LoggingConfig {
 
 // ========== DEFAULTS ==========
 
-impl Default for SpineConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            tls: TlsConfig::default(),
-            cluster: ClusterConfig::default(),
-            logging: LoggingConfig::default(),
-        }
-    }
-}
 
 impl Default for ServerConfig {
     fn default() -> Self {

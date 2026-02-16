@@ -1,6 +1,8 @@
 // Allow dead code for protocol features designed for future extensions
 #![allow(dead_code)]
 
+pub mod replay;
+
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -297,8 +299,8 @@ impl LatentVector {
             return None;
         }
 
-        // SAFETY: f32 slice from properly aligned bytes
-        let components: Vec<f32> = bytemuck::cast_slice(component_bytes).to_vec();
+        // Use try_cast_slice to handle unaligned data gracefully
+        let components: Vec<f32> = match bytemuck::try_cast_slice(component_bytes) { Ok(s) => s.to_vec(), Err(_) => component_bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect() };
 
         Some(Self {
             components,
@@ -573,7 +575,7 @@ impl ProtocolMorphology {
     fn new(seed: u64) -> Self {
         Self {
             frame_version: (seed % 256) as u8,
-            header_size: 4 + (seed % 13) as u8,
+            header_size: 5 + (seed % 12) as u8,
             big_endian: seed.is_multiple_of(2),
             checksum_variant: (seed % 4) as u8,
             padding_mode: match seed % 4 {
@@ -587,7 +589,7 @@ impl ProtocolMorphology {
 
     fn evolve(&mut self, hash: u64) {
         self.frame_version = self.frame_version.wrapping_add((hash % 7) as u8);
-        self.header_size = 4 + ((self.header_size as u64 + hash) % 13) as u8;
+        self.header_size = 5 + ((self.header_size as u64 + hash) % 12) as u8;
         self.big_endian = !self.big_endian;
         self.checksum_variant = (self.checksum_variant + (hash % 4) as u8) % 4;
         self.padding_mode = match (self.padding_mode as u8 + (hash % 4) as u8) % 4 {
@@ -1210,7 +1212,7 @@ where
             // Evolve key after sending (moving target)
             if self.moving_target {
                 chameleon.evolve(msg_hash);
-                self.morphology.evolve(msg_hash);
+                // morphology evolution deferred to after write_morphed_frame
             }
         }
         // Fallback to AES encryption
@@ -1233,6 +1235,11 @@ where
 
         // Write with morphing header
         self.write_morphed_frame(&data).await?;
+
+        // Evolve morphology AFTER writing frame to keep sender/receiver in sync
+        if self.moving_target && self.chameleon.is_some() {
+            self.morphology.evolve(msg_hash);
+        }
         Ok(())
     }
 
@@ -1262,7 +1269,7 @@ where
 
             if self.moving_target {
                 chameleon.evolve(msg_hash);
-                self.morphology.evolve(msg_hash);
+                // morphology evolution deferred to after write_morphed_frame
             }
         } else if let Some(cipher) = &self.cipher {
             // SECURITY: Use counter-based nonce to prevent nonce reuse
@@ -1280,6 +1287,11 @@ where
         }
 
         self.write_morphed_frame(&data).await?;
+
+        // Evolve morphology AFTER writing frame to keep sender/receiver in sync
+        if self.moving_target && self.chameleon.is_some() {
+            self.morphology.evolve(msg_hash);
+        }
         Ok(())
     }
 
