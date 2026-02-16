@@ -48,6 +48,7 @@
 //! - [`uring`]: io_uring kernel bypass (Linux)
 
 #![allow(dead_code)]
+#![allow(unexpected_cfgs)]
 #![cfg_attr(feature = "avx512", feature(stdarch_x86_avx512))]
 
 pub mod alloc;
@@ -60,6 +61,9 @@ pub mod time;
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub mod uring;
+
+#[cfg(kani)]
+mod kani_harnesses;
 
 // Re-exports
 pub use alloc::{ArenaAllocator, ArenaStats, BumpAllocator, SlabAllocator};
