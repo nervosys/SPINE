@@ -148,6 +148,93 @@ pub unsafe fn munmap(addr: *mut u8, _len: usize) -> Result<()> {
     }
 }
 
+// =============================================================================
+// MAPPED REGION (RAII WRAPPER)
+// =============================================================================
+
+/// RAII wrapper for memory-mapped regions.
+///
+/// Automatically calls `munmap` on `Drop`, preventing memory leaks from
+/// mismatched mmap/munmap calls. This addresses MISRA D7 (R.21.3).
+///
+/// # Examples
+///
+/// ```no_run
+/// use spine_kernel::syscall::*;
+/// let region = MappedRegion::new(4096, MemProt::READ_WRITE, MemFlags::PRIVATE | MemFlags::ANONYMOUS).unwrap();
+/// let ptr = region.as_ptr();
+/// // region automatically unmapped on drop
+/// ```
+pub struct MappedRegion {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl MappedRegion {
+    /// Create a new anonymous memory-mapped region.
+    ///
+    /// This is the safe equivalent of `mmap` + `munmap` with RAII cleanup.
+    pub fn new(len: usize, prot: MemProt, flags: MemFlags) -> Result<Self> {
+        if len == 0 {
+            return Err(Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "len must be > 0",
+            ));
+        }
+        // SAFETY: len > 0, anonymous mapping (fd=-1, offset=0), no fixed address
+        let ptr = unsafe { mmap(None, len, prot, flags, -1, 0)? };
+        Ok(Self { ptr, len })
+    }
+
+    /// Get a raw pointer to the mapped memory.
+    #[inline]
+    pub fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    /// Get the length of the mapped region in bytes.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Returns true if the region has zero length (never happens after construction).
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Get a byte slice view of the mapped memory.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure no concurrent writes to the region.
+    pub unsafe fn as_slice(&self) -> &[u8] {
+        std::slice::from_raw_parts(self.ptr, self.len)
+    }
+
+    /// Get a mutable byte slice view of the mapped memory.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure exclusive access to the region.
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+        std::slice::from_raw_parts_mut(self.ptr, self.len)
+    }
+}
+
+impl Drop for MappedRegion {
+    fn drop(&mut self) {
+        // SAFETY: ptr and len are valid from the mmap call in `new()`
+        unsafe {
+            let _ = munmap(self.ptr, self.len);
+        }
+    }
+}
+
+// SAFETY: MappedRegion owns its memory region exclusively
+unsafe impl Send for MappedRegion {}
+
 /// Lock memory to prevent swapping (Linux)
 ///
 /// # Safety

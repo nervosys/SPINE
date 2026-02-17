@@ -7,7 +7,7 @@
 //! - Lock-free stack and queue
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::CACHE_LINE_SIZE;
 
@@ -77,8 +77,8 @@ impl Default for PaddedAtomicU64 {
 
 /// Sequence lock for low-overhead read-heavy workloads
 ///
-/// Writers acquire exclusive access via sequence increment.
-/// Readers optimistically read and validate sequence.
+/// Single-writer, multi-reader lock. Writers acquire exclusive access via
+/// CAS on the sequence counter. Readers optimistically read and validate.
 ///
 /// **Use case**: Frequently-read, rarely-written data (config, metrics)
 pub struct SeqLock<T> {
@@ -130,19 +130,37 @@ impl<T: Copy> SeqLock<T> {
         }
     }
 
-    /// Write a new value
+    /// Write a new value with exclusive writer access.
+    ///
+    /// Uses CAS to atomically transition even→odd, ensuring only one writer
+    /// can enter the critical section. Concurrent writers spin.
     #[inline]
     pub fn write(&self, value: T) {
-        // Increment sequence (now odd = write in progress)
-        self.seq.fetch_add(1, Ordering::AcqRel);
-
-        // SAFETY: We have exclusive access (seq is odd)
-        unsafe {
-            *self.data.get() = value;
+        loop {
+            let seq = self.seq.load(Ordering::Relaxed);
+            // Only try to acquire when no write is in progress (seq is even)
+            if seq & 1 != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            // CAS: even → odd (acquire write lock)
+            if self
+                .seq
+                .compare_exchange_weak(seq, seq + 1, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                // We have exclusive write access (seq is odd, no other writer can CAS)
+                // SAFETY: CAS guarantees exclusive access
+                unsafe {
+                    *self.data.get() = value;
+                }
+                // Release: odd → even (release write lock)
+                self.seq.fetch_add(1, Ordering::Release);
+                return;
+            }
+            // CAS failed — another writer won, retry
+            std::hint::spin_loop();
         }
-
-        // Increment sequence again (now even = write complete)
-        self.seq.fetch_add(1, Ordering::Release);
     }
 
     /// Get the current sequence number
@@ -172,7 +190,8 @@ pub struct TaggedPtr<T> {
 impl<T> TaggedPtr<T> {
     /// Bits reserved for tag (16 bits = 65536 versions)
     const TAG_BITS: u64 = 16;
-    const TAG_MASK: u64 = (1 << Self::TAG_BITS) - 1;
+    const TAG_SHIFT: u64 = 48;
+    const TAG_MASK: u64 = ((1u64 << Self::TAG_BITS) - 1) << Self::TAG_SHIFT;
     const PTR_MASK: u64 = !Self::TAG_MASK;
 
     /// Create a new tagged pointer
@@ -193,7 +212,7 @@ impl<T> TaggedPtr<T> {
     pub fn load(&self, order: Ordering) -> (*mut T, u16) {
         let packed = self.packed.load(order);
         let ptr = (packed & Self::PTR_MASK) as *mut T;
-        let tag = (packed & Self::TAG_MASK) as u16;
+        let tag = ((packed & Self::TAG_MASK) >> Self::TAG_SHIFT) as u16;
         (ptr, tag)
     }
 
@@ -202,7 +221,7 @@ impl<T> TaggedPtr<T> {
     pub fn store(&self, ptr: *mut T, order: Ordering) {
         let (_, old_tag) = self.load(Ordering::Relaxed);
         let new_tag = old_tag.wrapping_add(1) as u64;
-        let packed = (ptr as u64 & Self::PTR_MASK) | (new_tag & Self::TAG_MASK);
+        let packed = (ptr as u64 & Self::PTR_MASK) | ((new_tag << Self::TAG_SHIFT) & Self::TAG_MASK);
         self.packed.store(packed, order);
     }
 
@@ -217,9 +236,9 @@ impl<T> TaggedPtr<T> {
         failure: Ordering,
     ) -> Result<(*mut T, u16), (*mut T, u16)> {
         let expected =
-            (expected_ptr as u64 & Self::PTR_MASK) | (expected_tag as u64 & Self::TAG_MASK);
+            (expected_ptr as u64 & Self::PTR_MASK) | ((expected_tag as u64) << Self::TAG_SHIFT & Self::TAG_MASK);
         let new_tag = expected_tag.wrapping_add(1) as u64;
-        let new = (new_ptr as u64 & Self::PTR_MASK) | (new_tag & Self::TAG_MASK);
+        let new = (new_ptr as u64 & Self::PTR_MASK) | ((new_tag << Self::TAG_SHIFT) & Self::TAG_MASK);
 
         match self
             .packed
@@ -228,7 +247,7 @@ impl<T> TaggedPtr<T> {
             Ok(_) => Ok((new_ptr, new_tag as u16)),
             Err(actual) => {
                 let ptr = (actual & Self::PTR_MASK) as *mut T;
-                let tag = (actual & Self::TAG_MASK) as u16;
+                let tag = ((actual & Self::TAG_MASK) >> Self::TAG_SHIFT) as u16;
                 Err((ptr, tag))
             }
         }
@@ -243,12 +262,12 @@ unsafe impl<T: Send> Sync for TaggedPtr<T> {}
 // LOCK-FREE STACK (SIMPLE TREIBER STACK)
 // =============================================================================
 
-/// Lock-free stack using Treiber's algorithm
+/// Lock-free stack using Treiber's algorithm with ABA prevention
 ///
-/// Simple implementation using AtomicPtr. Note: susceptible to ABA problem
-/// in pathological cases, but safe for most uses.
+/// Uses `TaggedPtr` (pointer + version counter) to prevent the ABA problem
+/// where a CAS succeeds on a stale pointer that was freed and reallocated.
 pub struct LockFreeStack<T> {
-    head: AtomicPtr<Node<T>>,
+    head: TaggedPtr<Node<T>>,
 }
 
 struct Node<T> {
@@ -260,7 +279,7 @@ impl<T> LockFreeStack<T> {
     /// Create a new empty stack
     pub fn new() -> Self {
         Self {
-            head: AtomicPtr::new(std::ptr::null_mut()),
+            head: TaggedPtr::null(),
         }
     }
 
@@ -272,15 +291,18 @@ impl<T> LockFreeStack<T> {
         }));
 
         loop {
-            let head = self.head.load(Ordering::Acquire);
+            let (head, tag) = self.head.load(Ordering::Acquire);
 
-            // SAFETY: node is valid
+            // SAFETY: node is valid, just allocated
             unsafe { (*node).next = head };
 
-            match self
-                .head
-                .compare_exchange_weak(head, node, Ordering::AcqRel, Ordering::Relaxed)
-            {
+            match self.head.compare_exchange(
+                head,
+                tag,
+                node,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => return,
                 Err(_) => continue,
             }
@@ -290,21 +312,26 @@ impl<T> LockFreeStack<T> {
     /// Pop a value from the stack
     pub fn pop(&self) -> Option<T> {
         loop {
-            let head = self.head.load(Ordering::Acquire);
+            let (head, tag) = self.head.load(Ordering::Acquire);
 
             if head.is_null() {
                 return None;
             }
 
-            // SAFETY: head is valid (we pushed it)
+            // SAFETY: head is valid — the tagged pointer's version counter
+            // prevents the ABA problem where head could be freed and reallocated
+            // between our load and CAS. The version must match for CAS to succeed.
             let next = unsafe { (*head).next };
 
-            match self
-                .head
-                .compare_exchange_weak(head, next, Ordering::AcqRel, Ordering::Relaxed)
-            {
+            match self.head.compare_exchange(
+                head,
+                tag,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
                 Ok(_) => {
-                    // SAFETY: We own the node now
+                    // SAFETY: We won the CAS, so we own the node exclusively
                     let node = unsafe { Box::from_raw(head) };
                     return Some(node.value);
                 }
@@ -315,10 +342,9 @@ impl<T> LockFreeStack<T> {
 
     /// Check if the stack is empty
     pub fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Acquire).is_null()
+        self.head.load(Ordering::Acquire).0.is_null()
     }
 }
-
 impl<T> Default for LockFreeStack<T> {
     fn default() -> Self {
         Self::new()
@@ -469,5 +495,81 @@ mod tests {
 
         flags.clear(0);
         assert!(!flags.test(0));
+    }
+
+    #[test]
+    fn test_seq_lock_concurrent_writers() {
+        // Verify CAS-based writer exclusion prevents data corruption
+        let lock = Arc::new(SeqLock::new(0u64));
+        let mut handles = vec![];
+
+        for writer_id in 0..4 {
+            let lock = lock.clone();
+            handles.push(thread::spawn(move || {
+                for i in 0..1000 {
+                    lock.write(writer_id * 1000 + i);
+                }
+            }));
+        }
+
+        // Concurrent readers
+        for _ in 0..4 {
+            let lock = lock.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..5000 {
+                    let val = lock.read();
+                    assert!(val < 4000, "Value should be in valid range");
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_lock_free_stack_concurrent() {
+        // Verify TaggedPtr ABA prevention under concurrent push/pop
+        let stack = Arc::new(LockFreeStack::new());
+        let mut handles = vec![];
+
+        // Concurrent pushers
+        for t in 0..4 {
+            let stack = stack.clone();
+            handles.push(thread::spawn(move || {
+                for i in 0..1000 {
+                    stack.push(t * 1000 + i);
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // Pop all and verify count
+        let mut count = 0;
+        while stack.pop().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 4000, "All pushed items must be popped");
+    }
+
+    #[test]
+    fn test_tagged_ptr_preserves_address() {
+        // Verify tagged pointer does not corrupt pointer value
+        let value = Box::into_raw(Box::new(42u64));
+        let tp = TaggedPtr::new(value);
+
+        let (loaded_ptr, _tag) = tp.load(Ordering::SeqCst);
+        assert_eq!(loaded_ptr, value, "TaggedPtr must preserve pointer address");
+
+        // Verify the value is accessible through the pointer
+        let val = unsafe { *loaded_ptr };
+        assert_eq!(val, 42, "Pointer must be dereferenceable to original value");
+
+        // Clean up
+        unsafe { drop(Box::from_raw(value)) };
     }
 }

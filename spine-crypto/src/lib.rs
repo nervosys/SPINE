@@ -35,15 +35,21 @@
 //! Implements NTRU-inspired lattice operations for key evolution that
 //! resists quantum computing attacks (Shor's algorithm).
 
-use spine_neural::{
-    Activation, DenseLayer, MirasNeuralEncoder, MirasVariant, MultiHeadAttention,
-    NeuralEncoderConfig, TitansMemory,
-};
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use spine_neural::{
+    Activation, DenseLayer, MirasNeuralEncoder, MirasVariant, MultiHeadAttention,
+    NeuralEncoderConfig, TitansMemory,
+};
 use std::collections::VecDeque;
+
+// AES-256-GCM for authenticated encryption (replaces XOR)
+use aes_gcm::aead::Aead;
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+// HKDF for proper key derivation
+use hkdf::Hkdf;
 
 // ============================================================================
 // TITANS-BASED MESSAGE PREDICTOR (Neural Long-Term Memory)
@@ -992,6 +998,8 @@ impl RingElement {
 /// Quantum-resistant key pair
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuantumKeyPair {
+    /// Public parameter `a` — must be stored for correct KEM encaps/decaps
+    pub a: RingElement,
     pub public_key: RingElement,
     secret_key: RingElement,
     params: LatticeParams,
@@ -1034,6 +1042,7 @@ impl QuantumKeyEvolution {
         let b = a.mul(&s).add(&e);
 
         QuantumKeyPair {
+            a, // Store `a` for correct KEM operation
             public_key: b,
             secret_key: s,
             params: params.clone(),
@@ -1041,10 +1050,14 @@ impl QuantumKeyEvolution {
     }
 
     /// Evolve the key forward (one-way function)
+    ///
+    /// Uses HKDF to derive a new seed from the current key material,
+    /// then generates a fresh RLWE keypair that maintains the b=a*s+e invariant.
     pub fn evolve(&mut self) -> [u8; 32] {
-        // Hash current key
+        // Hash current key material (public key + secret key + counter)
         let mut hasher = Sha256::new();
         hasher.update(self.current_key.public_key.to_bytes());
+        hasher.update(self.current_key.secret_key.to_bytes());
         hasher.update(self.evolution_counter.to_le_bytes());
         let hash: [u8; 32] = hasher.finalize().into();
 
@@ -1054,35 +1067,30 @@ impl QuantumKeyEvolution {
             self.key_history.pop_front();
         }
 
-        // Derive new seed from hash
-        let new_seed = u64::from_le_bytes(hash[0..8].try_into().unwrap());
+        // Use HKDF to derive new seed (mixes entropy from current key + counter)
+        let hk = Hkdf::<Sha256>::new(Some(&self.evolution_counter.to_le_bytes()), &hash);
+        let mut okm = [0u8; 32];
+        hk.expand(b"spine-key-evolution", &mut okm)
+            .expect("HKDF expand failed");
+        let new_seed = u64::from_le_bytes(okm[0..8].try_into().unwrap());
         let mut new_rng = StdRng::seed_from_u64(new_seed);
 
-        // Generate new keypair with chained randomness
-        let old_pk_bytes = self.current_key.public_key.to_bytes();
-        let mixing = RingElement::from_bytes(&old_pk_bytes, self.params.n, self.params.q);
-
-        let new_key = Self::generate_keypair(&self.params, &mut new_rng);
-
-        // Mix old and new for transitional security
-        let mixed_pk = new_key
-            .public_key
-            .add(&mixing.scale(self.evolution_counter as i64 % (self.params.q as i64 / 2)));
-
-        self.current_key = QuantumKeyPair {
-            public_key: mixed_pk,
-            secret_key: new_key.secret_key,
-            params: self.params.clone(),
-        };
+        // Generate a proper RLWE keypair that maintains the b=a*s+e invariant
+        self.current_key = Self::generate_keypair(&self.params, &mut new_rng);
 
         self.evolution_counter += 1;
 
         hash
     }
 
-    /// Encapsulate a shared secret using the public key
+    /// Encapsulate a shared secret using the public key (RLWE KEM)
+    ///
+    /// Uses the stored `a` from keygen to ensure sender and receiver
+    /// derive the same shared secret. Encodes a random message `m` into
+    /// the high bits and recovers it via rounding on decapsulation.
     pub fn encapsulate(&mut self) -> (Vec<u8>, [u8; 32]) {
-        let a = RingElement::random(self.params.n, self.params.q, &mut self.rng);
+        // Use the SAME `a` from keygen — critical for correctness
+        let a = &self.current_key.a;
         let r = RingElement::random_ternary(self.params.n, self.params.q, &mut self.rng);
         let e1 = RingElement::random_gaussian(
             self.params.n,
@@ -1097,26 +1105,42 @@ impl QuantumKeyEvolution {
             &mut self.rng,
         );
 
+        // Generate random message m ∈ {0, 1}^n for KEM
+        let m: Vec<i64> = (0..self.params.n)
+            .map(|_| self.rng.gen_range(0..2i64))
+            .collect();
+
         // u = a*r + e1
         let u = a.mul(&r).add(&e1);
 
-        // v = b*r + e2 + encode(m)
-        // For key encapsulation, m is derived from randomness
-        let v = self.current_key.public_key.mul(&r).add(&e2);
+        // v = b*r + e2 + ⌊q/2⌋·m (encode message in high bits)
+        let half_q = (self.params.q / 2) as i64;
+        let encoded_m = RingElement {
+            coeffs: m.iter().map(|&mi| mi * half_q).collect(),
+            n: self.params.n,
+            q: self.params.q,
+        };
+        let v = self.current_key.public_key.mul(&r).add(&e2).add(&encoded_m);
 
-        // Ciphertext
+        // Ciphertext = (u, v)
         let mut ciphertext = u.to_bytes();
         ciphertext.extend(v.to_bytes());
 
-        // Shared secret (hash of v)
+        // Shared secret = H(m) — both sides derive from the same m
         let mut hasher = Sha256::new();
-        hasher.update(v.to_bytes());
+        for &mi in &m {
+            hasher.update(mi.to_le_bytes());
+        }
         let shared_secret: [u8; 32] = hasher.finalize().into();
 
         (ciphertext, shared_secret)
     }
 
-    /// Decapsulate to recover shared secret
+    /// Decapsulate to recover shared secret (RLWE KEM)
+    ///
+    /// Recovers the encoded message by computing v - u·s, then rounding
+    /// each coefficient to 0 or 1 to recover the original message m.
+    /// The shared secret is H(m), matching the encapsulator.
     pub fn decapsulate(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
         let half = ciphertext.len() / 2;
         if half < self.params.n * 2 {
@@ -1126,12 +1150,33 @@ impl QuantumKeyEvolution {
         let u = RingElement::from_bytes(&ciphertext[..half], self.params.n, self.params.q);
         let v = RingElement::from_bytes(&ciphertext[half..], self.params.n, self.params.q);
 
-        // m' = v - u*s
+        // recovered = v - u·s ≈ ⌊q/2⌋·m + (small noise)
         let recovered = v.sub(&u.mul(&self.current_key.secret_key));
 
-        // Shared secret
+        // Round each coefficient: if closer to ⌊q/2⌋ → 1, else → 0
+        let half_q = self.params.q as i64 / 2;
+        let quarter_q = self.params.q as i64 / 4;
+        let m: Vec<i64> = recovered
+            .coeffs
+            .iter()
+            .map(|&c| {
+                // Normalize to [0, q)
+                let c_pos =
+                    ((c % self.params.q as i64) + self.params.q as i64) % self.params.q as i64;
+                // If |c - q/2| < q/4, round to 1; otherwise 0
+                if (c_pos - half_q).abs() < quarter_q {
+                    1i64
+                } else {
+                    0i64
+                }
+            })
+            .collect();
+
+        // Shared secret = H(m) — matches encapsulate
         let mut hasher = Sha256::new();
-        hasher.update(recovered.to_bytes());
+        for &mi in &m {
+            hasher.update(mi.to_le_bytes());
+        }
         Some(hasher.finalize().into())
     }
 
@@ -1195,24 +1240,33 @@ impl QuantumSpeculativeProtocol {
                 length: message.len(),
             }
         } else {
-            // Encapsulate full message
-            let (ciphertext, _shared_secret) = self.key_evolution.encapsulate();
+            // Encapsulate shared secret via RLWE KEM
+            let (ciphertext, shared_secret) = self.key_evolution.encapsulate();
 
-            // XOR message with shared secret (simplified encryption)
-            let mut encrypted = message.to_vec();
-            let key_bytes = self.key_evolution.get_key_hash();
-            for (i, byte) in encrypted.iter_mut().enumerate() {
-                *byte ^= key_bytes[i % 32];
-            }
+            // Derive AES-256-GCM key from KEM shared secret via HKDF
+            let hk = Hkdf::<Sha256>::new(None, &shared_secret);
+            let mut aes_key = [0u8; 32];
+            hk.expand(b"spine-aead-key", &mut aes_key)
+                .expect("HKDF expand failed");
+
+            // Create nonce from message count (unique per message)
+            let mut nonce_bytes = [0u8; 12];
+            nonce_bytes[..8].copy_from_slice(&self.message_count.to_le_bytes());
+            let nonce = Nonce::from_slice(&nonce_bytes);
+
+            // Encrypt with AES-256-GCM (authenticated encryption)
+            let cipher = Aes256Gcm::new_from_slice(&aes_key).expect("AES key length");
+            let encrypted = cipher.encrypt(nonce, message).expect("AES-GCM encrypt");
+
+            // Prepend 12-byte nonce to ciphertext for receiver
+            let mut encrypted_message = nonce_bytes.to_vec();
+            encrypted_message.extend(encrypted);
 
             MessagePayload::Full {
                 ciphertext,
-                encrypted_message: encrypted,
+                encrypted_message,
             }
         };
-
-        // Update predictor with actual message
-        self.predictor.observe(message);
 
         // Evolve key periodically
         self.message_count += 1;
@@ -1256,17 +1310,28 @@ impl QuantumSpeculativeProtocol {
                 }
             }
             MessagePayload::Full {
-                ciphertext: _,
+                ciphertext,
                 encrypted_message,
             } => {
-                // Decrypt
-                let key_bytes = self.key_evolution.get_key_hash();
-                let decrypted: Vec<u8> = encrypted_message
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &byte)| byte ^ key_bytes[i % 32])
-                    .collect();
-                Some(decrypted)
+                // Decapsulate KEM ciphertext to recover shared secret
+                let shared_secret = self.key_evolution.decapsulate(ciphertext)?;
+
+                // Derive AES-256-GCM key from KEM shared secret via HKDF
+                let hk = Hkdf::<Sha256>::new(None, &shared_secret);
+                let mut aes_key = [0u8; 32];
+                hk.expand(b"spine-aead-key", &mut aes_key)
+                    .expect("HKDF expand failed");
+
+                // Extract nonce (first 12 bytes) and ciphertext
+                if encrypted_message.len() < 12 {
+                    return None;
+                }
+                let nonce = Nonce::from_slice(&encrypted_message[..12]);
+                let ciphertext_data = &encrypted_message[12..];
+
+                // Decrypt with AES-256-GCM (authenticated — rejects tampered data)
+                let cipher = Aes256Gcm::new_from_slice(&aes_key).expect("AES key length");
+                cipher.decrypt(nonce, ciphertext_data).ok()
             }
         };
 
@@ -2013,5 +2078,98 @@ mod tests {
         // Surprise should be tracked
         let surprise = predictor.get_surprise();
         assert!(surprise >= 0.0, "Surprise should be non-negative");
+    }
+
+    #[test]
+    fn test_kem_shared_secret_match() {
+        // Verify that encapsulate and decapsulate produce matching shared secrets
+        let params = LatticeParams {
+            n: 64,
+            q: 257,
+            p: 3,
+            sigma: 1.5,
+        };
+        let mut ke = QuantumKeyEvolution::new(params, 12345);
+
+        let (ciphertext, shared_secret_enc) = ke.encapsulate();
+        let shared_secret_dec = ke.decapsulate(&ciphertext).unwrap();
+
+        assert_eq!(
+            shared_secret_enc, shared_secret_dec,
+            "KEM shared secrets must match between encapsulate and decapsulate"
+        );
+    }
+
+    #[test]
+    fn test_aead_tampered_ciphertext_rejected() {
+        // Verify that AES-256-GCM rejects tampered ciphertext
+        let config = TransformerConfig::default();
+        let params = LatticeParams { n: 32, q: 257, p: 3, sigma: 2.0 };
+
+        let mut alice = QuantumSpeculativeProtocol::new(config.clone(), params.clone(), 42);
+        let mut bob = QuantumSpeculativeProtocol::new(config, params, 42);
+
+        let msg = b"Secret message";
+        let mut quantum_msg = alice.send(msg);
+
+        // Tamper with the encrypted message
+        if let MessagePayload::Full { ref mut encrypted_message, .. } = quantum_msg.payload {
+            if let Some(byte) = encrypted_message.last_mut() {
+                *byte ^= 0xFF; // Flip bits
+            }
+        }
+
+        // Bob should reject tampered message (AES-GCM authentication failure)
+        let received = bob.receive(&quantum_msg);
+        assert!(received.is_none(), "Tampered ciphertext must be rejected by AEAD");
+    }
+
+    #[test]
+    fn test_key_evolution_maintains_kem_invariant() {
+        // Verify that key evolution produces valid keypairs (b = a*s + e)
+        let params = LatticeParams { n: 32, q: 257, p: 3, sigma: 2.0 };
+        let mut ke = QuantumKeyEvolution::new(params, 99);
+
+        for _ in 0..5 {
+            ke.evolve();
+            // After evolution, encaps/decaps should still work
+            let (ct, ss_enc) = ke.encapsulate();
+            let ss_dec = ke.decapsulate(&ct).unwrap();
+            assert_eq!(ss_enc, ss_dec, "KEM must work after key evolution");
+        }
+    }
+
+    #[test]
+    fn test_key_evolution_deterministic_hkdf() {
+        // Verify that two instances with the same seed evolve identically
+        let params = LatticeParams::default();
+        let mut ke1 = QuantumKeyEvolution::new(params.clone(), 7777);
+        let mut ke2 = QuantumKeyEvolution::new(params, 7777);
+
+        for _ in 0..5 {
+            let h1 = ke1.evolve();
+            let h2 = ke2.evolve();
+            assert_eq!(h1, h2, "Deterministic evolution must produce identical hashes");
+        }
+        assert_eq!(ke1.get_key_hash(), ke2.get_key_hash());
+    }
+
+    #[test]
+    fn test_aes_gcm_round_trip() {
+        // Full send/receive round-trip with AES-256-GCM
+        let config = TransformerConfig::default();
+        let params = LatticeParams { n: 64, q: 257, p: 3, sigma: 1.5 };
+
+        let mut alice = QuantumSpeculativeProtocol::new(config.clone(), params.clone(), 100);
+        let mut bob = QuantumSpeculativeProtocol::new(config, params, 100);
+
+        // Send multiple messages
+        for i in 0..5 {
+            let msg = format!("Message number {}", i);
+            let quantum_msg = alice.send(msg.as_bytes());
+            let received = bob.receive(&quantum_msg);
+            assert!(received.is_some(), "Message {} should decrypt", i);
+            assert_eq!(received.unwrap(), msg.as_bytes(), "Message {} content mismatch", i);
+        }
     }
 }

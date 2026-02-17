@@ -177,6 +177,17 @@
 - [x] **MISRA compliance** (`formal/misra/MISRA_COMPLIANCE.md`): 16 MISRA C:2012 rules mapped to Rust unsafe, 8 documented deviations with justification and kani verification links
 - [x] **349 tests passing**: 0 new (verification artifacts are external tools), 0 failures, 0 clippy warnings
 
+
+### Phase 11: Security Remediation ✅
+
+- [x] **C1: RLWE KEM correctness**: Store public parameter `a` from keygen; encode random message m in ciphertext high bits; rounding-based decapsulation; shared secret = H(m) on both sides
+- [x] **C2: XOR → AES-256-GCM AEAD**: Derive AES key from KEM shared secret via HKDF; nonce from message counter; authenticated encryption rejects tampered ciphertext
+- [x] **H2: Key evolution invariant**: Hash all key material (public+secret+counter); HKDF seed derivation; fresh RLWE keypair maintaining b=a·s+e
+- [x] **H3: SeqLock CAS writer exclusion**: CAS loop prevents concurrent writer UB (was fetch_add)
+- [x] **H4: LockFreeStack ABA prevention**: TaggedPtr with 16-bit version counter in upper bits; fixed bit layout for x86-64 canonical addressing
+- [x] **A1: MappedRegion RAII wrapper**: Safe mmap/munmap with Drop impl
+- [x] **TaggedPtr heap corruption fix**: Tag moved from low bits (corrupting pointers) to high bits (x86-64 uses lower 48 bits)
+- [x] **358 tests passing**: +9 security tests (5 crypto + 3 kernel + 1 doc test), 0 failures, 0 clippy warnings
 ### Performance Benchmarks
 
 | Component                    | Throughput       |

@@ -1,8 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 349 tests · 0 warnings · Apache 2.0
-> 25 Rust crates · 349 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 358 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -161,6 +160,18 @@
 - [x] **Cryptographic audit** (`formal/audit/CRYPTO_AUDIT.md`): 13 findings (2 critical, 4 high, 4 medium, 3 low) with remediation priorities, verification coverage matrix, third-party audit scope
 - [x] **MISRA compliance** (`formal/misra/MISRA_COMPLIANCE.md`): 16 MISRA C:2012 rules mapped to Rust unsafe, 8 documented deviations with justification/mitigation, verification matrix linked to kani harnesses
 - [x] 349 tests passing (0 new — verification artifacts are external tools)
+
+
+### Phase 11 — Security Remediation ✅
+
+- [x] **C1: RLWE KEM correctness**: Store public parameter `a` from keygen; encode random message `m ∈ {0,1}^n` as `⌊q/2⌋·m` in ciphertext; recover via rounding in decapsulate; shared secret = `H(m)` matches on both sides
+- [x] **C2: XOR → AES-256-GCM**: Replace insecure XOR encryption with authenticated AEAD; derive AES key from KEM shared secret via HKDF; nonce from message counter; reject tampered ciphertext
+- [x] **H2: Key evolution RLWE invariant**: Hash `public_key + secret_key + counter`; derive new seed via HKDF; generate fresh keypair maintaining `b = a·s + e` (no broken mixing)
+- [x] **H3: SeqLock CAS writer exclusion**: Replace `fetch_add` with CAS loop (load → check even → CAS odd → write → release); concurrent writers spin instead of causing UB
+- [x] **H4: LockFreeStack ABA prevention**: Replace `AtomicPtr` with `TaggedPtr` (16-bit version counter in upper bits); fix bit layout to use high 48-bit pointer / upper 16-bit tag for x86-64 canonical addresses
+- [x] **A1: MappedRegion RAII**: Safe mmap wrapper with `Drop` impl calling `munmap`; methods for `as_ptr()`, `as_slice()`, `as_mut_slice()`
+- [x] **TaggedPtr bit layout fix**: Moved tag from low 16 bits to high 16 bits (x86-64 canonical addressing uses lower 48 bits for pointers); eliminates heap corruption
+- [x] 358 tests passing (+9 security tests: 5 crypto + 3 kernel + 1 doc test)
 
 ## Planned
 
