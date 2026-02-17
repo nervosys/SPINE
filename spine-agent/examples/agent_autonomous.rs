@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
                         element Button {
                             text "Simulate Result Found"
                             on_click -> {
-                                navigate("https://github.com/nervosys/Hyperlight")
+                                navigate("https://github.com/nervosys/SPINE")
                                 step = "navigating"
                             }
                         }
@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
                     element Final {
                         text "Navigated to GitHub repository."
                         element Link {
-                            attribute href "https://github.com/nervosys/Hyperlight"
+                            attribute href "https://github.com/nervosys/SPINE"
                             text "View Source"
                         }
                     }

@@ -647,7 +647,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (17 Crates)
+### The SPINE Stack (25 Crates)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -1021,7 +1021,7 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 17 crates:
+SPINE includes comprehensive test coverage across all 25 crates:
 
 ```bash
 # Run all tests
@@ -1033,7 +1033,7 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (218 tests)
+### Test Summary (363 tests)
 
 | Crate           | Tests | Description                                          |
 | --------------- | ----- | ---------------------------------------------------- |

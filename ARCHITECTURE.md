@@ -4,7 +4,7 @@ This document provides a deep dive into the technical architecture of the SPINE 
 
 ## System Overview
 
-SPINE is a **headless semantic browser with adaptive encryption** designed for AI agents. It consists of seventeen core crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
+SPINE is a **headless semantic browser with adaptive encryption** designed for AI agents. It consists of twenty-five crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -1049,7 +1049,7 @@ distribute_task(description, required_roles):
 
 ---
 
-## 12. spine-transport
+## 15. spine-transport
 
 **Purpose**: High-performance zero-copy transport layer with BBR congestion control.
 
@@ -1095,7 +1095,7 @@ distribute_task(description, required_roles):
 
 ---
 
-## 13. spine-stream
+## 16. spine-stream
 
 **Purpose**: Reactive streaming layer with multiplexing, flow control, and priority queuing.
 
@@ -1155,7 +1155,7 @@ enum StreamPayload {
 
 ---
 
-## 14. spine-agentic
+## 17. spine-agentic
 
 **Purpose**: Advanced agentic AI framework with swarm intelligence and cognitive architectures.
 
@@ -1202,3 +1202,89 @@ enum StreamPayload {
 - **Explorer**: Discovers new information
 - **Guardian**: Monitors and enforces policies
 - **Learner**: Adapts from experience
+
+---
+
+## 18. spine-gpu
+
+**Purpose**: GPU-accelerated neural encoding with cross-platform compute abstraction.
+
+**Key Components**:
+
+- **ComputeBackend Trait**: Unified interface for mat-vec multiply, softmax, layer-norm, VAE forward
+- **CpuBackend**: SIMD 8-wide unrolled dot products (AVX2/NEON), fast rsqrt
+- **WgpuBackend**: WGSL compute shaders via wgpu (Vulkan/Metal/DX12/WebGPU)
+- **GpuAccelerator**: Auto-selects best available backend at runtime
+
+---
+
+## 19. spine-storage
+
+**Purpose**: Persistent storage backends for knowledge base and cluster state.
+
+**Key Components**:
+
+- **StorageBackend Trait**: `get/put/delete/scan/keys/batch_put/count/clear`
+- **InMemoryBackend**: Fast ephemeral HashMap-based storage for testing
+- **SqliteBackend**: Embedded relational storage with WAL journaling (default)
+- **RocksDbBackend**: High-performance LSM-tree storage with column families (optional feature)
+- **TypedStorage**: Generic wrapper providing serde serialization over any backend
+- **PersistentKnowledge**: Adapter integrating storage with spine-knowledge
+
+---
+
+## 20. spine-cache
+
+**Purpose**: Tiered caching system with three levels for latency-optimized data access.
+
+**Key Components**:
+
+- **L1 Cache**: In-memory LRU with TTL and byte-size limits (~10 ns access)
+- **L2 Cache**: Memory-mapped file-backed cache (~1 us access)
+- **L3 Cache**: Remote/delegated cache trait (~1 ms access)
+- **TieredCache**: Cascading lookup (L1 -> L2 -> L3) with promotion-on-hit
+
+---
+
+## 21. spine-k8s
+
+**Purpose**: Kubernetes operator for managing SPINE cluster deployments with auto-scaling.
+
+**Key Components**:
+
+- **SpineClusterSpec CRD**: Declarative cluster configuration (replicas, image, resources, scaling)
+- **AutoScaler**: CPU, memory, and connection-count based scaling with configurable thresholds
+- **ManifestGenerator**: StatefulSet, Service, and HPA Kubernetes manifest generation
+- **HealthMonitor**: Periodic health checks with automatic pod restart policies
+
+---
+
+## 22. spine-cli
+
+**Purpose**: Command-line interface for the SPINE agentic web stack.
+
+**Commands**: init, connect (REPL), query, deploy, benchmark, status. Built with clap derive macros.
+
+---
+
+## 23. spine-gateway
+
+**Purpose**: OpenAPI REST gateway exposing SPINE APIs to non-Rust clients.
+
+**Key Components**:
+
+- **Axum Router**: RESTful endpoints for sessions, navigation, search, HLS execution
+- **Swagger UI**: Auto-generated interactive API docs via utoipa
+- **Health Endpoints**: /health, /ready, /metrics for production monitoring
+
+---
+
+## 24. spine-python (excluded from workspace)
+
+**Purpose**: Python bindings via PyO3 + maturin. Exposes PyClient, PyUnifiedRepresentation, PySpineBinary.
+
+---
+
+## 25. spine-js (excluded from workspace)
+
+**Purpose**: TypeScript/WASM bindings via wasm-bindgen + wasm-pack. Exposes parseHtml(), compileHls().

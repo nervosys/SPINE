@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 358 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 363 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -171,7 +171,7 @@
 - [x] **H4: LockFreeStack ABA prevention**: Replace `AtomicPtr` with `TaggedPtr` (16-bit version counter in upper bits); fix bit layout to use high 48-bit pointer / upper 16-bit tag for x86-64 canonical addresses
 - [x] **A1: MappedRegion RAII**: Safe mmap wrapper with `Drop` impl calling `munmap`; methods for `as_ptr()`, `as_slice()`, `as_mut_slice()`
 - [x] **TaggedPtr bit layout fix**: Moved tag from low 16 bits to high 16 bits (x86-64 canonical addressing uses lower 48 bits for pointers); eliminates heap corruption
-- [x] 358 tests passing (+9 security tests: 5 crypto + 3 kernel + 1 doc test)
+- [x] 363 tests passing (+9 security tests: 5 crypto + 3 kernel + 1 doc test)
 
 ### Phase 12 — Cryptographic Hardening ✅
 
@@ -183,9 +183,57 @@
 - [x] **L3: Constant-time key comparison**: Replace `==` with `subtle::ConstantTimeEq` in `verify_evolution()` to prevent timing side-channels
 - [x] 363 tests passing (+5 PoW tests), 0 failures, 0 Clippy warnings
 
+### Phase 13 — CI/CD & Workspace Integrity
+
+- [x] **Workspace verification**: All 25 crates compile with `--all-targets -D warnings`
+- [x] **Clean Clippy**: Zero warnings across entire workspace
+- [x] **Test verification**: Full test suite (363 tests) passing with 0 failures
+
+### Phase 14 — Documentation & Polish
+
+- [x] **Stale reference fixes**: Updated "17 crates" to "25 crates", "218 tests" to "363 tests" across README, ARCHITECTURE, OPTIMIZATIONS, paper
+- [x] **Naming cleanup**: Removed all "Hyperlight" references in examples and docs
+- [x] **ARCHITECTURE.md expansion**: Added crate descriptions 15-25
+- [x] **README test table**: Expanded from 13 to 17 active crates with verified per-crate test counts
+- [x] **Docs site expansion**: Added 5 new internals pages (GPU, storage, caching, Kubernetes, formal verification)
+- [x] **Crate map update**: docs/src/architecture/crates.md expanded to 25 crates
+- [x] **Paper update**: paper.typ updated to 25 crates, 363 tests, ~68k LOC
+- [x] **ROADMAP**: Added Phase 13-14 entries and populated Planned section
+
 ## Planned
 
----
+### Certificate-Based Authentication
+
+- [ ] mTLS for agent-to-server authentication
+- [ ] Certificate rotation and revocation
+- [ ] Automated certificate management (ACME/Let's Encrypt)
+
+### Observability Dashboard
+
+- [ ] Real-time session monitoring web UI
+- [ ] Grafana dashboard templates for Prometheus metrics
+- [ ] Distributed tracing visualization (OpenTelemetry)
+
+### HLS Type System
+
+- [ ] Static type inference for HLS variables
+- [ ] Type-checked function signatures
+- [ ] Compile-time error reporting with source locations
+
+### Advanced Cryptography
+
+- [ ] M2: Latent-space AES-GCM (encrypt latent vectors directly in embedding space)
+- [ ] ML-KEM (FIPS 203) as alternative to custom RLWE
+- [ ] Certificate transparency log integration
+
+### Ecosystem Expansion
+
+- [ ] Go bindings (cgo + spine-go)
+- [ ] Java/Kotlin bindings (JNI)
+- [ ] Official Helm chart for Kubernetes deployments
+- [ ] Browser extension for human-agent hybrid browsing
+
+------
 
 ## Performance Benchmarks
 

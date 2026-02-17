@@ -38,6 +38,11 @@
 - [Transport Layer](./internals/transport.md)
 - [Streaming](./internals/streaming.md)
 - [Memory System](./internals/memory.md)
+- [GPU Compute](./internals/gpu.md)
+- [Persistent Storage](./internals/storage.md)
+- [Tiered Caching](./internals/caching.md)
+- [Kubernetes Operator](./internals/kubernetes.md)
+- [Formal Verification](./internals/formal.md)
 
 # Contributing
 

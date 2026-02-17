@@ -1,6 +1,6 @@
 # HLS Scripting
 
-HLS (Hyperlight Scripting) is a domain-specific language for server-side execution.
+HLS (SPINE Scripting) is a domain-specific language for server-side execution.
 
 ## Execute via Agent
 

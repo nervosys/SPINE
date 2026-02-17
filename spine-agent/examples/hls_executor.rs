@@ -1,6 +1,6 @@
 //! # HLS Script Executor
 //!
-//! Demonstrates compiling and executing HLS (Hyperlight Scripting)
+//! Demonstrates compiling and executing HLS (SPINE Scripting)
 //! programs through the SPINE agent API, including reactive state
 //! management and WASM execution.
 

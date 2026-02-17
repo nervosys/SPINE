@@ -1,6 +1,6 @@
 # Crate Map
 
-## Workspace Crates (19 total)
+## Workspace Crates (25 total)
 
 ### User-Facing
 
@@ -28,21 +28,26 @@
 | ----------------- | ---------- | ------------------------------------------------------------------------------- |
 | `spine-core`      | Binary+Lib | Multi-session orchestration server with config management                       |
 | `spine-protocol`  | Library    | Message types, frame encoding, protocol handler, speculation                    |
-| `spine-parser`    | Library    | Recursive semantic HTML → Unified Representation parser                         |
-| `spine-compiler`  | Library    | HLS (Hyperlight Scripting) → SpineBinary compiler                               |
+| `spine-parser`    | Library    | Recursive semantic HTML to Unified Representation parser                        |
+| `spine-compiler`  | Library    | HLS (SPINE Scripting) to SpineBinary compiler                                   |
 | `spine-knowledge` | Library    | Unified bioinspired memory (episodic, semantic, working, collective) with CRDTs |
 
 ### Infrastructure
 
-| Crate             | Type    | Description                                                            |
-| ----------------- | ------- | ---------------------------------------------------------------------- |
-| `spine-transport` | Library | Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system |
-| `spine-stream`    | Library | Reactive streams, multiplexing, flow control, priority queuing         |
-| `spine-crypto`    | Library | Titans prediction, quantum cryptography, X3DH, MIRAS memory            |
-| `spine-neural`    | Library | VAE encoder, Titans memory, attention, learned projections             |
-| `spine-wasm`      | Library | WebAssembly runtime (wasmtime) for HLS execution                       |
-| `spine-human`     | Library | Legacy web bridge — realistic mouse/keyboard simulation                |
-| `spine-recursive` | Library | Recursive Language Model for infinite context (10M+ chars)             |
+| Crate             | Type    | Description                                                              |
+| ----------------- | ------- | ------------------------------------------------------------------------ |
+| `spine-transport` | Library | Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system   |
+| `spine-stream`    | Library | Reactive streams, multiplexing, flow control, priority queuing           |
+| `spine-crypto`    | Library | Titans prediction, quantum cryptography, X3DH, MIRAS memory             |
+| `spine-neural`    | Library | VAE encoder, Titans memory, attention, learned projections               |
+| `spine-cluster`   | Library | Distributed coordination, Raft consensus, Sybil resistance, marketplace |
+| `spine-wasm`      | Library | WebAssembly runtime (wasmtime) for HLS execution                        |
+| `spine-human`     | Library | Legacy web bridge — realistic mouse/keyboard simulation                  |
+| `spine-recursive` | Library | Recursive Language Model for infinite context (10M+ chars)               |
+| `spine-gpu`       | Library | GPU compute abstraction (CPU SIMD fallback, wgpu Vulkan/Metal/DX12)     |
+| `spine-storage`   | Library | Persistent storage (InMemory, SQLite WAL, RocksDB LSM)                  |
+| `spine-cache`     | Library | Tiered caching (L1 LRU, L2 file-backed, L3 remote)                     |
+| `spine-k8s`       | Library | Kubernetes operator CRD, autoscaler, manifest generators                |
 
 ### Primitives
 
@@ -50,19 +55,29 @@
 | -------------- | ------- | -------------------------------------------------------------------------- |
 | `spine-kernel` | Library | SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC |
 
+### Bindings (excluded from default build)
+
+| Crate          | Type    | Description                                           |
+| -------------- | ------- | ----------------------------------------------------- |
+| `spine-python` | Library | Python bindings via PyO3 + maturin                    |
+| `spine-js`     | Library | TypeScript/WASM bindings via wasm-bindgen + wasm-pack |
+
 ## Dependency Graph (simplified)
 
 ```
-spine-cli ──────┐
-spine-gateway ──┤
-spine-browser ──┼── spine-agent ── spine-agentic ──┬── spine-protocol
-                │                                   ├── spine-neural
-                │                                   ├── spine-crypto
-                │                                   └── spine-knowledge
-                │
-                └── spine-core ── spine-protocol ──┬── spine-parser
-                                                    ├── spine-compiler
-                                                    ├── spine-transport ── spine-kernel
-                                                    ├── spine-stream
-                                                    └── spine-wasm
+spine-cli ------+
+spine-gateway --+
+spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
+                |                                   +-- spine-neural
+                |                                   +-- spine-crypto
+                |                                   +-- spine-knowledge -- spine-storage
+                |                                                          spine-cache
+                |
+                +-- spine-core -- spine-protocol --+-- spine-parser
+                                                    +-- spine-compiler
+                                                    +-- spine-transport -- spine-kernel
+                                                    +-- spine-stream
+                                                    +-- spine-cluster (Raft, Sybil)
+                                                    +-- spine-wasm
+                                                    +-- spine-gpu
 ```
