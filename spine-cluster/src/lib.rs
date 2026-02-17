@@ -6,7 +6,7 @@ pub mod raft;
 pub mod sybil;
 pub use marketplace::*;
 pub use raft::{RaftCluster, RaftCommand, RaftConfig, RaftNode, RaftRole, RaftStatus};
-pub use sybil::{NodeReputation, StakeWeightedConsensus};
+pub use sybil::{NodeReputation, ProofOfWork, StakeWeightedConsensus};
 
 // =============================================================================
 // SPINE CLUSTER - Distributed Agent Coordination

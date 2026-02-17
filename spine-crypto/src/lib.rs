@@ -44,6 +44,7 @@ use spine_neural::{
     NeuralEncoderConfig, TitansMemory,
 };
 use std::collections::VecDeque;
+use subtle::ConstantTimeEq;
 
 // AES-256-GCM for authenticated encryption (replaces XOR)
 use aes_gcm::aead::Aead;
@@ -835,10 +836,10 @@ pub struct LatticeParams {
 impl Default for LatticeParams {
     fn default() -> Self {
         Self {
-            n: 256,     // Moderate security
-            q: 3329,    // Kyber-like modulus
+            n: 1024,    // NIST Level 3 security (~192-bit classical)
+            q: 12289,   // NTT-friendly prime for n=1024
             p: 3,       // Ternary message space
-            sigma: 2.0, // Noise for security
+            sigma: 3.2, // Standard deviation per NIST recommendations
         }
     }
 }
@@ -1187,9 +1188,9 @@ impl QuantumKeyEvolution {
         hasher.finalize().into()
     }
 
-    /// Verify key chain integrity
+    /// Verify key chain integrity (constant-time comparison)
     pub fn verify_evolution(&self, expected_hash: &[u8; 32]) -> bool {
-        self.key_history.iter().any(|h| h == expected_hash)
+        self.key_history.iter().any(|h| h.ct_eq(expected_hash).into())
     }
 
     /// Get evolution counter for synchronization

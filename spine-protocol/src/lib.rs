@@ -4,6 +4,8 @@
 pub mod replay;
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
+use hmac::{Hmac, Mac};
+use sha2::Sha256 as Sha256Hash;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use spine_crypto::{
@@ -561,6 +563,16 @@ pub struct ProtocolMorphology {
     pub checksum_variant: u8,
     /// Padding strategy
     pub padding_mode: PaddingMode,
+    /// HMAC key for cryptographic morphology evolution (not serialized over wire)
+    #[serde(skip, default = "default_morphology_key")]
+    hmac_key: [u8; 32],
+    /// Evolution counter for HMAC domain separation
+    #[serde(skip)]
+    evolution_counter: u64,
+}
+
+fn default_morphology_key() -> [u8; 32] {
+    [0u8; 32]
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -584,15 +596,41 @@ impl ProtocolMorphology {
                 2 => PaddingMode::Random,
                 _ => PaddingMode::Chaotic,
             },
+            hmac_key: [0u8; 32],
+            evolution_counter: 0,
         }
     }
 
-    fn evolve(&mut self, hash: u64) {
-        self.frame_version = self.frame_version.wrapping_add((hash % 7) as u8);
-        self.header_size = 5 + ((self.header_size as u64 + hash) % 12) as u8;
-        self.big_endian = !self.big_endian;
-        self.checksum_variant = (self.checksum_variant + (hash % 4) as u8) % 4;
-        self.padding_mode = match (self.padding_mode as u8 + (hash % 4) as u8) % 4 {
+    /// Create with a session secret for cryptographic morphology evolution
+    fn new_keyed(seed: u64, secret: &[u8; 32]) -> Self {
+        let mut m = Self::new(seed);
+        m.hmac_key = *secret;
+        m
+    }
+
+    /// Evolve morphology using HMAC-SHA256 PRF keyed by session secret.
+    /// Produces cryptographically unpredictable state transitions that
+    /// cannot be predicted without knowledge of the HMAC key.
+    fn evolve(&mut self, msg_hash: u64) {
+        type HmacSha256 = Hmac<Sha256Hash>;
+
+        // Domain-separate each evolution step with counter + message hash
+        self.evolution_counter += 1;
+        let mut input = [0u8; 16];
+        input[..8].copy_from_slice(&self.evolution_counter.to_le_bytes());
+        input[8..].copy_from_slice(&msg_hash.to_le_bytes());
+
+        let mut mac =
+            <HmacSha256 as Mac>::new_from_slice(&self.hmac_key).expect("HMAC accepts any key size");
+        mac.update(&input);
+        let result = mac.finalize().into_bytes();
+
+        // Derive each morphology field from different bytes of the HMAC output
+        self.frame_version = self.frame_version.wrapping_add(result[0] % 7);
+        self.header_size = 5 + (result[1] % 12);
+        self.big_endian = result[2] & 1 == 0;
+        self.checksum_variant = result[3] % 4;
+        self.padding_mode = match result[4] % 4 {
             0 => PaddingMode::None,
             1 => PaddingMode::Pkcs7,
             2 => PaddingMode::Random,
@@ -600,6 +638,7 @@ impl ProtocolMorphology {
         };
     }
 }
+
 
 // =============================================================================
 // MESSAGE TYPES
@@ -968,6 +1007,8 @@ pub struct ProtocolHandler<S> {
     morphology: ProtocolMorphology,
     /// Nonce counter for AES-GCM (prevents nonce reuse)
     nonce_counter: u64,
+    /// Random session nonce mixed into AES-GCM IV (prevents cross-session reuse)
+    session_nonce: [u8; 4],
     /// Enable moving-target defense
     moving_target: bool,
     /// Speculative predictor for outgoing messages
@@ -1036,6 +1077,7 @@ where
             chameleon: None,
             morphology: ProtocolMorphology::new(0),
             nonce_counter: 0,
+            session_nonce: rand::random::<[u8; 4]>(),
             moving_target: false,
             output_predictor: SpeculativePredictor::new(),
             input_predictor: SpeculativePredictor::new(),
@@ -1060,8 +1102,10 @@ where
     /// Enable Chameleon protocol (latent-space cryptography + moving target)
     pub fn enable_chameleon(&mut self, secret: [u8; 32]) {
         self.chameleon = Some(ChameleonKey::new(&secret));
-        self.morphology =
-            ProtocolMorphology::new(u64::from_le_bytes(secret[0..8].try_into().unwrap()));
+        self.morphology = ProtocolMorphology::new_keyed(
+            u64::from_le_bytes(secret[0..8].try_into().unwrap()),
+            &secret,
+        );
         self.moving_target = true;
     }
 
@@ -1217,11 +1261,12 @@ where
         }
         // Fallback to AES encryption
         else if let Some(cipher) = &self.cipher {
-            // SECURITY: Use counter-based nonce to prevent nonce reuse
-            // Nonce = [counter (8 bytes)] || [zeros (4 bytes)]
+            // SECURITY: Nonce = [counter (8 bytes)] || [session_nonce (4 bytes)]
+            // Session nonce prevents cross-session nonce reuse with same key
             self.nonce_counter = self.nonce_counter.wrapping_add(1);
             let mut nonce_full = [0u8; 12];
             nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
+            nonce_full[8..].copy_from_slice(&self.session_nonce);
             let nonce = Nonce::from_slice(&nonce_full);
             data = cipher
                 .encrypt(nonce, data.as_ref())
@@ -1251,6 +1296,10 @@ where
         data = self.apply_padding(data);
 
         // Adaptive compression with flag
+        // SECURITY NOTE (L2): Compressing plaintext before encryption can leak
+        // information via ciphertext size changes (CRIME/BREACH attacks). This is
+        // acceptable for agent-to-agent communication where there is no reflected
+        // user-controlled content. Disable compression when handling untrusted input.
         if data.len() >= self.compression_threshold {
             let compressed = encode_all(&data[..], 3)?;
             let mut flagged = Vec::with_capacity(1 + compressed.len());
@@ -1276,6 +1325,7 @@ where
             self.nonce_counter = self.nonce_counter.wrapping_add(1);
             let mut nonce_full = [0u8; 12];
             nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
+            nonce_full[8..].copy_from_slice(&self.session_nonce);
             let nonce = Nonce::from_slice(&nonce_full);
             data = cipher
                 .encrypt(nonce, data.as_ref())
@@ -1981,8 +2031,10 @@ impl SpineConnection {
     /// Enable Chameleon protocol
     pub fn enable_chameleon(&mut self, secret: [u8; 32]) {
         self.handler.chameleon = Some(ChameleonKey::new(&secret));
-        self.handler.morphology =
-            ProtocolMorphology::new(u64::from_le_bytes(secret[0..8].try_into().unwrap()));
+        self.handler.morphology = ProtocolMorphology::new_keyed(
+            u64::from_le_bytes(secret[0..8].try_into().unwrap()),
+            &secret,
+        );
         self.handler.moving_target = true;
     }
 
@@ -2093,6 +2145,10 @@ impl ProtocolHandlerState {
         data = self.apply_padding(data);
 
         // Adaptive compression with flag
+        // SECURITY NOTE (L2): Compressing plaintext before encryption can leak
+        // information via ciphertext size changes (CRIME/BREACH attacks). This is
+        // acceptable for agent-to-agent communication where there is no reflected
+        // user-controlled content. Disable compression when handling untrusted input.
         if data.len() >= 64 {
             let compressed = encode_all(&data[..], 3)?;
             let mut flagged = Vec::with_capacity(1 + compressed.len());

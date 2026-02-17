@@ -16,3 +16,5 @@ log.workspace = true
 dashmap = "5.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand.workspace = true
+sha2 = "0.10"
+argon2 = "0.5"

@@ -173,6 +173,16 @@
 - [x] **TaggedPtr bit layout fix**: Moved tag from low 16 bits to high 16 bits (x86-64 canonical addressing uses lower 48 bits for pointers); eliminates heap corruption
 - [x] 358 tests passing (+9 security tests: 5 crypto + 3 kernel + 1 doc test)
 
+### Phase 12 — Cryptographic Hardening ✅
+
+- [x] **M1: HMAC morphology evolution**: Replace predictable LCG mixing with HMAC-SHA256 PRF; domain-separated with evolution counter + message hash; all morphology fields derived from keyed HMAC output
+- [x] **M3: Argon2id memory-hard PoW**: Replace stub PoW with Argon2id mining (m=4096 KiB, t=3, p=1); `ProofOfWork` struct with `mine()`, `verify()`, `compute_hash()`; `register_node_with_pow()` on consensus
+- [x] **M4: RLWE NIST Level 3 parameters**: Upgrade defaults from (n=256, q=3329) to (n=1024, q=12289, σ=3.2) for post-quantum security
+- [x] **L1: Session nonce in AES-GCM IV**: Add 4-byte random session nonce to nonce construction preventing cross-session nonce reuse
+- [x] **L2: Compression oracle documentation**: Document CRIME/BREACH risk at both adaptive compression sites with mitigation guidance
+- [x] **L3: Constant-time key comparison**: Replace `==` with `subtle::ConstantTimeEq` in `verify_evolution()` to prevent timing side-channels
+- [x] 363 tests passing (+5 PoW tests), 0 failures, 0 Clippy warnings
+
 ## Planned
 
 ---

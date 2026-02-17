@@ -188,6 +188,17 @@
 - [x] **A1: MappedRegion RAII wrapper**: Safe mmap/munmap with Drop impl
 - [x] **TaggedPtr heap corruption fix**: Tag moved from low bits (corrupting pointers) to high bits (x86-64 uses lower 48 bits)
 - [x] **358 tests passing**: +9 security tests (5 crypto + 3 kernel + 1 doc test), 0 failures, 0 clippy warnings
+
+### Phase 12: Cryptographic Hardening ✅
+
+- [x] **M1: HMAC morphology evolution**: HMAC-SHA256 PRF replacing predictable LCG (domain-separated with counter + msg hash)
+- [x] **M3: Argon2id memory-hard PoW**: Real mining/verification with m=4096 KiB, t=3, p=1; `ProofOfWork` struct + `register_node_with_pow()`
+- [x] **M4: RLWE NIST Level 3**: Default parameters upgraded from (n=256, q=3329) to (n=1024, q=12289, σ=3.2)
+- [x] **L1: Session nonce**: 4-byte random session nonce in AES-GCM IV preventing cross-session nonce reuse
+- [x] **L2: Compression oracle docs**: CRIME/BREACH risk documented at both adaptive compression sites
+- [x] **L3: Constant-time comparison**: `subtle::ConstantTimeEq` in `verify_evolution()` preventing timing side-channels
+- [x] **363 tests passing**: +5 PoW tests, 0 failures, 0 clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
