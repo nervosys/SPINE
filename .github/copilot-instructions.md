@@ -58,7 +58,7 @@
 - [x] **Iterator-based neural matmul**: Better LLVM vectorization
 - [x] **Mathematical proofs**: See OPTIMIZATIONS.md
 - [x] **215 tests passing**: Full verification coverage including security tests
-- [x] **218 tests passing**: +3 Sybil resistance tests after v1.1 architecture fix
+- [x] **402 tests passing**: +3 Sybil resistance tests after v1.1 architecture fix
 - [x] **0 Clippy warnings**: All style issues resolved
 - [x] **TCP/IP Benchmark**: 514× lower latency, 610× higher throughput vs standard TCP
 
@@ -206,13 +206,22 @@
 
 ### Phase 14: Documentation & Polish
 
-- [x] **Stale counts fixed**: "17 crates" -> "25 crates", "218 tests" -> "363 tests" across README, ARCHITECTURE, OPTIMIZATIONS, paper
+- [x] **Stale counts fixed**: "17 crates" -> "25 crates", "218 tests" -> "402 tests" across README, ARCHITECTURE, OPTIMIZATIONS, paper
 - [x] **Naming cleanup**: All "Hyperlight" -> "SPINE" in examples and docs
 - [x] **ARCHITECTURE.md**: Added crate descriptions 15-25 (transport, stream, agentic, gpu, storage, cache, k8s, cli, gateway, python, js)
 - [x] **README test table**: Expanded to 17 active crates with verified per-crate counts
 - [x] **Docs site**: +5 internals pages (GPU, storage, caching, Kubernetes, formal verification), crate map updated to 25
-- [x] **Paper**: Updated to 25 crates, 363 tests, ~68k LOC
+- [x] **Paper**: Updated to 25 crates, 402 tests, ~68k LOC
 - [x] **ROADMAP**: Added Phase 13-14 entries, populated Planned section with future roadmap items
+
+### Phase 15: Workspace Completeness & CI Hardening
+
+- [x] **4 missing crates integrated**: spine-gpu, spine-storage, spine-cache, spine-k8s added to workspace members
+- [x] **Clippy fixes**: Unused imports removed, match→if-let conversions
+- [x] **402 tests passing**: +39 tests from newly integrated crates
+- [x] **Stale reference sweep**: All test counts updated across README, OPTIMIZATIONS, paper, ROADMAP
+- [x] **CI status badge**: GitHub Actions badge added to README
+- [x] **README test table**: Expanded with 6 additional crate rows
 
 ### Performance Benchmarks
 

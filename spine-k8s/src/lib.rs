@@ -40,10 +40,8 @@
 
 #![allow(dead_code)]
 
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::Duration;
 
 // ============================================================================
 // Custom Resource Definitions (CRDs)
@@ -755,9 +753,8 @@ mod tests {
         };
 
         let decision = compute_scaling_decision(&spec, &metrics);
-        match decision {
-            ScalingDecision::ScaleUp(n) => assert!(n <= 5),
-            _ => {} // might also be NoChange if already at max
+        if let ScalingDecision::ScaleUp(n) = decision {
+            assert!(n <= 5);
         }
     }
 
@@ -776,9 +773,8 @@ mod tests {
         };
 
         let decision = compute_scaling_decision(&spec, &metrics);
-        match decision {
-            ScalingDecision::ScaleDown(n) => assert!(n >= 2),
-            _ => {}
+        if let ScalingDecision::ScaleDown(n) = decision {
+            assert!(n >= 2);
         }
     }
 

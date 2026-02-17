@@ -2,7 +2,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
-[![Tests](https://img.shields.io/badge/tests-218%20passing-brightgreen.svg)](#testing)
+[![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Path INterconnecting Entities) is a **headless semantic browser with adaptive encryption** — not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
 
@@ -43,7 +44,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 
 ## Core Components
 
-SPINE is composed of 17 specialized crates organized into a cohesive bioinspired architecture:
+SPINE is composed of 25 specialized crates organized into a cohesive bioinspired architecture:
 
 ### Kernel Layer
 
@@ -1033,7 +1034,7 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (363 tests)
+### Test Summary (402 tests)
 
 | Crate           | Tests | Description                                          |
 | --------------- | ----- | ---------------------------------------------------- |
@@ -1046,6 +1047,12 @@ cargo test -p spine-crypto
 | spine-recursive | 15    | Infinite context, LLM dispatchers                    |
 | spine-knowledge | 9     | Episodic, semantic, collective memory                |
 | spine-compiler  | 9     | HLS parsing, compilation, optimization               |
+| spine-cache     | 16    | LRU, tiered caching, TTL eviction                    |
+| spine-k8s       | 13    | CRD generation, autoscaling, manifests               |
+| spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders              |
+| spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                   |
+| spine-parser    | 8     | HTML parsing, UR extraction, selectors               |
+| spine-core      | 6     | Session orchestration, config management              |
 | spine-cluster   | 7     | Load balancing, session management, Sybil resistance |
 | spine-agentic   | 4     | Agent creation, knowledge graph                      |
 | spine-wasm      | 3     | HLB → WASM compilation and execution                 |

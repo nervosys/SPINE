@@ -19,6 +19,10 @@ members = [
     "spine-kernel",
     "spine-cli",
     "spine-gateway",
+    "spine-gpu",
+    "spine-storage",
+    "spine-cache",
+    "spine-k8s",
 ]
 exclude = ["spine-python", "spine-js"]
 resolver = "2"
