@@ -19,11 +19,11 @@ pub trait StorageBackend: Send + Sync {
 
 ## Backends
 
-| Backend     | Feature     | Use Case                     | Durability |
-| ----------- | ----------- | ---------------------------- | ---------- |
-| InMemory    | (default)   | Testing, ephemeral workloads | None       |
-| SQLite      | `sqlite`    | Single-node production       | WAL        |
-| RocksDB     | `rocksdb`   | High-throughput workloads    | LSM-tree   |
+| Backend  | Feature   | Use Case                     | Durability |
+| -------- | --------- | ---------------------------- | ---------- |
+| InMemory | (default) | Testing, ephemeral workloads | None       |
+| SQLite   | `sqlite`  | Single-node production       | WAL        |
+| RocksDB  | `rocksdb` | High-throughput workloads    | LSM-tree   |
 
 ## TypedStorage
 
