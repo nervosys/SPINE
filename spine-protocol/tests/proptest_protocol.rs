@@ -190,6 +190,5 @@ proptest! {
     }
 }
 
-
 // ProtocolMorphology::new() is private - morphology is tested indirectly
 // via ProtocolHandler::morph_now() in integration.rs

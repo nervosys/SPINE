@@ -5,9 +5,9 @@ pub mod replay;
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use hmac::{Hmac, Mac};
-use sha2::Sha256 as Sha256Hash;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256 as Sha256Hash;
 use spine_crypto::{
     LatticeParams, QuantumSpeculativeProtocol, TransformerConfig, TransformerPredictor,
 };
@@ -302,7 +302,13 @@ impl LatentVector {
         }
 
         // Use try_cast_slice to handle unaligned data gracefully
-        let components: Vec<f32> = match bytemuck::try_cast_slice(component_bytes) { Ok(s) => s.to_vec(), Err(_) => component_bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect() };
+        let components: Vec<f32> = match bytemuck::try_cast_slice(component_bytes) {
+            Ok(s) => s.to_vec(),
+            Err(_) => component_bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
+        };
 
         Some(Self {
             components,
@@ -638,7 +644,6 @@ impl ProtocolMorphology {
         };
     }
 }
-
 
 // =============================================================================
 // MESSAGE TYPES
@@ -4804,7 +4809,7 @@ mod tests {
         for _ in 0..20 {
             let strategy = PaddingStrategy::random(&mut rng);
             match strategy {
-                PaddingStrategy::Fixed(n) => assert!(n >= 64 && n <= 512),
+                PaddingStrategy::Fixed(n) => assert!((64..=512).contains(&n)),
                 PaddingStrategy::Random { min, max } => assert!(min < max),
                 PaddingStrategy::PowerOfTwo
                 | PaddingStrategy::Adaptive

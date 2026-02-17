@@ -166,17 +166,26 @@ impl StakeWeightedConsensus {
     }
 
     pub fn register_node(&self, id: NodeId, stake: u64, pow: u32) -> bool {
-        if stake < self.min_stake || pow < self.min_pow { return false; }
-        self.reputations.insert(id, NodeReputation::new(id, stake, pow));
+        if stake < self.min_stake || pow < self.min_pow {
+            return false;
+        }
+        self.reputations
+            .insert(id, NodeReputation::new(id, stake, pow));
         true
     }
 
     /// Register a node with verified Argon2id proof-of-work.
     /// This is the secure registration path that verifies the PoW before accepting.
     pub fn register_node_with_pow(&self, stake: u64, proof: &ProofOfWork) -> bool {
-        if stake < self.min_stake { return false; }
-        if proof.difficulty < self.min_pow { return false; }
-        if !proof.verify() { return false; }
+        if stake < self.min_stake {
+            return false;
+        }
+        if proof.difficulty < self.min_pow {
+            return false;
+        }
+        if !proof.verify() {
+            return false;
+        }
         self.reputations.insert(
             proof.node_id,
             NodeReputation::new(proof.node_id, stake, proof.difficulty),
@@ -192,11 +201,15 @@ impl StakeWeightedConsensus {
                 if r.can_vote() {
                     let w = r.voting_weight() * conf;
                     total += w;
-                    if *yes { approve += w; }
+                    if *yes {
+                        approve += w;
+                    }
                 }
             }
         }
-        if total == 0.0 { return (false, 0.0); }
+        if total == 0.0 {
+            return (false, 0.0);
+        }
         let ratio = approve / total;
         (ratio >= self.threshold, ratio)
     }

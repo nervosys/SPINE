@@ -1,4 +1,4 @@
-use scraper::{Html, Selector, node::Node};
+use scraper::{node::Node, Html, Selector};
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
@@ -26,18 +26,40 @@ pub struct UnifiedRepresentation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Element {
     Text(String),
-    Heading { level: u8, text: String },
-    Link { text: String, url: String },
-    Button { text: String, action_id: String },
-    Input { label: String, input_type: String, id: String },
-    Image { alt: String, src: String },
-    List { items: Vec<Element>, ordered: bool },
-    Container { tag: String, children: Vec<Element> },
+    Heading {
+        level: u8,
+        text: String,
+    },
+    Link {
+        text: String,
+        url: String,
+    },
+    Button {
+        text: String,
+        action_id: String,
+    },
+    Input {
+        label: String,
+        input_type: String,
+        id: String,
+    },
+    Image {
+        alt: String,
+        src: String,
+    },
+    List {
+        items: Vec<Element>,
+        ordered: bool,
+    },
+    Container {
+        tag: String,
+        children: Vec<Element>,
+    },
 }
 
 pub fn parse_html(html: &str) -> anyhow::Result<UnifiedRepresentation> {
     let document = Html::parse_document(html);
-    
+
     // Use cached selectors (avoids re-compiling CSS selectors on every call)
     let title = document
         .select(title_selector())
@@ -104,10 +126,13 @@ fn parse_node(node: ego_tree::NodeRef<Node>) -> Option<Element> {
                 }
                 "button" => {
                     let text = get_text(node);
-                    let action_id = el.attr("id")
+                    let action_id = el
+                        .attr("id")
                         .or_else(|| el.attr("name"))
                         .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("btn_{}", text.to_lowercase().replace(" ", "_")));
+                        .unwrap_or_else(|| {
+                            format!("btn_{}", text.to_lowercase().replace(" ", "_"))
+                        });
                     Some(Element::Button { text, action_id })
                 }
                 "img" => {
@@ -128,13 +153,28 @@ fn parse_node(node: ego_tree::NodeRef<Node>) -> Option<Element> {
                             }
                         }
                     }
-                    Some(Element::List { items, ordered: tag == "ol" })
+                    Some(Element::List {
+                        items,
+                        ordered: tag == "ol",
+                    })
                 }
                 "input" => {
-                    let label = el.attr("placeholder").or(el.attr("name")).unwrap_or("input").to_string();
+                    let label = el
+                        .attr("placeholder")
+                        .or(el.attr("name"))
+                        .unwrap_or("input")
+                        .to_string();
                     let input_type = el.attr("type").unwrap_or("text").to_string();
-                    let id = el.attr("id").or(el.attr("name")).unwrap_or("unknown").to_string();
-                    Some(Element::Input { label, input_type, id })
+                    let id = el
+                        .attr("id")
+                        .or(el.attr("name"))
+                        .unwrap_or("unknown")
+                        .to_string();
+                    Some(Element::Input {
+                        label,
+                        input_type,
+                        id,
+                    })
                 }
                 _ => {
                     let mut children = Vec::new();
@@ -146,7 +186,10 @@ fn parse_node(node: ego_tree::NodeRef<Node>) -> Option<Element> {
                     if children.is_empty() {
                         None
                     } else {
-                        Some(Element::Container { tag: tag.to_string(), children })
+                        Some(Element::Container {
+                            tag: tag.to_string(),
+                            children,
+                        })
                     }
                 }
             }

@@ -1,5 +1,5 @@
 //! Communication Protocols Demo
-//! 
+//!
 //! Demonstrates the advanced agent communication systems:
 //! - FIPA-style speech acts and performatives
 //! - Message broker with pub/sub
@@ -7,21 +7,33 @@
 //! - Blackboard architecture for collaborative problem solving
 //! - Trust and reputation systems
 
+use chrono::{Duration, Utc};
 use spine_agentic::{
-    // Communication protocols
-    SpeechAct, Performative, MessageBroker, BrokerStats,
-    // Contract Net
-    TaskAnnouncement, ContractBid, ContractNetManager, ContractNetStats,
-    // Blackboard
-    Blackboard, KnowledgeSource, KnowledgeLevel, BlackboardStats,
-    // Trust
-    TrustSystem, InteractionType, InteractionOutcome, TrustStats,
     // Core types
     AgentCapability,
+    // Blackboard
+    Blackboard,
+    BlackboardStats,
+    BrokerStats,
+    ContractBid,
+    ContractNetManager,
+    ContractNetStats,
+    InteractionOutcome,
+    InteractionType,
+    KnowledgeLevel,
+    KnowledgeSource,
+    MessageBroker,
+    Performative,
+    // Communication protocols
+    SpeechAct,
+    // Contract Net
+    TaskAnnouncement,
+    TrustStats,
+    // Trust
+    TrustSystem,
 };
-use uuid::Uuid;
-use chrono::{Utc, Duration};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
@@ -48,7 +60,7 @@ async fn demo_speech_acts_and_broker() {
     let agent_a = Uuid::new_v4();
     let agent_b = Uuid::new_v4();
     let agent_c = Uuid::new_v4();
-    
+
     println!("  Agents created:");
     println!("    • Agent A (Coordinator): {}", &agent_a.to_string()[..8]);
     println!("    • Agent B (Worker): {}", &agent_b.to_string()[..8]);
@@ -56,7 +68,7 @@ async fn demo_speech_acts_and_broker() {
 
     // Create message broker
     let broker = MessageBroker::new();
-    
+
     // Register agents
     broker.register_agent(agent_a);
     broker.register_agent(agent_b);
@@ -69,7 +81,7 @@ async fn demo_speech_acts_and_broker() {
 
     // Create conversation
     let conversation_id = Uuid::new_v4();
-    
+
     // Agent A requests work from Agent B
     let request = Performative::new(
         agent_a,
@@ -78,7 +90,10 @@ async fn demo_speech_acts_and_broker() {
             action: "analyze_data".to_string(),
             parameters: {
                 let mut params = HashMap::new();
-                params.insert("dataset".to_string(), serde_json::json!("user_behavior_2024"));
+                params.insert(
+                    "dataset".to_string(),
+                    serde_json::json!("user_behavior_2024"),
+                );
                 params.insert("depth".to_string(), serde_json::json!(3));
                 params
             },
@@ -86,7 +101,7 @@ async fn demo_speech_acts_and_broker() {
     )
     .with_conversation(conversation_id)
     .with_protocol("task-delegation");
-    
+
     let msg_id = broker.send(request).await.unwrap();
     println!("\n  Message flow:");
     println!("    1. Agent A → Agent B: Request (analyze_data)");
@@ -95,7 +110,7 @@ async fn demo_speech_acts_and_broker() {
     // Agent B receives and acknowledges
     let messages = broker.receive(&agent_b, 10).await;
     println!("    2. Agent B received {} message(s)", messages.len());
-    
+
     // Agent B sends acknowledgment
     let ack = Performative::new(
         agent_b,
@@ -104,7 +119,7 @@ async fn demo_speech_acts_and_broker() {
     )
     .with_conversation(conversation_id)
     .reply_to(msg_id);
-    
+
     broker.send(ack).await.unwrap();
     println!("    3. Agent B → Agent A: Acknowledge");
 
@@ -118,7 +133,7 @@ async fn demo_speech_acts_and_broker() {
         },
     )
     .with_conversation(conversation_id);
-    
+
     broker.send(promise).await.unwrap();
     println!("    4. Agent B → Agent A: Promise (deadline: 2 hours)");
 
@@ -136,17 +151,20 @@ async fn demo_speech_acts_and_broker() {
         },
     )
     .with_conversation(conversation_id);
-    
+
     broker.send(progress_info).await.unwrap();
     println!("    5. Agent B → All subscribers: Inform (50% progress)");
 
     // Check Agent C received via subscription
     let c_messages = broker.receive(&agent_c, 10).await;
-    println!("    6. Agent C received {} message(s) via subscription", c_messages.len());
+    println!(
+        "    6. Agent C received {} message(s) via subscription",
+        c_messages.len()
+    );
 
     // Complete conversation
     broker.complete_conversation(&conversation_id, "Task delegated successfully");
-    
+
     // Get conversation details
     if let Some(conv) = broker.get_conversation(&conversation_id) {
         println!("\n  Conversation Summary:");
@@ -248,7 +266,10 @@ async fn demo_contract_net_protocol() {
         proposed_duration: Duration::days(20).to_std().unwrap(),
         confidence: 0.95,
         approach: "Transformer-based neural recommendation with real-time updates".to_string(),
-        resources_required: vec!["High-memory GPUs".to_string(), "Streaming infrastructure".to_string()],
+        resources_required: vec![
+            "High-memory GPUs".to_string(),
+            "Streaming infrastructure".to_string(),
+        ],
         submitted_at: Utc::now(),
     };
     contract_net.submit_bid(bid_3.clone()).unwrap();
@@ -260,8 +281,10 @@ async fn demo_contract_net_protocol() {
 
     // Manager evaluates and awards contract (choosing highest confidence)
     let winning_bid = &bid_3;
-    let contract = contract_net.award_contract(&task_id, &winning_bid.id).unwrap();
-    
+    let contract = contract_net
+        .award_contract(&task_id, &winning_bid.id)
+        .unwrap();
+
     println!("\n  Contract awarded:");
     println!("    • Contract ID: {}", &contract.id.to_string()[..8]);
     println!("    • Winner: Contractor 3");
@@ -272,19 +295,22 @@ async fn demo_contract_net_protocol() {
     println!("\n  Contract execution:");
     contract_net.update_progress(&contract.id, 25);
     println!("    • Progress: 25%");
-    
+
     contract_net.update_progress(&contract.id, 50);
     println!("    • Progress: 50%");
-    
+
     contract_net.update_progress(&contract.id, 75);
     println!("    • Progress: 75%");
-    
+
     contract_net.complete_contract(&contract.id, "Recommendation engine deployed successfully");
     println!("    • Status: Completed");
 
     // Get contractor's contracts
     let contractor_contracts = contract_net.get_agent_contracts(&contractor_3);
-    println!("\n  Contractor 3's contracts: {}", contractor_contracts.len());
+    println!(
+        "\n  Contractor 3's contracts: {}",
+        contractor_contracts.len()
+    );
 
     // Stats
     let stats: ContractNetStats = contract_net.stats();
@@ -304,7 +330,7 @@ async fn demo_blackboard_architecture() {
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     let blackboard = Blackboard::new();
-    
+
     let sensor_agent = Uuid::new_v4();
     let feature_agent = Uuid::new_v4();
     let hypothesis_agent = Uuid::new_v4();
@@ -313,14 +339,29 @@ async fn demo_blackboard_architecture() {
     println!("  Knowledge Sources:");
     println!("    • Sensor Agent: {}", &sensor_agent.to_string()[..8]);
     println!("    • Feature Agent: {}", &feature_agent.to_string()[..8]);
-    println!("    • Hypothesis Agent: {}", &hypothesis_agent.to_string()[..8]);
+    println!(
+        "    • Hypothesis Agent: {}",
+        &hypothesis_agent.to_string()[..8]
+    );
     println!("    • Solution Agent: {}", &solution_agent.to_string()[..8]);
 
     // Register knowledge sources
     let ks_sensor = KnowledgeSource::new("SensorProcessor", vec![], KnowledgeLevel::Raw);
-    let ks_feature = KnowledgeSource::new("FeatureExtractor", vec![KnowledgeLevel::Raw], KnowledgeLevel::Feature);
-    let ks_hypothesis = KnowledgeSource::new("HypothesisGenerator", vec![KnowledgeLevel::Feature], KnowledgeLevel::Hypothesis);
-    let ks_solution = KnowledgeSource::new("SolutionBuilder", vec![KnowledgeLevel::Hypothesis], KnowledgeLevel::Solution);
+    let ks_feature = KnowledgeSource::new(
+        "FeatureExtractor",
+        vec![KnowledgeLevel::Raw],
+        KnowledgeLevel::Feature,
+    );
+    let ks_hypothesis = KnowledgeSource::new(
+        "HypothesisGenerator",
+        vec![KnowledgeLevel::Feature],
+        KnowledgeLevel::Hypothesis,
+    );
+    let ks_solution = KnowledgeSource::new(
+        "SolutionBuilder",
+        vec![KnowledgeLevel::Hypothesis],
+        KnowledgeLevel::Solution,
+    );
 
     blackboard.register_source(ks_sensor);
     blackboard.register_source(ks_feature);
@@ -336,88 +377,100 @@ async fn demo_blackboard_architecture() {
     println!("  Problem: Identify user intent from multi-modal input\n");
 
     // Step 1: Raw data
-    blackboard.write(
-        "raw_text",
-        serde_json::json!({
-            "content": "I need to book a flight to New York",
-            "timestamp": Utc::now().to_rfc3339(),
-            "source": "voice_transcription"
-        }),
-        sensor_agent,
-        KnowledgeLevel::Raw,
-    ).await;
+    blackboard
+        .write(
+            "raw_text",
+            serde_json::json!({
+                "content": "I need to book a flight to New York",
+                "timestamp": Utc::now().to_rfc3339(),
+                "source": "voice_transcription"
+            }),
+            sensor_agent,
+            KnowledgeLevel::Raw,
+        )
+        .await;
     println!("  Step 1: Raw text added to blackboard");
 
-    blackboard.write(
-        "raw_gesture",
-        serde_json::json!({
-            "gesture": "pointing_at_calendar",
-            "confidence": 0.92
-        }),
-        sensor_agent,
-        KnowledgeLevel::Raw,
-    ).await;
+    blackboard
+        .write(
+            "raw_gesture",
+            serde_json::json!({
+                "gesture": "pointing_at_calendar",
+                "confidence": 0.92
+            }),
+            sensor_agent,
+            KnowledgeLevel::Raw,
+        )
+        .await;
     println!("  Step 2: Raw gesture added to blackboard");
 
     // Step 2: Features extracted
-    blackboard.write(
-        "intent_keywords",
-        serde_json::json!({
-            "keywords": ["book", "flight", "New York"],
-            "entities": [
-                {"type": "action", "value": "book"},
-                {"type": "object", "value": "flight"},
-                {"type": "destination", "value": "New York"}
-            ]
-        }),
-        feature_agent,
-        KnowledgeLevel::Feature,
-    ).await;
+    blackboard
+        .write(
+            "intent_keywords",
+            serde_json::json!({
+                "keywords": ["book", "flight", "New York"],
+                "entities": [
+                    {"type": "action", "value": "book"},
+                    {"type": "object", "value": "flight"},
+                    {"type": "destination", "value": "New York"}
+                ]
+            }),
+            feature_agent,
+            KnowledgeLevel::Feature,
+        )
+        .await;
     println!("  Step 3: Keywords extracted to feature level");
 
-    blackboard.write(
-        "temporal_context",
-        serde_json::json!({
-            "implied_time": "near_future",
-            "gesture_context": "calendar_interaction",
-            "urgency": "medium"
-        }),
-        feature_agent,
-        KnowledgeLevel::Feature,
-    ).await;
+    blackboard
+        .write(
+            "temporal_context",
+            serde_json::json!({
+                "implied_time": "near_future",
+                "gesture_context": "calendar_interaction",
+                "urgency": "medium"
+            }),
+            feature_agent,
+            KnowledgeLevel::Feature,
+        )
+        .await;
     println!("  Step 4: Temporal context extracted");
 
     // Step 3: Hypothesis
-    blackboard.write(
-        "intent_hypothesis",
-        serde_json::json!({
-            "primary_intent": "flight_booking",
-            "confidence": 0.88,
-            "supporting_evidence": ["text_keywords", "gesture_calendar"],
-            "destination": "New York",
-            "timeframe": "within_week"
-        }),
-        hypothesis_agent,
-        KnowledgeLevel::Hypothesis,
-    ).await;
+    blackboard
+        .write(
+            "intent_hypothesis",
+            serde_json::json!({
+                "primary_intent": "flight_booking",
+                "confidence": 0.88,
+                "supporting_evidence": ["text_keywords", "gesture_calendar"],
+                "destination": "New York",
+                "timeframe": "within_week"
+            }),
+            hypothesis_agent,
+            KnowledgeLevel::Hypothesis,
+        )
+        .await;
     println!("  Step 5: Intent hypothesis generated");
 
     // Step 4: Solution
-    blackboard.write(
-        "final_solution",
-        serde_json::json!({
-            "action": "initiate_flight_booking_flow",
-            "parameters": {
-                "destination": "New York, NY",
-                "departure_window": "next_7_days",
-                "return_window": "flexible"
-            },
-            "confidence": 0.91,
-            "fallback_action": "clarify_dates"
-        }),
-        solution_agent,
-        KnowledgeLevel::Solution,
-    ).await;
+    blackboard
+        .write(
+            "final_solution",
+            serde_json::json!({
+                "action": "initiate_flight_booking_flow",
+                "parameters": {
+                    "destination": "New York, NY",
+                    "departure_window": "next_7_days",
+                    "return_window": "flexible"
+                },
+                "confidence": 0.91,
+                "fallback_action": "clarify_dates"
+            }),
+            solution_agent,
+            KnowledgeLevel::Solution,
+        )
+        .await;
     println!("  Step 6: Solution generated\n");
 
     // Read back the solution
@@ -433,13 +486,21 @@ async fn demo_blackboard_architecture() {
     let hypotheses = blackboard.read_level(&KnowledgeLevel::Hypothesis);
     let features = blackboard.read_level(&KnowledgeLevel::Feature);
     println!("\n  Knowledge by Level:");
-    println!("    • Raw entries: {}", blackboard.read_level(&KnowledgeLevel::Raw).len());
+    println!(
+        "    • Raw entries: {}",
+        blackboard.read_level(&KnowledgeLevel::Raw).len()
+    );
     println!("    • Feature entries: {}", features.len());
     println!("    • Hypothesis entries: {}", hypotheses.len());
-    println!("    • Solution entries: {}", blackboard.read_level(&KnowledgeLevel::Solution).len());
+    println!(
+        "    • Solution entries: {}",
+        blackboard.read_level(&KnowledgeLevel::Solution).len()
+    );
 
     // Get recent changes
-    let changes = blackboard.get_changes(Utc::now() - Duration::minutes(5)).await;
+    let changes = blackboard
+        .get_changes(Utc::now() - Duration::minutes(5))
+        .await;
     println!("\n  Recent changes: {} modifications", changes.len());
 
     // Stats
@@ -465,7 +526,10 @@ async fn demo_trust_and_reputation() {
     println!("  Agents:");
     println!("    • Alice (Reliable): {}", &agent_alice.to_string()[..8]);
     println!("    • Bob (Competent): {}", &agent_bob.to_string()[..8]);
-    println!("    • Charlie (Average): {}", &agent_charlie.to_string()[..8]);
+    println!(
+        "    • Charlie (Average): {}",
+        &agent_charlie.to_string()[..8]
+    );
     println!("    • Eve (Deceptive): {}", &agent_eve.to_string()[..8]);
 
     let trust_system = TrustSystem::new(0.01); // 1% decay rate
@@ -479,7 +543,9 @@ async fn demo_trust_and_reputation() {
             agent_bob,
             agent_alice,
             InteractionType::TaskDelegation,
-            InteractionOutcome::Success { quality: 0.9 + (i as f64 * 0.02) },
+            InteractionOutcome::Success {
+                quality: 0.9 + (i as f64 * 0.02),
+            },
         );
     }
     println!("    Alice: 5 successful task delegations (high quality)");
@@ -543,7 +609,7 @@ async fn demo_trust_and_reputation() {
 
     // Get trust assessments
     println!("\n  Trust Assessments (from Alice's perspective):");
-    
+
     if let Some(trust_bob) = trust_system.get_trust(&agent_alice, &agent_bob) {
         println!("    Alice → Bob:");
         println!("      • Overall trust: {:.2}", trust_bob.overall_trust);
@@ -568,7 +634,7 @@ async fn demo_trust_and_reputation() {
 
     // Add endorsements and warnings
     println!("\n  Reputation Actions:");
-    
+
     trust_system.endorse(
         agent_alice,
         agent_bob,
@@ -599,9 +665,21 @@ async fn demo_trust_and_reputation() {
     let rep_eve = trust_system.compute_reputation(&agent_eve);
 
     println!("\n  Global Reputation Scores:");
-    println!("    • Alice: {:.2} (endorsements: {})", rep_alice.global_score, rep_alice.endorsements.len());
-    println!("    • Bob: {:.2} (endorsements: {})", rep_bob.global_score, rep_bob.endorsements.len());
-    println!("    • Eve: {:.2} (warnings: {}) ⚠️", rep_eve.global_score, rep_eve.warnings.len());
+    println!(
+        "    • Alice: {:.2} (endorsements: {})",
+        rep_alice.global_score,
+        rep_alice.endorsements.len()
+    );
+    println!(
+        "    • Bob: {:.2} (endorsements: {})",
+        rep_bob.global_score,
+        rep_bob.endorsements.len()
+    );
+    println!(
+        "    • Eve: {:.2} (warnings: {}) ⚠️",
+        rep_eve.global_score,
+        rep_eve.warnings.len()
+    );
 
     // Apply decay
     trust_system.apply_decay();
@@ -613,7 +691,10 @@ async fn demo_trust_and_reputation() {
     println!("    • Total assessments: {}", stats.total_assessments);
     println!("    • Average trust: {:.2}", stats.average_trust);
     println!("    • Total interactions: {}", stats.total_interactions);
-    println!("    • Agents with reputation: {}", stats.agents_with_reputation);
+    println!(
+        "    • Agents with reputation: {}",
+        stats.agents_with_reputation
+    );
 
     println!("\n  ✓ Trust & Reputation System demo complete\n");
 }

@@ -33,16 +33,16 @@ fn main() {
 
     // Demo 1: Basic MIRAS predictor
     demo_basic_predictor(config.clone());
-    
+
     // Demo 2: All MIRAS variants
     demo_all_variants(config.clone());
-    
+
     // Demo 3: Adaptive variant switching
     demo_adaptive_switching(config.clone());
-    
+
     // Demo 4: Anomaly detection
     demo_anomaly_detection(config.clone());
-    
+
     // Demo 5: Combined surprise tracking
     demo_combined_surprise(config);
 
@@ -55,11 +55,11 @@ fn demo_basic_predictor(config: TitansConfig) {
     println!("═══════════════════════════════════════════════════════════════\n");
 
     let mut predictor = MirasTitansPredictor::new(config);
-    
+
     println!("Initial state:");
     println!("   • Variant: {}", predictor.variant());
     println!("   • Anomaly level: {:.4}", predictor.anomaly_level());
-    
+
     // Train on HTTP-like patterns
     let messages = [
         b"GET /api/users HTTP/1.1\r\n".as_slice(),
@@ -69,21 +69,33 @@ fn demo_basic_predictor(config: TitansConfig) {
         b"HTTP/1.1 200 OK\r\n",
         b"Content-Type: application/json\r\n",
     ];
-    
+
     println!("\n   Training on HTTP message patterns...");
     for (i, msg) in messages.iter().enumerate() {
         predictor.observe(msg);
         let stats = predictor.stats();
-        println!("   [{}/{}] Observed {} bytes, surprise: {:.4}", 
-            i + 1, messages.len(), msg.len(), stats.titans_surprise);
+        println!(
+            "   [{}/{}] Observed {} bytes, surprise: {:.4}",
+            i + 1,
+            messages.len(),
+            msg.len(),
+            stats.titans_surprise
+        );
     }
-    
+
     // Make prediction
     let (next_byte, confidence) = predictor.predict_next();
-    println!("\n   Prediction: next byte = {} ('{}')", next_byte, 
-        if next_byte.is_ascii_graphic() || next_byte == b' ' { next_byte as char } else { '?' });
+    println!(
+        "\n   Prediction: next byte = {} ('{}')",
+        next_byte,
+        if next_byte.is_ascii_graphic() || next_byte == b' ' {
+            next_byte as char
+        } else {
+            '?'
+        }
+    );
     println!("   Confidence: {:.2}%", confidence * 100.0);
-    
+
     let stats = predictor.stats();
     println!("\n   Final stats:");
     println!("   • Messages processed: {}", stats.message_count);
@@ -106,25 +118,29 @@ fn demo_all_variants(config: TitansConfig) {
 
     for (variant, description) in variants {
         let mut predictor = MirasTitansPredictor::new_with_variant(config.clone(), variant);
-        
+
         // Train briefly
         for _ in 0..3 {
             predictor.observe(b"test message pattern");
         }
-        
+
         let stats = predictor.stats();
-        println!("   {} {}", 
+        println!(
+            "   {} {}",
             match predictor.variant() {
                 "titans" => "🧠",
                 "yaad" => "🛡️",
                 "moneta" => "⏳",
                 "memora" => "⚖️",
-                _ => "❓"
+                _ => "❓",
             },
             predictor.variant().to_uppercase()
         );
         println!("      {}", description);
-        println!("      Surprise after training: {:.4}", stats.titans_surprise);
+        println!(
+            "      Surprise after training: {:.4}",
+            stats.titans_surprise
+        );
         println!();
     }
 }
@@ -136,20 +152,24 @@ fn demo_adaptive_switching(config: TitansConfig) {
 
     let mut predictor = MirasTitansPredictor::new(config);
     predictor.set_anomaly_threshold(0.3); // Lower threshold for demo
-    
+
     println!("   Threshold set to 0.3 for demonstration");
     println!("   Starting variant: {}\n", predictor.variant());
-    
+
     // Phase 1: Normal traffic (should stay Titans)
     println!("   Phase 1: Normal HTTP traffic");
     for i in 0..5 {
         predictor.observe(b"GET /api/status HTTP/1.1\r\n");
         if i == 4 {
-            println!("   → After {} messages: variant = {}, anomaly = {:.4}", 
-                i + 1, predictor.variant(), predictor.anomaly_level());
+            println!(
+                "   → After {} messages: variant = {}, anomaly = {:.4}",
+                i + 1,
+                predictor.variant(),
+                predictor.anomaly_level()
+            );
         }
     }
-    
+
     // Phase 2: Introduce noise (may trigger YAAD or MEMORA)
     println!("\n   Phase 2: Introducing anomalous patterns");
     for i in 0..10 {
@@ -161,9 +181,12 @@ fn demo_adaptive_switching(config: TitansConfig) {
         };
         predictor.observe(msg.as_bytes());
     }
-    println!("   → After mixed traffic: variant = {}, anomaly = {:.4}", 
-        predictor.variant(), predictor.anomaly_level());
-    
+    println!(
+        "   → After mixed traffic: variant = {}, anomaly = {:.4}",
+        predictor.variant(),
+        predictor.anomaly_level()
+    );
+
     println!();
 }
 
@@ -173,7 +196,7 @@ fn demo_anomaly_detection(config: TitansConfig) {
     println!("═══════════════════════════════════════════════════════════════\n");
 
     let mut predictor = MirasTitansPredictor::new(config);
-    
+
     // Establish baseline
     println!("   Establishing baseline with normal patterns...");
     for _ in 0..20 {
@@ -181,24 +204,29 @@ fn demo_anomaly_detection(config: TitansConfig) {
     }
     let baseline_surprise = predictor.get_surprise();
     println!("   Baseline Titans surprise: {:.4}", baseline_surprise);
-    
+
     // Introduce SQL injection attempt
     println!("\n   Introducing anomalous pattern (SQL injection)...");
     predictor.observe(b"SELECT * FROM users WHERE id = 1; DROP TABLE users;--");
-    
+
     let anomaly_surprise = predictor.get_surprise();
     let combined = predictor.get_combined_surprise();
     let miras = predictor.get_miras_surprise().unwrap_or(0.0);
-    
+
     println!("\n   🚨 Anomaly Detection Results:");
     println!("   • Titans surprise: {:.4}", anomaly_surprise);
     println!("   • MIRAS surprise: {:.4}", miras);
     println!("   • Combined surprise: {:.4}", combined);
-    
+
     let threshold = 0.5;
-    println!("\n   Is anomalous (threshold={})? {}", 
+    println!(
+        "\n   Is anomalous (threshold={})? {}",
         threshold,
-        if predictor.is_anomalous(threshold) { "⚠️ YES" } else { "✅ NO" }
+        if predictor.is_anomalous(threshold) {
+            "⚠️ YES"
+        } else {
+            "✅ NO"
+        }
     );
     println!();
 }
@@ -209,12 +237,14 @@ fn demo_combined_surprise(config: TitansConfig) {
     println!("═══════════════════════════════════════════════════════════════\n");
 
     let mut predictor = MirasTitansPredictor::new(config);
-    
+
     println!("   Tracking dual surprise (Titans + MIRAS) over time:\n");
-    println!("   {:>4} │ {:>12} │ {:>12} │ {:>12}", 
-        "Msg#", "Titans", "MIRAS", "Combined");
+    println!(
+        "   {:>4} │ {:>12} │ {:>12} │ {:>12}",
+        "Msg#", "Titans", "MIRAS", "Combined"
+    );
     println!("   ─────┼──────────────┼──────────────┼──────────────");
-    
+
     let messages = [
         "Hello World",
         "Hello World",
@@ -227,19 +257,25 @@ fn demo_combined_surprise(config: TitansConfig) {
         "Back to normal",
         "Final message",
     ];
-    
+
     for (i, msg) in messages.iter().enumerate() {
         predictor.observe(msg.as_bytes());
-        
+
         let titans = predictor.get_surprise();
         let miras = predictor.get_miras_surprise().unwrap_or(0.0);
         let combined = predictor.get_combined_surprise();
-        
+
         let indicator = if combined > 0.5 { "⚠️" } else { "  " };
-        println!("   {:>4} │ {:>12.4} │ {:>12.4} │ {:>12.4} {}", 
-            i + 1, titans, miras, combined, indicator);
+        println!(
+            "   {:>4} │ {:>12.4} │ {:>12.4} │ {:>12.4} {}",
+            i + 1,
+            titans,
+            miras,
+            combined,
+            indicator
+        );
     }
-    
+
     println!("\n   Final Statistics:");
     let stats = predictor.stats();
     println!("   • Total messages: {}", stats.message_count);

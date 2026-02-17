@@ -10,27 +10,102 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
 
 jobs:
+  # ── Lint ────────────────────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-lint-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-lint-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (all targets)
+        run: cargo clippy --workspace --exclude spine-browser --all-targets -- -D warnings
+
+  # ── Security Audit ─────────────────────────────────────────────────────────
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Test ────────────────────────────────────────────────────────────────────
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-test-
+
+      - name: Build workspace
+        run: cargo build --workspace --exclude spine-browser --target ${{ matrix.target }}
+
+      - name: Run tests (lib + integration)
+        if: matrix.target != 'aarch64-apple-darwin'
+        run: cargo test --workspace --exclude spine-browser --lib --tests --target ${{ matrix.target }}
+
+      - name: Run doc tests
+        if: matrix.target != 'aarch64-apple-darwin'
+        run: cargo test --workspace --exclude spine-browser --doc --target ${{ matrix.target }}
+
+  # ── Build Release Binaries ─────────────────────────────────────────────────
   build:
+    needs: [lint, test]
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: hyperlight-linux-x64
+            artifact: spine-linux-x64
             ext: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: hyperlight-windows-x64
+            artifact: spine-windows-x64
             ext: ".exe"
           - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: hyperlight-macos-x64
-            ext: ""
-          - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: hyperlight-macos-arm64
+            artifact: spine-macos-arm64
             ext: ""
 
     runs-on: ${{ matrix.os }}
@@ -38,40 +113,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-release-
 
-      - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Run tests
-        if: matrix.target != 'aarch64-apple-darwin'
-        run: cargo test --release --target ${{ matrix.target }}
-
-      - name: Run MIRAS demos
-        if: matrix.target != 'aarch64-apple-darwin'
-        run: |
-          cargo run --example miras_demo -p hyperlight-crypto --release --target ${{ matrix.target }}
-          cargo run --example chameleon_demo -p hyperlight-protocol --release --target ${{ matrix.target }}
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} -p spine-core -p spine-cli -p spine-gateway
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist/${{ matrix.artifact }}
-          cp target/${{ matrix.target }}/release/hyperlight-core${{ matrix.ext }} dist/${{ matrix.artifact }}/
-          cp target/${{ matrix.target }}/release/hyperlight-browser${{ matrix.ext }} dist/${{ matrix.artifact }}/
-          cp README.md ARCHITECTURE.md HLS_SPEC.md dist/${{ matrix.artifact }}/
+          cp target/${{ matrix.target }}/release/spine-core${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          cp target/${{ matrix.target }}/release/spine${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          cp target/${{ matrix.target }}/release/spine-gateway${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          cp README.md ARCHITECTURE.md HLS_SPEC.md THREAT_MODEL.md dist/${{ matrix.artifact }}/
           cd dist && tar -czvf ${{ matrix.artifact }}.tar.gz ${{ matrix.artifact }}
 
       - name: Package (Windows)
@@ -79,9 +144,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist/${{ matrix.artifact }}
-          Copy-Item target/${{ matrix.target }}/release/hyperlight-core${{ matrix.ext }} dist/${{ matrix.artifact }}/
-          Copy-Item target/${{ matrix.target }}/release/hyperlight-browser${{ matrix.ext }} dist/${{ matrix.artifact }}/
-          Copy-Item README.md, ARCHITECTURE.md, HLS_SPEC.md dist/${{ matrix.artifact }}/
+          Copy-Item target/${{ matrix.target }}/release/spine-core${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          Copy-Item target/${{ matrix.target }}/release/spine${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          Copy-Item target/${{ matrix.target }}/release/spine-gateway${{ matrix.ext }} dist/${{ matrix.artifact }}/
+          Copy-Item README.md, ARCHITECTURE.md, HLS_SPEC.md, THREAT_MODEL.md dist/${{ matrix.artifact }}/
           Compress-Archive -Path dist/${{ matrix.artifact }} -DestinationPath dist/${{ matrix.artifact }}.zip
 
       - name: Upload artifact
@@ -90,19 +156,50 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}.*
 
+  # ── Docker ──────────────────────────────────────────────────────────────────
+  docker:
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t spine:ci .
+
+      - name: Verify container starts
+        run: |
+          docker run -d --name spine-test -p 8080:8080 spine:ci
+          sleep 3
+          docker logs spine-test
+          docker stop spine-test
+
+  # ── Documentation ───────────────────────────────────────────────────────────
   docs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-action@stable
-      - run: cargo doc --no-deps --all-features
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-docs-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-docs-
+
+      - name: Build API docs
+        run: cargo doc --workspace --exclude spine-browser --no-deps
+
       - uses: actions/upload-artifact@v4
         with:
-          name: documentation
+          name: api-documentation
           path: target/doc
 
+  # ── Release ─────────────────────────────────────────────────────────────────
   release:
-    needs: [build, docs]
+    needs: [build, docker, docs]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
@@ -114,10 +211,9 @@ jobs:
           path: artifacts
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/hyperlight-linux-x64/*.tar.gz
-            artifacts/hyperlight-windows-x64/*.zip
-            artifacts/hyperlight-macos-x64/*.tar.gz
-            artifacts/hyperlight-macos-arm64/*.tar.gz
+            artifacts/spine-linux-x64/*.tar.gz
+            artifacts/spine-windows-x64/*.zip
+            artifacts/spine-macos-arm64/*.tar.gz

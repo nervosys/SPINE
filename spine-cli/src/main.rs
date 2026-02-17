@@ -209,7 +209,6 @@ enum QueryAction {
     },
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();

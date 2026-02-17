@@ -24,7 +24,7 @@ fn benchmark_backpressure_stream(c: &mut Criterion) {
                 });
 
                 let mut count = 0;
-                while let Some(_) = rx.recv().await {
+                while rx.recv().await.is_some() {
                     count += 1;
                     if count >= size {
                         break;
@@ -99,7 +99,11 @@ fn benchmark_chunking(c: &mut Criterion) {
 
                 while let Some(msg) = rx.recv().await {
                     if let spine_stream::StreamPayload::Chunk { meta, data } = msg.payload {
-                        if let Some(_) = receiver.process_chunk(meta, Bytes::from(data)).unwrap() {
+                        if receiver
+                            .process_chunk(meta, Bytes::from(data))
+                            .unwrap()
+                            .is_some()
+                        {
                             break;
                         }
                     }

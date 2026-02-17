@@ -449,7 +449,7 @@ fn print_inference_result(name: &str, result: &InferenceResult) {
     );
 
     // Show sample marginals
-    for (i, (node_id, marginal)) in result.marginals.iter().take(3).enumerate() {
+    for (i, (_node_id, marginal)) in result.marginals.iter().take(3).enumerate() {
         let formatted: String = marginal
             .iter()
             .map(|p| format!("{:.3}", p))

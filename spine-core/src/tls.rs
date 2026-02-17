@@ -2,8 +2,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
-use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 
 pub fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
@@ -27,7 +27,11 @@ pub fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     Ok(keys.into_iter().next().unwrap().into())
 }
 
-pub fn create_tls_acceptor(cert_path: &Path, key_path: &Path, ca_path: Option<&Path>) -> anyhow::Result<TlsAcceptor> {
+pub fn create_tls_acceptor(
+    cert_path: &Path,
+    key_path: &Path,
+    ca_path: Option<&Path>,
+) -> anyhow::Result<TlsAcceptor> {
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
 
@@ -37,8 +41,8 @@ pub fn create_tls_acceptor(cert_path: &Path, key_path: &Path, ca_path: Option<&P
         for cert in ca_certs {
             roots.add(cert)?;
         }
-        let client_auth = tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()?;
+        let client_auth =
+            tokio_rustls::rustls::server::WebPkiClientVerifier::builder(Arc::new(roots)).build()?;
         ServerConfig::builder()
             .with_client_cert_verifier(client_auth)
             .with_single_cert(certs, key)?

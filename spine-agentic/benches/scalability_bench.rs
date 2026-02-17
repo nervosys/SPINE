@@ -216,7 +216,7 @@ fn bench_concurrent_agents(c: &mut Criterion) {
                             });
                         }
 
-                        while let Some(_) = set.join_next().await {}
+                        while set.join_next().await.is_some() {}
                         black_box(shared_state.len())
                     })
                 });
@@ -231,6 +231,7 @@ fn bench_concurrent_agents(c: &mut Criterion) {
 fn bench_rlm_scalability(c: &mut Criterion) {
     let mut group = c.benchmark_group("rlm_scalability");
     group.sample_size(10);
+    let re = regex::Regex::new(r"\b\w{6,}\b").unwrap();
 
     // Simulate RLM chunking and aggregation
     for context_size_mb in [1, 10, 50].iter() {
@@ -264,9 +265,6 @@ fn bench_rlm_scalability(c: &mut Criterion) {
             BenchmarkId::new("regex_search_chunks", context_size_mb),
             &context,
             |b, ctx| {
-                use regex::Regex;
-                let re = Regex::new(r"\b\w{6,}\b").unwrap();
-
                 b.iter(|| {
                     let chunk_size = 65536;
                     let mut matches = 0;

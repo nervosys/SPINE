@@ -103,7 +103,6 @@ pub struct LoggingConfig {
 
 // ========== DEFAULTS ==========
 
-
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -228,7 +227,7 @@ mod tests {
         let config = SpineConfig::default();
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.max_sessions, 1000);
-        assert_eq!(config.tls.enabled, false);
+        assert!(!config.tls.enabled);
         assert_eq!(config.logging.format, "pretty");
     }
 
@@ -252,7 +251,7 @@ max_sessions = 500
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.server.max_sessions, 500);
         // Rest should be defaults
-        assert_eq!(config.tls.enabled, false);
+        assert!(!config.tls.enabled);
         assert_eq!(config.server.host, "127.0.0.1");
     }
 }

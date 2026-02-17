@@ -1,7 +1,6 @@
 // Allow dead code for compiler infrastructure and future language features
 #![allow(dead_code)]
 
-use spine_protocol::{SpineBinary, Instruction, ProtocolBinOp, ProtocolUnaryOp};
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while1},
@@ -11,6 +10,7 @@ use nom::{
     sequence::{preceded, terminated, tuple},
     IResult,
 };
+use spine_protocol::{Instruction, ProtocolBinOp, ProtocolUnaryOp, SpineBinary};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 

@@ -13,7 +13,7 @@ fn bench_simd_dot_product(c: &mut Criterion) {
         let b: Vec<f32> = (0..*size).map(|i| (size - i) as f32 * 0.001).collect();
 
         group.throughput(Throughput::Bytes((*size * 8) as u64)); // 2 vectors
-        group.bench_function(&format!("size_{}", size), |bench| {
+        group.bench_function(format!("size_{}", size), |bench| {
             bench.iter(|| black_box(dot_product(black_box(&a), black_box(&b))));
         });
     }
@@ -30,7 +30,7 @@ fn bench_simd_softmax(c: &mut Criterion) {
             .collect();
 
         group.throughput(Throughput::Bytes((*size * 4) as u64));
-        group.bench_function(&format!("size_{}", size), |bench| {
+        group.bench_function(format!("size_{}", size), |bench| {
             bench.iter(|| {
                 let mut data = input.clone();
                 softmax(black_box(&mut data))
@@ -58,7 +58,7 @@ fn bench_simd_matmul(c: &mut Criterion) {
 
         let flops = 2 * rows * cols; // 2 ops per multiply-add per element
         group.throughput(Throughput::Elements(flops as u64));
-        group.bench_function(&format!("{}x{}", rows, cols), |bench| {
+        group.bench_function(format!("{}x{}", rows, cols), |bench| {
             bench.iter(|| {
                 matmul(
                     black_box(&weights),

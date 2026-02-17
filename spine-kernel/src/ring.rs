@@ -14,7 +14,6 @@ use std::cell::UnsafeCell;
 use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-
 // =============================================================================
 // SPSC RING BUFFER
 // =============================================================================

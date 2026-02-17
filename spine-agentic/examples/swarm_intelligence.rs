@@ -6,11 +6,9 @@
 //! Run: cargo run --example swarm_intelligence -p spine-agentic
 
 use spine_agentic::{
-    create_agent_system, create_agent_with_capabilities,
-    AgentCapability, Goal, SwarmTask, SwarmRole, TrustLevel,
-    AgentRegistry, SwarmCoordinator, RegisteredAgent,
+    create_agent_system, create_agent_with_capabilities, AgentCapability, AgentRegistry, Goal,
+    SwarmRole, SwarmTask, TrustLevel,
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 #[tokio::main]
@@ -42,12 +40,45 @@ fn demo_agent_registry() {
 
     // Register various specialized agents
     let agents = vec![
-        ("DataMiner-1", vec![AgentCapability::ContentExtraction, AgentCapability::Navigation]),
-        ("DataMiner-2", vec![AgentCapability::ContentExtraction, AgentCapability::Navigation]),
-        ("Analyst-1", vec![AgentCapability::KnowledgeManagement, AgentCapability::ContinualLearning]),
-        ("Analyst-2", vec![AgentCapability::KnowledgeManagement, AgentCapability::ContinualLearning]),
-        ("Validator-1", vec![AgentCapability::CodeExecution, AgentCapability::ApiAccess]),
-        ("Coordinator-1", vec![AgentCapability::SwarmParticipation, AgentCapability::AgentCommunication]),
+        (
+            "DataMiner-1",
+            vec![
+                AgentCapability::ContentExtraction,
+                AgentCapability::Navigation,
+            ],
+        ),
+        (
+            "DataMiner-2",
+            vec![
+                AgentCapability::ContentExtraction,
+                AgentCapability::Navigation,
+            ],
+        ),
+        (
+            "Analyst-1",
+            vec![
+                AgentCapability::KnowledgeManagement,
+                AgentCapability::ContinualLearning,
+            ],
+        ),
+        (
+            "Analyst-2",
+            vec![
+                AgentCapability::KnowledgeManagement,
+                AgentCapability::ContinualLearning,
+            ],
+        ),
+        (
+            "Validator-1",
+            vec![AgentCapability::CodeExecution, AgentCapability::ApiAccess],
+        ),
+        (
+            "Coordinator-1",
+            vec![
+                AgentCapability::SwarmParticipation,
+                AgentCapability::AgentCommunication,
+            ],
+        ),
     ];
 
     for (name, caps) in agents {
@@ -55,13 +86,19 @@ fn demo_agent_registry() {
         // Manually set trust for demo
         let mut profile = agent.profile().clone();
         profile.trust_level = TrustLevel::Trusted;
-        registry.register(profile, Some(format!("127.0.0.1:{}", rand::random::<u16>() % 10000 + 5000)));
+        registry.register(
+            profile,
+            Some(format!(
+                "127.0.0.1:{}",
+                rand::random::<u16>() % 10000 + 5000
+            )),
+        );
         println!("  Registered: {}", name);
     }
 
     println!();
     println!("Online agents: {}", registry.online_agents().len());
-    
+
     // Discovery by capability
     let extractors = registry.find_by_capability(&AgentCapability::ContentExtraction);
     println!("Agents with ContentExtraction: {}", extractors.len());
@@ -99,7 +136,10 @@ async fn demo_swarm_formation() {
         leader_system.runtime.register_agent(profile);
     }
 
-    println!("Registered {} worker agents", leader_system.runtime.known_agents().len());
+    println!(
+        "Registered {} worker agents",
+        leader_system.runtime.known_agents().len()
+    );
 
     // Define a complex task
     let task = SwarmTask {
@@ -140,7 +180,10 @@ async fn demo_swarm_formation() {
     }
 
     println!();
-    println!("Swarm status after joining: {:?}", coordinator.swarm_status(swarm_id));
+    println!(
+        "Swarm status after joining: {:?}",
+        coordinator.swarm_status(swarm_id)
+    );
     println!();
 }
 
@@ -154,17 +197,22 @@ async fn demo_task_distribution() {
     let coordinator = leader_system.swarm_coordinator.clone();
 
     // Quick setup: register workers and form swarm
-    let worker_ids: Vec<_> = (1..=5).map(|i| {
-        let worker = create_agent_with_capabilities(
-            format!("DistWorker-{}", i),
-            vec![AgentCapability::ContentExtraction, AgentCapability::SwarmParticipation],
-        );
-        let mut profile = worker.profile().clone();
-        profile.trust_level = TrustLevel::Trusted;
-        let id = profile.id;
-        leader_system.runtime.register_agent(profile);
-        id
-    }).collect();
+    let worker_ids: Vec<_> = (1..=5)
+        .map(|i| {
+            let worker = create_agent_with_capabilities(
+                format!("DistWorker-{}", i),
+                vec![
+                    AgentCapability::ContentExtraction,
+                    AgentCapability::SwarmParticipation,
+                ],
+            );
+            let mut profile = worker.profile().clone();
+            profile.trust_level = TrustLevel::Trusted;
+            let id = profile.id;
+            leader_system.runtime.register_agent(profile);
+            id
+        })
+        .collect();
 
     let task = SwarmTask {
         id: Uuid::new_v4(),
@@ -181,16 +229,24 @@ async fn demo_task_distribution() {
 
     let swarm_id = coordinator.create_swarm(task, None).await;
     for (i, worker_id) in worker_ids.iter().enumerate() {
-        let role = if i == 0 { SwarmRole::Coordinator } else { SwarmRole::Worker };
+        let role = if i == 0 {
+            SwarmRole::Coordinator
+        } else {
+            SwarmRole::Worker
+        };
         coordinator.agent_joined(swarm_id, *worker_id, role);
     }
 
     // Distribute tasks
     println!("Distributing tasks to swarm members...");
     let assignments = coordinator.distribute_tasks(swarm_id);
-    
+
     for (agent_id, tasks) in &assignments {
-        println!("  Agent {:?}: {} subtask(s)", agent_id.0.to_string().chars().take(8).collect::<String>(), tasks.len());
+        println!(
+            "  Agent {:?}: {} subtask(s)",
+            agent_id.0.to_string().chars().take(8).collect::<String>(),
+            tasks.len()
+        );
     }
 
     // Simulate workers submitting results
@@ -203,7 +259,10 @@ async fn demo_task_distribution() {
             "quality_score": 0.8 + (rand::random::<f32>() * 0.2),
         });
         coordinator.submit_result(swarm_id, *worker_id, result.clone());
-        println!("  Worker {} submitted: {} items", i, result["data_collected"]);
+        println!(
+            "  Worker {} submitted: {} items",
+            i, result["data_collected"]
+        );
     }
 
     // Aggregate results
@@ -212,8 +271,13 @@ async fn demo_task_distribution() {
         println!("✓ Swarm completed!");
         println!("  Final result summary:");
         println!("    Members: {}", final_result["members"]);
-        println!("    Partial results: {}", 
-            final_result["partial_results"].as_array().map(|a| a.len()).unwrap_or(0));
+        println!(
+            "    Partial results: {}",
+            final_result["partial_results"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+        );
     }
     println!();
 }
@@ -267,35 +331,49 @@ async fn demo_collective_decision() {
     println!("Weighted Voting Results:");
     let mut option_a_weight = 0.0;
     let mut option_b_weight = 0.0;
-    
+
     for (agent, vote, confidence) in &votes {
-        println!("  {} → {} (confidence: {:.0}%)", agent, vote, confidence * 100.0);
+        println!(
+            "  {} → {} (confidence: {:.0}%)",
+            agent,
+            vote,
+            confidence * 100.0
+        );
         if *vote == "Option A" {
             option_a_weight += confidence;
         } else {
             option_b_weight += confidence;
         }
     }
-    
+
     let total_weight = option_a_weight + option_b_weight;
     let a_percentage = option_a_weight / total_weight;
     let b_percentage = option_b_weight / total_weight;
-    
+
     println!();
     println!("Weighted Results:");
     println!("  Option A: {:.1}%", a_percentage * 100.0);
     println!("  Option B: {:.1}%", b_percentage * 100.0);
-    
+
     let threshold = 0.67;
     if a_percentage >= threshold {
         println!();
-        println!("✓ CONSENSUS REACHED: Option A (exceeds {:.0}% threshold)", threshold * 100.0);
+        println!(
+            "✓ CONSENSUS REACHED: Option A (exceeds {:.0}% threshold)",
+            threshold * 100.0
+        );
     } else if b_percentage >= threshold {
         println!();
-        println!("✓ CONSENSUS REACHED: Option B (exceeds {:.0}% threshold)", threshold * 100.0);
+        println!(
+            "✓ CONSENSUS REACHED: Option B (exceeds {:.0}% threshold)",
+            threshold * 100.0
+        );
     } else {
         println!();
-        println!("⚠ NO CONSENSUS: Neither option reached {:.0}% threshold", threshold * 100.0);
+        println!(
+            "⚠ NO CONSENSUS: Neither option reached {:.0}% threshold",
+            threshold * 100.0
+        );
         println!("  → Initiating second round of deliberation...");
     }
     println!();

@@ -6,10 +6,9 @@
 //! Run: cargo run --example autonomous_agent -p spine-agentic
 
 use spine_agentic::{
-    create_agent_system, Action, Condition, Goal, ResourceLocator,
-    BehaviorNode, BehaviorResult, AgentCapability, SemanticQuery, OutputType,
+    create_agent_system, Action, AgentCapability, BehaviorNode, Condition, Goal, OutputType,
+    ResourceLocator, SemanticQuery,
 };
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
@@ -44,8 +43,7 @@ async fn demo_simple_behavior(system: &spine_agentic::AgentSystem) {
     // Simple sequence: Navigate -> Extract -> Store
     let behavior = BehaviorNode::Sequence(vec![
         BehaviorNode::Action(Action::Navigate(
-            ResourceLocator::semantic("AI research papers")
-                .with_constraint("topic:transformers")
+            ResourceLocator::semantic("AI research papers").with_constraint("topic:transformers"),
         )),
         BehaviorNode::Action(Action::Extract(SemanticQuery {
             query: "Key findings and contributions".to_string(),
@@ -81,25 +79,29 @@ async fn demo_complex_behavior(system: &spine_agentic::AgentSystem) {
     let behavior = BehaviorNode::Sequence(vec![
         // First, check if we have the capability
         BehaviorNode::Condition(Condition::HasCapability(AgentCapability::Navigation)),
-        
         // Then try to get data from multiple sources in parallel
         BehaviorNode::Parallel {
             children: vec![
                 BehaviorNode::Action(Action::Navigate(ResourceLocator::url("https://arxiv.org"))),
-                BehaviorNode::Action(Action::Navigate(ResourceLocator::url("https://scholar.google.com"))),
-                BehaviorNode::Action(Action::Navigate(ResourceLocator::url("https://semantic-scholar.org"))),
+                BehaviorNode::Action(Action::Navigate(ResourceLocator::url(
+                    "https://scholar.google.com",
+                ))),
+                BehaviorNode::Action(Action::Navigate(ResourceLocator::url(
+                    "https://semantic-scholar.org",
+                ))),
             ],
             success_threshold: 2, // Need at least 2 to succeed
         },
-        
         // Select best approach based on conditions
         BehaviorNode::Selector(vec![
             // Try the fast path first
             BehaviorNode::Sequence(vec![
-                BehaviorNode::Condition(Condition::ResourceExists(
-                    ResourceLocator::semantic("cached_results")
-                )),
-                BehaviorNode::Action(Action::Retrieve { key: "cached_results".to_string() }),
+                BehaviorNode::Condition(Condition::ResourceExists(ResourceLocator::semantic(
+                    "cached_results",
+                ))),
+                BehaviorNode::Action(Action::Retrieve {
+                    key: "cached_results".to_string(),
+                }),
             ]),
             // Fall back to full extraction
             BehaviorNode::Action(Action::Extract(SemanticQuery {
@@ -109,11 +111,10 @@ async fn demo_complex_behavior(system: &spine_agentic::AgentSystem) {
                 confidence_threshold: 0.7,
             })),
         ]),
-        
         // Always learn from the experience
-        BehaviorNode::Succeeder(Box::new(
-            BehaviorNode::Action(Action::Learn { topic: "research_patterns".to_string() })
-        )),
+        BehaviorNode::Succeeder(Box::new(BehaviorNode::Action(Action::Learn {
+            topic: "research_patterns".to_string(),
+        }))),
     ]);
 
     println!("Behavior Tree:");
@@ -159,7 +160,10 @@ async fn demo_goal_achievement(system: &spine_agentic::AgentSystem) {
     match system.achieve(goal).await {
         Ok(result) => {
             println!("✓ Goal achieved!");
-            println!("  Result: {}", serde_json::to_string_pretty(&result).unwrap_or_default());
+            println!(
+                "  Result: {}",
+                serde_json::to_string_pretty(&result).unwrap_or_default()
+            );
         }
         Err(e) => {
             println!("✗ Goal failed: {}", e);
@@ -168,6 +172,9 @@ async fn demo_goal_achievement(system: &spine_agentic::AgentSystem) {
     println!();
 
     // Show execution stats
-    println!("Active intentions: {}", system.runtime.active_intentions().len());
+    println!(
+        "Active intentions: {}",
+        system.runtime.active_intentions().len()
+    );
     println!("Known agents: {}", system.runtime.known_agents().len());
 }

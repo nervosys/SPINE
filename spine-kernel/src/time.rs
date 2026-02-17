@@ -14,10 +14,10 @@ use std::time::{Duration, Instant};
 // =============================================================================
 
 /// Read the CPU timestamp counter
-/// 
+///
 /// Returns a raw cycle count. To convert to nanoseconds, divide by
 /// CPU frequency (GHz). E.g., 3 GHz ≈ 3 cycles/ns.
-/// 
+///
 /// **Note**: TSC frequency may vary with CPU frequency scaling.
 /// Use `calibrate_tsc()` for accurate timing.
 #[inline]
@@ -26,14 +26,14 @@ pub fn rdtsc() -> u64 {
     unsafe {
         std::arch::x86_64::_rdtsc()
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     unsafe {
         let val: u64;
         std::arch::asm!("mrs {}, cntvct_el0", out(reg) val);
         val
     }
-    
+
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         // Fallback: use std Instant (less precise)
@@ -44,7 +44,7 @@ pub fn rdtsc() -> u64 {
 }
 
 /// Read timestamp counter with serialization (x86_64)
-/// 
+///
 /// RDTSCP ensures all previous instructions complete before reading.
 /// More accurate for benchmarking but ~10 cycles slower.
 #[inline]
@@ -54,7 +54,7 @@ pub fn rdtscp() -> u64 {
         let mut _aux: u32 = 0;
         std::arch::x86_64::__rdtscp(&mut _aux)
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         rdtsc()
@@ -77,32 +77,32 @@ pub struct TscCalibration {
 }
 
 /// Calibrate the TSC against system clock
-/// 
+///
 /// Runs a calibration loop to determine cycles/nanosecond.
 /// Call once at startup and cache the result.
 pub fn calibrate_tsc() -> TscCalibration {
     const CALIBRATION_MS: u64 = 10;
-    
+
     // Warmup
     for _ in 0..1000 {
         let _ = rdtsc();
     }
-    
+
     let start_instant = Instant::now();
     let start_tsc = rdtsc();
-    
+
     std::thread::sleep(Duration::from_millis(CALIBRATION_MS));
-    
+
     let end_tsc = rdtsc();
     let elapsed = start_instant.elapsed();
-    
+
     let cycles = end_tsc.saturating_sub(start_tsc);
     let nanos = elapsed.as_nanos() as f64;
-    
+
     let cycles_per_ns = cycles as f64 / nanos;
     let ns_per_cycle = nanos / cycles as f64;
     let freq_mhz = (cycles_per_ns * 1000.0) as u64;
-    
+
     TscCalibration {
         cycles_per_ns,
         ns_per_cycle,
@@ -216,7 +216,10 @@ pub fn measure_tsc<T, F: FnOnce() -> T>(f: F, calibration: &TscCalibration) -> (
     let start = rdtsc();
     let result = f();
     let cycles = rdtsc().saturating_sub(start);
-    (result, Duration::from_nanos(cycles_to_nanos(cycles, calibration)))
+    (
+        result,
+        Duration::from_nanos(cycles_to_nanos(cycles, calibration)),
+    )
 }
 
 // =============================================================================
@@ -320,7 +323,11 @@ impl TimingStats {
 
     /// Minimum in nanoseconds
     pub fn min_ns(&self) -> u64 {
-        if self.count == 0 { 0 } else { self.min_ns }
+        if self.count == 0 {
+            0
+        } else {
+            self.min_ns
+        }
     }
 
     /// Maximum in nanoseconds
@@ -358,7 +365,7 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new rate limiter
-    /// 
+    ///
     /// # Arguments
     /// * `rate_per_sec` - Operations per second allowed
     /// * `burst` - Maximum burst capacity
@@ -372,7 +379,7 @@ impl RateLimiter {
     }
 
     /// Try to acquire a token
-    /// 
+    ///
     /// Returns true if allowed, false if rate-limited.
     #[inline]
     pub fn try_acquire(&mut self) -> bool {
@@ -383,7 +390,7 @@ impl RateLimiter {
     #[inline]
     pub fn try_acquire_n(&mut self, n: f64) -> bool {
         self.refill();
-        
+
         if self.tokens >= n {
             self.tokens -= n;
             true
@@ -426,7 +433,7 @@ mod tests {
     fn test_calibration() {
         let cal = calibrate_tsc();
         println!("TSC calibration: {:?}", cal);
-        
+
         // Sanity check: should be somewhere between 1 and 10 GHz
         assert!(cal.freq_mhz > 500);
         assert!(cal.freq_mhz < 10_000);
@@ -436,9 +443,9 @@ mod tests {
     fn test_tsc_timer() {
         let cal = calibrate_tsc();
         let timer = TscTimer::start(cal);
-        
+
         std::thread::sleep(Duration::from_millis(1));
-        
+
         let elapsed = timer.elapsed();
         // Should be at least 1ms, but allow some margin
         assert!(elapsed.as_micros() >= 500);
@@ -448,7 +455,7 @@ mod tests {
     fn test_deadline() {
         let deadline = Deadline::from_now(Duration::from_millis(10));
         assert!(!deadline.has_passed());
-        
+
         std::thread::sleep(Duration::from_millis(15));
         assert!(deadline.has_passed());
     }
@@ -456,11 +463,11 @@ mod tests {
     #[test]
     fn test_timing_stats() {
         let mut stats = TimingStats::new();
-        
+
         stats.record(100);
         stats.record(200);
         stats.record(300);
-        
+
         assert_eq!(stats.count(), 3);
         assert!((stats.mean_ns() - 200.0).abs() < 0.01);
         assert_eq!(stats.min_ns(), 100);
@@ -470,15 +477,15 @@ mod tests {
     #[test]
     fn test_rate_limiter() {
         let mut limiter = RateLimiter::new(1000.0, 10.0);
-        
+
         // Should allow burst
         for _ in 0..10 {
             assert!(limiter.try_acquire());
         }
-        
+
         // Should be rate limited
         assert!(!limiter.try_acquire());
-        
+
         // Wait for refill
         std::thread::sleep(Duration::from_millis(5));
         assert!(limiter.try_acquire());

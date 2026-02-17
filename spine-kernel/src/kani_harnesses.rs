@@ -77,8 +77,10 @@ mod kani_harnesses {
             let end2 = start2 + size2;
 
             // No overlap: end1 <= start2 OR end2 <= start1
-            assert!(end1 <= start2 || end2 <= start1,
-                "Allocations overlap: [{start1}, {end1}) and [{start2}, {end2})");
+            assert!(
+                end1 <= start2 || end2 <= start1,
+                "Allocations overlap: [{start1}, {end1}) and [{start2}, {end2})"
+            );
         }
     }
 
@@ -102,8 +104,10 @@ mod kani_harnesses {
 
         if let Some(ptr) = bump.alloc(layout) {
             let addr = ptr.as_ptr() as usize;
-            assert!(addr % align == 0,
-                "Pointer {addr:#x} not aligned to {align}");
+            assert!(
+                addr % align == 0,
+                "Pointer {addr:#x} not aligned to {align}"
+            );
         }
     }
 
@@ -161,8 +165,10 @@ mod kani_harnesses {
             // Re-allocate: should get the same block back (LIFO free list)
             if let Some(ptr2) = slab.alloc() {
                 let addr2 = ptr2.as_ptr() as usize;
-                assert!(addr2 == addr1,
-                    "Dealloc'd block not returned: expected {addr1:#x}, got {addr2:#x}");
+                assert!(
+                    addr2 == addr1,
+                    "Dealloc'd block not returned: expected {addr1:#x}, got {addr2:#x}"
+                );
             }
         }
     }
@@ -184,7 +190,10 @@ mod kani_harnesses {
 
         // All 4 should have succeeded
         let alloc_count = ptrs.iter().filter(|p| p.is_some()).count();
-        assert!(alloc_count == 4, "Expected 4 allocations, got {alloc_count}");
+        assert!(
+            alloc_count == 4,
+            "Expected 4 allocations, got {alloc_count}"
+        );
 
         // 5th allocation should fail (no free blocks)
         assert!(slab.alloc().is_none(), "Slab should be exhausted");
@@ -201,7 +210,10 @@ mod kani_harnesses {
                 count += 1;
             }
         }
-        assert!(count == 4, "Expected 4 re-allocations after free, got {count}");
+        assert!(
+            count == 4,
+            "Expected 4 re-allocations after free, got {count}"
+        );
     }
 
     // =========================================================================
@@ -224,8 +236,7 @@ mod kani_harnesses {
         lock.write(val);
         let read_val = lock.read();
 
-        assert!(read_val == val,
-            "SeqLock read {read_val} but wrote {val}");
+        assert!(read_val == val, "SeqLock read {read_val} but wrote {val}");
     }
 
     /// Verify SeqLock write atomicity: sequence number is odd during write,
@@ -245,8 +256,10 @@ mod kani_harnesses {
 
         let seq_after = lock.sequence();
         assert!(seq_after % 2 == 0, "Post-write sequence should be even");
-        assert!(seq_after == seq_before + 2,
-            "Sequence should increment by 2: {seq_before} → {seq_after}");
+        assert!(
+            seq_after == seq_before + 2,
+            "Sequence should increment by 2: {seq_before} → {seq_after}"
+        );
     }
 
     // =========================================================================
@@ -298,7 +311,10 @@ mod kani_harnesses {
         }
 
         assert!(pop_count == n, "Expected {n} pops, got {pop_count}");
-        assert!(stack.pop().is_none(), "Stack should be empty after {n} pops");
+        assert!(
+            stack.pop().is_none(),
+            "Stack should be empty after {n} pops"
+        );
     }
 
     // =========================================================================
@@ -457,7 +473,9 @@ mod kani_harnesses {
         let scalar_result: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
 
         let diff = (simd_result - scalar_result).abs();
-        assert!(diff < 1e-3,
-            "SIMD vs scalar mismatch: {simd_result} vs {scalar_result} (diff={diff})");
+        assert!(
+            diff < 1e-3,
+            "SIMD vs scalar mismatch: {simd_result} vs {scalar_result} (diff={diff})"
+        );
     }
 }

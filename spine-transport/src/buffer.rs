@@ -3,9 +3,9 @@
 //! This module provides high-performance buffer management designed to minimize
 //! memory allocations and copies in the hot path.
 
-use bytes::{Bytes, BytesMut, BufMut};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use bytes::{BufMut, Bytes, BytesMut};
 use crossbeam_queue::ArrayQueue;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::{BufferAllocator, BufferStats};
 
@@ -14,7 +14,7 @@ use crate::{BufferAllocator, BufferStats};
 // =============================================================================
 
 /// Lock-free ring buffer for zero-copy I/O
-/// 
+///
 /// Uses a pre-allocated circular buffer with atomic head/tail pointers.
 /// Suitable for single-producer single-consumer scenarios.
 pub struct RingBuffer {
@@ -42,33 +42,33 @@ impl RingBuffer {
             write_pos: AtomicUsize::new(0),
         }
     }
-    
+
     /// Get available space for writing
     pub fn write_available(&self) -> usize {
         let read = self.read_pos.load(Ordering::Acquire);
         let write = self.write_pos.load(Ordering::Acquire);
         self.capacity - (write.wrapping_sub(read))
     }
-    
+
     /// Get available data for reading
     pub fn read_available(&self) -> usize {
         let read = self.read_pos.load(Ordering::Acquire);
         let write = self.write_pos.load(Ordering::Acquire);
         write.wrapping_sub(read)
     }
-    
+
     /// Write data to the buffer (returns bytes written)
     pub fn write(&self, data: &[u8]) -> usize {
         let available = self.write_available();
         let to_write = data.len().min(available);
-        
+
         if to_write == 0 {
             return 0;
         }
-        
+
         let write = self.write_pos.load(Ordering::Acquire);
         let start = write & self.mask;
-        
+
         // Handle wrap-around
         if start + to_write <= self.capacity {
             // Contiguous write
@@ -83,7 +83,7 @@ impl RingBuffer {
             unsafe {
                 let dst1 = self.data.as_ptr().add(start) as *mut u8;
                 std::ptr::copy_nonoverlapping(data.as_ptr(), dst1, first_part);
-                
+
                 let dst2 = self.data.as_ptr() as *mut u8;
                 std::ptr::copy_nonoverlapping(
                     data.as_ptr().add(first_part),
@@ -92,23 +92,24 @@ impl RingBuffer {
                 );
             }
         }
-        
-        self.write_pos.store(write.wrapping_add(to_write), Ordering::Release);
+
+        self.write_pos
+            .store(write.wrapping_add(to_write), Ordering::Release);
         to_write
     }
-    
+
     /// Read data from the buffer (returns bytes read)
     pub fn read(&self, buf: &mut [u8]) -> usize {
         let available = self.read_available();
         let to_read = buf.len().min(available);
-        
+
         if to_read == 0 {
             return 0;
         }
-        
+
         let read = self.read_pos.load(Ordering::Acquire);
         let start = read & self.mask;
-        
+
         // Handle wrap-around
         if start + to_read <= self.capacity {
             // Contiguous read
@@ -119,23 +120,24 @@ impl RingBuffer {
             buf[..first_part].copy_from_slice(&self.data[start..]);
             buf[first_part..to_read].copy_from_slice(&self.data[..to_read - first_part]);
         }
-        
-        self.read_pos.store(read.wrapping_add(to_read), Ordering::Release);
+
+        self.read_pos
+            .store(read.wrapping_add(to_read), Ordering::Release);
         to_read
     }
-    
+
     /// Peek at data without consuming it
     pub fn peek(&self, buf: &mut [u8]) -> usize {
         let available = self.read_available();
         let to_read = buf.len().min(available);
-        
+
         if to_read == 0 {
             return 0;
         }
-        
+
         let read = self.read_pos.load(Ordering::Acquire);
         let start = read & self.mask;
-        
+
         if start + to_read <= self.capacity {
             buf[..to_read].copy_from_slice(&self.data[start..start + to_read]);
         } else {
@@ -143,37 +145,38 @@ impl RingBuffer {
             buf[..first_part].copy_from_slice(&self.data[start..]);
             buf[first_part..to_read].copy_from_slice(&self.data[..to_read - first_part]);
         }
-        
+
         to_read
     }
-    
+
     /// Skip n bytes in the read buffer
     pub fn skip(&self, n: usize) -> usize {
         let available = self.read_available();
         let to_skip = n.min(available);
-        
+
         let read = self.read_pos.load(Ordering::Acquire);
-        self.read_pos.store(read.wrapping_add(to_skip), Ordering::Release);
-        
+        self.read_pos
+            .store(read.wrapping_add(to_skip), Ordering::Release);
+
         to_skip
     }
-    
+
     /// Clear the buffer
     pub fn clear(&self) {
         let write = self.write_pos.load(Ordering::Acquire);
         self.read_pos.store(write, Ordering::Release);
     }
-    
+
     /// Get capacity
     pub fn capacity(&self) -> usize {
         self.capacity
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.read_available() == 0
     }
-    
+
     /// Check if full
     pub fn is_full(&self) -> bool {
         self.write_available() == 0
@@ -189,7 +192,7 @@ unsafe impl Sync for RingBuffer {}
 // =============================================================================
 
 /// Fixed-size buffer pool for efficient allocation
-/// 
+///
 /// Pre-allocates a pool of fixed-size buffers that can be quickly borrowed
 /// and returned without heap allocation.
 pub struct SlabAllocator {
@@ -208,13 +211,13 @@ impl SlabAllocator {
     /// Create a new slab allocator
     pub fn new(buffer_size: usize, pool_capacity: usize) -> Self {
         let pool = ArrayQueue::new(pool_capacity);
-        
+
         // Pre-populate the pool
         for _ in 0..pool_capacity {
             let buf = BytesMut::with_capacity(buffer_size);
             let _ = pool.push(buf);
         }
-        
+
         Self {
             buffer_size,
             pool,
@@ -224,7 +227,7 @@ impl SlabAllocator {
             pool_misses: AtomicU64::new(0),
         }
     }
-    
+
     /// Borrow a buffer from the pool
     pub fn borrow(&self) -> BytesMut {
         if let Some(mut buf) = self.pool.pop() {
@@ -237,11 +240,11 @@ impl SlabAllocator {
             BytesMut::with_capacity(self.buffer_size)
         }
     }
-    
+
     /// Return a buffer to the pool
     pub fn return_buffer(&self, mut buf: BytesMut) {
         self.deallocated.fetch_add(1, Ordering::Relaxed);
-        
+
         // Only return to pool if it's the right size and pool isn't full
         if buf.capacity() >= self.buffer_size {
             buf.clear();
@@ -250,12 +253,12 @@ impl SlabAllocator {
         }
         // Otherwise just drop it
     }
-    
+
     /// Get buffer size
     pub fn buffer_size(&self) -> usize {
         self.buffer_size
     }
-    
+
     /// Get pool statistics
     pub fn stats(&self) -> SlabStats {
         SlabStats {
@@ -287,7 +290,7 @@ pub struct SlabStats {
 // =============================================================================
 
 /// Hierarchical buffer allocator with multiple size classes
-/// 
+///
 /// Uses different slab allocators for different size ranges to minimize
 /// internal fragmentation while maintaining fast allocation.
 pub struct HierarchicalAllocator {
@@ -314,7 +317,7 @@ impl HierarchicalAllocator {
             fallback_count: AtomicU64::new(0),
         }
     }
-    
+
     /// Create with custom sizes
     #[allow(clippy::too_many_arguments)]
     pub fn with_sizes(
@@ -335,7 +338,7 @@ impl HierarchicalAllocator {
             fallback_count: AtomicU64::new(0),
         }
     }
-    
+
     /// Allocate a buffer
     fn alloc(&self, size: usize) -> BytesMut {
         if size <= 1024 {
@@ -351,7 +354,7 @@ impl HierarchicalAllocator {
             BytesMut::with_capacity(size)
         }
     }
-    
+
     /// Return a buffer to the appropriate pool
     fn dealloc(&self, buf: BytesMut) {
         let cap = buf.capacity();
@@ -366,7 +369,7 @@ impl HierarchicalAllocator {
         }
         // Very large buffers just get dropped
     }
-    
+
     /// Get statistics for all pools
     pub fn all_stats(&self) -> HierarchicalStats {
         HierarchicalStats {
@@ -399,25 +402,37 @@ impl BufferAllocator for HierarchicalAllocator {
     fn allocate(&self, size: usize) -> BytesMut {
         self.alloc(size)
     }
-    
+
     fn deallocate(&self, buffer: BytesMut) {
         self.dealloc(buffer);
     }
-    
+
     fn stats(&self) -> BufferStats {
         let all = self.all_stats();
         BufferStats {
-            allocated: all.small.allocated + all.medium.allocated + 
-                       all.large.allocated + all.huge.allocated + 
-                       all.fallback_allocations,
-            deallocated: all.small.deallocated + all.medium.deallocated + 
-                         all.large.deallocated + all.huge.deallocated,
-            in_use: (all.small.allocated + all.medium.allocated + 
-                     all.large.allocated + all.huge.allocated)
-                    .saturating_sub(all.small.deallocated + all.medium.deallocated + 
-                                   all.large.deallocated + all.huge.deallocated),
-            pool_size: (all.small.pool_capacity + all.medium.pool_capacity + 
-                        all.large.pool_capacity + all.huge.pool_capacity) as u64,
+            allocated: all.small.allocated
+                + all.medium.allocated
+                + all.large.allocated
+                + all.huge.allocated
+                + all.fallback_allocations,
+            deallocated: all.small.deallocated
+                + all.medium.deallocated
+                + all.large.deallocated
+                + all.huge.deallocated,
+            in_use: (all.small.allocated
+                + all.medium.allocated
+                + all.large.allocated
+                + all.huge.allocated)
+                .saturating_sub(
+                    all.small.deallocated
+                        + all.medium.deallocated
+                        + all.large.deallocated
+                        + all.huge.deallocated,
+                ),
+            pool_size: (all.small.pool_capacity
+                + all.medium.pool_capacity
+                + all.large.pool_capacity
+                + all.huge.pool_capacity) as u64,
         }
     }
 }
@@ -427,7 +442,7 @@ impl BufferAllocator for HierarchicalAllocator {
 // =============================================================================
 
 /// Buffer that supports vectored (scatter-gather) I/O
-/// 
+///
 /// Allows building a message from multiple non-contiguous chunks
 /// that can be written with a single syscall using writev.
 pub struct VectoredBuffer {
@@ -445,7 +460,7 @@ impl VectoredBuffer {
             total_len: 0,
         }
     }
-    
+
     /// Create with pre-allocated capacity
     pub fn with_capacity(chunk_count: usize) -> Self {
         Self {
@@ -453,58 +468,59 @@ impl VectoredBuffer {
             total_len: 0,
         }
     }
-    
+
     /// Add a chunk to the buffer
     pub fn push(&mut self, chunk: Bytes) {
         self.total_len += chunk.len();
         self.chunks.push(chunk);
     }
-    
+
     /// Add a chunk from a slice (copies data)
     pub fn push_slice(&mut self, data: &[u8]) {
         self.push(Bytes::copy_from_slice(data));
     }
-    
+
     /// Get total length
     pub fn len(&self) -> usize {
         self.total_len
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.total_len == 0
     }
-    
+
     /// Get number of chunks
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
-    
+
     /// Get chunks as IO slices for vectored write
     pub fn as_io_slices(&self) -> Vec<std::io::IoSlice<'_>> {
-        self.chunks.iter()
+        self.chunks
+            .iter()
             .map(|c| std::io::IoSlice::new(c))
             .collect()
     }
-    
+
     /// Consume and return chunks
     pub fn into_chunks(self) -> Vec<Bytes> {
         self.chunks
     }
-    
+
     /// Flatten into a single contiguous buffer
     pub fn flatten(&self) -> Bytes {
         if self.chunks.len() == 1 {
             return self.chunks[0].clone();
         }
-        
+
         let mut buf = BytesMut::with_capacity(self.total_len);
         for chunk in &self.chunks {
             buf.put_slice(chunk);
         }
         buf.freeze()
     }
-    
+
     /// Clear the buffer
     pub fn clear(&mut self) {
         self.chunks.clear();
@@ -538,7 +554,7 @@ impl From<Vec<Bytes>> for VectoredBuffer {
 // =============================================================================
 
 /// Memory-mapped buffer for large file transfers
-/// 
+///
 /// Uses mmap to avoid copying large files through userspace.
 #[cfg(unix)]
 pub struct MmapBuffer {
@@ -553,22 +569,22 @@ impl MmapBuffer {
         let mmap = unsafe { memmap2::Mmap::map(file)? };
         Ok(Self { mmap })
     }
-    
+
     /// Get the buffer as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.mmap
     }
-    
+
     /// Get length
     pub fn len(&self) -> usize {
         self.mmap.len()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.mmap.is_empty()
     }
-    
+
     /// Convert to Bytes (may copy if refcount > 0)
     pub fn to_bytes(&self) -> Bytes {
         Bytes::copy_from_slice(&self.mmap)
@@ -588,39 +604,39 @@ impl MmapMutBuffer {
         let mmap = memmap2::MmapMut::map_anon(len)?;
         Ok(Self { mmap })
     }
-    
+
     /// Create a read-write memory-mapped buffer from a file
     pub fn from_file(file: &std::fs::File) -> std::io::Result<Self> {
         // SAFETY: Exclusive access to file required
         let mmap = unsafe { memmap2::MmapMut::map_mut(file)? };
         Ok(Self { mmap })
     }
-    
+
     /// Get the buffer as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.mmap
     }
-    
+
     /// Get the buffer as mutable bytes
     pub fn as_bytes_mut(&mut self) -> &mut [u8] {
         &mut self.mmap
     }
-    
+
     /// Get length
     pub fn len(&self) -> usize {
         self.mmap.len()
     }
-    
+
     /// Check if empty
     pub fn is_empty(&self) -> bool {
         self.mmap.is_empty()
     }
-    
+
     /// Flush changes to disk
     pub fn flush(&self) -> std::io::Result<()> {
         self.mmap.flush()
     }
-    
+
     /// Async flush
     pub fn flush_async(&self) -> std::io::Result<()> {
         self.mmap.flush_async()
@@ -630,21 +646,21 @@ impl MmapMutBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_ring_buffer_basic() {
         let ring = RingBuffer::new(1024);
-        
+
         assert_eq!(ring.capacity(), 1024);
         assert!(ring.is_empty());
         assert_eq!(ring.write_available(), 1024);
-        
+
         // Write some data
         let data = b"Hello, World!";
         let written = ring.write(data);
         assert_eq!(written, data.len());
         assert!(!ring.is_empty());
-        
+
         // Read it back
         let mut buf = [0u8; 64];
         let read = ring.read(&mut buf);
@@ -652,24 +668,24 @@ mod tests {
         assert_eq!(&buf[..read], data);
         assert!(ring.is_empty());
     }
-    
+
     #[test]
     fn test_ring_buffer_wrap_around() {
-        let ring = RingBuffer::new(16);  // Small buffer to force wrap
-        
+        let ring = RingBuffer::new(16); // Small buffer to force wrap
+
         // Write 12 bytes
         let written = ring.write(b"Hello World!");
         assert_eq!(written, 12);
-        
+
         // Read 8 bytes
         let mut buf = [0u8; 8];
         ring.read(&mut buf);
         assert_eq!(&buf, b"Hello Wo");
-        
+
         // Write 10 more bytes (wraps around)
         let written = ring.write(b"ABCDEFGHIJ");
         assert_eq!(written, 10);
-        
+
         // Read all
         let mut buf = [0u8; 14];
         let read = ring.read(&mut buf);
@@ -677,55 +693,55 @@ mod tests {
         assert_eq!(&buf[..4], b"rld!");
         assert_eq!(&buf[4..], b"ABCDEFGHIJ");
     }
-    
+
     #[test]
     fn test_slab_allocator() {
         let slab = SlabAllocator::new(4096, 16);
-        
+
         // Borrow several buffers
         let buf1 = slab.borrow();
         let buf2 = slab.borrow();
-        
+
         assert!(buf1.capacity() >= 4096);
         assert!(buf2.capacity() >= 4096);
-        
+
         // Return them
         slab.return_buffer(buf1);
         slab.return_buffer(buf2);
-        
+
         let stats = slab.stats();
         assert!(stats.pool_hits >= 2);
     }
-    
+
     #[test]
     fn test_hierarchical_allocator() {
         let alloc = HierarchicalAllocator::new();
-        
+
         // Allocate various sizes
         let small = alloc.allocate(100);
         let medium = alloc.allocate(2000);
         let large = alloc.allocate(20000);
-        
+
         assert!(small.capacity() >= 100);
         assert!(medium.capacity() >= 2000);
         assert!(large.capacity() >= 20000);
-        
+
         // Deallocate
         alloc.deallocate(small);
         alloc.deallocate(medium);
         alloc.deallocate(large);
     }
-    
+
     #[test]
     fn test_vectored_buffer() {
         let mut vec_buf = VectoredBuffer::new();
-        
+
         vec_buf.push(Bytes::from_static(b"Hello, "));
         vec_buf.push(Bytes::from_static(b"World!"));
-        
+
         assert_eq!(vec_buf.len(), 13);
         assert_eq!(vec_buf.chunk_count(), 2);
-        
+
         let flat = vec_buf.flatten();
         assert_eq!(&flat[..], b"Hello, World!");
     }

@@ -221,7 +221,8 @@ impl<T> TaggedPtr<T> {
     pub fn store(&self, ptr: *mut T, order: Ordering) {
         let (_, old_tag) = self.load(Ordering::Relaxed);
         let new_tag = old_tag.wrapping_add(1) as u64;
-        let packed = (ptr as u64 & Self::PTR_MASK) | ((new_tag << Self::TAG_SHIFT) & Self::TAG_MASK);
+        let packed =
+            (ptr as u64 & Self::PTR_MASK) | ((new_tag << Self::TAG_SHIFT) & Self::TAG_MASK);
         self.packed.store(packed, order);
     }
 
@@ -235,10 +236,11 @@ impl<T> TaggedPtr<T> {
         success: Ordering,
         failure: Ordering,
     ) -> Result<(*mut T, u16), (*mut T, u16)> {
-        let expected =
-            (expected_ptr as u64 & Self::PTR_MASK) | ((expected_tag as u64) << Self::TAG_SHIFT & Self::TAG_MASK);
+        let expected = (expected_ptr as u64 & Self::PTR_MASK)
+            | ((expected_tag as u64) << Self::TAG_SHIFT & Self::TAG_MASK);
         let new_tag = expected_tag.wrapping_add(1) as u64;
-        let new = (new_ptr as u64 & Self::PTR_MASK) | ((new_tag << Self::TAG_SHIFT) & Self::TAG_MASK);
+        let new =
+            (new_ptr as u64 & Self::PTR_MASK) | ((new_tag << Self::TAG_SHIFT) & Self::TAG_MASK);
 
         match self
             .packed
@@ -296,13 +298,10 @@ impl<T> LockFreeStack<T> {
             // SAFETY: node is valid, just allocated
             unsafe { (*node).next = head };
 
-            match self.head.compare_exchange(
-                head,
-                tag,
-                node,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .head
+                .compare_exchange(head, tag, node, Ordering::AcqRel, Ordering::Relaxed)
+            {
                 Ok(_) => return,
                 Err(_) => continue,
             }
@@ -323,13 +322,10 @@ impl<T> LockFreeStack<T> {
             // between our load and CAS. The version must match for CAS to succeed.
             let next = unsafe { (*head).next };
 
-            match self.head.compare_exchange(
-                head,
-                tag,
-                next,
-                Ordering::AcqRel,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .head
+                .compare_exchange(head, tag, next, Ordering::AcqRel, Ordering::Relaxed)
+            {
                 Ok(_) => {
                     // SAFETY: We won the CAS, so we own the node exclusively
                     let node = unsafe { Box::from_raw(head) };

@@ -1,9 +1,9 @@
 //! Property-based tests for spine-crypto cryptographic primitives.
 
 use proptest::prelude::*;
-use spine_crypto::*;
-use rand::SeedableRng;
 use rand::rngs::StdRng;
+use rand::SeedableRng;
+use spine_crypto::*;
 
 // ========== RING ELEMENT ALGEBRA ==========
 
@@ -159,7 +159,7 @@ proptest! {
             predictor.observe(msg);
         }
         let (_byte, confidence) = predictor.predict_next();
-        let ok = confidence >= 0.0 && confidence <= 1.0;
+        let ok = (0.0..=1.0).contains(&confidence);
         prop_assert!(ok, "confidence must be in [0,1], got {}", confidence);
     }
 

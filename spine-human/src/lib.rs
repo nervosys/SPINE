@@ -2,10 +2,10 @@
 #![allow(dead_code)]
 
 use anyhow::Result;
-use spine_compiler::Compiler;
-use spine_protocol::SpineBinary;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
+use spine_compiler::Compiler;
+use spine_protocol::SpineBinary;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -393,10 +393,7 @@ impl ReasoningEngine {
         Self
     }
 
-    pub fn suggest_actions(
-        &self,
-        ur: &spine_parser::UnifiedRepresentation,
-    ) -> Vec<AgentAction> {
+    pub fn suggest_actions(&self, ur: &spine_parser::UnifiedRepresentation) -> Vec<AgentAction> {
         let mut suggestions = Vec::new();
         use spine_parser::Element;
 
@@ -454,11 +451,7 @@ impl ReasoningEngine {
         suggestions
     }
 
-    pub fn create_plan(
-        &self,
-        goal: &str,
-        ur: &spine_parser::UnifiedRepresentation,
-    ) -> AgentPlan {
+    pub fn create_plan(&self, goal: &str, ur: &spine_parser::UnifiedRepresentation) -> AgentPlan {
         let suggestions = self.suggest_actions(ur);
         let mut steps = Vec::new();
         let mut confidence_sum = 0.0;

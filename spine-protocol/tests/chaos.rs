@@ -29,6 +29,7 @@ pub enum ChaosFault {
 }
 
 /// Generate random chaos faults
+#[allow(dead_code)]
 fn arb_fault() -> impl Strategy<Value = ChaosFault> {
     prop_oneof![
         (1..20usize).prop_map(ChaosFault::DropAfter),
@@ -113,10 +114,7 @@ async fn chaos_truncated_message() {
 
     // Write a valid-looking length prefix but truncated body
     let fake_len: u32 = 1000;
-    raw_writer
-        .write_all(&fake_len.to_be_bytes())
-        .await
-        .unwrap();
+    raw_writer.write_all(&fake_len.to_be_bytes()).await.unwrap();
     raw_writer.write_all(b"short").await.unwrap();
     drop(raw_writer); // EOF before full message
 
@@ -303,7 +301,6 @@ async fn chaos_mismatched_encryption_keys() {
         "Expected error with mismatched encryption keys"
     );
 }
-
 
 // ========== PROPTEST-DRIVEN CHAOS ==========
 

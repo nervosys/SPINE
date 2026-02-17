@@ -620,21 +620,16 @@ mod tests {
     struct MockConnection;
 
     impl TransportBackend for MockConnection {
-        fn send_frame(
-            &mut self,
-            _frame: Frame,
-        ) -> impl std::future::Future<Output = TransportResult<()>> + Send {
-            async { Ok(()) }
+        async fn send_frame(&mut self, _frame: Frame) -> TransportResult<()> {
+            Ok(())
         }
 
-        fn recv_frame(
-            &mut self,
-        ) -> impl std::future::Future<Output = TransportResult<Frame>> + Send {
-            async { Err(TransportError::ConnectionClosed) }
+        async fn recv_frame(&mut self) -> TransportResult<Frame> {
+            Err(TransportError::ConnectionClosed)
         }
 
-        fn flush(&mut self) -> impl std::future::Future<Output = TransportResult<()>> + Send {
-            async { Ok(()) }
+        async fn flush(&mut self) -> TransportResult<()> {
+            Ok(())
         }
 
         fn rtt(&self) -> Duration {
@@ -645,8 +640,8 @@ mod tests {
             true
         }
 
-        fn close(&mut self) -> impl std::future::Future<Output = TransportResult<()>> + Send {
-            async { Ok(()) }
+        async fn close(&mut self) -> TransportResult<()> {
+            Ok(())
         }
     }
 

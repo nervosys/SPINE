@@ -1169,7 +1169,7 @@ mod tests {
         let node = ClusterNode::new(addr, NodeCapabilities::default());
 
         assert_eq!(node.address, addr);
-        assert!(node.nodes.is_empty() || node.nodes.len() == 0);
+        assert!(node.nodes.is_empty() || node.nodes.is_empty());
     }
 
     #[test]

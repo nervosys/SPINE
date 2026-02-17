@@ -17,10 +17,10 @@ use crate::{align_up, CACHE_LINE_SIZE, PAGE_SIZE};
 // =============================================================================
 
 /// Fast bump allocator for sequential allocation
-/// 
+///
 /// Allocates by incrementing a pointer. Deallocation is a no-op;
 /// memory is freed when the entire arena is dropped.
-/// 
+///
 /// **Performance**: O(1) allocation, zero fragmentation
 pub struct BumpAllocator {
     /// Start of the memory region
@@ -38,11 +38,11 @@ impl BumpAllocator {
     pub fn new(capacity: usize) -> Self {
         let capacity = align_up(capacity, PAGE_SIZE);
         let layout = Layout::from_size_align(capacity, PAGE_SIZE).unwrap();
-        
+
         // SAFETY: Layout is valid and non-zero
         let ptr = unsafe { alloc(layout) };
         let start = NonNull::new(ptr).expect("allocation failed");
-        
+
         Self {
             start,
             current: AtomicUsize::new(ptr as usize),
@@ -56,16 +56,16 @@ impl BumpAllocator {
     pub fn alloc(&self, layout: Layout) -> Option<NonNull<u8>> {
         let align = layout.align().max(8);
         let size = layout.size();
-        
+
         loop {
             let current = self.current.load(Ordering::Relaxed);
             let aligned = align_up(current, align);
             let new_current = aligned + size;
-            
+
             if new_current > self.end {
                 return None;
             }
-            
+
             match self.current.compare_exchange_weak(
                 current,
                 new_current,
@@ -99,7 +99,8 @@ impl BumpAllocator {
 
     /// Reset the allocator (invalidates all previous allocations)
     pub fn reset(&self) {
-        self.current.store(self.start.as_ptr() as usize, Ordering::Release);
+        self.current
+            .store(self.start.as_ptr() as usize, Ordering::Release);
     }
 
     /// Get the number of bytes allocated
@@ -135,7 +136,7 @@ unsafe impl Sync for BumpAllocator {}
 // =============================================================================
 
 /// Fixed-size slab allocator
-/// 
+///
 /// Efficiently allocates fixed-size blocks from a pre-allocated pool.
 /// Uses a lock-free free list for O(1) alloc/dealloc.
 pub struct SlabAllocator {
@@ -158,7 +159,7 @@ struct SlabBlock {
 
 impl SlabAllocator {
     /// Create a new slab allocator
-    /// 
+    ///
     /// # Arguments
     /// * `block_size` - Size of each block (minimum 8 bytes for free list pointer)
     /// * `block_count` - Number of blocks in the slab
@@ -166,16 +167,16 @@ impl SlabAllocator {
         // Ensure block can hold the free list pointer
         let block_size = block_size.max(std::mem::size_of::<SlabBlock>());
         let block_size = align_up(block_size, 8);
-        
+
         let total_size = block_size * block_count;
         let layout = Layout::from_size_align(total_size, CACHE_LINE_SIZE).unwrap();
-        
+
         // SAFETY: Layout is valid
-        let memory = unsafe { 
+        let memory = unsafe {
             let ptr = alloc(layout);
             NonNull::new(ptr).expect("slab allocation failed")
         };
-        
+
         // Initialize free list
         let mut prev: *mut SlabBlock = std::ptr::null_mut();
         for i in (0..block_count).rev() {
@@ -186,7 +187,7 @@ impl SlabAllocator {
             }
             prev = block_ptr;
         }
-        
+
         Self {
             block_size,
             block_count,
@@ -204,10 +205,10 @@ impl SlabAllocator {
             if head.is_null() {
                 return None;
             }
-            
+
             // SAFETY: head is from our slab
             let next = unsafe { (*head).next.load(Ordering::Relaxed) };
-            
+
             match self.free_head.compare_exchange_weak(
                 head,
                 next,
@@ -224,7 +225,7 @@ impl SlabAllocator {
     }
 
     /// Return a block to the slab
-    /// 
+    ///
     /// # Safety
     /// The pointer must have been allocated from this slab and not yet deallocated.
     /// Passing a pointer from a different allocator or double-freeing causes undefined behavior.
@@ -234,7 +235,7 @@ impl SlabAllocator {
         let ptr_addr = ptr.as_ptr() as usize;
         let start_addr = self.memory.as_ptr() as usize;
         let end_addr = start_addr + (self.block_size * self.block_count);
-        
+
         debug_assert!(
             ptr_addr >= start_addr && ptr_addr < end_addr,
             "dealloc: pointer {:p} not from this slab [{:p}..{:p})",
@@ -242,19 +243,19 @@ impl SlabAllocator {
             self.memory.as_ptr(),
             (end_addr as *const u8)
         );
-        
+
         // In release builds, validate alignment to block boundary
         debug_assert!(
             (ptr_addr - start_addr).is_multiple_of(self.block_size),
             "dealloc: pointer not aligned to block boundary"
         );
-        
+
         let block = ptr.as_ptr() as *mut SlabBlock;
-        
+
         loop {
             let head = self.free_head.load(Ordering::Relaxed);
             (*block).next = AtomicPtr::new(head);
-            
+
             match self.free_head.compare_exchange_weak(
                 head,
                 block,
@@ -309,7 +310,7 @@ unsafe impl Sync for SlabAllocator {}
 // =============================================================================
 
 /// Thread-local arena allocator with multiple size classes
-/// 
+///
 /// Combines bump allocation with size-class segregation for
 /// efficient mixed-size allocations.
 pub struct ArenaAllocator {
@@ -327,7 +328,7 @@ impl ArenaAllocator {
     /// Create a new arena allocator
     pub fn new() -> Self {
         Self {
-            small: SlabAllocator::new(64, 16384),        // 1MB
+            small: SlabAllocator::new(64, 16384),       // 1MB
             medium: SlabAllocator::new(1024, 4096),     // 4MB
             large: SlabAllocator::new(64 * 1024, 256),  // 16MB
             huge: BumpAllocator::new(64 * 1024 * 1024), // 64MB
@@ -338,7 +339,7 @@ impl ArenaAllocator {
     #[inline]
     pub fn alloc(&self, size: usize, align: usize) -> Option<NonNull<u8>> {
         let size = align_up(size, align);
-        
+
         if size <= 64 {
             self.small.alloc()
         } else if size <= 1024 {
@@ -352,7 +353,7 @@ impl ArenaAllocator {
     }
 
     /// Deallocate memory
-    /// 
+    ///
     /// # Safety
     /// Pointer must have been allocated from this arena
     #[inline]
@@ -421,7 +422,7 @@ pub fn alloc_aligned(size: usize) -> Option<NonNull<u8>> {
 }
 
 /// Deallocate cache-line aligned memory
-/// 
+///
 /// # Safety
 /// Pointer must have been allocated by alloc_aligned with the same size
 #[inline]
@@ -441,13 +442,13 @@ mod tests {
     #[test]
     fn test_bump_allocator() {
         let alloc = BumpAllocator::new(4096);
-        
+
         let p1 = alloc.alloc(Layout::new::<u64>()).unwrap();
         let p2 = alloc.alloc(Layout::new::<u64>()).unwrap();
-        
+
         assert_ne!(p1, p2);
         assert!(alloc.allocated() >= 16);
-        
+
         alloc.reset();
         assert_eq!(alloc.allocated(), 0);
     }
@@ -455,20 +456,20 @@ mod tests {
     #[test]
     fn test_slab_allocator() {
         let slab = SlabAllocator::new(64, 100);
-        
+
         let mut ptrs = Vec::new();
         for _ in 0..100 {
             let ptr = slab.alloc().unwrap();
             ptrs.push(ptr);
         }
-        
+
         assert!(slab.alloc().is_none()); // Full
         assert_eq!(slab.allocated(), 100);
-        
+
         // Return one
         unsafe { slab.dealloc(ptrs.pop().unwrap()) };
         assert_eq!(slab.allocated(), 99);
-        
+
         // Can allocate again
         let _ = slab.alloc().unwrap();
         assert_eq!(slab.allocated(), 100);
@@ -477,16 +478,16 @@ mod tests {
     #[test]
     fn test_arena_allocator() {
         let arena = ArenaAllocator::new();
-        
+
         // Small allocation
-        let p1 = arena.alloc(32, 8).unwrap();
+        let _p1 = arena.alloc(32, 8).unwrap();
         // Medium allocation
-        let p2 = arena.alloc(512, 8).unwrap();
+        let _p2 = arena.alloc(512, 8).unwrap();
         // Large allocation
-        let p3 = arena.alloc(32 * 1024, 8).unwrap();
+        let _p3 = arena.alloc(32 * 1024, 8).unwrap();
         // Huge allocation
-        let p4 = arena.alloc(128 * 1024, 8).unwrap();
-        
+        let _p4 = arena.alloc(128 * 1024, 8).unwrap();
+
         let stats = arena.stats();
         assert!(stats.small_allocated >= 1);
         assert!(stats.medium_allocated >= 1);

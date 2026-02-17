@@ -136,9 +136,7 @@ async fn interactive_session(client: &mut AgentClient<TcpStream>) -> Result<()> 
 
 // TLS and WS sessions work the same way but with different client types.
 // We use a macro to avoid duplicating the interactive loop for each transport.
-async fn interactive_session_tls(
-    client: &mut AgentClient<TlsStream<TcpStream>>,
-) -> Result<()> {
+async fn interactive_session_tls(client: &mut AgentClient<TlsStream<TcpStream>>) -> Result<()> {
     print_help();
     let stdin = io::stdin();
     let mut stdout = io::stdout();

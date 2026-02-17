@@ -341,10 +341,7 @@ impl ReplayVerifier {
                 detail: if !seq_ok {
                     format!("seq gap: expected {}, got {}", i, entry.seq)
                 } else if !ts_ok {
-                    format!(
-                        "timestamp regression: {} < {}",
-                        entry.timestamp_us, prev_ts
-                    )
+                    format!("timestamp regression: {} < {}", entry.timestamp_us, prev_ts)
                 } else {
                     "ordering OK".to_string()
                 },

@@ -3,9 +3,7 @@
 //! This example demonstrates processing 10M+ character contexts that would be
 //! impossible with traditional LLM approaches.
 
-use spine_recursive::{
-    MockSubLlmDispatcher, RecursiveLM, RlmConfig, ReplEnvironment,
-};
+use spine_recursive::{MockSubLlmDispatcher, RecursiveLM, ReplEnvironment, RlmConfig};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -18,11 +16,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Scale test - increasing context sizes
     let context_sizes = vec![
-        100_000,      // 100K chars (~25K tokens)
-        500_000,      // 500K chars (~125K tokens)
-        1_000_000,    // 1M chars (~250K tokens)
-        5_000_000,    // 5M chars (~1.25M tokens)
-        10_000_000,   // 10M chars (~2.5M tokens) - Beyond any model context window!
+        100_000,    // 100K chars (~25K tokens)
+        500_000,    // 500K chars (~125K tokens)
+        1_000_000,  // 1M chars (~250K tokens)
+        5_000_000,  // 5M chars (~1.25M tokens)
+        10_000_000, // 10M chars (~2.5M tokens) - Beyond any model context window!
     ];
 
     let root_dispatcher = Arc::new(MockSubLlmDispatcher::new("gpt-5"));
@@ -46,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Generate content
         let content = generate_varied_content(size);
-        
+
         // Load context
         let load_start = Instant::now();
         let meta = rlm.load_context("massive_doc", content).await?;
@@ -54,7 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Query - this would fail with traditional LLMs for large contexts
         let query_start = Instant::now();
-        let _response = rlm.query("Find information about quantum computing").await?;
+        let _response = rlm
+            .query("Find information about quantum computing")
+            .await?;
         let query_time = query_start.elapsed();
 
         let stats = rlm.stats();
@@ -99,8 +99,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Demonstrate O(1) chunk access
     println!("\n🔍 Random chunk access (should be O(1)):");
-    let chunk_indices = [0, meta.num_chunks / 4, meta.num_chunks / 2, meta.num_chunks - 1];
-    
+    let chunk_indices = [
+        0,
+        meta.num_chunks / 4,
+        meta.num_chunks / 2,
+        meta.num_chunks - 1,
+    ];
+
     for &idx in &chunk_indices {
         let start = Instant::now();
         let chunk = repl.get_chunk("huge_doc", idx).await?;
@@ -112,13 +117,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔎 Keyword search across 10M chars:");
     let start = Instant::now();
     let results = repl.search_keyword("huge_doc", "quantum").await?;
-    println!("   Found {} chunks containing 'quantum' in {:?}", results.len(), start.elapsed());
+    println!(
+        "   Found {} chunks containing 'quantum' in {:?}",
+        results.len(),
+        start.elapsed()
+    );
 
     // Demonstrate regex search
     println!("\n🔎 Regex search across 10M chars:");
     let start = Instant::now();
     let results = repl.search_regex("huge_doc", r"Section \d+").await?;
-    println!("   Found {} chunks matching 'Section \\d+' in {:?}", results.len(), start.elapsed());
+    println!(
+        "   Found {} chunks matching 'Section \\d+' in {:?}",
+        results.len(),
+        start.elapsed()
+    );
 
     // Show final stats
     println!("\n📊 Final REPL Statistics:");
@@ -140,31 +153,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 fn generate_varied_content(target_size: usize) -> String {
     let mut content = String::with_capacity(target_size);
     let mut section = 1;
-    
+
     let topics = [
-        ("quantum computing", "revolutionizing cryptography and optimization"),
+        (
+            "quantum computing",
+            "revolutionizing cryptography and optimization",
+        ),
         ("neural networks", "mimicking biological brain structures"),
         ("machine learning", "enabling pattern recognition at scale"),
         ("deep learning", "achieving superhuman performance on tasks"),
-        ("natural language", "understanding and generating human text"),
+        (
+            "natural language",
+            "understanding and generating human text",
+        ),
         ("computer vision", "interpreting visual information"),
         ("reinforcement learning", "learning through trial and error"),
         ("transformers", "attention-based sequence modeling"),
         ("generative AI", "creating novel content"),
         ("AI safety", "ensuring beneficial AI development"),
     ];
-    
+
     while content.len() < target_size {
         let (topic, desc) = topics[section % topics.len()];
-        
+
         // Add varied content structure
         if section % 10 == 0 {
             content.push_str(&format!(
                 "\n\n{}\nChapter {}: Major Developments in {}\n{}\n\n",
-                "=".repeat(60), section / 10, topic, "=".repeat(60)
+                "=".repeat(60),
+                section / 10,
+                topic,
+                "=".repeat(60)
             ));
         }
-        
+
         content.push_str(&format!(
             "Section {}: {}\n\
             The field of {} focuses on {}.\n\
@@ -174,7 +196,7 @@ fn generate_varied_content(target_size: usize) -> String {
             Future developments in {} will likely transform society.\n\n",
             section, topic, topic, desc, topic, topic, topic, topic
         ));
-        
+
         // Add some data patterns
         if section % 5 == 0 {
             content.push_str(&format!(
@@ -185,10 +207,10 @@ fn generate_varied_content(target_size: usize) -> String {
                 10 + (section % 50)
             ));
         }
-        
+
         section += 1;
     }
-    
+
     content.truncate(target_size);
     content
 }

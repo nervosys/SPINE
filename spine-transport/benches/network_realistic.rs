@@ -31,23 +31,17 @@ fn get_port() -> u16 {
 // =============================================================================
 
 /// SPINE-optimized TCP server with frame codec + BBR pacing
-fn spawn_SPINE_server(port: u16) -> thread::JoinHandle<()> {
+fn spawn_spine_server(port: u16) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
 
         if let Ok((mut stream, _)) = listener.accept() {
             stream.set_nodelay(true).unwrap();
-            let mut codec = FrameCodec::new(65536);
+            let codec = FrameCodec::new(65536);
             let mut buf = vec![0u8; 65536];
             let mut header_buf = [0u8; 12];
 
-            loop {
-                // Read frame header
-                match stream.read_exact(&mut header_buf) {
-                    Ok(()) => {}
-                    Err(_) => break,
-                }
-
+            while stream.read_exact(&mut header_buf).is_ok() {
                 let length = u32::from_le_bytes([
                     header_buf[0],
                     header_buf[1],
@@ -144,7 +138,7 @@ fn bench_e2e_latency(c: &mut Criterion) {
             size,
             |b, &size| {
                 let port = get_port();
-                let _server = spawn_SPINE_server(port);
+                let _server = spawn_spine_server(port);
                 thread::sleep(Duration::from_millis(100));
 
                 let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
@@ -208,40 +202,36 @@ fn bench_e2e_throughput(c: &mut Criterion) {
         });
 
         // SPINE framed TCP
-        group.bench_with_input(
-            BenchmarkId::new("SPINE_framed", size),
-            size,
-            |b, &size| {
-                let port = get_port();
-                let _server = spawn_SPINE_server(port);
-                thread::sleep(Duration::from_millis(100));
+        group.bench_with_input(BenchmarkId::new("SPINE_framed", size), size, |b, &size| {
+            let port = get_port();
+            let _server = spawn_spine_server(port);
+            thread::sleep(Duration::from_millis(100));
 
-                let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
-                stream.set_nodelay(true).unwrap();
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            stream.set_nodelay(true).unwrap();
 
-                let mut codec = FrameCodec::new(size * 2);
-                let frame = Frame {
-                    header: FrameHeader {
-                        length: size as u32,
-                        flags: FrameFlags::empty(),
-                        sequence: 1,
-                        stream_id: 1,
-                        _reserved: 0,
-                    },
-                    payload: Bytes::from(vec![0xABu8; size]),
-                };
+            let mut codec = FrameCodec::new(size * 2);
+            let frame = Frame {
+                header: FrameHeader {
+                    length: size as u32,
+                    flags: FrameFlags::empty(),
+                    sequence: 1,
+                    stream_id: 1,
+                    _reserved: 0,
+                },
+                payload: Bytes::from(vec![0xABu8; size]),
+            };
 
-                b.iter(|| {
-                    let encoded = codec.encode(&frame);
-                    stream.write_all(&encoded).unwrap();
+            b.iter(|| {
+                let encoded = codec.encode(&frame);
+                stream.write_all(&encoded).unwrap();
 
-                    let mut recv_buf = vec![0u8; encoded.len()];
-                    stream.read_exact(&mut recv_buf).unwrap();
-                    let decoded = codec.decode(&recv_buf).unwrap();
-                    black_box(decoded);
-                });
-            },
-        );
+                let mut recv_buf = vec![0u8; encoded.len()];
+                stream.read_exact(&mut recv_buf).unwrap();
+                let decoded = codec.decode(&recv_buf).unwrap();
+                black_box(decoded);
+            });
+        });
     }
 
     group.finish();
@@ -264,7 +254,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
                 let streams: Vec<_> = ports
                     .iter()
                     .map(|&p| {
-                        let mut s = TcpStream::connect(format!("127.0.0.1:{}", p)).unwrap();
+                        let s = TcpStream::connect(format!("127.0.0.1:{}", p)).unwrap();
                         s.set_nodelay(true).unwrap();
                         s
                     })

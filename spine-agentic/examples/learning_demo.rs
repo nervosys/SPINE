@@ -1,5 +1,5 @@
 //! Learning & Adaptation Demo
-//! 
+//!
 //! Demonstrates the learning systems in spine-agentic:
 //! - Agent reinforcement learning with Q-learning
 //! - Skill library with transfer learning
@@ -7,21 +7,37 @@
 //! - Curriculum learning with progressive difficulty
 //! - Emergent behavior detection
 
-use spine_agentic::{
-    // Learning
-    AgentLearner, LearningAlgorithm, Experience, StateRepresentation, LearningSignal,
-    // Skills
-    SkillLibrary, Skill, SkillCategory, SkillCondition, ConditionKind, SkillEffect, EffectKind, SkillParameter, SkillParamType,
-    // Meta-learning
-    MetaLearner, MetaLearningConfig, LearningTask,
-    // Curriculum
-    CurriculumManager, CurriculumStage,
-    // Emergent behavior
-    EmergentBehaviorDetector, AgentAction,
-};
-use uuid::Uuid;
 use chrono::Utc;
+use spine_agentic::{
+    AgentAction,
+    // Learning
+    AgentLearner,
+    ConditionKind,
+    // Curriculum
+    CurriculumManager,
+    CurriculumStage,
+    EffectKind,
+    // Emergent behavior
+    EmergentBehaviorDetector,
+    Experience,
+    LearningAlgorithm,
+    LearningSignal,
+    LearningTask,
+    // Meta-learning
+    MetaLearner,
+    MetaLearningConfig,
+    Skill,
+    SkillCategory,
+    SkillCondition,
+    SkillEffect,
+    // Skills
+    SkillLibrary,
+    SkillParamType,
+    SkillParameter,
+    StateRepresentation,
+};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
@@ -49,10 +65,13 @@ async fn demo_reinforcement_learning() {
     let agent_id = Uuid::new_v4();
     let mut learner = AgentLearner::new(
         agent_id,
-        LearningAlgorithm::QLearning { alpha: 0.1, gamma: 0.99 },
+        LearningAlgorithm::QLearning {
+            alpha: 0.1,
+            gamma: 0.99,
+        },
         1000, // Buffer capacity
     );
-    
+
     println!("  Created Q-Learning agent with:");
     println!("    • Learning rate (α): 0.1");
     println!("    • Discount factor (γ): 0.99");
@@ -89,9 +108,9 @@ async fn demo_reinforcement_learning() {
                 .with_symbol("page", serde_json::json!("shopping")),
             action: action.to_string(),
             next_state: StateRepresentation::new(vec![0.6, 0.4, 0.7]),
-            signal: LearningSignal::Reward { 
-                value: *reward, 
-                context: context.to_string() 
+            signal: LearningSignal::Reward {
+                value: *reward,
+                context: context.to_string(),
             },
             priority: reward.abs(),
             timestamp: Utc::now(),
@@ -116,7 +135,7 @@ async fn demo_reinforcement_learning() {
 
     // Decay exploration
     learner.decay_exploration("navigation", 0.9, 0.05);
-    
+
     let stats = learner.get_stats();
     println!("\n  Learning Statistics:");
     println!("    • Total experiences: {}", stats.total_experiences);
@@ -138,64 +157,54 @@ fn demo_skill_library() {
         name: "web_navigate".to_string(),
         description: "Navigate to a URL and wait for page load".to_string(),
         category: SkillCategory::Navigation,
-        preconditions: vec![
-            SkillCondition {
-                kind: ConditionKind::HasCapability("browser".to_string()),
-                parameters: HashMap::new(),
-            }
-        ],
-        effects: vec![
-            SkillEffect {
-                kind: EffectKind::StateChange { 
-                    key: "current_page".to_string(), 
-                    value: serde_json::json!("target_url") 
-                },
-                probability: 0.95,
-            }
-        ],
-        parameters: vec![
-            SkillParameter {
-                name: "url".to_string(),
-                param_type: SkillParamType::Url,
-                default: None,
-                required: true,
-            }
-        ],
+        preconditions: vec![SkillCondition {
+            kind: ConditionKind::HasCapability("browser".to_string()),
+            parameters: HashMap::new(),
+        }],
+        effects: vec![SkillEffect {
+            kind: EffectKind::StateChange {
+                key: "current_page".to_string(),
+                value: serde_json::json!("target_url"),
+            },
+            probability: 0.95,
+        }],
+        parameters: vec![SkillParameter {
+            name: "url".to_string(),
+            param_type: SkillParamType::Url,
+            default: None,
+            required: true,
+        }],
         execution_trace: Some("fetch_page -> wait_ready -> verify_load".to_string()),
         success_rate: 0.95,
         usage_count: 0,
         created_at: Utc::now(),
         learned_from: None,
     };
-    
+
     let extract_skill = Skill {
         id: Uuid::new_v4(),
         name: "data_extract".to_string(),
         description: "Extract structured data using CSS selectors".to_string(),
         category: SkillCategory::DataExtraction,
-        preconditions: vec![
-            SkillCondition {
-                kind: ConditionKind::StateEquals { 
-                    key: "page_loaded".to_string(), 
-                    value: serde_json::json!(true) 
-                },
-                parameters: HashMap::new(),
-            }
-        ],
-        effects: vec![
-            SkillEffect {
-                kind: EffectKind::KnowledgeGained { topic: "extracted_data".to_string() },
-                probability: 0.9,
-            }
-        ],
-        parameters: vec![
-            SkillParameter {
-                name: "selector".to_string(),
-                param_type: SkillParamType::Selector,
-                default: None,
-                required: true,
-            }
-        ],
+        preconditions: vec![SkillCondition {
+            kind: ConditionKind::StateEquals {
+                key: "page_loaded".to_string(),
+                value: serde_json::json!(true),
+            },
+            parameters: HashMap::new(),
+        }],
+        effects: vec![SkillEffect {
+            kind: EffectKind::KnowledgeGained {
+                topic: "extracted_data".to_string(),
+            },
+            probability: 0.9,
+        }],
+        parameters: vec![SkillParameter {
+            name: "selector".to_string(),
+            param_type: SkillParamType::Selector,
+            default: None,
+            required: true,
+        }],
         execution_trace: Some("query_selector -> extract_text -> validate_data".to_string()),
         success_rate: 0.88,
         usage_count: 0,
@@ -209,12 +218,12 @@ fn demo_skill_library() {
         description: "Analyze page content for patterns and insights".to_string(),
         category: SkillCategory::Analysis,
         preconditions: vec![],
-        effects: vec![
-            SkillEffect {
-                kind: EffectKind::KnowledgeGained { topic: "content_analysis".to_string() },
-                probability: 0.85,
-            }
-        ],
+        effects: vec![SkillEffect {
+            kind: EffectKind::KnowledgeGained {
+                topic: "content_analysis".to_string(),
+            },
+            probability: 0.85,
+        }],
         parameters: vec![],
         execution_trace: Some("tokenize -> classify -> summarize".to_string()),
         success_rate: 0.82,
@@ -234,14 +243,21 @@ fn demo_skill_library() {
     // Query skills
     println!("  Skills by category (Navigation):");
     for skill in library.find_by_category(&SkillCategory::Navigation) {
-        println!("    • {} (success: {:.0}%)", skill.name, skill.success_rate * 100.0);
+        println!(
+            "    • {} (success: {:.0}%)",
+            skill.name,
+            skill.success_rate * 100.0
+        );
     }
 
     // Find applicable skills
     let mut current_state = HashMap::new();
     current_state.insert("page_loaded".to_string(), serde_json::json!(true));
-    current_state.insert("capabilities".to_string(), serde_json::json!(["browser", "extractor"]));
-    
+    current_state.insert(
+        "capabilities".to_string(),
+        serde_json::json!(["browser", "extractor"]),
+    );
+
     println!("\n  Applicable skills for current state:");
     for skill in library.find_applicable(&current_state) {
         println!("    • {} - {}", skill.name, skill.description);
@@ -252,7 +268,10 @@ fn demo_skill_library() {
     let target_agent = Uuid::new_v4();
     if let Some(transferred) = library.transfer_skill(&nav_id, target_agent) {
         println!("    ✓ Transferred 'web_navigate' to new agent");
-        println!("    Initial success rate: {:.0}% (20% penalty applied)", transferred.success_rate * 100.0);
+        println!(
+            "    Initial success rate: {:.0}% (20% penalty applied)",
+            transferred.success_rate * 100.0
+        );
     }
 
     // Record usage
@@ -260,19 +279,30 @@ fn demo_skill_library() {
     library.record_usage(&nav_id, true);
     library.record_usage(&extract_id, true);
     library.record_usage(&extract_id, false);
-    
+
     println!("\n  Updated usage statistics:");
     if let Some(skill) = library.get(&nav_id) {
-        println!("    • web_navigate: {} uses, {:.0}% success", skill.usage_count, skill.success_rate * 100.0);
+        println!(
+            "    • web_navigate: {} uses, {:.0}% success",
+            skill.usage_count,
+            skill.success_rate * 100.0
+        );
     }
     if let Some(skill) = library.get(&extract_id) {
-        println!("    • data_extract: {} uses, {:.0}% success", skill.usage_count, skill.success_rate * 100.0);
+        println!(
+            "    • data_extract: {} uses, {:.0}% success",
+            skill.usage_count,
+            skill.success_rate * 100.0
+        );
     }
 
     let stats = library.stats();
     println!("\n  Library Statistics:");
     println!("    • Total skills: {}", stats.total_skills);
-    println!("    • Average success rate: {:.1}%", stats.average_success_rate * 100.0);
+    println!(
+        "    • Average success rate: {:.1}%",
+        stats.average_success_rate * 100.0
+    );
     println!("    • Total usages: {}\n", stats.total_usages);
 }
 
@@ -289,7 +319,7 @@ async fn demo_meta_learning() {
         task_batch_size: 4,
         adaptation_steps: 10,
     };
-    
+
     println!("  Meta-Learner Configuration:");
     println!("    • Inner learning rate: {}", config.inner_learning_rate);
     println!("    • Outer learning rate: {}", config.outer_learning_rate);
@@ -307,8 +337,10 @@ async fn demo_meta_learning() {
 
     println!("  Training tasks:");
     for task in &tasks {
-        println!("    • {} (domain: {}, difficulty: {:.1})", 
-                 task.name, task.domain, task.difficulty);
+        println!(
+            "    • {} (domain: {}, difficulty: {:.1})",
+            task.name, task.domain, task.difficulty
+        );
     }
 
     // Perform meta-update
@@ -318,11 +350,17 @@ async fn demo_meta_learning() {
     // Demonstrate rapid adaptation
     println!("\n  Rapid adaptation to new task:");
     let new_task = create_learning_task("product_search", "web_extraction");
-    println!("    New task: {} (domain: {})", new_task.name, new_task.domain);
-    
+    println!(
+        "    New task: {} (domain: {})",
+        new_task.name, new_task.domain
+    );
+
     let adapted_policy = meta_learner.adapt_to_task(&new_task).await;
     println!("    ✓ Adapted policy: {}", adapted_policy.name);
-    println!("    Exploration rate: {:.2}", adapted_policy.exploration_rate);
+    println!(
+        "    Exploration rate: {:.2}",
+        adapted_policy.exploration_rate
+    );
 
     // Record task for future meta-updates
     meta_learner.record_task(new_task);
@@ -331,42 +369,45 @@ async fn demo_meta_learning() {
     println!("\n  Meta-Learning Statistics:");
     println!("    • Tasks learned: {}", stats.tasks_learned);
     println!("    • Domains covered: {:?}", stats.domains);
-    println!("    • Meta-parameter norm: {:.4}\n", stats.meta_parameter_norm);
+    println!(
+        "    • Meta-parameter norm: {:.4}\n",
+        stats.meta_parameter_norm
+    );
 }
 
 fn create_learning_task(name: &str, domain: &str) -> LearningTask {
     // Create synthetic experiences for the task
-    let train_experiences: Vec<Experience> = (0..5).map(|i| {
-        Experience {
+    let train_experiences: Vec<Experience> = (0..5)
+        .map(|i| Experience {
             id: Uuid::new_v4(),
             state: StateRepresentation::new(vec![i as f64 * 0.1, 0.5, 0.3]),
             action: format!("{}.action_{}", domain, i),
             next_state: StateRepresentation::new(vec![(i + 1) as f64 * 0.1, 0.6, 0.4]),
-            signal: LearningSignal::Reward { 
-                value: 0.5 + (i as f64 * 0.1), 
-                context: format!("training_{}", i) 
+            signal: LearningSignal::Reward {
+                value: 0.5 + (i as f64 * 0.1),
+                context: format!("training_{}", i),
             },
             priority: 1.0,
             timestamp: Utc::now(),
             metadata: HashMap::new(),
-        }
-    }).collect();
+        })
+        .collect();
 
-    let test_experiences: Vec<Experience> = (0..3).map(|i| {
-        Experience {
+    let test_experiences: Vec<Experience> = (0..3)
+        .map(|i| Experience {
             id: Uuid::new_v4(),
             state: StateRepresentation::new(vec![0.8, 0.4, 0.6]),
             action: format!("{}.action_{}", domain, i),
             next_state: StateRepresentation::new(vec![0.9, 0.5, 0.7]),
-            signal: LearningSignal::Reward { 
-                value: 0.7 + (i as f64 * 0.05), 
-                context: format!("test_{}", i) 
+            signal: LearningSignal::Reward {
+                value: 0.7 + (i as f64 * 0.05),
+                context: format!("test_{}", i),
             },
             priority: 1.0,
             timestamp: Utc::now(),
             metadata: HashMap::new(),
-        }
-    }).collect();
+        })
+        .collect();
 
     LearningTask {
         id: Uuid::new_v4(),
@@ -397,9 +438,9 @@ fn demo_curriculum_learning() {
         success_threshold: 0.7,
         max_attempts: 3,
     };
-    
+
     let stage1_id = stage1.id;
-    
+
     let stage2 = CurriculumStage {
         id: Uuid::new_v4(),
         name: "Data Extraction".to_string(),
@@ -410,9 +451,9 @@ fn demo_curriculum_learning() {
         success_threshold: 0.75,
         max_attempts: 3,
     };
-    
+
     let stage2_id = stage2.id;
-    
+
     let stage3 = CurriculumStage {
         id: Uuid::new_v4(),
         name: "Form Interaction".to_string(),
@@ -423,9 +464,9 @@ fn demo_curriculum_learning() {
         success_threshold: 0.8,
         max_attempts: 3,
     };
-    
+
     let stage3_id = stage3.id;
-    
+
     let stage4 = CurriculumStage {
         id: Uuid::new_v4(),
         name: "Complex Workflows".to_string(),
@@ -446,7 +487,7 @@ fn demo_curriculum_learning() {
     println!("    3. Form Interaction (difficulty: 0.6)");
     curriculum.add_stage(stage4);
     println!("    4. Complex Workflows (difficulty: 0.9)");
-    
+
     curriculum.sort_by_difficulty();
     println!("    ✓ Sorted by difficulty\n");
 
@@ -459,32 +500,38 @@ fn demo_curriculum_learning() {
 
     // Simulate agent1 progress
     println!("  Agent 1 progress:");
-    
+
     if let Some(stage) = curriculum.get_next_stage(&agent1) {
         println!("    → Starting: {}", stage.name);
-        
+
         // First attempt - fail
         let result = curriculum.record_attempt(&agent1, &stage.id, 0.5);
-        match result {
-            spine_agentic::CurriculumResult::RetryNeeded { attempts_remaining, current_score, .. } => {
-                println!("    ✗ Attempt 1: {:.0}% (need {:.0}%, {} tries left)", 
-                         current_score * 100.0, stage.success_threshold * 100.0, attempts_remaining);
-            }
-            _ => {}
+        if let spine_agentic::CurriculumResult::RetryNeeded {
+            attempts_remaining,
+            current_score,
+            ..
+        } = result
+        {
+            println!(
+                "    ✗ Attempt 1: {:.0}% (need {:.0}%, {} tries left)",
+                current_score * 100.0,
+                stage.success_threshold * 100.0,
+                attempts_remaining
+            );
         }
-        
+
         // Second attempt - success
         let result = curriculum.record_attempt(&agent1, &stage.id, 0.85);
-        match result {
-            spine_agentic::CurriculumResult::StageCompleted { score, next_stage, .. } => {
-                println!("    ✓ Attempt 2: {:.0}% - PASSED!", score * 100.0);
-                if let Some(next) = next_stage {
-                    if let Some(stage) = curriculum.get_next_stage(&agent1) {
-                        println!("    → Next stage: {}", stage.name);
-                    }
+        if let spine_agentic::CurriculumResult::StageCompleted {
+            score, next_stage, ..
+        } = result
+        {
+            println!("    ✓ Attempt 2: {:.0}% - PASSED!", score * 100.0);
+            if let Some(_next) = next_stage {
+                if let Some(stage) = curriculum.get_next_stage(&agent1) {
+                    println!("    → Next stage: {}", stage.name);
                 }
             }
-            _ => {}
         }
     }
 
@@ -492,16 +539,29 @@ fn demo_curriculum_learning() {
     println!("\n  Agent 2 progress:");
     if let Some(stage) = curriculum.get_next_stage(&agent2) {
         println!("    → Starting: {}", stage.name);
-        
+
         for i in 1..=3 {
             let result = curriculum.record_attempt(&agent2, &stage.id, 0.4);
             match result {
-                spine_agentic::CurriculumResult::RetryNeeded { attempts_remaining, .. } => {
-                    println!("    ✗ Attempt {}: 40% ({} tries left)", i, attempts_remaining);
+                spine_agentic::CurriculumResult::RetryNeeded {
+                    attempts_remaining, ..
+                } => {
+                    println!(
+                        "    ✗ Attempt {}: 40% ({} tries left)",
+                        i, attempts_remaining
+                    );
                 }
-                spine_agentic::CurriculumResult::StageFailed { attempts, best_score, .. } => {
-                    println!("    ✗ Attempt {}: FAILED after {} attempts (best: {:.0}%)", 
-                             i, attempts, best_score * 100.0);
+                spine_agentic::CurriculumResult::StageFailed {
+                    attempts,
+                    best_score,
+                    ..
+                } => {
+                    println!(
+                        "    ✗ Attempt {}: FAILED after {} attempts (best: {:.0}%)",
+                        i,
+                        attempts,
+                        best_score * 100.0
+                    );
                 }
                 _ => {}
             }
@@ -512,7 +572,10 @@ fn demo_curriculum_learning() {
     println!("\n  Curriculum Statistics:");
     println!("    • Total stages: {}", stats.total_stages);
     println!("    • Enrolled agents: {}", stats.enrolled_agents);
-    println!("    • Average progress: {:.1}%\n", stats.average_progress * 100.0);
+    println!(
+        "    • Average progress: {:.1}%\n",
+        stats.average_progress * 100.0
+    );
 }
 
 async fn demo_emergent_behavior() {
@@ -545,12 +608,15 @@ async fn demo_emergent_behavior() {
             timestamp: base_time + chrono::Duration::seconds(i as i64),
             context: {
                 let mut ctx = HashMap::new();
-                ctx.insert("page".to_string(), serde_json::json!(format!("page_{}", i % 3)));
+                ctx.insert(
+                    "page".to_string(),
+                    serde_json::json!(format!("page_{}", i % 3)),
+                );
                 ctx
             },
             outcome: Some(0.7 + (i as f64 % 5.0) * 0.1),
         };
-        
+
         detector.record_action(action).await;
     }
 
@@ -562,19 +628,27 @@ async fn demo_emergent_behavior() {
 
     println!("\n  Detected behaviors:");
     for behavior in &behaviors {
-        println!("    • {} ({} agents involved)", 
-                 behavior.name, 
-                 behavior.involved_agents.len());
+        println!(
+            "    • {} ({} agents involved)",
+            behavior.name,
+            behavior.involved_agents.len()
+        );
         println!("      Description: {}", behavior.description);
         match &behavior.pattern {
             spine_agentic::BehaviorPattern::SpontaneousCoordination { action_sequence } => {
-                println!("      Actions: {:?}", &action_sequence[..action_sequence.len().min(3)]);
+                println!(
+                    "      Actions: {:?}",
+                    &action_sequence[..action_sequence.len().min(3)]
+                );
             }
             spine_agentic::BehaviorPattern::RoleDifferentiation { roles, .. } => {
                 println!("      Roles: {:?}", roles);
             }
             spine_agentic::BehaviorPattern::NovelStrategy { solution_path, .. } => {
-                println!("      Strategy: {:?}", &solution_path[..solution_path.len().min(3)]);
+                println!(
+                    "      Strategy: {:?}",
+                    &solution_path[..solution_path.len().min(3)]
+                );
             }
             _ => {}
         }

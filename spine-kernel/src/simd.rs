@@ -12,7 +12,6 @@
 //! | ARM NEON     | 128-bit    | 4 x f32    |
 //! | Portable     | varies     | scalar     |
 
-
 /// SIMD vector width in bytes for the current platform
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 pub const SIMD_WIDTH: usize = 32; // 256 bits

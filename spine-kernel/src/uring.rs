@@ -21,7 +21,7 @@ use io_uring::{opcode, types, IoUring, Submitter};
 // =============================================================================
 
 /// High-performance io_uring wrapper
-/// 
+///
 /// Provides batched, zero-copy async I/O operations.
 pub struct UringIo {
     ring: IoUring,
@@ -30,7 +30,7 @@ pub struct UringIo {
 
 impl UringIo {
     /// Create a new io_uring instance
-    /// 
+    ///
     /// # Arguments
     /// * `entries` - Number of submission queue entries (power of 2)
     pub fn new(entries: u32) -> Result<Self> {
@@ -38,7 +38,7 @@ impl UringIo {
             .setup_sqpoll(1000) // Kernel polling with 1ms idle timeout
             .build(entries)
             .map_err(|e| Error::new(ErrorKind::Other, e))?;
-        
+
         Ok(Self {
             ring,
             registered_buffers: Vec::new(),
@@ -47,9 +47,8 @@ impl UringIo {
 
     /// Create without kernel polling (lower CPU usage)
     pub fn new_standard(entries: u32) -> Result<Self> {
-        let ring = IoUring::new(entries)
-            .map_err(|e| Error::new(ErrorKind::Other, e))?;
-        
+        let ring = IoUring::new(entries).map_err(|e| Error::new(ErrorKind::Other, e))?;
+
         Ok(Self {
             ring,
             registered_buffers: Vec::new(),
@@ -57,7 +56,7 @@ impl UringIo {
     }
 
     /// Register buffers for zero-copy I/O
-    /// 
+    ///
     /// Registered buffers avoid kernel copies during I/O.
     pub fn register_buffers(&mut self, buffers: Vec<Vec<u8>>) -> Result<()> {
         let iovecs: Vec<libc::iovec> = buffers
@@ -67,25 +66,31 @@ impl UringIo {
                 iov_len: buf.len(),
             })
             .collect();
-        
+
         self.ring
             .submitter()
             .register_buffers(&iovecs)
             .map_err(|e| Error::new(ErrorKind::Other, e))?;
-        
+
         self.registered_buffers = buffers;
         Ok(())
     }
 
     /// Submit a read operation
-    pub fn submit_read(&mut self, fd: RawFd, buf_index: u16, offset: u64, user_data: u64) -> Result<()> {
+    pub fn submit_read(
+        &mut self,
+        fd: RawFd,
+        buf_index: u16,
+        offset: u64,
+        user_data: u64,
+    ) -> Result<()> {
         let buf = &self.registered_buffers[buf_index as usize];
-        
+
         let entry = opcode::Read::new(types::Fd(fd), buf.as_ptr() as *mut _, buf.len() as _)
             .offset(offset)
             .build()
             .user_data(user_data);
-        
+
         // SAFETY: Entry is valid
         unsafe {
             self.ring
@@ -93,19 +98,26 @@ impl UringIo {
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a write operation
-    pub fn submit_write(&mut self, fd: RawFd, buf_index: u16, offset: u64, len: usize, user_data: u64) -> Result<()> {
+    pub fn submit_write(
+        &mut self,
+        fd: RawFd,
+        buf_index: u16,
+        offset: u64,
+        len: usize,
+        user_data: u64,
+    ) -> Result<()> {
         let buf = &self.registered_buffers[buf_index as usize];
-        
+
         let entry = opcode::Write::new(types::Fd(fd), buf.as_ptr(), len.min(buf.len()) as _)
             .offset(offset)
             .build()
             .user_data(user_data);
-        
+
         // SAFETY: Entry is valid
         unsafe {
             self.ring
@@ -113,62 +125,83 @@ impl UringIo {
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a vectored read (scatter)
-    pub fn submit_readv(&mut self, fd: RawFd, iovecs: &[libc::iovec], offset: u64, user_data: u64) -> Result<()> {
+    pub fn submit_readv(
+        &mut self,
+        fd: RawFd,
+        iovecs: &[libc::iovec],
+        offset: u64,
+        user_data: u64,
+    ) -> Result<()> {
         let entry = opcode::Readv::new(types::Fd(fd), iovecs.as_ptr(), iovecs.len() as _)
             .offset(offset)
             .build()
             .user_data(user_data);
-        
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a vectored write (gather)
-    pub fn submit_writev(&mut self, fd: RawFd, iovecs: &[libc::iovec], offset: u64, user_data: u64) -> Result<()> {
+    pub fn submit_writev(
+        &mut self,
+        fd: RawFd,
+        iovecs: &[libc::iovec],
+        offset: u64,
+        user_data: u64,
+    ) -> Result<()> {
         let entry = opcode::Writev::new(types::Fd(fd), iovecs.as_ptr(), iovecs.len() as _)
             .offset(offset)
             .build()
             .user_data(user_data);
-        
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a TCP accept operation
     pub fn submit_accept(&mut self, listen_fd: RawFd, user_data: u64) -> Result<()> {
-        let entry = opcode::Accept::new(types::Fd(listen_fd), std::ptr::null_mut(), std::ptr::null_mut())
-            .build()
-            .user_data(user_data);
-        
+        let entry = opcode::Accept::new(
+            types::Fd(listen_fd),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+        .build()
+        .user_data(user_data);
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a TCP connect operation
-    pub fn submit_connect(&mut self, fd: RawFd, addr: &libc::sockaddr_in, user_data: u64) -> Result<()> {
+    pub fn submit_connect(
+        &mut self,
+        fd: RawFd,
+        addr: &libc::sockaddr_in,
+        user_data: u64,
+    ) -> Result<()> {
         let entry = opcode::Connect::new(
             types::Fd(fd),
             addr as *const _ as *const _,
@@ -176,14 +209,14 @@ impl UringIo {
         )
         .build()
         .user_data(user_data);
-        
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
@@ -192,14 +225,14 @@ impl UringIo {
         let entry = opcode::Send::new(types::Fd(fd), buf.as_ptr(), buf.len() as _)
             .build()
             .user_data(user_data);
-        
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
@@ -208,14 +241,14 @@ impl UringIo {
         let entry = opcode::Recv::new(types::Fd(fd), buf.as_mut_ptr(), buf.len() as _)
             .build()
             .user_data(user_data);
-        
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
@@ -224,46 +257,42 @@ impl UringIo {
         let entry = opcode::Close::new(types::Fd(fd))
             .build()
             .user_data(user_data);
-        
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a timeout operation
     pub fn submit_timeout(&mut self, timespec: &types::Timespec, user_data: u64) -> Result<()> {
-        let entry = opcode::Timeout::new(timespec)
-            .build()
-            .user_data(user_data);
-        
+        let entry = opcode::Timeout::new(timespec).build().user_data(user_data);
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
     /// Submit a no-op (useful for waking up the kernel poller)
     pub fn submit_nop(&mut self, user_data: u64) -> Result<()> {
-        let entry = opcode::Nop::new()
-            .build()
-            .user_data(user_data);
-        
+        let entry = opcode::Nop::new().build().user_data(user_data);
+
         unsafe {
             self.ring
                 .submission()
                 .push(&entry)
                 .map_err(|_| Error::new(ErrorKind::Other, "submission queue full"))?;
         }
-        
+
         Ok(())
     }
 
@@ -282,19 +311,19 @@ impl UringIo {
     }
 
     /// Process completions
-    /// 
+    ///
     /// Calls the callback for each completed operation.
     pub fn process_completions<F>(&mut self, mut callback: F) -> usize
     where
         F: FnMut(u64, i32), // (user_data, result)
     {
         let mut count = 0;
-        
+
         while let Some(cqe) = self.ring.completion().next() {
             callback(cqe.user_data(), cqe.result());
             count += 1;
         }
-        
+
         count
     }
 
@@ -368,13 +397,35 @@ impl Completion {
 /// Operation type for batching
 #[derive(Debug, Clone)]
 pub enum UringOp {
-    Read { fd: RawFd, buf_index: u16, offset: u64 },
-    Write { fd: RawFd, buf_index: u16, offset: u64, len: usize },
-    Send { fd: RawFd, data: Vec<u8> },
-    Recv { fd: RawFd, len: usize },
-    Accept { listen_fd: RawFd },
-    Connect { fd: RawFd, addr: libc::sockaddr_in },
-    Close { fd: RawFd },
+    Read {
+        fd: RawFd,
+        buf_index: u16,
+        offset: u64,
+    },
+    Write {
+        fd: RawFd,
+        buf_index: u16,
+        offset: u64,
+        len: usize,
+    },
+    Send {
+        fd: RawFd,
+        data: Vec<u8>,
+    },
+    Recv {
+        fd: RawFd,
+        len: usize,
+    },
+    Accept {
+        listen_fd: RawFd,
+    },
+    Connect {
+        fd: RawFd,
+        addr: libc::sockaddr_in,
+    },
+    Close {
+        fd: RawFd,
+    },
     Nop,
 }
 
@@ -389,7 +440,9 @@ impl UringBatch {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
-        Self { ops: Vec::with_capacity(capacity) }
+        Self {
+            ops: Vec::with_capacity(capacity),
+        }
     }
 
     pub fn push(&mut self, op: UringOp, user_data: u64) {
@@ -433,11 +486,17 @@ mod tests {
 
     #[test]
     fn test_completion() {
-        let success = Completion { user_data: 42, result: 100 };
+        let success = Completion {
+            user_data: 42,
+            result: 100,
+        };
         assert!(success.is_ok());
         assert_eq!(success.bytes(), Some(100));
 
-        let failure = Completion { user_data: 43, result: -libc::EAGAIN };
+        let failure = Completion {
+            user_data: 43,
+            result: -libc::EAGAIN,
+        };
         assert!(failure.is_err());
         assert_eq!(failure.error(), Some(libc::EAGAIN));
     }

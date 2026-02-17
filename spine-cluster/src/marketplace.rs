@@ -309,17 +309,48 @@ pub struct AuditEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AuditEvent {
-    AgentRegistered { agent_id: String, listing_id: ListingId },
-    AgentDeregistered { agent_id: String },
-    CapabilityAdded { listing_id: ListingId, capability: String },
-    CapabilityRemoved { listing_id: ListingId, capability: String },
-    BidPlaced { bid_id: BidId, requester: String, provider: String },
-    BidAccepted { bid_id: BidId },
-    BidRejected { bid_id: BidId },
-    ContractCreated { contract_id: ContractId },
-    ContractCompleted { contract_id: ContractId, rating: Option<u8> },
-    ContractFailed { contract_id: ContractId, reason: String },
-    ReputationUpdated { agent_id: String, old: f64, new: f64 },
+    AgentRegistered {
+        agent_id: String,
+        listing_id: ListingId,
+    },
+    AgentDeregistered {
+        agent_id: String,
+    },
+    CapabilityAdded {
+        listing_id: ListingId,
+        capability: String,
+    },
+    CapabilityRemoved {
+        listing_id: ListingId,
+        capability: String,
+    },
+    BidPlaced {
+        bid_id: BidId,
+        requester: String,
+        provider: String,
+    },
+    BidAccepted {
+        bid_id: BidId,
+    },
+    BidRejected {
+        bid_id: BidId,
+    },
+    ContractCreated {
+        contract_id: ContractId,
+    },
+    ContractCompleted {
+        contract_id: ContractId,
+        rating: Option<u8>,
+    },
+    ContractFailed {
+        contract_id: ContractId,
+        reason: String,
+    },
+    ReputationUpdated {
+        agent_id: String,
+        old: f64,
+        new: f64,
+    },
 }
 
 // =============================================================================
@@ -400,12 +431,16 @@ impl Marketplace {
 
     /// Register an agent listing. Returns the assigned listing ID.
     pub fn register(&self, mut listing: AgentListing) -> ListingId {
-        let id = format!("listing-{}", self.listing_counter.fetch_add(1, Ordering::Relaxed));
+        let id = format!(
+            "listing-{}",
+            self.listing_counter.fetch_add(1, Ordering::Relaxed)
+        );
         listing.listing_id = id.clone();
         listing.registered_at = now_ms();
         listing.last_seen = now_ms();
 
-        self.agent_index.insert(listing.agent_id.clone(), id.clone());
+        self.agent_index
+            .insert(listing.agent_id.clone(), id.clone());
         self.audit(AuditEvent::AgentRegistered {
             agent_id: listing.agent_id.clone(),
             listing_id: id.clone(),
@@ -551,7 +586,11 @@ impl Marketplace {
         }
 
         // Sort by relevance descending
-        results.sort_by(|a, b| b.relevance.partial_cmp(&a.relevance).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.relevance
+                .partial_cmp(&a.relevance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(limit);
         results
     }
@@ -562,9 +601,9 @@ impl Marketplace {
             .iter()
             .filter(|entry| {
                 let listing = entry.value();
-                capabilities.iter().all(|required| {
-                    listing.capabilities.iter().any(|c| c.name == *required)
-                })
+                capabilities
+                    .iter()
+                    .all(|required| listing.capabilities.iter().any(|c| c.name == *required))
             })
             .map(|entry| entry.value().clone())
             .collect()
@@ -635,7 +674,10 @@ impl Marketplace {
         bid.status = BidStatus::Accepted;
         bid.resolved_at = Some(now_ms());
 
-        let contract_id = format!("contract-{}", self.contract_counter.fetch_add(1, Ordering::Relaxed));
+        let contract_id = format!(
+            "contract-{}",
+            self.contract_counter.fetch_add(1, Ordering::Relaxed)
+        );
         let contract = Contract {
             contract_id: contract_id.clone(),
             bid_id: bid_id.to_string(),
@@ -726,11 +768,7 @@ impl Marketplace {
     }
 
     /// Mark a contract as failed.
-    pub fn fail_contract(
-        &self,
-        contract_id: &str,
-        reason: &str,
-    ) -> Result<(), MarketplaceError> {
+    pub fn fail_contract(&self, contract_id: &str, reason: &str) -> Result<(), MarketplaceError> {
         let mut contract = self
             .contracts
             .get_mut(contract_id)
@@ -836,11 +874,7 @@ impl Marketplace {
 
     /// Get marketplace statistics.
     pub fn stats(&self) -> MarketplaceStats {
-        let total_capabilities: usize = self
-            .listings
-            .iter()
-            .map(|l| l.capabilities.len())
-            .sum();
+        let total_capabilities: usize = self.listings.iter().map(|l| l.capabilities.len()).sum();
         let online_agents = self.listings.iter().filter(|l| l.online).count();
 
         MarketplaceStats {
@@ -1086,7 +1120,12 @@ mod tests {
         });
         // Should exclude sentiment-analysis (0.05) and summarization (0.10)
         assert!(results.iter().all(|r| {
-            let cap = r.listing.capabilities.iter().find(|c| c.name == r.matched_capability).unwrap();
+            let cap = r
+                .listing
+                .capabilities
+                .iter()
+                .find(|c| c.name == r.matched_capability)
+                .unwrap();
             cap.price <= 0.02
         }));
     }

@@ -3,9 +3,7 @@
 //! Demonstrates collaborative agent roles and social network structures
 //! as graphical models for multi-agent coordination.
 
-use spine_agentic::{
-    CollaborativeRole, SocialSwarmBuilder, SocialSwarmNetwork, SocialTopology,
-};
+use spine_agentic::{CollaborativeRole, SocialSwarmBuilder, SocialSwarmNetwork, SocialTopology};
 use std::collections::HashMap;
 
 fn main() {

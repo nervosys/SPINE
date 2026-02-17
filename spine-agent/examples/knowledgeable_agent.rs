@@ -1,5 +1,5 @@
-use spine_agent::AgentClient;
 use serde_json::json;
+use spine_agent::AgentClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -12,17 +12,21 @@ async fn main() -> anyhow::Result<()> {
 
     // 2. Store some knowledge
     println!("Storing knowledge about SPINE...");
-    client.store_knowledge(
-        "spine_version", 
-        json!("0.1.0-alpha"), 
-        vec!["metadata".to_string(), "version".to_string()]
-    ).await?;
+    client
+        .store_knowledge(
+            "spine_version",
+            json!("0.1.0-alpha"),
+            vec!["metadata".to_string(), "version".to_string()],
+        )
+        .await?;
 
-    client.store_knowledge(
-        "project_goal", 
-        json!("Build a high-performance browser engine for AI agents"), 
-        vec!["mission".to_string()]
-    ).await?;
+    client
+        .store_knowledge(
+            "project_goal",
+            json!("Build a high-performance browser engine for AI agents"),
+            vec!["mission".to_string()],
+        )
+        .await?;
 
     // 3. Query knowledge
     println!("Querying knowledge...");

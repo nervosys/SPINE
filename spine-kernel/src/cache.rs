@@ -13,7 +13,7 @@ use crate::CACHE_LINE_SIZE;
 // =============================================================================
 
 /// Wrapper that ensures a value occupies exactly one cache line
-/// 
+///
 /// Use this to prevent false sharing between frequently-accessed values.
 #[repr(C, align(64))]
 pub struct CacheLine<T> {
@@ -61,7 +61,7 @@ impl<T: Copy> Copy for CacheLine<T> {}
 
 impl<T> std::ops::Deref for CacheLine<T> {
     type Target = T;
-    
+
     #[inline]
     fn deref(&self) -> &Self::Target {
         &self.value
@@ -93,9 +93,9 @@ pub enum Locality {
 }
 
 /// Prefetch data for reading
-/// 
+///
 /// Hints to the CPU to bring data into cache before it's needed.
-/// 
+///
 /// # Arguments
 /// * `ptr` - Pointer to prefetch
 /// * `locality` - How likely the data is to be reused
@@ -104,19 +104,31 @@ pub fn prefetch_read<T>(ptr: *const T, locality: Locality) {
     #[cfg(target_arch = "x86_64")]
     unsafe {
         match locality {
-            Locality::NonTemporal => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_NTA),
-            Locality::Low => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T2),
-            Locality::Moderate => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T1),
-            Locality::High => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0),
+            Locality::NonTemporal => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_NTA)
+            }
+            Locality::Low => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T2)
+            }
+            Locality::Moderate => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T1)
+            }
+            Locality::High => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0)
+            }
         }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     unsafe {
         // ARM prefetch
-        std::arch::aarch64::_prefetch(ptr as *const i8, std::arch::aarch64::_PREFETCH_READ, locality as i32);
+        std::arch::aarch64::_prefetch(
+            ptr as *const i8,
+            std::arch::aarch64::_PREFETCH_READ,
+            locality as i32,
+        );
     }
-    
+
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         let _ = (ptr, locality); // No-op on other architectures
@@ -130,18 +142,30 @@ pub fn prefetch_write<T>(ptr: *mut T, locality: Locality) {
     unsafe {
         // x86 doesn't have write-specific prefetch, use regular
         match locality {
-            Locality::NonTemporal => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_NTA),
-            Locality::Low => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T2),
-            Locality::Moderate => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T1),
-            Locality::High => std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0),
+            Locality::NonTemporal => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_NTA)
+            }
+            Locality::Low => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T2)
+            }
+            Locality::Moderate => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T1)
+            }
+            Locality::High => {
+                std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0)
+            }
         }
     }
-    
+
     #[cfg(target_arch = "aarch64")]
     unsafe {
-        std::arch::aarch64::_prefetch(ptr as *const i8, std::arch::aarch64::_PREFETCH_WRITE, locality as i32);
+        std::arch::aarch64::_prefetch(
+            ptr as *const i8,
+            std::arch::aarch64::_PREFETCH_WRITE,
+            locality as i32,
+        );
     }
-    
+
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
         let _ = (ptr, locality);
@@ -154,8 +178,9 @@ pub fn prefetch_range<T>(ptr: *const T, count: usize, locality: Locality) {
     let byte_ptr = ptr as *const u8;
     let byte_count = count * std::mem::size_of::<T>();
     let cache_lines = byte_count.div_ceil(CACHE_LINE_SIZE);
-    
-    for i in 0..cache_lines.min(16) { // Limit to avoid flooding
+
+    for i in 0..cache_lines.min(16) {
+        // Limit to avoid flooding
         prefetch_read(unsafe { byte_ptr.add(i * CACHE_LINE_SIZE) }, locality);
     }
 }
@@ -165,7 +190,7 @@ pub fn prefetch_range<T>(ptr: *const T, count: usize, locality: Locality) {
 // =============================================================================
 
 /// Macro to create struct-of-arrays from array-of-structs
-/// 
+///
 /// SoA layout is more cache-friendly for SIMD operations.
 #[macro_export]
 macro_rules! soa {
@@ -241,7 +266,7 @@ macro_rules! soa {
 // =============================================================================
 
 /// Hot data that's accessed frequently
-/// 
+///
 /// Keep this small to fit in L1 cache.
 #[repr(C)]
 pub struct HotData<H, C> {
@@ -258,7 +283,7 @@ impl<H, C> HotData<H, C> {
     }
 
     /// Access cold data
-    /// 
+    ///
     /// # Safety
     /// The cold box must still be alive
     #[inline]
@@ -280,7 +305,7 @@ pub struct PrefetchIter<'a, T> {
 
 impl<'a, T> PrefetchIter<'a, T> {
     /// Create a new prefetching iterator
-    /// 
+    ///
     /// # Arguments
     /// * `slice` - The slice to iterate
     /// * `prefetch_distance` - How many elements ahead to prefetch
@@ -291,7 +316,7 @@ impl<'a, T> PrefetchIter<'a, T> {
         for item in slice.iter().take(end) {
             prefetch_read(item, Locality::High);
         }
-        
+
         Self {
             slice,
             index: 0,
@@ -333,7 +358,7 @@ impl<'a, T> ExactSizeIterator for PrefetchIter<'a, T> {}
 // =============================================================================
 
 /// Array where each element is on its own cache line
-/// 
+///
 /// Use for frequently-modified arrays accessed by multiple threads.
 pub struct CacheLineArray<T, const N: usize> {
     data: [CacheLine<T>; N],
@@ -419,7 +444,7 @@ mod tests {
     fn test_prefetch_iter() {
         let data: Vec<u64> = (0..1000).collect();
         let iter = PrefetchIter::new(&data, 8);
-        
+
         let sum: u64 = iter.copied().sum();
         assert_eq!(sum, (0..1000u64).sum());
     }
@@ -429,7 +454,7 @@ mod tests {
         let mut arr: CacheLineArray<u64, 16> = CacheLineArray::new();
         arr[0] = 42;
         arr[15] = 100;
-        
+
         assert_eq!(arr[0], 42);
         assert_eq!(arr[15], 100);
     }

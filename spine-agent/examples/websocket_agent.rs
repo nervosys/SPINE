@@ -4,8 +4,8 @@
 //! Useful when SPINE is deployed behind a reverse proxy (nginx, Caddy)
 //! or when clients are in browser-adjacent environments.
 
-use spine_agent::AgentClient;
 use anyhow::Result;
+use spine_agent::AgentClient;
 
 #[tokio::main]
 async fn main() -> Result<()> {

@@ -16,8 +16,8 @@
 // =============================================================================
 
 use anyhow::{Context, Result};
-use spine_protocol::{SpineBinary, Instruction};
 use serde::{Deserialize, Serialize};
+use spine_protocol::{Instruction, SpineBinary};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use wasmtime::*;

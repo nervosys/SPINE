@@ -1227,8 +1227,10 @@ mod tests {
     #[test]
     fn test_confirmation() {
         let (n1, n2, n3) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let mut cfg = CollectiveConfig::default();
-        cfg.min_confirmations = 3;
+        let cfg = CollectiveConfig {
+            min_confirmations: 3,
+            ..Default::default()
+        };
         let mem = CollectiveMemory::new(n1, cfg);
         let e = mem.store(
             "fact",
@@ -1282,7 +1284,7 @@ mod tests {
         let mut mem = UnifiedMemory::new(node, UnifiedConfig::default());
         mem.set_goal("Learn programming", 1.0);
         let _ = mem.experience("Rust is safe.", HashMap::new());
-        let e = mem.learn("rust", "A safe language", vec!["lang".to_string()], 0.95);
+        let _e = mem.learn("rust", "A safe language", vec!["lang".to_string()], 0.95);
         let r = mem.recall("rust", 5);
         assert!(!r.knowledge.is_empty());
         assert!(mem.stats().collective.total_entries > 0);

@@ -40,7 +40,7 @@ use tokio::net::TcpStream;
 use crate::{Frame, TransportBackend, TransportError, TransportResult};
 
 #[cfg(test)]
-use crate::{FrameHeader, FrameFlags};
+use crate::{FrameFlags, FrameHeader};
 
 // =============================================================================
 // WEBSOCKET BRIDGE
@@ -172,10 +172,9 @@ impl TransportBackend for WebSocketBridge {
                         ));
                     }
 
-                    let header_bytes: [u8; 12] =
-                        data[..12].try_into().map_err(|_| {
-                            TransportError::InvalidFrame("header slice error".into())
-                        })?;
+                    let header_bytes: [u8; 12] = data[..12]
+                        .try_into()
+                        .map_err(|_| TransportError::InvalidFrame("header slice error".into()))?;
                     let header = Frame::parse_header(&header_bytes);
                     let payload = Bytes::copy_from_slice(&data[12..]);
 
@@ -222,10 +221,7 @@ impl TransportBackend for WebSocketBridge {
     }
 
     async fn close(&mut self) -> TransportResult<()> {
-        let _ = self
-            .inner
-            .close(None)
-            .await;
+        let _ = self.inner.close(None).await;
         self.healthy = false;
         Ok(())
     }
@@ -304,10 +300,9 @@ impl TransportBackend for WebSocketServerBridge {
                         ));
                     }
 
-                    let header_bytes: [u8; 12] =
-                        data[..12].try_into().map_err(|_| {
-                            TransportError::InvalidFrame("header slice error".into())
-                        })?;
+                    let header_bytes: [u8; 12] = data[..12]
+                        .try_into()
+                        .map_err(|_| TransportError::InvalidFrame("header slice error".into()))?;
                     let header = Frame::parse_header(&header_bytes);
                     let payload = Bytes::copy_from_slice(&data[12..]);
 
@@ -444,21 +439,15 @@ impl AsyncWrite for WebSocketStream {
         let inner = &mut self.bridge.inner;
 
         match inner.poll_ready_unpin(cx) {
-            std::task::Poll::Ready(Ok(())) => {
-                match inner.start_send_unpin(msg) {
-                    Ok(()) => {
-                        self.bridge.bytes_sent += buf.len() as u64;
-                        self.bridge.last_activity = Instant::now();
-                        std::task::Poll::Ready(Ok(buf.len()))
-                    }
-                    Err(e) => std::task::Poll::Ready(Err(std::io::Error::other(
-                        e,
-                    ))),
+            std::task::Poll::Ready(Ok(())) => match inner.start_send_unpin(msg) {
+                Ok(()) => {
+                    self.bridge.bytes_sent += buf.len() as u64;
+                    self.bridge.last_activity = Instant::now();
+                    std::task::Poll::Ready(Ok(buf.len()))
                 }
-            }
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+                Err(e) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
+            },
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -471,9 +460,7 @@ impl AsyncWrite for WebSocketStream {
         let inner = &mut self.bridge.inner;
         match inner.poll_flush_unpin(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -489,9 +476,7 @@ impl AsyncWrite for WebSocketStream {
                 self.bridge.healthy = false;
                 std::task::Poll::Ready(Ok(()))
             }
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -593,13 +578,9 @@ impl AsyncWrite for WebSocketClientStream {
                     self.bridge.last_activity = Instant::now();
                     std::task::Poll::Ready(Ok(buf.len()))
                 }
-                Err(e) => std::task::Poll::Ready(Err(std::io::Error::other(
-                    e,
-                ))),
+                Err(e) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             },
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -612,9 +593,7 @@ impl AsyncWrite for WebSocketClientStream {
         let inner = &mut self.bridge.inner;
         match inner.poll_flush_unpin(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -630,9 +609,7 @@ impl AsyncWrite for WebSocketClientStream {
                 self.bridge.healthy = false;
                 std::task::Poll::Ready(Ok(()))
             }
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -686,9 +663,7 @@ impl AsyncWrite for QuicStream {
     ) -> std::task::Poll<std::io::Result<usize>> {
         match std::pin::Pin::new(&mut self.send).poll_write(cx, buf) {
             std::task::Poll::Ready(Ok(n)) => std::task::Poll::Ready(Ok(n)),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -699,9 +674,7 @@ impl AsyncWrite for QuicStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_flush(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }
@@ -712,9 +685,7 @@ impl AsyncWrite for QuicStream {
     ) -> std::task::Poll<std::io::Result<()>> {
         match std::pin::Pin::new(&mut self.send).poll_shutdown(cx) {
             std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(())),
-            std::task::Poll::Ready(Err(e)) => {
-                std::task::Poll::Ready(Err(std::io::Error::other(e)))
-            }
+            std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(std::io::Error::other(e))),
             std::task::Poll::Pending => std::task::Poll::Pending,
         }
     }

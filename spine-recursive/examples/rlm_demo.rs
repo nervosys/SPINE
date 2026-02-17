@@ -3,9 +3,7 @@
 //! This example shows how RLMs can process arbitrarily large contexts by treating
 //! them as part of the environment rather than feeding directly into the neural network.
 
-use spine_recursive::{
-    ContextMetadata, MockSubLlmDispatcher, RecursiveLM, RlmConfig, RlmResponse,
-};
+use spine_recursive::{ContextMetadata, MockSubLlmDispatcher, RecursiveLM, RlmConfig, RlmResponse};
 use std::sync::Arc;
 
 #[tokio::main]

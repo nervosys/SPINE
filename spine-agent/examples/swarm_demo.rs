@@ -115,30 +115,32 @@ fn main() {
     // 3. Run the scheduler simulation
     println!("⚡ SCHEDULER STARTING...\n");
     println!("═══════════════════════════════════════════════════════════════");
-    
+
     let mut tick = 0;
     let mut nodes = nodes;
-    
+
     loop {
         tick += 1;
         println!("\n🕐 [Tick {}]", tick);
-        
+
         // Collect completed task IDs
-        let completed_tasks: Vec<Uuid> = tasks.iter()
+        let completed_tasks: Vec<Uuid> = tasks
+            .iter()
             .filter(|t| t.status == TaskStatus::Completed)
             .map(|t| t.id)
             .collect();
 
         let mut _any_pending = false;
-        
+
         for task in tasks.iter_mut() {
             if task.status == TaskStatus::Pending && task.assigned_to.is_none() {
                 _any_pending = true;
-                
+
                 // Check dependencies
-                let deps_met = task.dependencies.iter().all(|dep_id| {
-                    completed_tasks.contains(dep_id)
-                });
+                let deps_met = task
+                    .dependencies
+                    .iter()
+                    .all(|dep_id| completed_tasks.contains(dep_id));
 
                 if !deps_met {
                     println!("   ⏳ '{}' - waiting on dependencies", task.description);
@@ -147,17 +149,19 @@ fn main() {
 
                 // SKILL-BASED ROUTING: Find best node
                 let mut best_node: Option<(usize, usize)> = None; // (index, score)
-                
+
                 for (idx, node) in nodes.iter().enumerate() {
                     if node.current_task.is_some() {
                         continue; // Node is busy
                     }
-                    
+
                     // Calculate skill match score
-                    let score = task.required_skills.iter()
+                    let score = task
+                        .required_skills
+                        .iter()
                         .filter(|s| node.skills.contains(s))
                         .count();
-                    
+
                     if score > 0 && score > best_node.map(|(_, s)| s).unwrap_or(0) {
                         best_node = Some((idx, score));
                     }
@@ -166,9 +170,13 @@ fn main() {
                 if let Some((node_idx, score)) = best_node {
                     let node = &mut nodes[node_idx];
                     println!("   ✅ ASSIGNING: '{}'", task.description);
-                    println!("      → {} (matched {}/{} skills)", 
-                        node.name, score, task.required_skills.len());
-                    
+                    println!(
+                        "      → {} (matched {}/{} skills)",
+                        node.name,
+                        score,
+                        task.required_skills.len()
+                    );
+
                     task.assigned_to = Some(node.id);
                     task.status = TaskStatus::InProgress;
                     node.current_task = Some(task.id);
@@ -184,7 +192,7 @@ fn main() {
                 println!("   🔄 IN PROGRESS: '{}'", task.description);
                 // Mark as completed on next tick
                 task.status = TaskStatus::Completed;
-                
+
                 // Free up the node
                 if let Some(node_id) = task.assigned_to {
                     if let Some(node) = nodes.iter_mut().find(|n| n.id == node_id) {
@@ -211,7 +219,7 @@ fn main() {
 
     println!("\n═══════════════════════════════════════════════════════════════");
     println!("✨ SWARM PLAN EXECUTION COMPLETE!\n");
-    
+
     println!("📊 FINAL STATUS:");
     println!("───────────────────────────────────────────────────────────────");
     for task in &tasks {
@@ -220,13 +228,14 @@ fn main() {
             TaskStatus::InProgress => "🔄",
             TaskStatus::Pending => "⏳",
         };
-        let assignee = task.assigned_to
+        let assignee = task
+            .assigned_to
             .and_then(|id| nodes.iter().find(|n| n.id == id))
             .map(|n| n.name.as_str())
             .unwrap_or("Unassigned");
         println!("  {} {} → {}", status_icon, task.description, assignee);
     }
-    
+
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║  The scheduler successfully matched tasks to nodes based     ║");
     println!("║  on skills and respected the dependency graph (DAG).         ║");

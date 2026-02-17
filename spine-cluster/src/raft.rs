@@ -1238,7 +1238,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_raft_single_node_election() {
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::channel(100);
         let id = Uuid::new_v4();
         let node = RaftNode::new(
             id,
@@ -1263,7 +1263,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_raft_submit_command() {
-        let (tx, mut rx) = mpsc::channel(100);
+        let (tx, _rx) = mpsc::channel(100);
         let id = Uuid::new_v4();
         let node = RaftNode::new(
             id,
@@ -1280,7 +1280,7 @@ mod tests {
         node.tick().await.unwrap();
         assert_eq!(node.role().await, RaftRole::Leader);
 
-        let index = node
+        let _index = node
             .submit_command(RaftCommand::Put {
                 key: "test".to_string(),
                 value: b"value".to_vec(),

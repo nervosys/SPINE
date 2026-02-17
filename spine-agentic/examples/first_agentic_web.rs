@@ -4,12 +4,11 @@
 //!
 //! Run: cargo run --example first_agentic_web -p spine-agentic --release
 
-use spine_agentic::{
-    create_agent, create_agent_with_capabilities,
-    AgentCapability, Goal, ResourceLocator, SemanticQuery, OutputType,
-    SwarmTask, KnowledgeNode, KnowledgeGraph,
-};
 use chrono::Utc;
+use spine_agentic::{
+    create_agent, create_agent_with_capabilities, AgentCapability, Goal, KnowledgeGraph,
+    KnowledgeNode, OutputType, ResourceLocator, SemanticQuery, SwarmTask,
+};
 use uuid::Uuid;
 
 fn main() {
@@ -28,7 +27,7 @@ fn main() {
     println!("║                                                                           ║");
     println!("╚═══════════════════════════════════════════════════════════════════════════╝");
     println!();
-    
+
     println!("What SPINE is:");
     println!("  ✓ Headless semantic browser for AI agents");
     println!("  ✓ Adaptive encryption (Standard → Hardened → PostQuantum)");
@@ -40,13 +39,13 @@ fn main() {
     println!("  ✗ Not a new internet protocol");
     println!("  ✗ Not guaranteed quantum-safe (best effort)");
     println!();
-    
+
     phase_1_semantic_browsing();
     phase_2_adaptive_encryption();
     phase_3_swarm_coordination();
     phase_4_knowledge_sharing();
     phase_5_full_stack_demo();
-    
+
     println!();
     println!("═══════════════════════════════════════════════════════════════════════════");
     println!("                    AGENTIC WEB STACK 1.0 COMPLETE");
@@ -68,7 +67,7 @@ fn phase_1_semantic_browsing() {
     println!("│ Efficient meaning extraction for AI agents                                │");
     println!("└───────────────────────────────────────────────────────────────────────────┘");
     println!();
-    
+
     let browser_agent = create_agent_with_capabilities(
         "Semantic-Browser-01",
         vec![
@@ -77,20 +76,24 @@ fn phase_1_semantic_browsing() {
             AgentCapability::ContinualLearning,
         ],
     );
-    
-    println!("  Agent: {} ({:?})", browser_agent.profile().name, browser_agent.agent_id());
+
+    println!(
+        "  Agent: {} ({:?})",
+        browser_agent.profile().name,
+        browser_agent.agent_id()
+    );
     println!();
-    
+
     println!("  Resource Locators (not URLs, but semantic addresses):");
     let url_resource = ResourceLocator::url("https://arxiv.org/abs/2401.00001");
     println!("    • URL: {:?}", url_resource);
-    
+
     let semantic_resource = ResourceLocator::semantic("latest transformer papers")
         .with_constraint("topic:attention-mechanisms")
         .with_constraint("year:2024");
     println!("    • Semantic: {:?}", semantic_resource);
     println!();
-    
+
     println!("  Semantic Queries (not keyword search, but meaning extraction):");
     let query = SemanticQuery {
         query: "What are the computational requirements for training LLMs?".to_string(),
@@ -99,13 +102,19 @@ fn phase_1_semantic_browsing() {
         confidence_threshold: 0.85,
     };
     println!("    Query: \"{}\"", query.query);
-    println!("    Output: {:?}, Confidence: {}%", query.output_type, (query.confidence_threshold * 100.0) as u32);
+    println!(
+        "    Output: {:?}, Confidence: {}%",
+        query.output_type,
+        (query.confidence_threshold * 100.0) as u32
+    );
     println!();
-    
-    let intention = browser_agent.intend(Goal::Navigate { target: semantic_resource });
+
+    let intention = browser_agent.intend(Goal::Navigate {
+        target: semantic_resource,
+    });
     println!("  Intention Created: {:?}", intention);
     println!();
-    
+
     println!("  Unified Representation (UR) - not HTML, but meaning:");
     println!("    ┌─────────────────────────────────────────────────┐");
     println!("    │ type: research_paper                            │");
@@ -123,7 +132,7 @@ fn phase_2_adaptive_encryption() {
     println!("│ Security levels: Standard → Hardened → PostQuantum                        │");
     println!("└───────────────────────────────────────────────────────────────────────────┘");
     println!();
-    
+
     println!("  Security Levels (adaptive based on threat model):");
     println!("  ┌──────────────┬─────────────────┬────────────────────┬─────────────────┐");
     println!("  │ Level        │ Key Exchange    │ Encryption         │ Use Case        │");
@@ -133,20 +142,28 @@ fn phase_2_adaptive_encryption() {
     println!("  │ PostQuantum  │ RLWE only       │ ChaCha20-Poly1305  │ Future-proofing │");
     println!("  └──────────────┴─────────────────┴────────────────────┴─────────────────┘");
     println!();
-    
+
     println!("  X3DH Key Exchange (trust bootstrapping):");
     println!("    1. Alice publishes identity key IKa to directory");
     println!("    2. Bob fetches Alice's keys, generates ephemeral EKb");
     println!("    3. Shared secret: SK = KDF(DH1 || DH2 || DH3)");
     println!("    4. Forward secrecy via Double Ratchet");
     println!();
-    
+
     let agent_a = create_agent("Alice");
     let agent_b = create_agent("Bob");
-    
+
     println!("  Encryption Negotiation:");
-    println!("    {} → {}: HELLO (capabilities: [Standard, Hardened])", agent_a.profile().name, agent_b.profile().name);
-    println!("    {} → {}: HELLO_ACK (selected: Hardened)", agent_b.profile().name, agent_a.profile().name);
+    println!(
+        "    {} → {}: HELLO (capabilities: [Standard, Hardened])",
+        agent_a.profile().name,
+        agent_b.profile().name
+    );
+    println!(
+        "    {} → {}: HELLO_ACK (selected: Hardened)",
+        agent_b.profile().name,
+        agent_a.profile().name
+    );
     println!("    [Session established with forward secrecy]");
     println!();
 }
@@ -157,26 +174,35 @@ fn phase_3_swarm_coordination() {
     println!("│ Distributed consensus with Sybil resistance                               │");
     println!("└───────────────────────────────────────────────────────────────────────────┘");
     println!();
-    
+
     let coordinator = create_agent_with_capabilities(
         "Swarm-Coordinator",
-        vec![AgentCapability::SwarmParticipation, AgentCapability::KnowledgeManagement],
+        vec![
+            AgentCapability::SwarmParticipation,
+            AgentCapability::KnowledgeManagement,
+        ],
     );
-    
-    let workers: Vec<_> = (1..=5).map(|i| {
-        create_agent_with_capabilities(
-            &format!("Worker-{:02}", i),
-            vec![AgentCapability::Navigation, AgentCapability::ContentExtraction, AgentCapability::SwarmParticipation],
-        )
-    }).collect();
-    
+
+    let workers: Vec<_> = (1..=5)
+        .map(|i| {
+            create_agent_with_capabilities(
+                format!("Worker-{:02}", i),
+                vec![
+                    AgentCapability::Navigation,
+                    AgentCapability::ContentExtraction,
+                    AgentCapability::SwarmParticipation,
+                ],
+            )
+        })
+        .collect();
+
     println!("  Swarm Formation:");
     println!("    Coordinator: {}", coordinator.profile().name);
     for worker in &workers {
         println!("    Worker: {}", worker.profile().name);
     }
     println!();
-    
+
     println!("  Sybil Resistance (stake-weighted consensus):");
     println!("  ┌─────────────────────┬─────────┬────────────┬──────────────┐");
     println!("  │ Node                │ Stake   │ Reputation │ Voting Power │");
@@ -190,21 +216,27 @@ fn phase_3_swarm_coordination() {
     println!("    Voting power = stake × reputation / total_weighted_stake");
     println!("    Sybil attacker needs 51% of stake × reputation to control consensus");
     println!();
-    
+
     let task = SwarmTask {
         id: Uuid::new_v4(),
         description: "Research latest advances in multimodal AI".to_string(),
-        goal: Box::new(Goal::Navigate { 
-            target: ResourceLocator::semantic("multimodal AI research") 
+        goal: Box::new(Goal::Navigate {
+            target: ResourceLocator::semantic("multimodal AI research"),
         }),
         min_members: 3,
         max_members: 10,
-        required_capabilities: vec![AgentCapability::Navigation, AgentCapability::ContentExtraction],
+        required_capabilities: vec![
+            AgentCapability::Navigation,
+            AgentCapability::ContentExtraction,
+        ],
         deadline: Some(Utc::now() + chrono::Duration::hours(1)),
     };
-    
+
     println!("  Swarm Task: \"{}\"", task.description);
-    println!("    Members: {}-{}, Deadline: {:?}", task.min_members, task.max_members, task.deadline);
+    println!(
+        "    Members: {}-{}, Deadline: {:?}",
+        task.min_members, task.max_members, task.deadline
+    );
     println!();
 }
 
@@ -214,9 +246,9 @@ fn phase_4_knowledge_sharing() {
     println!("│ CRDT-based distributed memory (eventually consistent)                     │");
     println!("└───────────────────────────────────────────────────────────────────────────┘");
     println!();
-    
+
     let mut graph = KnowledgeGraph::new();
-    
+
     let node1 = KnowledgeNode {
         id: Uuid::new_v4().to_string(),
         label: "Transformers".to_string(),
@@ -229,7 +261,7 @@ fn phase_4_knowledge_sharing() {
         updated_at: Utc::now(),
     };
     graph.add_node(node1);
-    
+
     println!("  Knowledge Graph (distributed via CRDT):");
     println!("    ┌─────────────────────────────────────────────────────────┐");
     println!("    │                    TRANSFORMERS                         │");
@@ -242,13 +274,13 @@ fn phase_4_knowledge_sharing() {
     println!("    │   (bidirectional)   │       │   (unidirectional)  │");
     println!("    └─────────────────────┘       └─────────────────────┘");
     println!();
-    
+
     println!("  CRDT Merge (concurrent updates from different agents):");
     println!("    Agent-A discovers: \"GPT-4 has 1.76 trillion parameters\"");
     println!("    Agent-B discovers: \"GPT-4 has multimodal capabilities\"");
     println!("    Merged: {{GPT-4: [params, multimodal]}} - No conflicts!");
     println!();
-    
+
     println!("  Bioinspired Memory Hierarchy:");
     println!("    COLLECTIVE → SEMANTIC → EPISODIC → WORKING");
     println!("    (swarm-wide)  (facts)    (events)   (active)");
@@ -261,7 +293,7 @@ fn phase_5_full_stack_demo() {
     println!("│ All components working together                                           │");
     println!("└───────────────────────────────────────────────────────────────────────────┘");
     println!();
-    
+
     println!("  Scenario: Research swarm analyzing AI safety literature");
     println!();
     println!("  Timeline:");
@@ -278,7 +310,7 @@ fn phase_5_full_stack_demo() {
     println!("  T+1300ms [CONSENSUS] Quorum reached (67% weighted approval)");
     println!("  T+1420ms [COMPLETE] Task finished in 1.42 seconds");
     println!();
-    
+
     println!("  Output (Unified Representation):");
     println!("    ┌─────────────────────────────────────────────────────────────────┐");
     println!("    │ type: research_synthesis                                        │");
@@ -289,7 +321,7 @@ fn phase_5_full_stack_demo() {
     println!("    │ sybil_filtered: 1 malicious node excluded                       │");
     println!("    └─────────────────────────────────────────────────────────────────┘");
     println!();
-    
+
     println!("  Performance Summary:");
     println!("    • Semantic parsing: 50ms average (vs 500ms human reading)");
     println!("    • Encryption overhead: <5ms per message");

@@ -255,7 +255,7 @@ fn bench_context_processing(c: &mut Criterion) {
                 b.iter(|| {
                     // SPINE's RLM: chunk once, access any chunk in O(1)
                     let chunk_size = 200_000; // Larger chunks, O(1) access
-                    let num_chunks = (ctx.len() + chunk_size - 1) / chunk_size;
+                    let num_chunks = ctx.len().div_ceil(chunk_size);
 
                     // Can access any chunk without re-processing
                     let random_chunk_idx = num_chunks / 2;
@@ -411,7 +411,7 @@ fn bench_encryption_overhead(c: &mut Criterion) {
         b.iter(|| {
             // Neural projection: message -> latent space
             let mut latent = vec![0.0f32; 128];
-            for (i, &byte) in message.iter().enumerate() {
+            for &byte in message.iter() {
                 let row_start = (byte as usize % 128) * 256;
                 for (j, lat) in latent.iter_mut().enumerate() {
                     *lat += projection[row_start + j] * (byte as f32 / 255.0);

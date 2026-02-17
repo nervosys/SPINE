@@ -2,31 +2,31 @@
 #![allow(clippy::let_underscore_future)]
 
 use anyhow::Result;
-use tracing::{info, error, warn, debug, instrument, span, Level};
-use tokio::net::TcpListener;
-use tokio::io::{AsyncRead, AsyncWrite};
-use spine_protocol::{ProtocolHandler, Message, BrowserCommand, Response, PreComputedResponse};
-use spine_parser::parse_html;
-use spine_wasm::WasmRuntime;
-use spine_neural::NeuralLatentEncoder;
-use spine_cluster::{ClusterNode, NodeCapabilities};
-use spine_transport::WebSocketStream;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use dashmap::DashMap;
-use uuid::Uuid;
-use serde::{Serialize, Deserialize};
 use axum::{routing::get, Router};
+use dashmap::DashMap;
 use prometheus::{Encoder, TextEncoder};
+use serde::{Deserialize, Serialize};
+use spine_cluster::{ClusterNode, NodeCapabilities};
+use spine_neural::NeuralLatentEncoder;
+use spine_parser::parse_html;
+use spine_protocol::{BrowserCommand, Message, PreComputedResponse, ProtocolHandler, Response};
+use spine_transport::WebSocketStream;
+use spine_wasm::WasmRuntime;
+use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tracing::{debug, error, info, instrument, span, warn, Level};
+use uuid::Uuid;
 
 mod config;
-mod vdom;
 mod telemetry;
 mod tls;
+mod vdom;
 use config::SpineConfig;
-use vdom::VirtualDom;
 use telemetry::*;
 use tls::*;
+use vdom::VirtualDom;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Session {
@@ -122,7 +122,7 @@ impl BrowserState {
     async fn save_sessions(&self) -> anyhow::Result<()> {
         let dir = std::path::Path::new("sessions");
         tokio::fs::create_dir_all(dir).await.ok();
-        
+
         for entry in self.sessions.iter() {
             let id = entry.key();
             let session = entry.value();
@@ -179,15 +179,18 @@ impl BrowserState {
     fn check_rate_limit(&self, session_id: &str) -> bool {
         let max_tokens = 100.0;
         let refill_rate = 10.0; // tokens per second
-        
-        let mut entry = self.rate_limits.entry(session_id.to_string()).or_insert((max_tokens, std::time::Instant::now()));
+
+        let mut entry = self
+            .rate_limits
+            .entry(session_id.to_string())
+            .or_insert((max_tokens, std::time::Instant::now()));
         let (tokens, last_update) = entry.value_mut();
-        
+
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(*last_update).as_secs_f64();
         *tokens = (*tokens + elapsed * refill_rate).min(max_tokens);
         *last_update = now;
-        
+
         if *tokens >= 1.0 {
             *tokens -= 1.0;
             true
@@ -206,20 +209,20 @@ async fn handle_command(
 ) -> (Response, Vec<Vec<f32>>) {
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
-    
+
     // Record command in history
     if let Some(mut session) = state.sessions.get_mut(session_id) {
         session.history.push(command.clone());
         session.last_command = Some(command.clone());
     }
-    
+
     let mut latent_to_stream = Vec::new();
     let response = match command {
         BrowserCommand::Navigate { url } => {
             match state.client.get(&url).send().await {
                 Ok(resp) => {
                     let html = resp.text().await.unwrap_or_default();
-                    
+
                     // Transpile HTML to HLB for agentic interaction
                     let hlb = spine_human::HumanTranspiler::transpile(&html, "", "")
                         .unwrap_or_else(|e| {
@@ -257,7 +260,9 @@ async fn handle_command(
                     }
                     Response {
                         id: request_id,
-                        result: Some(serde_json::json!({"status": "success", "session_id": session_id})),
+                        result: Some(
+                            serde_json::json!({"status": "success", "session_id": session_id}),
+                        ),
                         error: None,
                     }
                 }
@@ -327,8 +332,12 @@ async fn handle_command(
             }
         }
         BrowserCommand::ExecuteBinary(bin) => {
-            info!("Executing HLB with {} instructions and capabilities: {:?}", bin.instructions.len(), bin.capabilities);
-            
+            info!(
+                "Executing HLB with {} instructions and capabilities: {:?}",
+                bin.instructions.len(),
+                bin.capabilities
+            );
+
             // Capability check
             for cap in &bin.capabilities {
                 match cap.as_str() {
@@ -336,11 +345,14 @@ async fn handle_command(
                         // Allowed by default for now
                     }
                     _ => {
-                        return (Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("Unauthorized or unknown capability: {}", cap)),
-                        }, Vec::new());
+                        return (
+                            Response {
+                                id: request_id,
+                                result: None,
+                                error: Some(format!("Unauthorized or unknown capability: {}", cap)),
+                            },
+                            Vec::new(),
+                        );
                     }
                 }
             }
@@ -350,14 +362,17 @@ async fn handle_command(
                 session.current_binary = Some(bin.clone());
             }
 
-            let result = state.wasm_runtime.execute(&bin).expect("Failed to execute HLB in WASM");
-            
+            let result = state
+                .wasm_runtime
+                .execute(&bin)
+                .expect("Failed to execute HLB in WASM");
+
             latent_to_stream = result.latent_streams.clone();
-            
+
             // Update session VDOM and compute patches
             let new_vdom = VirtualDom::from_wasm(&result);
             let mut patches = Vec::new();
-            
+
             if let Some(mut session) = state.sessions.get_mut(session_id) {
                 if let Some(old_vdom) = &session.current_vdom {
                     patches = new_vdom.diff(old_vdom);
@@ -370,7 +385,7 @@ async fn handle_command(
                         "state_declared" | "state_updated" => {
                             if let (Some(name), Some(value)) = (
                                 event.payload.get("name").and_then(|v| v.as_str()),
-                                event.payload.get("value")
+                                event.payload.get("value"),
                             ) {
                                 session.state.insert(name.to_string(), value.clone());
                             }
@@ -391,7 +406,9 @@ async fn handle_command(
                         tokio::spawn(async move {
                             if let Ok(resp) = state_clone.client.get(&url_clone).send().await {
                                 if let Ok(html) = resp.text().await {
-                                    if let Some(mut session) = state_clone.sessions.get_mut(&sid_clone) {
+                                    if let Some(mut session) =
+                                        state_clone.sessions.get_mut(&sid_clone)
+                                    {
                                         session.current_url = Some(url_clone);
                                         session.current_html = Some(html);
                                     }
@@ -412,15 +429,31 @@ async fn handle_command(
                                 key: key.clone(),
                                 value: value.clone(),
                                 tags: tags.clone(),
-                                timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                                timestamp_ns: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_nanos()
+                                    as u64,
                             };
-                            state.knowledge_base.entry(key.clone()).or_default().push(entry);
-                            
+                            state
+                                .knowledge_base
+                                .entry(key.clone())
+                                .or_default()
+                                .push(entry);
+
                             let cluster = state.cluster.lock().await;
-                            let _ = cluster.broadcast_knowledge(key.clone(), value.clone(), tags.clone());
+                            let _ = cluster.broadcast_knowledge(
+                                key.clone(),
+                                value.clone(),
+                                tags.clone(),
+                            );
                         }
                     }
-                    spine_wasm::WasmAction::QueryKnowledge { query, tags: _, limit: _ } => {
+                    spine_wasm::WasmAction::QueryKnowledge {
+                        query,
+                        tags: _,
+                        limit: _,
+                    } => {
                         info!("WASM requested knowledge query: {}", query);
                     }
                     spine_wasm::WasmAction::Reason(query) => {
@@ -432,14 +465,16 @@ async fn handle_command(
                                     let plan = engine.create_plan(query, &ur);
                                     info!("Reasoning plan: {:?}", plan);
                                     // Store the plan in session history or state for the agent to see
-                                    session.history.push(BrowserCommand::Navigate { url: format!("reasoning://{}", query) });
+                                    session.history.push(BrowserCommand::Navigate {
+                                        url: format!("reasoning://{}", query),
+                                    });
                                 }
                             }
                         }
                     }
                 }
             }
-            
+
             Response {
                 id: request_id,
                 result: Some(serde_json::json!({
@@ -460,7 +495,11 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::HandleEvent { element_id: _element_id, event_name, payload: _payload } => {
+        BrowserCommand::HandleEvent {
+            element_id: _element_id,
+            event_name,
+            payload: _payload,
+        } => {
             if let Some(mut session) = state.sessions.get_mut(session_id) {
                 let bin = session.current_binary.clone();
                 if let Some(bin) = bin {
@@ -470,18 +509,18 @@ async fn handle_command(
                         for (k, v) in &session.state {
                             runtime.state.insert(k.clone(), v.clone());
                         }
-                        
+
                         // Execute handler
                         let _handler_result = runtime.execute(&bin, pc);
-                        
+
                         // Update session state from runtime
                         for (k, v) in &runtime.state {
                             session.state.insert(k.clone(), v.clone());
                         }
-                        
+
                         // Re-render from render_start
                         let render_result = runtime.execute(&bin, bin.render_start);
-                        
+
                         // Compute patches
                         let new_vdom = render_result.vdom;
                         let mut patches = Vec::new();
@@ -489,7 +528,7 @@ async fn handle_command(
                             patches = new_vdom.diff(old_vdom);
                         }
                         session.current_vdom = Some(new_vdom);
-                        
+
                         Response {
                             id: request_id,
                             result: Some(serde_json::json!({
@@ -584,8 +623,8 @@ async fn handle_command(
             encoder.evolve(seed);
             Response {
                 id: request_id,
-                result: Some(serde_json::json!({ 
-                    "status": "morphed", 
+                result: Some(serde_json::json!({
+                    "status": "morphed",
                     "new_seed": seed,
                     "protocol": "chameleon-v2"
                 })),
@@ -603,7 +642,7 @@ async fn handle_command(
                     // Broadcast to cluster for distributed search
                     let cluster = state.cluster.lock().await;
                     let _ = cluster.broadcast_search(query.clone(), request_id.clone());
-                    
+
                     Response {
                         id: request_id,
                         result: Some(serde_json::json!({
@@ -633,7 +672,10 @@ async fn handle_command(
             if let Some(session) = state.sessions.get(session_id) {
                 let data = serde_json::to_vec(&*session).unwrap();
                 let cluster = state.cluster.lock().await;
-                if let Err(e) = cluster.send_session_data(session_id.to_string(), data).await {
+                if let Err(e) = cluster
+                    .send_session_data(session_id.to_string(), data)
+                    .await
+                {
                     Response {
                         id: request_id,
                         result: None,
@@ -642,7 +684,9 @@ async fn handle_command(
                 } else {
                     Response {
                         id: request_id,
-                        result: Some(serde_json::json!({ "status": "transferred", "target": target_node_id })),
+                        result: Some(
+                            serde_json::json!({ "status": "transferred", "target": target_node_id }),
+                        ),
                         error: None,
                     }
                 }
@@ -664,8 +708,12 @@ async fn handle_command(
                     .unwrap_or_default()
                     .as_nanos() as u64,
             };
-            state.knowledge_base.entry(session_id.to_string()).or_default().push(entry);
-            
+            state
+                .knowledge_base
+                .entry(session_id.to_string())
+                .or_default()
+                .push(entry);
+
             // Broadcast to cluster
             let cluster = state.cluster.lock().await;
             let _ = cluster.broadcast_knowledge(key, value, tags);
@@ -677,8 +725,13 @@ async fn handle_command(
             }
         }
         BrowserCommand::QueryKnowledge { query, tags, limit } => {
-            let entries = state.knowledge_base.get(session_id).map(|e| e.clone()).unwrap_or_default();
-            let results: Vec<_> = entries.into_iter()
+            let entries = state
+                .knowledge_base
+                .get(session_id)
+                .map(|e| e.clone())
+                .unwrap_or_default();
+            let results: Vec<_> = entries
+                .into_iter()
                 .filter(|e| {
                     let matches_tags = tags.is_empty() || tags.iter().all(|t| e.tags.contains(t));
                     let matches_query = query.is_empty() || e.key.contains(&query);
@@ -703,7 +756,11 @@ async fn handle_command(
             }
         }
         BrowserCommand::GetSessionHistory => {
-            let history = state.sessions.get(session_id).map(|s| s.history.clone()).unwrap_or_default();
+            let history = state
+                .sessions
+                .get(session_id)
+                .map(|s| s.history.clone())
+                .unwrap_or_default();
             Response {
                 id: request_id,
                 result: Some(serde_json::json!({ "history": history })),
@@ -711,7 +768,9 @@ async fn handle_command(
             }
         }
         BrowserCommand::GetCapabilities => {
-            let capabilities = state.sessions.get(session_id)
+            let capabilities = state
+                .sessions
+                .get(session_id)
                 .and_then(|s| s.current_binary.as_ref().map(|b| b.capabilities.clone()))
                 .unwrap_or_default();
             Response {
@@ -725,7 +784,9 @@ async fn handle_command(
                 session.autonomous_mode = enabled;
                 Response {
                     id: request_id,
-                    result: Some(serde_json::json!({ "status": "autonomous_mode_set", "enabled": enabled })),
+                    result: Some(
+                        serde_json::json!({ "status": "autonomous_mode_set", "enabled": enabled }),
+                    ),
                     error: None,
                 }
             } else {
@@ -737,16 +798,26 @@ async fn handle_command(
             }
         }
         BrowserCommand::SwarmSearch { query, depth } => {
-            info!("Initiating swarm search for '{}' with depth {}", query, depth);
+            info!(
+                "Initiating swarm search for '{}' with depth {}",
+                query, depth
+            );
             let cluster = state.cluster.lock().await;
-            let _ = cluster.broadcast_swarm_search(query.clone(), depth, request_id.clone()).await;
+            let _ = cluster
+                .broadcast_swarm_search(query.clone(), depth, request_id.clone())
+                .await;
             Response {
                 id: request_id,
-                result: Some(serde_json::json!({ "status": "swarm_search_initiated", "query": query, "depth": depth })),
+                result: Some(
+                    serde_json::json!({ "status": "swarm_search_initiated", "query": query, "depth": depth }),
+                ),
                 error: None,
             }
         }
-        BrowserCommand::DelegateTask { task, target_agent_id } => {
+        BrowserCommand::DelegateTask {
+            task,
+            target_agent_id,
+        } => {
             info!("Delegating task: '{}' to {:?}", task, target_agent_id);
             let cluster = state.cluster.lock().await;
             let _ = cluster.delegate_task(task.clone(), target_agent_id).await;
@@ -759,7 +830,9 @@ async fn handle_command(
         BrowserCommand::ProposeKnowledge { key, value, tags } => {
             info!("Proposing knowledge: {} = {:?}", key, value);
             let cluster = state.cluster.lock().await;
-            let _ = cluster.propose_knowledge(key.clone(), value.clone(), tags.clone()).await;
+            let _ = cluster
+                .propose_knowledge(key.clone(), value.clone(), tags.clone())
+                .await;
             Response {
                 id: request_id,
                 result: Some(serde_json::json!({ "status": "knowledge_proposed", "key": key })),
@@ -769,7 +842,7 @@ async fn handle_command(
         BrowserCommand::CreateSwarmPlan { goal } => {
             info!("Creating swarm plan for goal: '{}'", goal);
             let plan_id = Uuid::new_v4();
-            
+
             // Simulate plan generation (in a real app, this would use an LLM)
             let tasks = vec![
                 spine_protocol::PlanTask {
@@ -789,9 +862,9 @@ async fn handle_command(
                     dependencies: vec![], // Would depend on the first task
                     status: spine_protocol::TaskStatus::Pending,
                     result: None,
-                }
+                },
             ];
-            
+
             let plan = spine_protocol::SwarmPlan {
                 id: plan_id,
                 goal: goal.clone(),
@@ -802,12 +875,12 @@ async fn handle_command(
                     .unwrap_or_default()
                     .as_secs(),
             };
-            
+
             state.plans.insert(plan_id, plan.clone());
-            
+
             let cluster = state.cluster.lock().await;
             let _ = cluster.propose_swarm_plan(plan).await;
-            
+
             Response {
                 id: request_id,
                 result: Some(serde_json::json!({ "status": "plan_created", "plan_id": plan_id })),
@@ -816,18 +889,22 @@ async fn handle_command(
         }
         BrowserCommand::ExecutePlanTask { plan_id, task_id } => {
             info!("Executing plan task {} for plan {}", task_id, plan_id);
-            
+
             if let Some(mut plan) = state.plans.get_mut(&plan_id) {
                 if let Some(task) = plan.tasks.iter_mut().find(|t| t.id == task_id) {
                     task.status = spine_protocol::TaskStatus::InProgress;
-                    
+
                     // Broadcast update
                     let cluster = state.cluster.lock().await;
-                    let _ = cluster.update_plan_task(plan_id, task_id, task.status.clone(), None).await;
-                    
+                    let _ = cluster
+                        .update_plan_task(plan_id, task_id, task.status.clone(), None)
+                        .await;
+
                     Response {
                         id: request_id,
-                        result: Some(serde_json::json!({ "status": "task_started", "task_id": task_id })),
+                        result: Some(
+                            serde_json::json!({ "status": "task_started", "task_id": task_id }),
+                        ),
                         error: None,
                     }
                 } else {
@@ -853,8 +930,9 @@ async fn handle_command(
                 "IoT" => spine_agentic::ProtocolDomain::IoT,
                 _ => spine_agentic::ProtocolDomain::BulkData,
             };
-            
-            let mut protocol = state.neural_protocols
+
+            let mut protocol = state
+                .neural_protocols
                 .entry(domain.clone())
                 .or_insert_with(|| spine_agentic::NeuralProtocol::new(1000.0, 5.0));
             match protocol.transmit(&data, domain_enum).await {
@@ -874,8 +952,8 @@ async fn handle_command(
             let runtime = state.agentic_runtime.clone();
             let profile = runtime.profile();
             let variant = profile.miras_variant.clone();
-            let surprise = 0.15; 
-            
+            let surprise = 0.15;
+
             Response {
                 id: request_id,
                 result: Some(serde_json::json!({
@@ -887,8 +965,15 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::SendSpeechAct { target_id, performative, content } => {
-            info!("Sending speech act to {}: {} - {}", target_id, performative, content);
+        BrowserCommand::SendSpeechAct {
+            target_id,
+            performative,
+            content,
+        } => {
+            info!(
+                "Sending speech act to {}: {} - {}",
+                target_id, performative, content
+            );
             Response {
                 id: request_id,
                 result: Some(serde_json::json!({ "status": "sent" })),
@@ -896,7 +981,7 @@ async fn handle_command(
             }
         }
     };
-    
+
     timer.observe_duration();
     (response, latent_to_stream)
 }
@@ -906,14 +991,17 @@ async fn main() -> Result<()> {
     let config = SpineConfig::load();
     init_telemetry("spine-core")?;
     info!("Starting SPINE Agentic Browser...");
-    info!("Config: host={}, port={}, max_sessions={}, tls={}",
-        config.server.host, config.server.port,
-        config.server.max_sessions, config.tls.enabled);
+    info!(
+        "Config: host={}, port={}, max_sessions={}, tls={}",
+        config.server.host, config.server.port, config.server.max_sessions, config.tls.enabled
+    );
 
     let port = config.server.port;
     let cluster_port = port + config.cluster.port_offset;
-    let cluster_addr = format!("{}:{}", config.server.host, cluster_port).parse().unwrap();
-    
+    let cluster_addr = format!("{}:{}", config.server.host, cluster_port)
+        .parse()
+        .unwrap();
+
     let capabilities = NodeCapabilities {
         supports_wasm: true,
         supports_chameleon: true,
@@ -1046,8 +1134,8 @@ async fn main() -> Result<()> {
                 html.push_str("<table><tr><th>Session ID</th><th>URL</th><th>Last Command</th></tr>");
                 for entry in state.sessions.iter() {
                     let (id, session) = entry.pair();
-                    html.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{:?}</td></tr>", 
-                        id, 
+                    html.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{:?}</td></tr>",
+                        id,
                         session.current_url.as_deref().unwrap_or("None"),
                         session.last_command));
                 }
@@ -1072,13 +1160,19 @@ async fn main() -> Result<()> {
         let cluster = state.cluster.lock().await;
         cluster.get_event_receiver()
     };
-    
+
     tokio::spawn(async move {
         let mut rx = event_rx.lock().await;
         while let Some(event) = rx.recv().await {
             match event {
-                spine_cluster::ClusterEvent::SessionTransferRequested { session_id, from_node } => {
-                    info!("Session transfer requested for {} from node {}", session_id, from_node);
+                spine_cluster::ClusterEvent::SessionTransferRequested {
+                    session_id,
+                    from_node,
+                } => {
+                    info!(
+                        "Session transfer requested for {} from node {}",
+                        session_id, from_node
+                    );
                     // In a real implementation, we might need to acknowledge or prepare
                 }
                 spine_cluster::ClusterEvent::SessionDataReceived { session_id, data } => {
@@ -1087,9 +1181,16 @@ async fn main() -> Result<()> {
                         cluster_state.sessions.insert(session_id, session);
                     }
                 }
-                spine_cluster::ClusterEvent::SearchRequested { query, request_id, origin_node } => {
-                    info!("Distributed search requested: '{}' from node {}", query, origin_node);
-                    
+                spine_cluster::ClusterEvent::SearchRequested {
+                    query,
+                    request_id,
+                    origin_node,
+                } => {
+                    info!(
+                        "Distributed search requested: '{}' from node {}",
+                        query, origin_node
+                    );
+
                     let mut results = Vec::new();
                     for session in cluster_state.sessions.iter() {
                         if let Some(html) = &session.current_html {
@@ -1103,17 +1204,32 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    
+
                     let results_json = serde_json::Value::Array(results);
                     let cluster = cluster_state.cluster.lock().await;
                     let _ = cluster.send_search_results(origin_node, request_id, results_json);
                 }
-                spine_cluster::ClusterEvent::SearchResultReceived { request_id, results: _, node_id } => {
-                    info!("Received search results for {} from node {}", request_id, node_id);
+                spine_cluster::ClusterEvent::SearchResultReceived {
+                    request_id,
+                    results: _,
+                    node_id,
+                } => {
+                    info!(
+                        "Received search results for {} from node {}",
+                        request_id, node_id
+                    );
                     // In a real app, we'd push this to the client via a WebSocket or similar
                 }
-                spine_cluster::ClusterEvent::KnowledgeSynced { key, value, tags, origin_node } => {
-                    info!("Knowledge synced from node {}: {} = {}", origin_node, key, value);
+                spine_cluster::ClusterEvent::KnowledgeSynced {
+                    key,
+                    value,
+                    tags,
+                    origin_node,
+                } => {
+                    info!(
+                        "Knowledge synced from node {}: {} = {}",
+                        origin_node, key, value
+                    );
                     // Store in a global/shared knowledge base or specific session if applicable
                     // For now, we'll store it in a "cluster_shared" session
                     let entry = KnowledgeEntry {
@@ -1125,86 +1241,154 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     };
-                    cluster_state.knowledge_base.entry("cluster_shared".to_string()).or_default().push(entry);
+                    cluster_state
+                        .knowledge_base
+                        .entry("cluster_shared".to_string())
+                        .or_default()
+                        .push(entry);
                 }
-                spine_cluster::ClusterEvent::SwarmSearchRequested { query, depth, request_id: _, origin_node } => {
-                    info!("Swarm search requested: '{}' (depth {}) from node {}", query, depth, origin_node);
+                spine_cluster::ClusterEvent::SwarmSearchRequested {
+                    query,
+                    depth,
+                    request_id: _,
+                    origin_node,
+                } => {
+                    info!(
+                        "Swarm search requested: '{}' (depth {}) from node {}",
+                        query, depth, origin_node
+                    );
                     // Spawn a "Scout" session to perform the search
                     let scout_id = format!("scout-{}-{}", origin_node, Uuid::new_v4());
                     let mut scout_session = Session::new();
-                    scout_session.current_url = Some(format!("https://www.google.com/search?q={}", query));
+                    scout_session.current_url =
+                        Some(format!("https://www.google.com/search?q={}", query));
                     scout_session.autonomous_mode = true;
-                    cluster_state.sessions.insert(scout_id.clone(), scout_session);
-                    
+                    cluster_state
+                        .sessions
+                        .insert(scout_id.clone(), scout_session);
+
                     // In a real implementation, we'd wait for the scout to finish and send results back
                 }
-                spine_cluster::ClusterEvent::TaskDelegated { task, target_agent_id, origin_node } => {
-                    info!("Task delegated from node {}: '{}' (target: {:?})", origin_node, task, target_agent_id);
+                spine_cluster::ClusterEvent::TaskDelegated {
+                    task,
+                    target_agent_id,
+                    origin_node,
+                } => {
+                    info!(
+                        "Task delegated from node {}: '{}' (target: {:?})",
+                        origin_node, task, target_agent_id
+                    );
                     // Handle task delegation (e.g., assign to an idle autonomous session)
                 }
-                spine_cluster::ClusterEvent::KnowledgeProposed { proposal_id, key, value, tags, origin_node } => {
-                    info!("Knowledge proposal received from node {}: {} = {:?}", origin_node, key, value);
-                    
+                spine_cluster::ClusterEvent::KnowledgeProposed {
+                    proposal_id,
+                    key,
+                    value,
+                    tags,
+                    origin_node,
+                } => {
+                    info!(
+                        "Knowledge proposal received from node {}: {} = {:?}",
+                        origin_node, key, value
+                    );
+
                     // Store proposal
-                    cluster_state.proposals.insert(proposal_id, KnowledgeProposal {
-                        key: key.clone(),
-                        value: value.clone(),
-                        tags: tags.clone(),
-                        votes: Vec::new(),
-                        origin_node,
-                    });
-                    
+                    cluster_state.proposals.insert(
+                        proposal_id,
+                        KnowledgeProposal {
+                            key: key.clone(),
+                            value: value.clone(),
+                            tags: tags.clone(),
+                            votes: Vec::new(),
+                            origin_node,
+                        },
+                    );
+
                     // Auto-vote based on confidence (simulated)
                     let cluster = cluster_state.cluster.lock().await;
                     let _ = cluster.vote_on_knowledge(proposal_id, true, 0.9).await;
                 }
-                spine_cluster::ClusterEvent::KnowledgeVoteReceived { proposal_id, voter_id, approved, confidence } => {
-                    info!("Vote received for proposal {} from node {}: approved={}, confidence={:.2}", 
-                          proposal_id, voter_id, approved, confidence);
-                    
+                spine_cluster::ClusterEvent::KnowledgeVoteReceived {
+                    proposal_id,
+                    voter_id,
+                    approved,
+                    confidence,
+                } => {
+                    info!(
+                        "Vote received for proposal {} from node {}: approved={}, confidence={:.2}",
+                        proposal_id, voter_id, approved, confidence
+                    );
+
                     if let Some(mut proposal) = cluster_state.proposals.get_mut(&proposal_id) {
                         proposal.votes.push(KnowledgeVote {
                             voter_id,
                             approved,
                             confidence,
                         });
-                        
+
                         // Check if consensus reached using weighted voting
                         let cluster = cluster_state.cluster.lock().await;
                         let total_nodes = cluster.get_healthy_nodes().len() + 1; // +1 for self
-                        
+
                         // Compute weighted approval score using voter confidence
-                        let weighted_approval: f32 = proposal.votes.iter()
+                        let weighted_approval: f32 = proposal
+                            .votes
+                            .iter()
                             .filter(|v| v.approved)
                             .map(|v| v.confidence)
                             .sum();
-                        let total_confidence: f32 = proposal.votes.iter()
-                            .map(|v| v.confidence)
-                            .sum();
-                        let weighted_ratio = if total_confidence > 0.0 { 
-                            weighted_approval / total_confidence 
-                        } else { 0.0 };
-                        
+                        let total_confidence: f32 =
+                            proposal.votes.iter().map(|v| v.confidence).sum();
+                        let weighted_ratio = if total_confidence > 0.0 {
+                            weighted_approval / total_confidence
+                        } else {
+                            0.0
+                        };
+
                         // Log vote breakdown by voter
                         for vote in proposal.votes.iter() {
-                            debug!("  Voter {}: approved={}, confidence={:.2}", 
-                                   vote.voter_id, vote.approved, vote.confidence);
+                            debug!(
+                                "  Voter {}: approved={}, confidence={:.2}",
+                                vote.voter_id, vote.approved, vote.confidence
+                            );
                         }
-                        
+
                         let approved_votes = proposal.votes.iter().filter(|v| v.approved).count();
                         let threshold = cluster.get_consensus_threshold();
-                        info!("Proposal {} from node {}: {}/{} votes ({:.1}% weighted approval)", 
-                              proposal_id, proposal.origin_node, approved_votes, total_nodes, weighted_ratio * 100.0);
-                        
+                        info!(
+                            "Proposal {} from node {}: {}/{} votes ({:.1}% weighted approval)",
+                            proposal_id,
+                            proposal.origin_node,
+                            approved_votes,
+                            total_nodes,
+                            weighted_ratio * 100.0
+                        );
+
                         if (approved_votes as f32 / total_nodes as f32) >= threshold {
-                            info!("Consensus reached for proposal {}. Committing...", proposal_id);
-                            let _ = cluster.commit_knowledge(proposal_id, proposal.key.clone(), proposal.value.clone(), proposal.tags.clone());
+                            info!(
+                                "Consensus reached for proposal {}. Committing...",
+                                proposal_id
+                            );
+                            let _ = cluster.commit_knowledge(
+                                proposal_id,
+                                proposal.key.clone(),
+                                proposal.value.clone(),
+                                proposal.tags.clone(),
+                            );
                         }
                     }
                 }
-                spine_cluster::ClusterEvent::KnowledgeCommitted { proposal_id, key, value, tags } => {
-                    info!("Knowledge proposal {} committed: {} = {:?}", proposal_id, key, value);
-                    
+                spine_cluster::ClusterEvent::KnowledgeCommitted {
+                    proposal_id,
+                    key,
+                    value,
+                    tags,
+                } => {
+                    info!(
+                        "Knowledge proposal {} committed: {} = {:?}",
+                        proposal_id, key, value
+                    );
+
                     let entry = KnowledgeEntry {
                         key,
                         value,
@@ -1214,15 +1398,33 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     };
-                    cluster_state.knowledge_base.entry("cluster_consensus".to_string()).or_default().push(entry);
+                    cluster_state
+                        .knowledge_base
+                        .entry("cluster_consensus".to_string())
+                        .or_default()
+                        .push(entry);
                     cluster_state.proposals.remove(&proposal_id);
                 }
                 spine_cluster::ClusterEvent::SwarmPlanProposed { plan, origin_node } => {
-                    info!("Swarm plan proposed by node {}: '{}' ({} tasks)", origin_node, plan.goal, plan.tasks.len());
+                    info!(
+                        "Swarm plan proposed by node {}: '{}' ({} tasks)",
+                        origin_node,
+                        plan.goal,
+                        plan.tasks.len()
+                    );
                     cluster_state.plans.insert(plan.id, plan);
                 }
-                spine_cluster::ClusterEvent::PlanTaskUpdated { plan_id, task_id, status, result, node_id } => {
-                    info!("Plan task {} updated by node {}: status={:?}", task_id, node_id, status);
+                spine_cluster::ClusterEvent::PlanTaskUpdated {
+                    plan_id,
+                    task_id,
+                    status,
+                    result,
+                    node_id,
+                } => {
+                    info!(
+                        "Plan task {} updated by node {}: status={:?}",
+                        task_id, node_id, status
+                    );
                     if let Some(mut plan) = cluster_state.plans.get_mut(&plan_id) {
                         if let Some(task) = plan.tasks.iter_mut().find(|t| t.id == task_id) {
                             task.status = status;
@@ -1241,24 +1443,29 @@ async fn main() -> Result<()> {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             interval.tick().await;
-            
+
             // 1. Swarm Task Scheduling
             for mut plan_entry in agent_state.plans.iter_mut() {
                 let plan_id = *plan_entry.key();
                 let plan = plan_entry.value_mut();
-                
+
                 if plan.status == spine_protocol::PlanStatus::Active {
-                    let completed_tasks: Vec<_> = plan.tasks.iter()
+                    let completed_tasks: Vec<_> = plan
+                        .tasks
+                        .iter()
                         .filter(|t| t.status == spine_protocol::TaskStatus::Completed)
                         .map(|t| t.id)
                         .collect();
 
                     for task in plan.tasks.iter_mut() {
-                        if task.status == spine_protocol::TaskStatus::Pending && task.assigned_to.is_none() {
+                        if task.status == spine_protocol::TaskStatus::Pending
+                            && task.assigned_to.is_none()
+                        {
                             // Check dependencies
-                            let deps_met = task.dependencies.iter().all(|dep_id| {
-                                completed_tasks.contains(dep_id)
-                            });
+                            let deps_met = task
+                                .dependencies
+                                .iter()
+                                .all(|dep_id| completed_tasks.contains(dep_id));
 
                             if !deps_met {
                                 continue;
@@ -1267,25 +1474,31 @@ async fn main() -> Result<()> {
                             // Skill-based Routing
                             let cluster = agent_state.cluster.lock().await;
                             let mut best_node = None;
-                            
+
                             // Check self first
                             let my_id = cluster.id;
                             let my_caps = cluster.get_capabilities();
-                            let my_score = task.required_skills.iter()
+                            let my_score = task
+                                .required_skills
+                                .iter()
                                 .filter(|s| my_caps.skills.contains(s))
                                 .count();
-                            
+
                             if my_score > 0 {
                                 best_node = Some((my_id, my_score));
                             }
-                            
+
                             // Check other nodes
                             for node in cluster.get_healthy_nodes() {
-                                if node.id == my_id { continue; }
-                                let score = task.required_skills.iter()
+                                if node.id == my_id {
+                                    continue;
+                                }
+                                let score = task
+                                    .required_skills
+                                    .iter()
                                     .filter(|s| node.capabilities.skills.contains(s))
                                     .count();
-                                
+
                                 if score > best_node.map(|(_, s)| s).unwrap_or(0) {
                                     best_node = Some((node.id, score));
                                 }
@@ -1294,32 +1507,58 @@ async fn main() -> Result<()> {
                             if let Some((node_id, _)) = best_node {
                                 info!("Swarm Scheduler: Assigning task '{}' to node {} (skills matched)", task.description, node_id);
                                 task.assigned_to = Some(node_id);
-                                
+
                                 if node_id == my_id {
                                     task.status = spine_protocol::TaskStatus::InProgress;
                                     // Broadcast assignment
-                                    let _ = cluster.update_plan_task(plan_id, task.id, task.status.clone(), None).await;
-                                    
+                                    let _ = cluster
+                                        .update_plan_task(
+                                            plan_id,
+                                            task.id,
+                                            task.status.clone(),
+                                            None,
+                                        )
+                                        .await;
+
                                     // Trigger task execution (simulated)
                                     let task_desc = task.description.clone();
                                     let task_id = task.id;
                                     let task_state = agent_state.clone();
                                     tokio::spawn(async move {
-                                        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                                        tokio::time::sleep(std::time::Duration::from_secs(10))
+                                            .await;
                                         info!("Task completed: {}", task_desc);
                                         if let Some(mut p) = task_state.plans.get_mut(&plan_id) {
-                                            if let Some(t) = p.tasks.iter_mut().find(|t| t.id == task_id) {
+                                            if let Some(t) =
+                                                p.tasks.iter_mut().find(|t| t.id == task_id)
+                                            {
                                                 t.status = spine_protocol::TaskStatus::Completed;
-                                                t.result = Some(serde_json::json!({ "status": "success", "data": "Simulated result" }));
-                                                
+                                                t.result = Some(
+                                                    serde_json::json!({ "status": "success", "data": "Simulated result" }),
+                                                );
+
                                                 let cluster = task_state.cluster.lock().await;
-                                                let _ = cluster.update_plan_task(plan_id, task_id, t.status.clone(), t.result.clone()).await;
+                                                let _ = cluster
+                                                    .update_plan_task(
+                                                        plan_id,
+                                                        task_id,
+                                                        t.status.clone(),
+                                                        t.result.clone(),
+                                                    )
+                                                    .await;
                                             }
                                         }
                                     });
                                 } else {
                                     // Task assigned to another node, they will pick it up in their loop
-                                    let _ = cluster.update_plan_task(plan_id, task.id, task.status.clone(), None).await;
+                                    let _ = cluster
+                                        .update_plan_task(
+                                            plan_id,
+                                            task.id,
+                                            task.status.clone(),
+                                            None,
+                                        )
+                                        .await;
                                 }
                             }
                         }
@@ -1331,33 +1570,37 @@ async fn main() -> Result<()> {
             for mut entry in agent_state.sessions.iter_mut() {
                 let session_id = entry.key().clone();
                 let session = entry.value_mut();
-                
+
                 if session.autonomous_mode {
                     if let Some(html) = &session.current_html {
                         match spine_parser::parse_html(html) {
                             Ok(ur) => {
                                 let engine = spine_human::ReasoningEngine::new();
                                 let plan = engine.create_plan("Explore and find search", &ur);
-                                
+
                                 if let Some(best_action) = plan.steps.first() {
                                     if plan.estimated_success > 0.7 {
                                         info!("Autonomous agent in session {} executing plan step: {}", session_id, best_action.action_type);
-                                        
+
                                         // Execute the action
                                         match best_action.action_type.as_str() {
                                             "Search" | "Authenticate" => {
                                                 if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(spine_protocol::BrowserCommand::Click { 
-                                                        element_id: target_id.clone() 
-                                                    });
+                                                    session.history.push(
+                                                        spine_protocol::BrowserCommand::Click {
+                                                            element_id: target_id.clone(),
+                                                        },
+                                                    );
                                                 }
                                             }
                                             "InputSearch" => {
                                                 if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(spine_protocol::BrowserCommand::Type { 
-                                                        element_id: target_id.clone(),
-                                                        text: "SPINE Browser".to_string()
-                                                    });
+                                                    session.history.push(
+                                                        spine_protocol::BrowserCommand::Type {
+                                                            element_id: target_id.clone(),
+                                                            text: "SPINE Browser".to_string(),
+                                                        },
+                                                    );
                                                 }
                                             }
                                             _ => {}
@@ -1365,7 +1608,10 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
-                            Err(e) => warn!("Failed to parse HTML for autonomous session {}: {}", session_id, e),
+                            Err(e) => warn!(
+                                "Failed to parse HTML for autonomous session {}: {}",
+                                session_id, e
+                            ),
                         }
                     }
                 }
@@ -1384,7 +1630,10 @@ async fn main() -> Result<()> {
                 // If a session has been active but hasn't morphed recently, trigger a morph
                 // This is a simple "agentic" self-healing behavior
                 if session.last_command.is_some() && !session.needs_morph {
-                    info!("Self-healing: triggering proactive protocol morph for session {}", session.key());
+                    info!(
+                        "Self-healing: triggering proactive protocol morph for session {}",
+                        session.key()
+                    );
                     session.needs_morph = true;
                 }
             }
@@ -1406,7 +1655,9 @@ async fn main() -> Result<()> {
     let quic_port = port + config.server.quic_port_offset;
     #[cfg(feature = "quic")]
     {
-        let quic_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, quic_port).parse().unwrap();
+        let quic_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, quic_port)
+            .parse()
+            .unwrap();
         let quic_builder = spine_protocol::QuicEndpointBuilder::new();
         let quic_endpoint = quic_builder.build_server(quic_addr)?;
         info!("QUIC listening on {}", quic_addr);
@@ -1440,12 +1691,19 @@ async fn main() -> Result<()> {
         let cert_path = std::path::Path::new(&config.tls.cert_path);
         let key_path = std::path::Path::new(&config.tls.key_path);
         let ca_path = std::path::Path::new(&config.tls.ca_path);
-        let ca_opt = if ca_path.exists() { Some(ca_path) } else { None };
+        let ca_opt = if ca_path.exists() {
+            Some(ca_path)
+        } else {
+            None
+        };
 
         if cert_path.exists() && key_path.exists() {
             Some(create_tls_acceptor(cert_path, key_path, ca_opt)?)
         } else {
-            info!("TLS enabled but certs not found at {}. Falling back to plain TCP.", config.tls.cert_path);
+            info!(
+                "TLS enabled but certs not found at {}. Falling back to plain TCP.",
+                config.tls.cert_path
+            );
             None
         }
     } else {
@@ -1462,17 +1720,24 @@ async fn main() -> Result<()> {
             interval.tick().await;
             let now = std::time::Instant::now();
             let mut reaped = 0u32;
-            let ids_to_remove: Vec<String> = watchdog_state.sessions.iter()
+            let ids_to_remove: Vec<String> = watchdog_state
+                .sessions
+                .iter()
                 .filter_map(|entry| {
                     let session = entry.value();
                     // Sessions with no recent command and past idle timeout
                     if session.last_command.is_some() {
                         // We don't have per-session timestamps yet, use a heuristic:
                         // sessions in autonomous mode are kept alive
-                        if session.autonomous_mode { return None; }
+                        if session.autonomous_mode {
+                            return None;
+                        }
                     }
                     // For now, reap sessions that have no URL and no commands (abandoned)
-                    if session.current_url.is_none() && session.last_command.is_none() && session.history.is_empty() {
+                    if session.current_url.is_none()
+                        && session.last_command.is_none()
+                        && session.history.is_empty()
+                    {
                         Some(entry.key().clone())
                     } else {
                         None
@@ -1486,7 +1751,11 @@ async fn main() -> Result<()> {
                 reaped += 1;
             }
             if reaped > 0 {
-                info!("Watchdog: reaped {} idle sessions, {} remaining", reaped, watchdog_state.sessions.len());
+                info!(
+                    "Watchdog: reaped {} idle sessions, {} remaining",
+                    reaped,
+                    watchdog_state.sessions.len()
+                );
             }
             let _ = now; // suppress unused warning for future per-session timestamps
             let _ = idle_timeout;
@@ -1505,7 +1774,9 @@ async fn main() -> Result<()> {
             return;
         }
         info!("Shutdown signal received — draining connections...");
-        shutdown_state.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
+        shutdown_state
+            .shutting_down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Save sessions before shutdown
         if let Err(e) = shutdown_state.save_sessions().await {
@@ -1517,13 +1788,18 @@ async fn main() -> Result<()> {
         // Wait for active connections to drain (up to timeout)
         let deadline = tokio::time::Instant::now() + shutdown_timeout;
         loop {
-            let active = shutdown_state.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+            let active = shutdown_state
+                .active_connections
+                .load(std::sync::atomic::Ordering::Relaxed);
             if active == 0 {
                 info!("All connections drained");
                 break;
             }
             if tokio::time::Instant::now() >= deadline {
-                warn!("Shutdown timeout — {} connections still active, forcing exit", active);
+                warn!(
+                    "Shutdown timeout — {} connections still active, forcing exit",
+                    active
+                );
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -1647,9 +1923,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>) 
-where 
-    S: AsyncRead + AsyncWrite + Unpin + Send 
+async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
 {
     let mut session_id: Option<String> = None;
 
@@ -1659,17 +1935,21 @@ where
                 let _ = handler.send_message(&Message::Pong { timestamp }).await;
             }
             Ok(Message::Request(req)) => {
-                let req_span = span!(Level::INFO, "request", request_id = %req.id, command = ?req.command);
+                let req_span =
+                    span!(Level::INFO, "request", request_id = %req.id, command = ?req.command);
                 let _enter = req_span.enter();
                 info!("Received request: {:?}", req);
-                
+
                 // 1. Check session limit for new sessions
-                if session_id.is_none() && state.sessions.len() >= state.config.server.max_sessions {
-                    let _ = handler.send_message(&Message::Response(Response {
-                        id: req.id,
-                        result: None,
-                        error: Some("Server busy: maximum sessions reached".to_string()),
-                    })).await;
+                if session_id.is_none() && state.sessions.len() >= state.config.server.max_sessions
+                {
+                    let _ = handler
+                        .send_message(&Message::Response(Response {
+                            id: req.id,
+                            result: None,
+                            error: Some("Server busy: maximum sessions reached".to_string()),
+                        }))
+                        .await;
                     return;
                 }
 
@@ -1680,22 +1960,24 @@ where
                     let new_id = Uuid::new_v4().to_string();
                     SESSIONS_ACTIVE.inc();
                     state.sessions.insert(new_id.clone(), Session::new());
-                    
+
                     // Register session with cluster
                     let cluster = state.cluster.lock().await;
                     cluster.register_local_session(new_id.clone());
-                    
+
                     session_id = Some(new_id.clone());
                     new_id
                 };
 
                 // 3. Enforce rate limit
                 if !state.check_rate_limit(&id) {
-                    let _ = handler.send_message(&Message::Response(Response {
-                        id: req.id,
-                        result: None,
-                        error: Some("Rate limit exceeded".to_string()),
-                    })).await;
+                    let _ = handler
+                        .send_message(&Message::Response(Response {
+                            id: req.id,
+                            result: None,
+                            error: Some("Rate limit exceeded".to_string()),
+                        }))
+                        .await;
                     continue;
                 }
 
@@ -1704,7 +1986,11 @@ where
                     if session.needs_morph {
                         let seed = rand::random::<u64>();
                         info!("Sending proactive MorphRequest for session {}", id);
-                        if handler.send_message(&Message::MorphRequest { seed }).await.is_ok() {
+                        if handler
+                            .send_message(&Message::MorphRequest { seed })
+                            .await
+                            .is_ok()
+                        {
                             handler.morph_now(seed);
                             session.needs_morph = false;
                         }
@@ -1719,13 +2005,17 @@ where
                         .as_nanos() as u64;
                     handler.morph_now(seed);
                     PROTOCOL_MORPHS.inc();
-                    (Response {
-                        id: req.id,
-                        result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
-                        error: None,
-                    }, Vec::new())
+                    (
+                        Response {
+                            id: req.id,
+                            result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
+                            error: None,
+                        },
+                        Vec::new(),
+                    )
                 } else {
-                    let (res, latent) = handle_command(&state, &id, req.command.clone(), req.id).await;
+                    let (res, latent) =
+                        handle_command(&state, &id, req.command.clone(), req.id).await;
                     if let Some(mut session) = state.sessions.get_mut(&id) {
                         session.last_command = Some(req.command);
                     }
@@ -1735,7 +2025,7 @@ where
                 if let Err(e) = handler.send_message(&Message::Response(res)).await {
                     error!("Failed to send response: {}", e);
                 }
-                
+
                 // Stream any latent vectors produced
                 for vector in latent_to_stream {
                     let latent_msg = spine_protocol::LatentVector {
@@ -1743,7 +2033,10 @@ where
                         dim_hint: 0,
                         epoch: 0,
                     };
-                    if let Err(e) = handler.send_message(&Message::LatentMessage(latent_msg)).await {
+                    if let Err(e) = handler
+                        .send_message(&Message::LatentMessage(latent_msg))
+                        .await
+                    {
                         error!("Failed to stream latent vector: {}", e);
                     }
                 }
@@ -1754,7 +2047,7 @@ where
                 handler.speculate_responses(|predicted_hash| {
                     let session = state_clone.sessions.get(&id_clone)?;
                     let last_cmd = session.last_command.as_ref()?;
-                    
+
                     match last_cmd {
                         BrowserCommand::Navigate { .. } => {
                             // If we just navigated, the agent will likely ask for UR
@@ -1782,7 +2075,7 @@ where
                         }
                         _ => {}
                     }
-                    
+
                     None
                 });
             }

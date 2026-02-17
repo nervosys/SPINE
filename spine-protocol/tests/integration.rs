@@ -10,7 +10,7 @@
 //! - Stress testing
 
 use spine_protocol::{
-    BrowserCommand, Event, Message, ProtocolHandler, Request, Response, LatentVector,
+    BrowserCommand, Event, LatentVector, Message, ProtocolHandler, Request, Response,
 };
 /// Create a pair of ProtocolHandlers connected via in-process duplex stream
 fn handler_pair() -> (
@@ -60,7 +60,10 @@ async fn protocol_plaintext_request_response() {
             assert_eq!(r.id, "test-1");
             assert!(r.error.is_none());
         }
-        other => panic!("Expected Response, got {:?}", std::mem::discriminant(&other)),
+        other => panic!(
+            "Expected Response, got {:?}",
+            std::mem::discriminant(&other)
+        ),
     }
 }
 
@@ -104,7 +107,10 @@ async fn protocol_plaintext_latent_vector() {
             assert_eq!(v.dim_hint, 4);
             assert_eq!(v.epoch, 7);
         }
-        other => panic!("Expected LatentMessage, got {:?}", std::mem::discriminant(&other)),
+        other => panic!(
+            "Expected LatentMessage, got {:?}",
+            std::mem::discriminant(&other)
+        ),
     }
 }
 
@@ -153,7 +159,6 @@ async fn protocol_encrypted_multiple_messages() {
 }
 
 // ========== CHAMELEON PROTOCOL ==========
-
 
 // ========== CHAMELEON PROTOCOL ==========
 

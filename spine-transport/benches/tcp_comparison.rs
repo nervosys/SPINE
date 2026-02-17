@@ -92,23 +92,19 @@ fn bench_tcp_latency(c: &mut Criterion) {
         });
 
         // SPINE frame encode/decode (simulated processing)
-        group.bench_with_input(
-            BenchmarkId::new("SPINE_frame", size),
-            size,
-            |b, &size| {
-                let mut codec = FrameCodec::new(size * 2);
-                let frame = make_frame(size);
+        group.bench_with_input(BenchmarkId::new("SPINE_frame", size), size, |b, &size| {
+            let mut codec = FrameCodec::new(size * 2);
+            let frame = make_frame(size);
 
-                b.iter(|| {
-                    // Encode
-                    let encoded = codec.encode(&frame);
+            b.iter(|| {
+                // Encode
+                let encoded = codec.encode(&frame);
 
-                    // Decode
-                    let decoded = codec.decode(&encoded).unwrap();
-                    black_box(decoded);
-                });
-            },
-        );
+                // Decode
+                let decoded = codec.decode(&encoded).unwrap();
+                black_box(decoded);
+            });
+        });
     }
 
     group.finish();
@@ -198,21 +194,17 @@ fn bench_allocation(c: &mut Criterion) {
         });
 
         // SPINE slab allocator
-        group.bench_with_input(
-            BenchmarkId::new("SPINE_slab", count),
-            count,
-            |b, &count| {
-                b.iter(|| {
-                    let allocator = SlabAllocator::new(1024, count);
-                    let mut handles = Vec::with_capacity(count);
-                    for _ in 0..count {
-                        let buf = allocator.borrow();
-                        handles.push(buf);
-                    }
-                    black_box(handles);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("SPINE_slab", count), count, |b, &count| {
+            b.iter(|| {
+                let allocator = SlabAllocator::new(1024, count);
+                let mut handles = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let buf = allocator.borrow();
+                    handles.push(buf);
+                }
+                black_box(handles);
+            });
+        });
 
         // SPINE hierarchical allocator
         group.bench_with_input(
@@ -384,36 +376,28 @@ fn bench_serialization(c: &mut Criterion) {
         });
 
         // SPINE frame codec
-        group.bench_with_input(
-            BenchmarkId::new("SPINE_codec", size),
-            size,
-            |b, &size| {
-                let codec = FrameCodec::new(size * 2);
-                let frame = make_frame(size);
+        group.bench_with_input(BenchmarkId::new("SPINE_codec", size), size, |b, &size| {
+            let codec = FrameCodec::new(size * 2);
+            let frame = make_frame(size);
 
-                b.iter(|| {
-                    let encoded = codec.encode(&frame);
-                    black_box(encoded);
-                });
-            },
-        );
+            b.iter(|| {
+                let encoded = codec.encode(&frame);
+                black_box(encoded);
+            });
+        });
 
         // SPINE frame builder (optimized)
-        group.bench_with_input(
-            BenchmarkId::new("SPINE_builder", size),
-            size,
-            |b, &size| {
-                let data = vec![0xABu8; size];
+        group.bench_with_input(BenchmarkId::new("SPINE_builder", size), size, |b, &size| {
+            let data = vec![0xABu8; size];
 
-                b.iter(|| {
-                    let frame = FrameBuilder::new()
-                        .stream_id(1)
-                        .payload(Bytes::from(data.clone()))
-                        .build();
-                    black_box(frame);
-                });
-            },
-        );
+            b.iter(|| {
+                let frame = FrameBuilder::new()
+                    .stream_id(1)
+                    .payload(Bytes::from(data.clone()))
+                    .build();
+                black_box(frame);
+            });
+        });
     }
 
     group.finish();

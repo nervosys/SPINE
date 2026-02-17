@@ -1190,7 +1190,9 @@ impl QuantumKeyEvolution {
 
     /// Verify key chain integrity (constant-time comparison)
     pub fn verify_evolution(&self, expected_hash: &[u8; 32]) -> bool {
-        self.key_history.iter().any(|h| h.ct_eq(expected_hash).into())
+        self.key_history
+            .iter()
+            .any(|h| h.ct_eq(expected_hash).into())
     }
 
     /// Get evolution counter for synchronization
@@ -1642,7 +1644,7 @@ mod tests {
             MirasVariant::Moneta { p: 2.0 },
             MirasVariant::Memora,
         ] {
-            let predictor = MirasTitansPredictor::new_with_variant(config.clone(), variant.clone());
+            let predictor = MirasTitansPredictor::new_with_variant(config.clone(), variant);
 
             // Check variant matches what was requested (before any adaptive switching)
             match variant {
@@ -2072,7 +2074,7 @@ mod tests {
         // Predictions should have reasonable confidence
         let (_, confidence) = predictor.predict_next();
         assert!(
-            confidence >= 0.0 && confidence <= 1.0,
+            (0.0..=1.0).contains(&confidence),
             "Confidence should be normalized"
         );
 
@@ -2105,7 +2107,12 @@ mod tests {
     fn test_aead_tampered_ciphertext_rejected() {
         // Verify that AES-256-GCM rejects tampered ciphertext
         let config = TransformerConfig::default();
-        let params = LatticeParams { n: 32, q: 257, p: 3, sigma: 2.0 };
+        let params = LatticeParams {
+            n: 32,
+            q: 257,
+            p: 3,
+            sigma: 2.0,
+        };
 
         let mut alice = QuantumSpeculativeProtocol::new(config.clone(), params.clone(), 42);
         let mut bob = QuantumSpeculativeProtocol::new(config, params, 42);
@@ -2114,7 +2121,11 @@ mod tests {
         let mut quantum_msg = alice.send(msg);
 
         // Tamper with the encrypted message
-        if let MessagePayload::Full { ref mut encrypted_message, .. } = quantum_msg.payload {
+        if let MessagePayload::Full {
+            ref mut encrypted_message,
+            ..
+        } = quantum_msg.payload
+        {
             if let Some(byte) = encrypted_message.last_mut() {
                 *byte ^= 0xFF; // Flip bits
             }
@@ -2122,13 +2133,21 @@ mod tests {
 
         // Bob should reject tampered message (AES-GCM authentication failure)
         let received = bob.receive(&quantum_msg);
-        assert!(received.is_none(), "Tampered ciphertext must be rejected by AEAD");
+        assert!(
+            received.is_none(),
+            "Tampered ciphertext must be rejected by AEAD"
+        );
     }
 
     #[test]
     fn test_key_evolution_maintains_kem_invariant() {
         // Verify that key evolution produces valid keypairs (b = a*s + e)
-        let params = LatticeParams { n: 32, q: 257, p: 3, sigma: 2.0 };
+        let params = LatticeParams {
+            n: 32,
+            q: 257,
+            p: 3,
+            sigma: 2.0,
+        };
         let mut ke = QuantumKeyEvolution::new(params, 99);
 
         for _ in 0..5 {
@@ -2150,7 +2169,10 @@ mod tests {
         for _ in 0..5 {
             let h1 = ke1.evolve();
             let h2 = ke2.evolve();
-            assert_eq!(h1, h2, "Deterministic evolution must produce identical hashes");
+            assert_eq!(
+                h1, h2,
+                "Deterministic evolution must produce identical hashes"
+            );
         }
         assert_eq!(ke1.get_key_hash(), ke2.get_key_hash());
     }
@@ -2159,7 +2181,12 @@ mod tests {
     fn test_aes_gcm_round_trip() {
         // Full send/receive round-trip with AES-256-GCM
         let config = TransformerConfig::default();
-        let params = LatticeParams { n: 64, q: 257, p: 3, sigma: 1.5 };
+        let params = LatticeParams {
+            n: 64,
+            q: 257,
+            p: 3,
+            sigma: 1.5,
+        };
 
         let mut alice = QuantumSpeculativeProtocol::new(config.clone(), params.clone(), 100);
         let mut bob = QuantumSpeculativeProtocol::new(config, params, 100);
@@ -2170,7 +2197,12 @@ mod tests {
             let quantum_msg = alice.send(msg.as_bytes());
             let received = bob.receive(&quantum_msg);
             assert!(received.is_some(), "Message {} should decrypt", i);
-            assert_eq!(received.unwrap(), msg.as_bytes(), "Message {} content mismatch", i);
+            assert_eq!(
+                received.unwrap(),
+                msg.as_bytes(),
+                "Message {} content mismatch",
+                i
+            );
         }
     }
 }

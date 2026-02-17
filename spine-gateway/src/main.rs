@@ -221,10 +221,7 @@ fn err(status: StatusCode, msg: impl ToString) -> (StatusCode, Json<ErrorRespons
     )
 }
 
-fn get_session(
-    state: &AppState,
-    id: Uuid,
-) -> Result<Session, (StatusCode, Json<ErrorResponse>)> {
+fn get_session(state: &AppState, id: Uuid) -> Result<Session, (StatusCode, Json<ErrorResponse>)> {
     state
         .sessions
         .get(&id)
@@ -258,9 +255,7 @@ async fn create_session(
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("connect failed: {e}")))?;
     let id = Uuid::new_v4();
-    state
-        .sessions
-        .insert(id, Arc::new(Mutex::new(client)));
+    state.sessions.insert(id, Arc::new(Mutex::new(client)));
     Ok((
         StatusCode::CREATED,
         Json(SessionInfo {
@@ -607,7 +602,9 @@ mod tests {
 
     #[test]
     fn test_parse_html_offline() {
-        let ur = parse_html("<html><head><title>Test</title></head><body><p>Hello</p></body></html>").unwrap();
+        let ur =
+            parse_html("<html><head><title>Test</title></head><body><p>Hello</p></body></html>")
+                .unwrap();
         assert_eq!(ur.title, "Test");
     }
 }
