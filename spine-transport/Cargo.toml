@@ -39,9 +39,9 @@ log.workspace = true
 tracing = "0.1"
 
 # Zero-copy buffers
-bytes = "1.5"
+bytes = "1.11"
 memmap2 = "0.9"  # Memory-mapped files
-bitflags = "2.4"
+bitflags = "2.11"
 
 # Compression (SIMD-accelerated)
 zstd = "0.12"
