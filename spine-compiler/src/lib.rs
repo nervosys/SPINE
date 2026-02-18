@@ -14,6 +14,135 @@ use spine_protocol::{Instruction, ProtocolBinOp, ProtocolUnaryOp, SpineBinary};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+
+// =============================================================================
+// SOURCE LOCATION TRACKING
+// =============================================================================
+
+/// Source location span for error reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self {
+        Self { start, end }
+    }
+
+    /// Compute (line, column) from source text and byte offset.
+    pub fn line_col(&self, source: &str) -> (usize, usize) {
+        let mut line = 1;
+        let mut col = 1;
+        for (i, ch) in source.char_indices() {
+            if i >= self.start {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                col = 1;
+            } else {
+                col += 1;
+            }
+        }
+        (line, col)
+    }
+
+    /// Merge two spans into one covering both.
+    pub fn merge(self, other: Span) -> Span {
+        Span {
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
+    }
+}
+
+impl std::fmt::Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}..{}", self.start, self.end)
+    }
+}
+
+/// Structured compile-time type error with source location.
+#[derive(Debug, Clone)]
+pub struct TypeError {
+    pub message: String,
+    pub span: Span,
+    pub expected: Option<HlsType>,
+    pub found: Option<HlsType>,
+}
+
+impl TypeError {
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            message: message.into(),
+            span,
+            expected: None,
+            found: None,
+        }
+    }
+
+    pub fn with_types(mut self, expected: HlsType, found: HlsType) -> Self {
+        self.expected = Some(expected);
+        self.found = Some(found);
+        self
+    }
+
+    /// Format the error with source context (filename, line, column, snippet).
+    pub fn format(&self, source: &str) -> String {
+        let (line, col) = self.span.line_col(source);
+        let source_line = source.lines().nth(line - 1).unwrap_or("");
+        let mut msg = format!("error[E0308]: {}", self.message);
+        msg.push_str(&format!("\n --> <hls>:{}:{}", line, col));
+        msg.push_str("\n  |");
+        msg.push_str(&format!("\n{:>3} | {}", line, source_line));
+        msg.push_str("\n  |");
+        if let (Some(expected), Some(found)) = (&self.expected, &self.found) {
+            msg.push_str(&format!("\n  = expected `{:?}`, found `{:?}`", expected, found));
+        }
+        msg
+    }
+}
+
+impl std::fmt::Display for TypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for TypeError {}
+
+/// Collection of type errors accumulated during checking.
+#[derive(Debug, Default)]
+pub struct TypeErrors {
+    pub errors: Vec<TypeError>,
+}
+
+impl TypeErrors {
+    pub fn push(&mut self, err: TypeError) {
+        self.errors.push(err);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    /// Format all errors with source context.
+    pub fn format_all(&self, source: &str) -> String {
+        self.errors
+            .iter()
+            .map(|e| e.format(source))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
+
 // =============================================================================
 // COMPILER STATE
 // =============================================================================
@@ -1045,7 +1174,245 @@ impl Compiler {
         Ok(())
     }
 
-    fn optimize(statements: Vec<HlsStatement>) -> Vec<HlsStatement> {
+
+    /// Perform type checking, collecting all errors instead of aborting on first.
+    /// Returns a `TypeErrors` collection. If non-empty, compilation should fail.
+    #[allow(clippy::only_used_in_recursion)]
+    fn check_types_collect(
+        ctx: &mut CompilerContext,
+        stmt: &HlsStatement,
+        source: &str,
+        errors: &mut TypeErrors,
+    ) {
+        match stmt {
+            HlsStatement::Let { name, value, type_annotation } => {
+                match Self::infer_expr_type(ctx, value) {
+                    Ok(val_type) => {
+                        let final_type = if let Some(annotated) = type_annotation {
+                            if !Self::types_match(annotated, &val_type) {
+                                errors.push(
+                                    TypeError::new(
+                                        format!("type mismatch for variable '{}'", name),
+                                        Span::default(),
+                                    )
+                                    .with_types(annotated.clone(), val_type.clone()),
+                                );
+                            }
+                            annotated.clone()
+                        } else {
+                            val_type
+                        };
+                        ctx.variables.insert(name.clone(), (final_type, HlsValue::Null));
+                    }
+                    Err(e) => {
+                        errors.push(TypeError::new(e.to_string(), Span::default()));
+                    }
+                }
+            }
+            HlsStatement::State { name, initial, type_annotation } => {
+                match Self::infer_expr_type(ctx, initial) {
+                    Ok(val_type) => {
+                        let final_type = if let Some(annotated) = type_annotation {
+                            if !Self::types_match(annotated, &val_type) {
+                                errors.push(
+                                    TypeError::new(
+                                        format!("type mismatch for state '{}'", name),
+                                        Span::default(),
+                                    )
+                                    .with_types(annotated.clone(), val_type.clone()),
+                                );
+                            }
+                            annotated.clone()
+                        } else {
+                            val_type
+                        };
+                        ctx.variables.insert(name.clone(), (final_type, HlsValue::Null));
+                    }
+                    Err(e) => {
+                        errors.push(TypeError::new(e.to_string(), Span::default()));
+                    }
+                }
+            }
+            HlsStatement::Assign { name, value } => {
+                match Self::infer_expr_type(ctx, value) {
+                    Ok(val_type) => {
+                        if let Some((expected_type, _)) = ctx.variables.get(name) {
+                            if !Self::types_match(expected_type, &val_type) {
+                                errors.push(
+                                    TypeError::new(
+                                        format!("type mismatch in assignment to '{}'", name),
+                                        Span::default(),
+                                    )
+                                    .with_types(expected_type.clone(), val_type),
+                                );
+                            }
+                        } else {
+                            errors.push(TypeError::new(
+                                format!("undefined variable '{}'", name),
+                                Span::default(),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(TypeError::new(e.to_string(), Span::default()));
+                    }
+                }
+            }
+            HlsStatement::FnDef { name, params, body, return_type } => {
+                let mut fn_ctx = CompilerContext {
+                    variables: ctx.variables.clone(),
+                    functions: ctx.functions.clone(),
+                    ..Default::default()
+                };
+                for (p_name, p_type) in params {
+                    fn_ctx.variables.insert(p_name.clone(), (p_type.clone(), HlsValue::Null));
+                }
+                let r_type = return_type.clone().unwrap_or(HlsType::Any);
+
+                // Check return type consistency
+                for s in body {
+                    if let HlsStatement::Return(Some(ret_expr)) = s {
+                        if let Ok(ret_type) = Self::infer_expr_type(&fn_ctx, ret_expr) {
+                            if r_type != HlsType::Any && !Self::types_match(&r_type, &ret_type) {
+                                errors.push(
+                                    TypeError::new(
+                                        format!(
+                                            "function '{}' return type mismatch",
+                                            name
+                                        ),
+                                        Span::default(),
+                                    )
+                                    .with_types(r_type.clone(), ret_type),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                ctx.functions.insert(
+                    name.clone(),
+                    HlsFunction {
+                        name: name.clone(),
+                        params: params.clone(),
+                        body: body.clone(),
+                        return_type: r_type,
+                    },
+                );
+                for s in body {
+                    Self::check_types_collect(&mut fn_ctx, s, source, errors);
+                }
+            }
+            HlsStatement::Call { name, args } => {
+                if let Some(func) = ctx.functions.get(name) {
+                    if func.params.len() != args.len() {
+                        errors.push(TypeError::new(
+                            format!(
+                                "function '{}' expected {} arguments, found {}",
+                                name,
+                                func.params.len(),
+                                args.len()
+                            ),
+                            Span::default(),
+                        ));
+                    } else {
+                        for (i, arg) in args.iter().enumerate() {
+                            if let Ok(arg_type) = Self::infer_expr_type(ctx, arg) {
+                                if !Self::types_match(&func.params[i].1, &arg_type) {
+                                    errors.push(
+                                        TypeError::new(
+                                            format!(
+                                                "argument {} of '{}' type mismatch",
+                                                i, name
+                                            ),
+                                            Span::default(),
+                                        )
+                                        .with_types(func.params[i].1.clone(), arg_type),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            HlsStatement::If { condition, then_branch, else_branch } => {
+                if let Err(e) = Self::infer_expr_type(ctx, condition) {
+                    errors.push(TypeError::new(e.to_string(), Span::default()));
+                }
+                for s in then_branch {
+                    Self::check_types_collect(ctx, s, source, errors);
+                }
+                if let Some(eb) = else_branch {
+                    for s in eb {
+                        Self::check_types_collect(ctx, s, source, errors);
+                    }
+                }
+            }
+            HlsStatement::For { item, list, body } => {
+                let inner_type = match Self::infer_expr_type(ctx, list) {
+                    Ok(HlsType::List(inner)) => *inner,
+                    Ok(_) => HlsType::Any,
+                    Err(e) => {
+                        errors.push(TypeError::new(e.to_string(), Span::default()));
+                        HlsType::Any
+                    }
+                };
+                ctx.variables.insert(item.clone(), (inner_type, HlsValue::Null));
+                for s in body {
+                    Self::check_types_collect(ctx, s, source, errors);
+                }
+                ctx.variables.remove(item);
+            }
+            HlsStatement::Element { children, .. } => {
+                for s in children {
+                    Self::check_types_collect(ctx, s, source, errors);
+                }
+            }
+            HlsStatement::Navigate(url_expr) => {
+                if let Ok(t) = Self::infer_expr_type(ctx, url_expr) {
+                    if t != HlsType::String && t != HlsType::Any {
+                        errors.push(
+                            TypeError::new("navigate requires a string URL", Span::default())
+                                .with_types(HlsType::String, t),
+                        );
+                    }
+                }
+            }
+            HlsStatement::Search(query_expr) => {
+                if let Ok(t) = Self::infer_expr_type(ctx, query_expr) {
+                    if t != HlsType::String && t != HlsType::Any {
+                        errors.push(
+                            TypeError::new("search requires a string query", Span::default())
+                                .with_types(HlsType::String, t),
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Public API: Type-check a source string, returning all errors at once.
+    pub fn type_check(source: &str) -> Result<(), TypeErrors> {
+        let (_, statements) = parse_program(source)
+            .map_err(|e| {
+                let mut errs = TypeErrors::default();
+                errs.push(TypeError::new(format!("parse error: {}", e), Span::default()));
+                errs
+            })?;
+        let mut ctx = CompilerContext::default();
+        let mut errors = TypeErrors::default();
+        for stmt in &statements {
+            Self::check_types_collect(&mut ctx, stmt, source, &mut errors);
+        }
+        if errors.has_errors() {
+            Err(errors)
+        } else {
+            Ok(())
+        }
+    }
+
+
+        fn optimize(statements: Vec<HlsStatement>) -> Vec<HlsStatement> {
         let mut functions = HashMap::new();
         // First pass: collect and optimize functions for inlining
         for stmt in &statements {
@@ -2303,4 +2670,113 @@ mod tests {
             .iter()
             .any(|i| matches!(i, Instruction::Call { .. })));
     }
+
+
+    #[test]
+    fn test_type_error_span_display() {
+        let span = Span::new(10, 25);
+        assert_eq!(format!("{}", span), "10..25");
+    }
+
+    #[test]
+    fn test_type_error_line_col() {
+        let source = "let x = 1\nlet y = true\nlet z = x + y";
+        let span = Span::new(24, 37); // position of "x + y" on line 3
+        let (line, col) = span.line_col(source);
+        assert_eq!(line, 3);
+    }
+
+    #[test]
+    fn test_type_error_format() {
+        let err = TypeError::new("mismatched types", Span::new(0, 5))
+            .with_types(HlsType::Number, HlsType::String);
+        let formatted = err.format("let x = \"hello\"");
+        assert!(formatted.contains("error[E0308]"));
+        assert!(formatted.contains("mismatched types"));
+        assert!(formatted.contains("Number"));
+        assert!(formatted.contains("String"));
+    }
+
+    #[test]
+    fn test_type_errors_collection() {
+        let mut errors = TypeErrors::default();
+        assert!(errors.is_empty());
+        errors.push(TypeError::new("err1", Span::default()));
+        errors.push(TypeError::new("err2", Span::default()));
+        assert!(errors.has_errors());
+        assert_eq!(errors.errors.len(), 2);
+    }
+
+    #[test]
+    fn test_type_check_valid_program() {
+        let source = "let x: number = 42\nlet y = x + 1";
+        let result = Compiler::type_check(source);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_type_check_mismatch_detected() {
+        let source = "let x: number = \"hello\"";
+        let result = Compiler::type_check(source);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(!errors.is_empty());
+        assert!(errors.errors[0].message.contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_type_check_undefined_variable() {
+        let source = "let x = undeclared_var";
+        let result = Compiler::type_check(source);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.errors[0].message.contains("undefined") || errors.errors[0].message.contains("Undefined"));
+    }
+
+    #[test]
+    fn test_type_check_function_arg_count() {
+        let source = "fn add(a: number, b: number) -> number {\n  return a + b\n}\nadd(1)";
+        let result = Compiler::type_check(source);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.errors[0].message.contains("expected 2 arguments"));
+    }
+
+    #[test]
+    fn test_type_check_function_return_type() {
+        let source = "fn greet(name: string) -> number {\n  return name\n}";
+        let result = Compiler::type_check(source);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.errors[0].message.contains("return type mismatch"));
+    }
+
+    #[test]
+    fn test_type_check_navigate_requires_string() {
+        let source = "navigate 42";
+        let result = Compiler::type_check(source);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.errors[0].message.contains("navigate"));
+    }
+
+    #[test]
+    fn test_type_check_multiple_errors() {
+        // Two separate errors: undefined var and type mismatch
+        let source = "let x: number = \"bad\"\nlet y = unknown_var";
+        let result = Compiler::type_check(source);
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.errors.len() >= 2);
+    }
+
+    #[test]
+    fn test_span_merge() {
+        let s1 = Span::new(5, 10);
+        let s2 = Span::new(8, 20);
+        let merged = s1.merge(s2);
+        assert_eq!(merged.start, 5);
+        assert_eq!(merged.end, 20);
+    }
+
 }

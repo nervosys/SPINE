@@ -250,12 +250,23 @@
 
 ### Phase 18: Observability Dashboard
 
+### Phase 19: HLS Type System ✅
+
+- [x] **Source location tracking**: `Span` type with line/column computation, merge, Display impl
+- [x] **Structured type errors**: `TypeError` with span, expected/found types, source-context formatting (error[E0308] style)
+- [x] **Error collection**: `TypeErrors` accumulator — reports ALL errors instead of aborting on first
+- [x] **Multi-statement type checking**: `check_types_collect` for Let, State, Assign, FnDef, Call, If, For, Element, Navigate, Search
+- [x] **Function signature enforcement**: Param count validation, arg type checking, return type mismatch detection
+- [x] **Navigate/Search type guards**: Enforces string arguments with diagnostic
+- [x] **Public `Compiler::type_check()` API**: Full source type-checking returning structured errors
+- [x] **443 tests passing**: +12 tests (4 Span/TypeError + 8 type checking), 0 failures, 0 Clippy warnings
+
 - [x] **Grafana dashboard**: Pre-built JSON with 12 panels for all SPINE metrics
 - [x] **Prometheus config**: Scrape targets for spine-core and gateway
 - [x] **Gateway `/metrics` endpoint**: Prometheus-format metrics exposition
 - [x] **Gateway request counting**: AtomicU64 counters for requests and errors
 - [x] **OpenTelemetry tracing**: `#[instrument]` on key agent and gateway methods
-- [x] **431 tests passing**: +2 tests, 0 failures, 0 Clippy warnings
+- [x] **443 tests passing**: +2 tests, 0 failures, 0 Clippy warnings
 
 ### Performance Benchmarks
 

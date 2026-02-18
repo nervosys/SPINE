@@ -1035,7 +1035,7 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (431 tests)
+### Test Summary (443 tests)
 
 | Crate           | Tests | Description                                          |
 | --------------- | ----- | ---------------------------------------------------- |

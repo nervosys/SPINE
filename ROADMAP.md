@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 431 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 443 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -236,21 +236,30 @@
 
 ### Phase 18 — Observability Dashboard
 
+### Phase 19: HLS Type System ✅
+
+- [x] **Source location tracking**: `Span` type with line/column computation and merge
+- [x] **Structured type errors**: `TypeError` with span, expected/found types, source-context formatting
+- [x] **Error collection**: `TypeErrors` accumulator — reports ALL errors, not just first
+- [x] **Multi-statement type checking**: `check_types_collect` handles Let, State, Assign, FnDef, Call, If, For, Element, Navigate, Search
+- [x] **Function signature enforcement**: Param count, arg types, and return type checking
+- [x] **Navigate/Search type checking**: Enforces string arguments
+- [x] **Public type_check API**: `Compiler::type_check(source)` returns all errors at once
+- [x] **443 tests passing**: +12 tests, 0 failures, 0 Clippy warnings
+
+
 - [x] **Grafana dashboard**: Pre-built `deploy/grafana/spine-dashboard.json` with 12 panels (sessions, latency, throughput, errors, memory, CPU, prediction, cache, protocol, connections)
 - [x] **Prometheus config**: `deploy/prometheus/prometheus.yml` with spine-core + gateway scrape targets
 - [x] **Gateway `/metrics` endpoint**: Prometheus-format exposition (uptime, active sessions, requests, errors counters)
 - [x] **Gateway request counting**: `AtomicU64` counters for total requests and errors across all API handlers
 - [x] **OpenTelemetry tracing**: `#[instrument]` on key agent methods (navigate, get_ur, search, ping, execute_hls) and gateway handlers (navigate, search, execute_hls)
 - [x] **Agent tracing dep**: Added `tracing = "0.1"` to spine-agent
-- [x] **431 tests passing**: +2 gateway observability tests, 0 failures, 0 Clippy warnings
+- [x] **443 tests passing**: +2 gateway observability tests, 0 failures, 0 Clippy warnings
 
 ## Planned
 
 ### HLS Type System
 
-- [ ] Static type inference for HLS variables
-- [ ] Type-checked function signatures
-- [ ] Compile-time error reporting with source locations
 
 ### Advanced Cryptography
 
