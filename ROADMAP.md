@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 443 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 458 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -238,6 +238,21 @@
 
 ### Phase 19: HLS Type System ✅
 
+### Phase 20: Agent Ontology System ✅
+
+- [x] **OntologyTerm**: URI-based terms with labels, descriptions, parent hierarchy, properties
+- [x] **AgentOntology**: Namespace-versioned ontology with term management and whole-ontology hashing
+- [x] **Cryptographic hashes**: SHA-256 per-term and whole-ontology hashes for HashOnly visibility
+- [x] **Neural hashes**: Locality-sensitive embeddings for NeuralHash visibility (approximate matching)
+- [x] **Visibility controls**: Public, HashOnly, NeuralHash, Private per-term visibility
+- [x] **DisclosedOntology**: Privacy-preserving views combining cleartext, hashed, and neural terms
+- [x] **OntologyAccessControl**: Per-agent permission rules with first-match-wins resolution
+- [x] **OntologyRegistry**: Discovery index with term lookup, hash verification, and neural similarity search
+- [x] **AgentProfile integration**: `ontology` field with `with_ontology()` builder
+- [x] **Compatibility scoring**: Jaccard similarity between agents' public ontology terms
+- [x] **458 tests passing**: +15 tests (14 ontology + 1 agentic), 0 failures, 0 Clippy warnings
+
+
 - [x] **Source location tracking**: `Span` type with line/column computation and merge
 - [x] **Structured type errors**: `TypeError` with span, expected/found types, source-context formatting
 - [x] **Error collection**: `TypeErrors` accumulator — reports ALL errors, not just first
@@ -245,7 +260,7 @@
 - [x] **Function signature enforcement**: Param count, arg types, and return type checking
 - [x] **Navigate/Search type checking**: Enforces string arguments
 - [x] **Public type_check API**: `Compiler::type_check(source)` returns all errors at once
-- [x] **443 tests passing**: +12 tests, 0 failures, 0 Clippy warnings
+- [x] **458 tests passing**: +12 tests, 0 failures, 0 Clippy warnings
 
 
 - [x] **Grafana dashboard**: Pre-built `deploy/grafana/spine-dashboard.json` with 12 panels (sessions, latency, throughput, errors, memory, CPU, prediction, cache, protocol, connections)
@@ -254,7 +269,7 @@
 - [x] **Gateway request counting**: `AtomicU64` counters for total requests and errors across all API handlers
 - [x] **OpenTelemetry tracing**: `#[instrument]` on key agent methods (navigate, get_ur, search, ping, execute_hls) and gateway handlers (navigate, search, execute_hls)
 - [x] **Agent tracing dep**: Added `tracing = "0.1"` to spine-agent
-- [x] **443 tests passing**: +2 gateway observability tests, 0 failures, 0 Clippy warnings
+- [x] **458 tests passing**: +2 gateway observability tests, 0 failures, 0 Clippy warnings
 
 ## Planned
 

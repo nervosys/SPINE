@@ -252,6 +252,20 @@
 
 ### Phase 19: HLS Type System ✅
 
+### Phase 20: Agent Ontology System ✅
+
+- [x] **OntologyTerm**: URI-based terms with labels, descriptions, parent hierarchy, properties
+- [x] **AgentOntology**: Namespace-versioned ontology with term management and whole-ontology hashing
+- [x] **Cryptographic hashes**: SHA-256 per-term and whole-ontology hashes for HashOnly visibility
+- [x] **Neural hashes**: Locality-sensitive embeddings for NeuralHash visibility (approximate matching)
+- [x] **Visibility controls**: Public, HashOnly, NeuralHash, Private per-term visibility
+- [x] **DisclosedOntology**: Privacy-preserving views combining cleartext, hashed, and neural terms
+- [x] **OntologyAccessControl**: Per-agent permission rules with first-match-wins resolution
+- [x] **OntologyRegistry**: Discovery index with term lookup, hash verification, and neural similarity search
+- [x] **AgentProfile integration**: `ontology` field with `with_ontology()` builder
+- [x] **Compatibility scoring**: Jaccard similarity between agents' public ontology terms
+- [x] **458 tests passing**: +15 tests (14 ontology + 1 agentic), 0 failures, 0 Clippy warnings
+
 - [x] **Source location tracking**: `Span` type with line/column computation, merge, Display impl
 - [x] **Structured type errors**: `TypeError` with span, expected/found types, source-context formatting (error[E0308] style)
 - [x] **Error collection**: `TypeErrors` accumulator — reports ALL errors instead of aborting on first
@@ -259,14 +273,14 @@
 - [x] **Function signature enforcement**: Param count validation, arg type checking, return type mismatch detection
 - [x] **Navigate/Search type guards**: Enforces string arguments with diagnostic
 - [x] **Public `Compiler::type_check()` API**: Full source type-checking returning structured errors
-- [x] **443 tests passing**: +12 tests (4 Span/TypeError + 8 type checking), 0 failures, 0 Clippy warnings
+- [x] **458 tests passing**: +12 tests (4 Span/TypeError + 8 type checking), 0 failures, 0 Clippy warnings
 
 - [x] **Grafana dashboard**: Pre-built JSON with 12 panels for all SPINE metrics
 - [x] **Prometheus config**: Scrape targets for spine-core and gateway
 - [x] **Gateway `/metrics` endpoint**: Prometheus-format metrics exposition
 - [x] **Gateway request counting**: AtomicU64 counters for requests and errors
 - [x] **OpenTelemetry tracing**: `#[instrument]` on key agent and gateway methods
-- [x] **443 tests passing**: +2 tests, 0 failures, 0 Clippy warnings
+- [x] **458 tests passing**: +2 tests, 0 failures, 0 Clippy warnings
 
 ### Performance Benchmarks
 
