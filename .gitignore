@@ -1,6 +1,6 @@
 # Build artifacts
 /target/
-Cargo.lock
+# Cargo.lock is committed for reproducible builds (workspace has binaries)
 
 # IDE
 .idea/

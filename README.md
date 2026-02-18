@@ -3,7 +3,8 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-402%20passing-brightgreen.svg)](#testing)
+[![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
+[![Tests](https://img.shields.io/badge/tests-415%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Path INterconnecting Entities) is a **headless semantic browser with adaptive encryption** — not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
 
@@ -1034,26 +1035,28 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (402 tests)
+### Test Summary (415 tests)
 
 | Crate           | Tests | Description                                          |
 | --------------- | ----- | ---------------------------------------------------- |
-| spine-kernel    | 32    | SIMD, allocators, atomics, ring buffers              |
+| spine-protocol  | 67    | Chameleon protocol, chaos, integration, property     |
+| spine-transport | 57    | Zero-copy I/O, BBR, connection pooling, property     |
+| spine-crypto    | 41    | RLWE, Titans predictor, MIRAS, property              |
+| spine-cluster   | 37    | Load balancing, session management, Sybil resistance |
+| spine-kernel    | 35    | SIMD, allocators, atomics, ring buffers              |
 | spine-stream    | 35    | Reactive streams, multiplexing, flow                 |
-| spine-transport | 33    | Zero-copy I/O, BBR, connection pooling               |
-| spine-protocol  | 27    | Chameleon protocol, co-evolution                     |
-| spine-crypto    | 23    | RLWE, Titans predictor, MIRAS                        |
 | spine-neural    | 19    | VAE, attention, memory variants                      |
-| spine-recursive | 15    | Infinite context, LLM dispatchers                    |
-| spine-knowledge | 9     | Episodic, semantic, collective memory                |
-| spine-compiler  | 9     | HLS parsing, compilation, optimization               |
 | spine-cache     | 16    | LRU, tiered caching, TTL eviction                    |
+| spine-recursive | 15    | Infinite context, LLM dispatchers                    |
 | spine-k8s       | 13    | CRD generation, autoscaling, manifests               |
 | spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders              |
+| spine-agent     | 11    | SDK API, protocol types, connection handling          |
+| spine-knowledge | 9     | Episodic, semantic, collective memory                |
+| spine-compiler  | 9     | HLS parsing, compilation, optimization               |
 | spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                   |
-| spine-parser    | 8     | HTML parsing, UR extraction, selectors               |
-| spine-core      | 6     | Session orchestration, config management              |
-| spine-cluster   | 7     | Load balancing, session management, Sybil resistance |
+| spine-parser    | 8     | HTML parsing, UR extraction, property tests          |
+| spine-core      | 6     | Session orchestration, config management             |
+| spine-gateway   | 5     | REST API gateway, health checks                      |
 | spine-agentic   | 4     | Agent creation, knowledge graph                      |
 | spine-wasm      | 3     | HLB → WASM compilation and execution                 |
 | spine-human     | 2     | Human interaction patterns                           |

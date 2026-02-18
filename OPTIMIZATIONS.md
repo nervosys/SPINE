@@ -228,7 +228,7 @@ Applied **82 automatic fixes** across the codebase:
 All optimizations maintain:
 - ✅ **Semantic equivalence** (proven mathematically)
 - ✅ **Safety invariants** (Rust's ownership + documented unsafe)
-- ✅ **402 tests passing** (verified experimentally)
+- ✅ **415 tests passing** (verified experimentally)
 - ✅ **0 Clippy warnings**
 
 ### Performance Benchmarks
@@ -433,7 +433,7 @@ impl FlatDenseLayer {
 - Better CPU prefetching and cache utilization
 - Convert existing models with `FlatDenseLayer::from_dense_layer()`
 
-**Tests:** 402 passing ✅
+**Tests:** 415 passing ✅
 **Warnings:** 0 remaining
 
 ---
@@ -507,5 +507,5 @@ if data.len() >= self.compression_threshold {
 | Single-pass cosine   | ~3× less memory traffic                 |
 | Partial sort         | O(n) avg for top-k retrieval            |
 
-**Tests:** 402 passing ✅
+**Tests:** 415 passing ✅
 **Warnings:** 0 remaining

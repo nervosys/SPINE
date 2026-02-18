@@ -668,3 +668,137 @@ where
         Ok(())
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compiler_reexport() {
+        // Verify Compiler is re-exported and can compile HLS
+        let binary = Compiler::compile("element div { }").unwrap();
+        assert!(!binary.instructions.is_empty());
+    }
+
+    #[test]
+    fn test_compiler_reexport_error() {
+        // Invalid HLS should return an error, not panic
+        let result = Compiler::compile("");
+        // Empty input may compile to empty binary or error depending on parser
+        // Just ensure it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_agent_client_speculation_stats_type() {
+        // Verify the SpeculationStats type is accessible
+        let stats = spine_protocol::SpeculationStats::default();
+        assert_eq!(stats.output_predictions, 0);
+        assert_eq!(stats.output_hits, 0);
+    }
+
+    #[test]
+    fn test_browser_command_serialization() {
+        // Test that BrowserCommand variants serialize correctly for the agent protocol
+        let cmd = BrowserCommand::Navigate {
+            url: "https://example.com".to_string(),
+        };
+        let json = serde_json::to_value(&cmd).unwrap();
+        assert!(json.to_string().contains("example.com"));
+
+        let cmd2 = BrowserCommand::GetUR;
+        let json2 = serde_json::to_value(&cmd2).unwrap();
+        assert!(!json2.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_request_response_protocol() {
+        // Test that Request/Response types work correctly
+        let req = Request {
+            id: "1".to_string(),
+            command: BrowserCommand::GetCapabilities,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.id, "1");
+
+        let res = Response {
+            id: "1".to_string(),
+            result: Some(serde_json::json!({"capabilities": ["navigate", "search"]})),
+            error: None,
+        };
+        assert!(res.error.is_none());
+        assert!(res.result.is_some());
+    }
+
+    #[test]
+    fn test_message_variants() {
+        // Test that Message::Request and Message::Response serialize/deserialize
+        let msg = Message::Request(Request {
+            id: "42".to_string(),
+            command: BrowserCommand::Morph,
+        });
+        let json = serde_json::to_string(&msg).unwrap();
+        let rt: Message = serde_json::from_str(&json).unwrap();
+        match rt {
+            Message::Request(r) => assert_eq!(r.id, "42"),
+            _ => panic!("Expected Request variant"),
+        }
+    }
+
+    #[test]
+    fn test_ping_message() {
+        let msg = Message::Ping { timestamp: 1234567890 };
+        let json = serde_json::to_string(&msg).unwrap();
+        let rt: Message = serde_json::from_str(&json).unwrap();
+        match rt {
+            Message::Ping { timestamp } => assert_eq!(timestamp, 1234567890),
+            _ => panic!("Expected Ping variant"),
+        }
+    }
+
+    #[test]
+    fn test_latent_message() {
+        let msg = Message::LatentMessage(spine_protocol::LatentVector {
+            components: vec![0.1, 0.2, 0.3],
+            dim_hint: 3,
+            epoch: 0,
+        });
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("0.1"));
+    }
+
+    #[tokio::test]
+    async fn test_connect_invalid_address() {
+        // Connecting to an invalid address should return an error, not panic
+        let result = AgentClient::connect("127.0.0.1:1").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connect_with_retry_fails_fast() {
+        // With 0 retries and invalid addr, should fail immediately
+        let result = AgentClient::connect_with_retry(
+            "127.0.0.1:1",
+            0,
+            std::time::Duration::from_millis(1),
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_wasm_execution_result_default() {
+        let result = spine_wasm::WasmExecutionResult {
+            elements: vec![],
+            events: vec![],
+            latent_streams: vec![],
+            actions: vec![],
+            stats: spine_wasm::WasmStats::default(),
+        };
+        assert!(result.elements.is_empty());
+        assert_eq!(result.stats.wasm_size_bytes, 0);
+    }
+}

@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 402 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 415 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -208,6 +208,17 @@
 - [x] **Stale reference sweep**: Updated all "363 tests" → "402 tests" across README, OPTIMIZATIONS, paper, ROADMAP
 - [x] **CI status badge**: Added GitHub Actions CI badge to README
 - [x] **README test table**: Added spine-gpu, spine-storage, spine-cache, spine-k8s, spine-parser, spine-core rows
+
+### Phase 16 — Quality Infrastructure
+
+- [x] **Accurate test table**: Per-crate counts verified via `cargo test --workspace --list`, sorted by count descending
+- [x] **spine-agent tests**: 11 unit tests covering SDK API, protocol types, connection handling, compiler re-exports
+- [x] **CI coverage job**: cargo-llvm-cov + Codecov upload with LLVM instrumentation
+- [x] **CI cargo-deny job**: License allow-list, advisory database, ban/source rules via deny.toml
+- [x] **CI MSRV check**: Rust 1.75.0 minimum supported version verification
+- [x] **Dependabot config**: Weekly updates for Cargo dependencies and GitHub Actions
+- [x] **Cargo.lock committed**: Removed from .gitignore for reproducible builds
+- [x] **415 tests passing**: +13 tests (+11 spine-agent + 2 doc tests), 0 failures, 0 Clippy warnings
 
 ## Planned
 
