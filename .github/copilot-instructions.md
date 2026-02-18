@@ -248,6 +248,15 @@
 - [x] **Gateway TLS config**: Backend TLS config propagated through AppState
 - [x] **429 tests passing**: +14 tests (8 TLS + 6 config tests), 0 failures, 0 Clippy warnings
 
+### Phase 18: Observability Dashboard
+
+- [x] **Grafana dashboard**: Pre-built JSON with 12 panels for all SPINE metrics
+- [x] **Prometheus config**: Scrape targets for spine-core and gateway
+- [x] **Gateway `/metrics` endpoint**: Prometheus-format metrics exposition
+- [x] **Gateway request counting**: AtomicU64 counters for requests and errors
+- [x] **OpenTelemetry tracing**: `#[instrument]` on key agent and gateway methods
+- [x] **431 tests passing**: +2 tests, 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |

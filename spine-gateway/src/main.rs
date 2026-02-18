@@ -4,12 +4,13 @@
 //! Provides session management, navigation, search, HLS execution, and health
 //! endpoints with auto-generated Swagger UI.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Json;
+use axum::response::{Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use dashmap::DashMap;
@@ -25,6 +26,7 @@ use spine_agent::AgentClient;
 use spine_compiler::Compiler;
 use spine_core::SpineConfig;
 use spine_parser::parse_html;
+use tracing::instrument;
 
 // ---------------------------------------------------------------------------
 // OpenAPI schema
@@ -94,6 +96,8 @@ struct AppState {
     max_sessions: usize,
     #[allow(dead_code)]
     tls_config: spine_core::config::TlsConfig,
+    requests_total: AtomicU64,
+    errors_total: AtomicU64,
 }
 
 impl AppState {
@@ -104,6 +108,8 @@ impl AppState {
             start_time: Instant::now(),
             max_sessions: config.server.max_sessions,
             tls_config: config.tls.clone(),
+            requests_total: AtomicU64::new(0),
+            errors_total: AtomicU64::new(0),
         }
     }
 }
@@ -250,7 +256,9 @@ async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateSessionReq>,
 ) -> Result<(StatusCode, Json<SessionInfo>), (StatusCode, Json<ErrorResponse>)> {
+    state.requests_total.fetch_add(1, Ordering::Relaxed);
     if state.sessions.len() >= state.max_sessions {
+        state.errors_total.fetch_add(1, Ordering::Relaxed);
         return Err(err(StatusCode::SERVICE_UNAVAILABLE, "max sessions reached"));
     }
     let addr = req.backend_addr.as_deref().unwrap_or(&state.backend_addr);
@@ -301,11 +309,13 @@ async fn delete_session(
         (status = 502, description = "Backend error", body = ErrorResponse),
     )
 )]
+#[instrument(skip_all, fields(id = %id))]
 async fn navigate(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
     Json(req): Json<NavigateReq>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    state.requests_total.fetch_add(1, Ordering::Relaxed);
     let session = get_session(&state, id)?;
     let mut client = session.lock().await;
     client
@@ -380,11 +390,13 @@ async fn get_html(
         (status = 502, body = ErrorResponse),
     )
 )]
+#[instrument(skip_all, fields(id = %id))]
 async fn search(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
     Json(req): Json<SearchReq>,
 ) -> Result<Json<SearchResponse>, (StatusCode, Json<ErrorResponse>)> {
+    state.requests_total.fetch_add(1, Ordering::Relaxed);
     let session = get_session(&state, id)?;
     let mut client = session.lock().await;
     let results = client
@@ -406,11 +418,13 @@ async fn search(
         (status = 502, body = ErrorResponse),
     )
 )]
+#[instrument(skip_all, fields(id = %id))]
 async fn execute_hls(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
     Json(req): Json<ExecuteHlsReq>,
 ) -> Result<Json<ExecResponse>, (StatusCode, Json<ErrorResponse>)> {
+    state.requests_total.fetch_add(1, Ordering::Relaxed);
     let session = get_session(&state, id)?;
     let mut client = session.lock().await;
     let result = client
@@ -517,6 +531,35 @@ async fn ready(State(state): State<Arc<AppState>>) -> Json<ReadyResponse> {
     })
 }
 
+/// Prometheus-compatible metrics endpoint
+async fn metrics(State(state): State<Arc<AppState>>) -> Response {
+    let uptime = state.start_time.elapsed().as_secs();
+    let sessions = state.sessions.len();
+    let requests = state.requests_total.load(Ordering::Relaxed);
+    let errors = state.errors_total.load(Ordering::Relaxed);
+
+    let body = format!(
+        "# HELP spine_gateway_uptime_seconds Gateway uptime in seconds\n\
+         # TYPE spine_gateway_uptime_seconds gauge\n\
+         spine_gateway_uptime_seconds {}\n\
+         # HELP spine_gateway_active_sessions Number of active sessions\n\
+         # TYPE spine_gateway_active_sessions gauge\n\
+         spine_gateway_active_sessions {}\n\
+         # HELP spine_gateway_requests_total Total API requests\n\
+         # TYPE spine_gateway_requests_total counter\n\
+         spine_gateway_requests_total {}\n\
+         # HELP spine_gateway_errors_total Total API errors\n\
+         # TYPE spine_gateway_errors_total counter\n\
+         spine_gateway_errors_total {}\n",
+        uptime, sessions, requests, errors
+    );
+
+    Response::builder()
+        .header("content-type", "text/plain; version=0.0.4")
+        .body(body.into())
+        .unwrap()
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -547,6 +590,7 @@ async fn main() -> anyhow::Result<()> {
         // Ops
         .route("/health", get(health))
         .route("/ready", get(ready))
+        .route("/metrics", get(metrics))
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .with_state(state);
@@ -610,4 +654,23 @@ mod tests {
                 .unwrap();
         assert_eq!(ur.title, "Test");
     }
+
+    #[test]
+    fn test_app_state_counters() {
+        let config = SpineConfig::default();
+        let state = AppState::new(&config);
+        assert_eq!(state.requests_total.load(Ordering::Relaxed), 0);
+        assert_eq!(state.errors_total.load(Ordering::Relaxed), 0);
+        state.requests_total.fetch_add(5, Ordering::Relaxed);
+        state.errors_total.fetch_add(2, Ordering::Relaxed);
+        assert_eq!(state.requests_total.load(Ordering::Relaxed), 5);
+        assert_eq!(state.errors_total.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_grafana_dashboard_exists() {
+        assert!(std::path::Path::new("deploy/grafana/spine-dashboard.json").exists()
+            || std::path::Path::new("../deploy/grafana/spine-dashboard.json").exists());
+    }
+
 }

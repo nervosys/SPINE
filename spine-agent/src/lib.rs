@@ -3,6 +3,7 @@ use rustls::ClientConfig;
 use rustls::RootCertStore;
 use spine_human::HumanInteractionEngine;
 use spine_parser::UnifiedRepresentation;
+use tracing::instrument;
 use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -264,6 +265,7 @@ where
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn navigate(&mut self, url: &str) -> anyhow::Result<()> {
         let res = self
             .send_request(BrowserCommand::Navigate {
@@ -276,6 +278,7 @@ where
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn get_ur(&mut self) -> anyhow::Result<UnifiedRepresentation> {
         let res = self.send_request(BrowserCommand::GetUR).await?;
         if let Some(err) = res.error {
@@ -359,6 +362,7 @@ where
         Ok(res.result.unwrap_or(serde_json::Value::Null))
     }
 
+    #[instrument(skip(self))]
     pub async fn execute_hls(
         &mut self,
         script: &str,
@@ -412,6 +416,7 @@ where
         self.handler.get_speculation_stats()
     }
 
+    #[instrument(skip(self))]
     pub async fn search(&mut self, query: &str) -> anyhow::Result<serde_json::Value> {
         let res = self
             .send_request(BrowserCommand::Search {
@@ -523,6 +528,7 @@ where
         Ok(history)
     }
 
+    #[instrument(skip(self))]
     pub async fn ping(&mut self) -> anyhow::Result<u64> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?

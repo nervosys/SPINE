@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 429 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 431 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -234,13 +234,17 @@
 - [x] **Gateway TLS config**: Backend TLS config propagated through AppState
 - [x] **429 tests passing**: +14 tests (8 TLS + 6 config tests), 0 failures, 0 Clippy warnings
 
+### Phase 18 — Observability Dashboard
+
+- [x] **Grafana dashboard**: Pre-built `deploy/grafana/spine-dashboard.json` with 12 panels (sessions, latency, throughput, errors, memory, CPU, prediction, cache, protocol, connections)
+- [x] **Prometheus config**: `deploy/prometheus/prometheus.yml` with spine-core + gateway scrape targets
+- [x] **Gateway `/metrics` endpoint**: Prometheus-format exposition (uptime, active sessions, requests, errors counters)
+- [x] **Gateway request counting**: `AtomicU64` counters for total requests and errors across all API handlers
+- [x] **OpenTelemetry tracing**: `#[instrument]` on key agent methods (navigate, get_ur, search, ping, execute_hls) and gateway handlers (navigate, search, execute_hls)
+- [x] **Agent tracing dep**: Added `tracing = "0.1"` to spine-agent
+- [x] **431 tests passing**: +2 gateway observability tests, 0 failures, 0 Clippy warnings
+
 ## Planned
-
-### Observability Dashboard
-
-- [ ] Real-time session monitoring web UI
-- [ ] Grafana dashboard templates for Prometheus metrics
-- [ ] Distributed tracing visualization (OpenTelemetry)
 
 ### HLS Type System
 

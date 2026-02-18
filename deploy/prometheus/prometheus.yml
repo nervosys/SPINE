@@ -1,0 +1,22 @@
+# Prometheus configuration for SPINE agentic web stack
+# Place in /etc/prometheus/prometheus.yml or mount into the Prometheus container
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'spine-core'
+    static_configs:
+      - targets: ['spine-core:9090']
+    metrics_path: /metrics
+
+  - job_name: 'spine-gateway'
+    static_configs:
+      - targets: ['spine-gateway:9091']
+    metrics_path: /metrics
+
+  # Add additional SPINE nodes here for cluster monitoring
+  # - job_name: 'spine-node-2'
+  #   static_configs:
+  #     - targets: ['spine-node-2:9090']
