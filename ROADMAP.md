@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 415 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 429 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -220,13 +220,21 @@
 - [x] **Cargo.lock committed**: Removed from .gitignore for reproducible builds
 - [x] **415 tests passing**: +13 tests (+11 spine-agent + 2 doc tests), 0 failures, 0 Clippy warnings
 
+### Phase 17 — Certificate-Based Authentication
+
+- [x] **Extended TlsConfig**: 12 new fields (mutual_tls, crl_path, client_cert/key, cert_reload_secs, auto_generate, ACME settings)
+- [x] **CRL support**: Certificate Revocation List checking in ``build_server_config``
+- [x] **Certificate rotation**: ``RotatingTlsAcceptor`` with file-watcher-based hot-reload
+- [x] **Self-signed cert generation**: ``generate_self_signed()`` and ``generate_dev_certs()`` via rcgen (CA + server + client)
+- [x] **ACME cert manager**: ``AcmeCertManager`` with Let's Encrypt integration (staging/production, renewal checking)
+- [x] **Env var overrides**: 7 new TLS env vars (SPINE_TLS_CERT, _KEY, _CA, _MTLS, _CRL, _AUTO_GENERATE)
+- [x] **Agent TLS retry**: ``connect_tls_with_retry()`` with exponential backoff
+- [x] **CLI mTLS flags**: ``--client-cert`` and ``--client-key`` for ``spine connect``
+- [x] **CLI cert subcommand**: ``spine cert generate`` and ``spine cert info`` commands
+- [x] **Gateway TLS config**: Backend TLS config propagated through AppState
+- [x] **429 tests passing**: +14 tests (8 TLS + 6 config tests), 0 failures, 0 Clippy warnings
+
 ## Planned
-
-### Certificate-Based Authentication
-
-- [ ] mTLS for agent-to-server authentication
-- [ ] Certificate rotation and revocation
-- [ ] Automated certificate management (ACME/Let's Encrypt)
 
 ### Observability Dashboard
 

@@ -4,6 +4,7 @@
 //! in other binaries (e.g. `spine-cli deploy`).
 
 pub mod config;
+pub mod tls;
 
 pub use config::SpineConfig;
 

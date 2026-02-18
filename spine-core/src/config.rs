@@ -82,6 +82,26 @@ pub struct TlsConfig {
     pub cert_path: String,
     pub key_path: String,
     pub ca_path: String,
+    /// Require client certificates (mutual TLS)
+    pub mutual_tls: bool,
+    /// Path to CRL file for revocation checking
+    pub crl_path: String,
+    /// Client certificate path (for agent-side mTLS)
+    pub client_cert_path: String,
+    /// Client key path (for agent-side mTLS)
+    pub client_key_path: String,
+    /// Certificate reload interval in seconds (0 = disabled)
+    pub cert_reload_secs: u64,
+    /// Auto-generate self-signed certs for development
+    pub auto_generate: bool,
+    /// Enable ACME (Let's Encrypt) certificate management
+    pub acme_enabled: bool,
+    /// ACME domains
+    pub acme_domains: Vec<String>,
+    /// ACME contact email
+    pub acme_email: String,
+    /// Use ACME staging environment
+    pub acme_staging: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +148,16 @@ impl Default for TlsConfig {
             cert_path: "certs/cert.pem".into(),
             key_path: "certs/key.pem".into(),
             ca_path: "certs/ca.pem".into(),
+            mutual_tls: false,
+            crl_path: String::new(),
+            client_cert_path: String::new(),
+            client_key_path: String::new(),
+            cert_reload_secs: 0,
+            auto_generate: false,
+            acme_enabled: false,
+            acme_domains: Vec::new(),
+            acme_email: String::new(),
+            acme_staging: true,
         }
     }
 }
@@ -193,6 +223,24 @@ impl SpineConfig {
         }
         if let Ok(v) = std::env::var("SPINE_TLS") {
             config.tls.enabled = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = std::env::var("SPINE_TLS_CERT") {
+            config.tls.cert_path = v;
+        }
+        if let Ok(v) = std::env::var("SPINE_TLS_KEY") {
+            config.tls.key_path = v;
+        }
+        if let Ok(v) = std::env::var("SPINE_TLS_CA") {
+            config.tls.ca_path = v;
+        }
+        if let Ok(v) = std::env::var("SPINE_TLS_MTLS") {
+            config.tls.mutual_tls = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = std::env::var("SPINE_TLS_CRL") {
+            config.tls.crl_path = v;
+        }
+        if let Ok(v) = std::env::var("SPINE_TLS_AUTO_GENERATE") {
+            config.tls.auto_generate = v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Ok(v) = std::env::var("SPINE_LOG_FORMAT") {
             config.logging.format = v;

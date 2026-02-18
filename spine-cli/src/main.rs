@@ -70,6 +70,14 @@ enum Commands {
         /// TLS domain name
         #[arg(long)]
         domain: Option<String>,
+
+        /// Client certificate path (for mTLS)
+        #[arg(long)]
+        client_cert: Option<PathBuf>,
+
+        /// Client private key path (for mTLS)
+        #[arg(long)]
+        client_key: Option<PathBuf>,
     },
 
     /// Query a SPINE server
@@ -113,6 +121,26 @@ enum Commands {
         /// Server address
         #[arg(default_value = "127.0.0.1:8080")]
         addr: String,
+    },
+
+    /// Certificate management
+    #[command(subcommand)]
+    Cert(CertAction),
+}
+
+#[derive(Subcommand)]
+enum CertAction {
+    /// Generate development certificates (CA + server + client)
+    Generate {
+        /// Output directory for certificates
+        #[arg(short, long, default_value = "certs")]
+        output: PathBuf,
+    },
+
+    /// Show certificate information
+    Info {
+        /// Path to certificate PEM file
+        path: PathBuf,
     },
 }
 
@@ -234,7 +262,9 @@ async fn main() -> Result<()> {
             tls,
             ca,
             domain,
-        } => commands::connect::run(addr, ws, tls, ca, domain).await,
+            client_cert,
+            client_key,
+        } => commands::connect::run(addr, ws, tls, ca, domain, client_cert, client_key).await,
 
         Commands::Query { action } => match action {
             QueryAction::Navigate { url, addr, format } => {
@@ -267,5 +297,7 @@ async fn main() -> Result<()> {
         } => commands::benchmark::run(addr, iterations, concurrency).await,
 
         Commands::Status { addr } => commands::status::run(addr).await,
+
+        Commands::Cert(action) => commands::cert::run(action).await,
     }
 }

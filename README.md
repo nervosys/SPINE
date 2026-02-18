@@ -1035,7 +1035,7 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (415 tests)
+### Test Summary (429 tests)
 
 | Crate           | Tests | Description                                          |
 | --------------- | ----- | ---------------------------------------------------- |
@@ -1055,7 +1055,7 @@ cargo test -p spine-crypto
 | spine-compiler  | 9     | HLS parsing, compilation, optimization               |
 | spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                   |
 | spine-parser    | 8     | HTML parsing, UR extraction, property tests          |
-| spine-core      | 6     | Session orchestration, config management             |
+| spine-core      | 13    | Session orchestration, config management, TLS/cert   |
 | spine-gateway   | 5     | REST API gateway, health checks                      |
 | spine-agentic   | 4     | Agent creation, knowledge graph                      |
 | spine-wasm      | 3     | HLB → WASM compilation and execution                 |

@@ -157,6 +157,37 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
+
+    /// Connect to a SPINE server over TLS with automatic retry and exponential backoff.
+    pub async fn connect_tls_with_retry(
+        addr: &str,
+        domain: &str,
+        ca_path: Option<&std::path::Path>,
+        client_cert: Option<(&std::path::Path, &std::path::Path)>,
+        max_retries: u32,
+    ) -> anyhow::Result<Self> {
+        let mut delay = std::time::Duration::from_secs(1);
+        let max_delay = std::time::Duration::from_secs(60);
+        for attempt in 0..max_retries {
+            match Self::connect_tls(addr, domain, ca_path, client_cert).await {
+                Ok(client) => return Ok(client),
+                Err(e) => {
+                    if attempt + 1 >= max_retries {
+                        return Err(e);
+                    }
+                    log::warn!(
+                        "TLS connection attempt {} failed: {}. Retrying in {:?}...",
+                        attempt + 1,
+                        e,
+                        delay
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(max_delay);
+                }
+            }
+        }
+        anyhow::bail!("connect_tls_with_retry: max_retries=0")
+    }
 }
 
 impl AgentClient<spine_transport::WebSocketClientStream> {

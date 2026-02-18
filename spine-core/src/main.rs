@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 mod config;
 mod telemetry;
+#[allow(dead_code)]
 mod tls;
 mod vdom;
 use config::SpineConfig;

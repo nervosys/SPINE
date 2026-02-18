@@ -14,6 +14,8 @@ pub async fn run(
     tls: bool,
     ca: Option<PathBuf>,
     domain: Option<String>,
+    client_cert: Option<PathBuf>,
+    client_key: Option<PathBuf>,
 ) -> Result<()> {
     eprintln!("{} Connecting to {}...", "▸".green().bold(), addr.cyan());
 
@@ -33,11 +35,28 @@ pub async fn run(
     } else if tls {
         let domain_str = domain.as_deref().unwrap_or("localhost");
         let ca_path = ca.as_deref();
-        let mut client = AgentClient::connect_tls(&addr, domain_str, ca_path, None).await?;
+        let client_auth = match (&client_cert, &client_key) {
+            (Some(cert), Some(key)) => Some((cert.as_path(), key.as_path())),
+            _ => None,
+        };
+        if client_cert.is_some() && client_key.is_none() {
+            eprintln!(
+                "{} --client-key required when --client-cert is specified",
+                "⚠".yellow().bold()
+            );
+        }
+        let mut client =
+            AgentClient::connect_tls(&addr, domain_str, ca_path, client_auth).await?;
+        let mode = if client_auth.is_some() {
+            "mTLS"
+        } else {
+            "TLS"
+        };
         let latency = client.ping().await?;
         eprintln!(
-            "{} Connected via TLS ({}ms latency)",
+            "{} Connected via {} ({}ms latency)",
             "✓".green().bold(),
+            mode,
             latency
         );
         interactive_session_tls(&mut client).await

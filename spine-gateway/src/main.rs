@@ -92,6 +92,8 @@ struct AppState {
     backend_addr: String,
     start_time: Instant,
     max_sessions: usize,
+    #[allow(dead_code)]
+    tls_config: spine_core::config::TlsConfig,
 }
 
 impl AppState {
@@ -101,6 +103,7 @@ impl AppState {
             backend_addr: format!("{}:{}", config.server.host, config.server.port),
             start_time: Instant::now(),
             max_sessions: config.server.max_sessions,
+            tls_config: config.tls.clone(),
         }
     }
 }
