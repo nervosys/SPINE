@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 458 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 493 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -106,7 +106,7 @@
 - [x] Agent capability marketplace: registry, discovery, bidding, contracts, reputation, audit log
 - [x] 245 tests passing (+27 from Phase 5)
 
-### Phase 6 — Production Hardening
+### Phase 6 — Production Hardening ✅
 
 - [x] **Configuration management**: TOML/env-based `SpineConfig` with layered overrides (`spine.toml` → env vars → defaults)
 - [x] **Health check endpoints**: `/health` (status, uptime, connections), `/ready` (session capacity), `/metrics` (Prometheus)
@@ -120,7 +120,7 @@
 - [x] 249 tests passing (+4 from Phase 6)
 
 
-### Phase 7 — Testing & Verification
+### Phase 7 — Testing & Verification ✅
 
 - [x] **Property-based testing**: proptest for protocol, parser, transport, and crypto (41 properties across 4 crates)
 - [x] **Fuzz testing**: 5 cargo-fuzz targets for parser HTML, latent vectors, frame decode, message deser, frame headers
@@ -183,13 +183,13 @@
 - [x] **L3: Constant-time key comparison**: Replace `==` with `subtle::ConstantTimeEq` in `verify_evolution()` to prevent timing side-channels
 - [x] 402 tests passing (+5 PoW tests), 0 failures, 0 Clippy warnings
 
-### Phase 13 — CI/CD & Workspace Integrity
+### Phase 13 — CI/CD & Workspace Integrity ✅
 
 - [x] **Workspace verification**: All 25 crates compile with `--all-targets -D warnings`
 - [x] **Clean Clippy**: Zero warnings across entire workspace
 - [x] **Test verification**: Full test suite (402 tests) passing with 0 failures
 
-### Phase 14 — Documentation & Polish
+### Phase 14 — Documentation & Polish ✅
 
 - [x] **Stale reference fixes**: Updated "17 crates" to "25 crates", "218 tests" to "402 tests" across README, ARCHITECTURE, OPTIMIZATIONS, paper
 - [x] **Naming cleanup**: Removed all "Hyperlight" references in examples and docs
@@ -220,7 +220,7 @@
 - [x] **Cargo.lock committed**: Removed from .gitignore for reproducible builds
 - [x] **415 tests passing**: +13 tests (+11 spine-agent + 2 doc tests), 0 failures, 0 Clippy warnings
 
-### Phase 17 — Certificate-Based Authentication
+### Phase 17 — Certificate-Based Authentication ✅
 
 - [x] **Extended TlsConfig**: 12 new fields (mutual_tls, crl_path, client_cert/key, cert_reload_secs, auto_generate, ACME settings)
 - [x] **CRL support**: Certificate Revocation List checking in ``build_server_config``
@@ -234,11 +234,28 @@
 - [x] **Gateway TLS config**: Backend TLS config propagated through AppState
 - [x] **429 tests passing**: +14 tests (8 TLS + 6 config tests), 0 failures, 0 Clippy warnings
 
-### Phase 18 — Observability Dashboard
+### Phase 18 — Observability Dashboard ✅
 
-### Phase 19: HLS Type System ✅
+- [x] **Grafana dashboard**: Pre-built `deploy/grafana/spine-dashboard.json` with 12 panels (sessions, latency, throughput, errors, memory, CPU, prediction, cache, protocol, connections)
+- [x] **Prometheus config**: `deploy/prometheus/prometheus.yml` with spine-core + gateway scrape targets
+- [x] **Gateway `/metrics` endpoint**: Prometheus-format exposition (uptime, active sessions, requests, errors counters)
+- [x] **Gateway request counting**: `AtomicU64` counters for total requests and errors across all API handlers
+- [x] **OpenTelemetry tracing**: `#[instrument]` on key agent methods (navigate, get_ur, search, ping, execute_hls) and gateway handlers (navigate, search, execute_hls)
+- [x] **Agent tracing dep**: Added `tracing = "0.1"` to spine-agent
+- [x] 458 tests passing (+2 gateway observability tests)
 
-### Phase 20: Agent Ontology System ✅
+### Phase 19 — HLS Type System ✅
+
+- [x] **Source location tracking**: `Span` type with line/column computation and merge
+- [x] **Structured type errors**: `TypeError` with span, expected/found types, source-context formatting
+- [x] **Error collection**: `TypeErrors` accumulator — reports ALL errors, not just first
+- [x] **Multi-statement type checking**: `check_types_collect` handles Let, State, Assign, FnDef, Call, If, For, Element, Navigate, Search
+- [x] **Function signature enforcement**: Param count, arg types, and return type checking
+- [x] **Navigate/Search type checking**: Enforces string arguments
+- [x] **Public type_check API**: `Compiler::type_check(source)` returns all errors at once
+- [x] 458 tests passing (+12 tests)
+
+### Phase 20 — Agent Ontology System ✅
 
 - [x] **OntologyTerm**: URI-based terms with labels, descriptions, parent hierarchy, properties
 - [x] **AgentOntology**: Namespace-versioned ontology with term management and whole-ontology hashing
@@ -250,31 +267,21 @@
 - [x] **OntologyRegistry**: Discovery index with term lookup, hash verification, and neural similarity search
 - [x] **AgentProfile integration**: `ontology` field with `with_ontology()` builder
 - [x] **Compatibility scoring**: Jaccard similarity between agents' public ontology terms
-- [x] **458 tests passing**: +15 tests (14 ontology + 1 agentic), 0 failures, 0 Clippy warnings
+- [x] 462 tests passing (+15 ontology + 1 agentic)
 
+### Phase 21 — Agent Mesh Networking ✅
 
-- [x] **Source location tracking**: `Span` type with line/column computation and merge
-- [x] **Structured type errors**: `TypeError` with span, expected/found types, source-context formatting
-- [x] **Error collection**: `TypeErrors` accumulator — reports ALL errors, not just first
-- [x] **Multi-statement type checking**: `check_types_collect` handles Let, State, Assign, FnDef, Call, If, For, Element, Navigate, Search
-- [x] **Function signature enforcement**: Param count, arg types, and return type checking
-- [x] **Navigate/Search type checking**: Enforces string arguments
-- [x] **Public type_check API**: `Compiler::type_check(source)` returns all errors at once
-- [x] **458 tests passing**: +12 tests, 0 failures, 0 Clippy warnings
-
-
-- [x] **Grafana dashboard**: Pre-built `deploy/grafana/spine-dashboard.json` with 12 panels (sessions, latency, throughput, errors, memory, CPU, prediction, cache, protocol, connections)
-- [x] **Prometheus config**: `deploy/prometheus/prometheus.yml` with spine-core + gateway scrape targets
-- [x] **Gateway `/metrics` endpoint**: Prometheus-format exposition (uptime, active sessions, requests, errors counters)
-- [x] **Gateway request counting**: `AtomicU64` counters for total requests and errors across all API handlers
-- [x] **OpenTelemetry tracing**: `#[instrument]` on key agent methods (navigate, get_ur, search, ping, execute_hls) and gateway handlers (navigate, search, execute_hls)
-- [x] **Agent tracing dep**: Added `tracing = "0.1"` to spine-agent
-- [x] **458 tests passing**: +2 gateway observability tests, 0 failures, 0 Clippy warnings
+- [x] **Ed25519 signing identity** (`spine-agentic/src/identity.rs`): `Ed25519Keypair` (generate, from_seed, sign, verify), `SigningIdentity` (agent UUID + keypair), `SignedEnvelope` (signed message wrapper with `open()`/`verify()`), `PublicIdentity` (shareable identity with fingerprint)
+- [x] **Peer-to-peer mesh** (`spine-agentic/src/mesh.rs`): `MeshNode` with connection management, peer discovery, multi-hop routing, signed message envelopes
+- [x] **Routing table**: `RoutingTable` with shortest-path selection, stale route pruning, route learning from message hops
+- [x] **Gossip protocol**: `PeerAnnouncement` propagation, max_peers enforcement, banned peer filtering, self-announcement
+- [x] **Message deduplication**: `MessageDedup` ring buffer preventing routing loops, TTL-based message expiry
+- [x] **Mesh envelope**: `MeshEnvelope` with `MeshTarget` (Agent/Broadcast/Capability), `MeshPayload` (AgentMessage, PeerAnnounce, Ping/Pong, RouteRequest/Response, KnowledgeSync, SwarmInvite/Response)
+- [x] **Signature verification**: Per-envelope Ed25519 verification against trusted key store, tampered message rejection
+- [x] **Mesh statistics**: Atomic counters for routed/delivered/dropped/sent messages, peer connections, bytes, gossip rounds
+- [x] 493 tests passing (+35 tests: 11 identity + 24 mesh), 0 failures, 0 Clippy warnings
 
 ## Planned
-
-### HLS Type System
-
 
 ### Advanced Cryptography
 

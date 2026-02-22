@@ -282,6 +282,17 @@
 - [x] **OpenTelemetry tracing**: `#[instrument]` on key agent and gateway methods
 - [x] **458 tests passing**: +2 tests, 0 failures, 0 Clippy warnings
 
+### Phase 21: Agent Mesh Networking ✅
+
+- [x] **Ed25519 signing identity**: `Ed25519Keypair`, `SigningIdentity`, `SignedEnvelope`, `PublicIdentity` with fingerprint
+- [x] **Peer-to-peer mesh**: `MeshNode` with connection management, peer discovery, multi-hop routing
+- [x] **Routing table**: Shortest-path selection, stale route pruning, route learning from message hops
+- [x] **Gossip protocol**: `PeerAnnouncement` propagation, max_peers enforcement, banned peer filtering
+- [x] **Message deduplication**: Ring buffer preventing routing loops, TTL-based expiry
+- [x] **Mesh envelope**: `MeshTarget` (Agent/Broadcast/Capability), `MeshPayload` with 9 variants
+- [x] **Signature verification**: Per-envelope Ed25519 against trusted key store
+- [x] **493 tests passing**: +35 tests (11 identity + 24 mesh), 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |

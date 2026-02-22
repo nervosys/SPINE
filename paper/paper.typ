@@ -1739,7 +1739,7 @@ Four optimization phases were applied systematically:
 3. *Kernel primitives*: SIMD intrinsics, custom allocators, lock-free ring buffers
 4. *Hot-path elimination*: Buffer reuse, caching, single-pass algorithms, stack allocation
 
-Each phase was validated against the full test suite (458 tests) with 0 regressions and 0 Clippy warnings.
+Each phase was validated against the full test suite (493 tests) with 0 regressions and 0 Clippy warnings.
 
 == Test Coverage
 
@@ -1790,7 +1790,7 @@ We provide a rigorous examination of each SPINE component, validating both theor
     [Human Interaction], [Proven], [2], [Mouse paths, typing delays],
     [Kernel Primitives], [Proven], [32], [SIMD, allocators, ring buffers],
   ),
-  caption: [Validation status by component (458 tests total)],
+  caption: [Validation status by component (493 tests total)],
 )
 
 == Validated Capabilities
@@ -1965,7 +1965,7 @@ SPINE demonstrates that purpose-built AI web infrastructure achieves orders-of-m
 
 The 25 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, unified memory provides distributed knowledge, and kernel primitives maximize hardware utilization—all backed by quantum-resistant cryptography.
 
-*25 crates. 458 tests. ~68,000 lines of Rust. A headless semantic browser for AI agents.*
+*25 crates. 493 tests. ~68,000 lines of Rust. A headless semantic browser for AI agents.*
 
 The complete implementation is available as open-source code at github.com/nervosys/SPINE.
 
