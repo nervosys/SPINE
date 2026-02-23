@@ -24,6 +24,7 @@ zstd = "0.12"
 aes-gcm = "0.10"
 hmac = "0.12"
 sha2 = "0.10"
+hkdf = "0.12"
 rand = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
 spine-neural = { path = "../spine-neural" }

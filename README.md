@@ -1050,7 +1050,7 @@ cargo test -p spine-crypto
 | spine-recursive | 15    | Infinite context, LLM dispatchers                    |
 | spine-k8s       | 13    | CRD generation, autoscaling, manifests               |
 | spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders              |
-| spine-agent     | 11    | SDK API, protocol types, connection handling          |
+| spine-agent     | 11    | SDK API, protocol types, connection handling         |
 | spine-knowledge | 9     | Episodic, semantic, collective memory                |
 | spine-compiler  | 9     | HLS parsing, compilation, optimization               |
 | spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                   |

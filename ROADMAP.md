@@ -351,9 +351,9 @@
 | `spine-knowledge` | Bioinspired memory (episodic/semantic/working/collective, CRDT) |
 | `spine-cli`       | CLI tool: init, connect, query, deploy, benchmark, status       |
 | `spine-gateway`   | REST API gateway with OpenAPI/Swagger UI (axum + utoipa)        |
-| `spine-gpu`       | GPU compute: CpuBackend (SIMD), WgpuBackend (WGSL shaders)     |
+| `spine-gpu`       | GPU compute: CpuBackend (SIMD), WgpuBackend (WGSL shaders)      |
 | `spine-storage`   | Persistent storage: InMemory, SQLite (WAL), RocksDB (LSM)       |
-| `spine-cache`     | Tiered caching: L1 LRU, L2 file-backed, L3 remote              |
+| `spine-cache`     | Tiered caching: L1 LRU, L2 file-backed, L3 remote               |
 | `spine-k8s`       | Kubernetes operator: CRD, autoscaler, manifest generators       |
 | `spine-python`*   | Python bindings via PyO3 + maturin                              |
 | `spine-js`*       | TypeScript/WASM bindings via wasm-bindgen + wasm-pack           |
