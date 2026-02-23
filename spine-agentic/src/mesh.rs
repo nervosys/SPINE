@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn test_mesh_node_creation() {
         let id = test_identity("node-a");
-        let agent_id = id.agent_id.clone();
+        let agent_id = id.agent_id;
         let node = MeshNode::new(id, test_config());
 
         assert_eq!(*node.agent_id(), agent_id);
@@ -847,7 +847,7 @@ mod tests {
         let peer_id = AgentId::new();
         let addr: SocketAddr = "192.168.1.10:9000".parse().unwrap();
 
-        node.add_peer(peer_id.clone(), addr);
+        node.add_peer(peer_id, addr);
 
         assert_eq!(node.peer_count(), 1);
         let peer = node.get_peer(&peer_id).unwrap();
@@ -858,7 +858,7 @@ mod tests {
     #[test]
     fn test_no_self_peer() {
         let id = test_identity("self-test");
-        let agent_id = id.agent_id.clone();
+        let agent_id = id.agent_id;
         let node = MeshNode::new(id, test_config());
 
         node.add_peer(agent_id, "127.0.0.1:9000".parse().unwrap());
@@ -870,7 +870,7 @@ mod tests {
         let node = MeshNode::new(test_identity("state-test"), test_config());
         let peer_id = AgentId::new();
 
-        node.add_peer(peer_id.clone(), "10.0.0.1:9000".parse().unwrap());
+        node.add_peer(peer_id, "10.0.0.1:9000".parse().unwrap());
         assert_eq!(node.get_peer(&peer_id).unwrap().state, PeerState::Discovered);
 
         node.mark_connected(&peer_id);
@@ -895,7 +895,7 @@ mod tests {
         let target = AgentId::new();
 
         let envelope = node.create_envelope(
-            MeshTarget::Agent(target.clone()),
+            MeshTarget::Agent(target),
             MeshPayload::Ping(12345),
         );
 
@@ -909,7 +909,7 @@ mod tests {
     #[tokio::test]
     async fn test_process_envelope_deliver() {
         let id = test_identity("receiver");
-        let receiver_id = id.agent_id.clone();
+        let receiver_id = id.agent_id;
         let node = MeshNode::new(id, test_config());
 
         // Create envelope addressed to this node
@@ -946,7 +946,7 @@ mod tests {
     async fn test_process_envelope_ttl_expired() {
         let node = MeshNode::new(test_identity("ttl-test"), test_config());
 
-        let mut envelope = MeshEnvelope {
+        let envelope = MeshEnvelope {
             id: Uuid::new_v4(),
             from: AgentId::new(),
             to: MeshTarget::Agent(AgentId::new()),
@@ -992,15 +992,15 @@ mod tests {
         let sender_node = MeshNode::new(sender.clone(), test_config());
 
         let receiver = test_identity("sig-receiver");
-        let receiver_id = receiver.agent_id.clone();
+        let receiver_id = receiver.agent_id;
         let receiver_node = MeshNode::new(receiver, test_config());
 
         // Trust the sender's key
-        receiver_node.trust_key(sender.agent_id.clone(), sender.public_key().to_vec());
+        receiver_node.trust_key(sender.agent_id, sender.public_key().to_vec());
 
         // Valid envelope
         let envelope = sender_node.create_envelope(
-            MeshTarget::Agent(receiver_id.clone()),
+            MeshTarget::Agent(receiver_id),
             MeshPayload::Ping(77),
         );
         let action = receiver_node.process_envelope(envelope).await.unwrap();
@@ -1061,8 +1061,8 @@ mod tests {
         let peer1 = AgentId::new();
         let peer2 = AgentId::new();
 
-        node.add_peer(peer1.clone(), "10.0.0.1:9000".parse().unwrap());
-        node.add_peer(peer2.clone(), "10.0.0.2:9000".parse().unwrap());
+        node.add_peer(peer1, "10.0.0.1:9000".parse().unwrap());
+        node.add_peer(peer2, "10.0.0.2:9000".parse().unwrap());
         node.mark_connected(&peer1);
 
         let gossip = node.generate_gossip();
@@ -1098,7 +1098,7 @@ mod tests {
     #[test]
     fn test_gossip_ignores_self() {
         let id = test_identity("self-gossip");
-        let agent_id = id.agent_id.clone();
+        let agent_id = id.agent_id;
         let node = MeshNode::new(id, test_config());
 
         let announcements = vec![PeerAnnouncement {
@@ -1137,12 +1137,12 @@ mod tests {
         let banned_id = AgentId::new();
 
         // Add and ban a peer
-        node.add_peer(banned_id.clone(), "10.0.0.1:9000".parse().unwrap());
+        node.add_peer(banned_id, "10.0.0.1:9000".parse().unwrap());
         node.ban_peer(&banned_id);
 
         // Try to re-add via gossip
         let announcements = vec![PeerAnnouncement {
-            agent_id: banned_id.clone(),
+            agent_id: banned_id,
             addr: "10.0.0.99:9000".parse().unwrap(),
             capabilities: vec![],
             hop_count: 1,
@@ -1161,17 +1161,17 @@ mod tests {
         let hop2 = AgentId::new();
 
         // Add a 3-hop route
-        table.update(target.clone(), hop1.clone(), 3, 100);
+        table.update(target, hop1, 3, 100);
         assert_eq!(table.len(), 1);
         assert_eq!(table.next_hop(&target).unwrap().next_hop, hop1);
 
         // Better route (2 hops) should replace
-        table.update(target.clone(), hop2.clone(), 2, 50);
+        table.update(target, hop2, 2, 50);
         assert_eq!(table.next_hop(&target).unwrap().next_hop, hop2);
         assert_eq!(table.next_hop(&target).unwrap().hop_count, 2);
 
         // Worse route should not replace
-        table.update(target.clone(), hop1.clone(), 5, 200);
+        table.update(target, hop1, 5, 200);
         assert_eq!(table.next_hop(&target).unwrap().next_hop, hop2); // unchanged
     }
 
@@ -1202,7 +1202,7 @@ mod tests {
         let node = MeshNode::new(test_identity("router"), test_config());
         let peer_id = AgentId::new();
 
-        node.add_peer(peer_id.clone(), "10.0.0.1:9000".parse().unwrap());
+        node.add_peer(peer_id, "10.0.0.1:9000".parse().unwrap());
         node.mark_connected(&peer_id);
 
         let hop = node.resolve_next_hop(&peer_id).await;
@@ -1217,7 +1217,7 @@ mod tests {
 
         {
             let mut routing = node.routing.write().await;
-            routing.update(target.clone(), relay.clone(), 2, 50);
+            routing.update(target, relay, 2, 50);
         }
 
         let hop = node.resolve_next_hop(&target).await;
@@ -1251,7 +1251,7 @@ mod tests {
     #[tokio::test]
     async fn test_routing_from_hops() {
         let id = test_identity("learner");
-        let learner_id = id.agent_id.clone();
+        let learner_id = id.agent_id;
         let node = MeshNode::new(id, test_config());
 
         let sender_id = AgentId::new();
@@ -1260,10 +1260,10 @@ mod tests {
         // Envelope that passed through relay_id to get to us
         let envelope = MeshEnvelope {
             id: Uuid::new_v4(),
-            from: sender_id.clone(),
+            from: sender_id,
             to: MeshTarget::Agent(learner_id),
             ttl: 2,
-            hops: vec![sender_id.clone(), relay_id.clone()],
+            hops: vec![sender_id, relay_id],
             payload: MeshPayload::Ping(0),
             signature: vec![0u8; 64],
             timestamp: Utc::now(),

@@ -14,6 +14,7 @@ log.workspace = true
 tokio.workspace = true
 rand.workspace = true
 sha2.workspace = true
+ed25519-dalek.workspace = true
 
 # Internal dependencies
 spine-neural = { path = "../spine-neural" }
@@ -54,26 +55,4 @@ path = "examples/swarm_intelligence.rs"
 [[example]]
 name = "advanced_agentic"
 path = "examples/advanced_agentic.rs"
-
-[[example]]
-name = "infrastructure_demo"
-path = "examples/infrastructure_demo.rs"
-
-[[example]]
-name = "cognitive_demo"
-path = "examples/cognitive_demo.rs"
-
-[[example]]
-name = "learning_demo"
-path = "examples/learning_demo.rs"
-
-[[example]]
-name = "communication_demo"
-path = "examples/communication_demo.rs"
-
-[[example]]
-name = "neural_protocol_demo"
-path = "examples/neural_protocol_demo.rs"
-
-
 

@@ -2682,7 +2682,7 @@ mod tests {
     fn test_type_error_line_col() {
         let source = "let x = 1\nlet y = true\nlet z = x + y";
         let span = Span::new(24, 37); // position of "x + y" on line 3
-        let (line, col) = span.line_col(source);
+        let (line, _col) = span.line_col(source);
         assert_eq!(line, 3);
     }
 

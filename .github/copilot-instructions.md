@@ -291,7 +291,19 @@
 - [x] **Message deduplication**: Ring buffer preventing routing loops, TTL-based expiry
 - [x] **Mesh envelope**: `MeshTarget` (Agent/Broadcast/Capability), `MeshPayload` with 9 variants
 - [x] **Signature verification**: Per-envelope Ed25519 against trusted key store
-- [x] **493 tests passing**: +35 tests (11 identity + 24 mesh), 0 failures, 0 Clippy warnings
+- [x] **495 tests passing**: +35 tests (11 identity + 24 mesh), 0 failures, 0 Clippy warnings
+
+### Phase 22: Architectural Consolidation ✅
+
+- [x] **Ed25519 crypto fix**: Replaced homebrew Ed25519 with `ed25519-dalek` v2; real `SigningKey`/`VerifyingKey` with CSPRNG keygen
+- [x] **AgentDID real signing**: Swapped stub `[0u8; 64]` signatures for actual Ed25519 signing/verification
+- [x] **Dead code removal**: Trimmed `spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−41%)
+- [x] **Broken example cleanup**: Deleted 8 obsolete examples, retained 5 working ones
+- [x] **Message type unification**: `From<AgentMessage> ↔ AgentMessageCompact` conversion traits
+- [x] **MeshTransport TCP layer**: Length-prefixed framing with `listen()`, `send_to()`, `gossip()`
+- [x] **AgentServer framing fix**: Proper `[u32 BE][JSON]` protocol replacing raw `stream.read()`
+- [x] **Cross-crate stubs**: `NeuralProtocol`, `ProtocolDomain`, `TransmissionResult`, `Performative`, `SpeechAct`
+- [x] **495 tests passing**: 0 failures, 0 Clippy warnings
 
 ### Performance Benchmarks
 

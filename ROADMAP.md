@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 493 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 495 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -280,6 +280,19 @@
 - [x] **Signature verification**: Per-envelope Ed25519 verification against trusted key store, tampered message rejection
 - [x] **Mesh statistics**: Atomic counters for routed/delivered/dropped/sent messages, peer connections, bytes, gossip rounds
 - [x] 493 tests passing (+35 tests: 11 identity + 24 mesh), 0 failures, 0 Clippy warnings
+
+### Phase 22 — Architectural Consolidation ✅
+
+- [x] **Ed25519 crypto fix**: Replaced homebrew Ed25519 with `ed25519-dalek` v2 (`rand_core` feature); real `SigningKey` / `VerifyingKey` with CSPRNG keygen, proper signature verification
+- [x] **AgentDID real signing**: Swapped stub `[0u8; 64]` signatures for actual Ed25519 signing/verification in `AgentDID`
+- [x] **Dead code removal**: Trimmed `spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−5,845 lines, ~41%); removed unused GraphicalModel infrastructure, NeuralProtocol engine, LearningSubsystem, CognitiveArchitecture, InfrastructureManager
+- [x] **Broken example cleanup**: Deleted 8 obsolete examples referencing removed types; retained 5 working examples
+- [x] **Message type unification**: Added `From<AgentMessage> ↔ AgentMessageCompact` conversion traits bridging Layer 5 and mesh messaging
+- [x] **MeshTransport TCP layer**: `MeshTransport` struct with length-prefixed framing (`[u32 BE][JSON]`, 16 MB max), `listen()`, `send_to()`, `send_to_agent()`, `gossip()` methods over TCP
+- [x] **AgentServer framing fix**: Replaced raw `stream.read()` with proper length-prefixed protocol in both `AgentServer` and `AgentClient`; prevents message truncation/concatenation
+- [x] **Cross-crate stub repair**: Added minimal `NeuralProtocol`, `ProtocolDomain`, `TransmissionResult`, `Performative`, `SpeechAct` stubs consumed by spine-agent, spine-browser, spine-core
+- [x] **Clippy clean**: Auto-fixed 28 clone-on-Copy warnings (mesh.rs, compiler)
+- [x] 495 tests passing, 0 failures, 0 Clippy warnings
 
 ## Planned
 

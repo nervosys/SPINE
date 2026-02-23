@@ -1,8 +1,8 @@
 //! # Agent Identity & Cryptographic Signing
 //!
-//! Unified identity layer for SPINE agents with Ed25519 digital signatures.
-//! Provides non-repudiation, message authenticity, and cross-crate identity
-//! compatibility.
+//! Unified identity layer for SPINE agents with **real Ed25519** digital signatures
+//! via the audited `ed25519-dalek` crate. Provides non-repudiation, message
+//! authenticity, and cross-crate identity compatibility.
 //!
 //! ## Architecture
 //!
@@ -20,111 +20,87 @@
 
 use crate::AgentId;
 use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256};
 
-/// Ed25519 signing key (32 bytes seed)
+/// Ed25519 seed length (32 bytes).
 const ED25519_SEED_LEN: usize = 32;
-/// Ed25519 public key length
+/// Ed25519 public key length (32 bytes).
 const ED25519_PUB_LEN: usize = 32;
-/// Ed25519 signature length
+/// Ed25519 signature length (64 bytes).
 const ED25519_SIG_LEN: usize = 64;
 
-/// An Ed25519 keypair for agent signing.
+/// An Ed25519 keypair for agent signing, backed by `ed25519-dalek`.
 ///
-/// Uses a simplified Ed25519 implementation suitable for agent identity.
-/// The private key is the seed; the public key is derived from it.
+/// The private key is a 32-byte seed; the public key is derived via
+/// the Ed25519 curve (not a hash). Signatures use RFC 8032 pure Ed25519.
 #[derive(Clone)]
 pub struct Ed25519Keypair {
-    seed: [u8; ED25519_SEED_LEN],
-    public_key: [u8; ED25519_PUB_LEN],
+    signing_key: SigningKey,
+    cached_pub: [u8; ED25519_PUB_LEN],
 }
 
+
+impl std::fmt::Debug for Ed25519Keypair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ed25519Keypair")
+            .field("public_key", &hex::encode(&self.cached_pub))
+            .finish()
+    }
+}
 impl Ed25519Keypair {
-    /// Generate a new random keypair.
+    /// Generate a new random keypair using a CSPRNG.
     pub fn generate() -> Self {
-        let mut seed = [0u8; ED25519_SEED_LEN];
-        use rand::RngCore;
-        rand::thread_rng().fill_bytes(&mut seed);
-        let public_key = Self::derive_public_key(&seed);
-        Self { seed, public_key }
+        let mut csprng = rand::thread_rng();
+        let signing_key = SigningKey::generate(&mut csprng);
+        let cached_pub = signing_key.verifying_key().to_bytes();
+        Self { signing_key, cached_pub }
     }
 
-    /// Create a keypair from a known seed (deterministic).
+    /// Create a keypair from a known 32-byte seed (deterministic).
     pub fn from_seed(seed: [u8; ED25519_SEED_LEN]) -> Self {
-        let public_key = Self::derive_public_key(&seed);
-        Self { seed, public_key }
+        let signing_key = SigningKey::from_bytes(&seed);
+        let cached_pub = signing_key.verifying_key().to_bytes();
+        Self { signing_key, cached_pub }
     }
 
-    /// Get the public key bytes.
+    /// Get the public key as a 32-byte array.
     pub fn public_key(&self) -> &[u8; ED25519_PUB_LEN] {
-        &self.public_key
+        &self.cached_pub
     }
 
-    /// Sign a message, producing a 64-byte signature.
-    ///
-    /// Uses SHA-512 based Ed25519-like signing:
-    /// 1. Hash seed with SHA-512 to get expanded key
-    /// 2. Hash (expanded_key || message) to get nonce
-    /// 3. Combine nonce + public_key + message hash for signature
+    /// Sign a message, producing a 64-byte Ed25519 signature (RFC 8032).
     pub fn sign(&self, message: &[u8]) -> [u8; ED25519_SIG_LEN] {
-        // Expand seed with SHA-512
-        let mut hasher = Sha512::new();
-        hasher.update(self.seed);
-        let expanded = hasher.finalize();
-
-        // Compute nonce = H(expanded[32..64] || message)
-        let mut nonce_hasher = Sha512::new();
-        nonce_hasher.update(&expanded[32..]);
-        nonce_hasher.update(message);
-        let nonce_hash = nonce_hasher.finalize();
-
-        // Compute signature = H(nonce || public_key || message)
-        let mut sig_hasher = Sha512::new();
-        sig_hasher.update(&nonce_hash[..32]);
-        sig_hasher.update(self.public_key);
-        sig_hasher.update(message);
-        let sig_hash = sig_hasher.finalize();
-
-        let mut signature = [0u8; ED25519_SIG_LEN];
-        signature[..32].copy_from_slice(&nonce_hash[..32]);
-        signature[32..].copy_from_slice(&sig_hash[..32]);
-        signature
+        let sig = self.signing_key.sign(message);
+        sig.to_bytes()
     }
 
     /// Verify a signature against a public key.
     ///
-    /// Recomputes the signature from the public key and message,
-    /// then compares in constant time.
+    /// Returns `false` if the public key or signature are malformed,
+    /// or if the signature does not match.
     pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
         if public_key.len() != ED25519_PUB_LEN || signature.len() != ED25519_SIG_LEN {
             return false;
         }
 
-        // Recompute: sig_hash = H(signature[0..32] || public_key || message)
-        let mut sig_hasher = Sha512::new();
-        sig_hasher.update(&signature[..32]);
-        sig_hasher.update(public_key);
-        sig_hasher.update(message);
-        let expected = sig_hasher.finalize();
+        let pk_bytes: [u8; 32] = match public_key.try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+        let sig_bytes: [u8; 64] = match signature.try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
 
-        // Constant-time comparison of signature[32..64] with expected[..32]
-        let mut diff = 0u8;
-        for i in 0..32 {
-            diff |= signature[32 + i] ^ expected[i];
-        }
-        diff == 0
-    }
+        let verifying_key = match VerifyingKey::from_bytes(&pk_bytes) {
+            Ok(vk) => vk,
+            Err(_) => return false,
+        };
+        let sig = Signature::from_bytes(&sig_bytes);
 
-    /// Derive public key from seed (SHA-256 of seed).
-    fn derive_public_key(seed: &[u8; ED25519_SEED_LEN]) -> [u8; ED25519_PUB_LEN] {
-        let mut hasher = Sha256::new();
-        hasher.update(b"spine-agent-pubkey-v1:");
-        hasher.update(seed);
-        let hash = hasher.finalize();
-        let mut pk = [0u8; ED25519_PUB_LEN];
-        pk.copy_from_slice(&hash);
-        pk
+        verifying_key.verify(message, &sig).is_ok()
     }
 }
 
@@ -276,11 +252,6 @@ impl PublicIdentity {
     }
 }
 
-/// Convert public key bytes to a hex-encoded fingerprint string.
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
 /// Hex encoding module (no external dep needed).
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
@@ -414,5 +385,36 @@ mod tests {
         assert!(!Ed25519Keypair::verify(kp.public_key(), msg, &[0u8; 128]));
         // Empty
         assert!(!Ed25519Keypair::verify(kp.public_key(), msg, &[]));
+    }
+
+    #[test]
+    fn test_real_ed25519_curve_operations() {
+        // Verify this is REAL Ed25519: same seed must produce the same
+        // public key as ed25519-dalek directly.
+        let seed = [99u8; 32];
+        let kp = Ed25519Keypair::from_seed(seed);
+        let direct_key = SigningKey::from_bytes(&seed);
+        assert_eq!(
+            kp.public_key(),
+            direct_key.verifying_key().as_bytes(),
+            "public key must match ed25519-dalek's curve derivation"
+        );
+    }
+
+    #[test]
+    fn test_cross_verify_with_dalek() {
+        // Sign with our wrapper, verify with raw dalek — must succeed.
+        let seed = [55u8; 32];
+        let kp = Ed25519Keypair::from_seed(seed);
+        let msg = b"cross-verify test";
+        let sig_bytes = kp.sign(msg);
+
+        let direct_key = SigningKey::from_bytes(&seed);
+        let vk = direct_key.verifying_key();
+        let sig = Signature::from_bytes(&sig_bytes);
+        assert!(
+            vk.verify(msg, &sig).is_ok(),
+            "dalek must accept our signature"
+        );
     }
 }
