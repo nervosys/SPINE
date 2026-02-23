@@ -1038,6 +1038,11 @@ pub struct ProtocolHandler<S> {
     latent_buf: Vec<u8>,
     /// Minimum payload size for zstd compression (below this, overhead exceeds savings)
     compression_threshold: usize,
+    /// Latent-space AEAD: chain Chameleon encoding + AES-GCM encryption (M2)
+    /// When enabled, data is first neural-encoded to a LatentVector, serialized,
+    /// then AES-GCM encrypted. Provides defense-in-depth: neural obfuscation +
+    /// authenticated encryption. Requires both chameleon and cipher to be set.
+    latent_aead: bool,
 }
 
 /// Statistics for tracking speculation effectiveness
@@ -1095,6 +1100,7 @@ where
             read_buf: Vec::with_capacity(8192),
             latent_buf: Vec::with_capacity(4096),
             compression_threshold: 64,
+            latent_aead: false,
         }
     }
 
@@ -1112,6 +1118,33 @@ where
             &secret,
         );
         self.moving_target = true;
+    }
+
+    /// Enable Chameleon + AES-GCM (M2: latent-space AEAD)
+    ///
+    /// Defense-in-depth: data is first neural-encoded to a LatentVector
+    /// (obfuscation), then the serialized latent bytes are AES-256-GCM
+    /// encrypted (authenticated encryption). An attacker must break both
+    /// the neural encoder AND AES-GCM to recover plaintext.
+    pub fn enable_chameleon_aead(&mut self, secret: [u8; 32]) {
+        // Derive separate keys for Chameleon and AES-GCM from the shared secret
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, &secret);
+        let mut aes_key = [0u8; 32];
+        hk.expand(b"spine-latent-aead-key", &mut aes_key)
+            .expect("HKDF expand");
+
+        // Set up Chameleon with the original secret
+        self.chameleon = Some(ChameleonKey::new(&secret));
+        self.morphology = ProtocolMorphology::new_keyed(
+            u64::from_le_bytes(secret[0..8].try_into().unwrap()),
+            &secret,
+        );
+        self.moving_target = true;
+
+        // Set up AES-GCM with derived key
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&aes_key);
+        self.cipher = Some(Aes256Gcm::new(key));
+        self.latent_aead = true;
     }
 
     /// Enable speculative decoding
@@ -1258,13 +1291,32 @@ where
             latent.to_bytes_into(&mut self.latent_buf);
             data = std::mem::take(&mut self.latent_buf);
 
+            // M2: Latent-space AEAD — encrypt the serialized latent vector with AES-GCM
+            // This provides defense-in-depth: neural obfuscation + authenticated encryption.
+            // An attacker must break BOTH the neural latent encoder AND AES-256-GCM.
+            if self.latent_aead {
+                if let Some(cipher) = &self.cipher {
+                    self.nonce_counter = self.nonce_counter.wrapping_add(1);
+                    let mut nonce_full = [0u8; 12];
+                    nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
+                    nonce_full[8..].copy_from_slice(&self.session_nonce);
+                    let nonce = Nonce::from_slice(&nonce_full);
+                    data = cipher
+                        .encrypt(nonce, data.as_ref())
+                        .map_err(|e| anyhow::anyhow!("Latent AEAD encrypt error: {}", e))?;
+                    let mut with_nonce = nonce_full.to_vec();
+                    with_nonce.extend(data);
+                    data = with_nonce;
+                }
+            }
+
             // Evolve key after sending (moving target)
             if self.moving_target {
                 chameleon.evolve(msg_hash);
                 // morphology evolution deferred to after write_morphed_frame
             }
         }
-        // Fallback to AES encryption
+        // Fallback to AES encryption (without Chameleon)
         else if let Some(cipher) = &self.cipher {
             // SECURITY: Nonce = [counter (8 bytes)] || [session_nonce (4 bytes)]
             // Session nonce prevents cross-session nonce reuse with same key
@@ -1321,6 +1373,23 @@ where
             latent.to_bytes_into(&mut self.latent_buf);
             data = std::mem::take(&mut self.latent_buf);
 
+            // M2: Latent-space AEAD on raw path too
+            if self.latent_aead {
+                if let Some(cipher) = &self.cipher {
+                    self.nonce_counter = self.nonce_counter.wrapping_add(1);
+                    let mut nonce_full = [0u8; 12];
+                    nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
+                    nonce_full[8..].copy_from_slice(&self.session_nonce);
+                    let nonce = Nonce::from_slice(&nonce_full);
+                    data = cipher
+                        .encrypt(nonce, data.as_ref())
+                        .map_err(|e| anyhow::anyhow!("Latent AEAD encrypt error: {}", e))?;
+                    let mut with_nonce = nonce_full.to_vec();
+                    with_nonce.extend(data);
+                    data = with_nonce;
+                }
+            }
+
             if self.moving_target {
                 chameleon.evolve(msg_hash);
                 // morphology evolution deferred to after write_morphed_frame
@@ -1357,12 +1426,25 @@ where
 
         // Chameleon decoding (if enabled)
         if let Some(ref mut chameleon) = self.chameleon {
+            // M2: Latent-space AEAD — decrypt serialized latent vector before decoding
+            if self.latent_aead {
+                if let Some(cipher) = &self.cipher {
+                    if data.len() < 12 {
+                        return Err(anyhow::anyhow!("Invalid latent AEAD message"));
+                    }
+                    let nonce = Nonce::from_slice(&data[..12]);
+                    data = cipher
+                        .decrypt(nonce, &data[12..])
+                        .map_err(|e| anyhow::anyhow!("Latent AEAD decrypt error: {}", e))?;
+                }
+            }
+
             // FAST: Zero-copy binary deserialization
             let latent = LatentVector::from_bytes_fast(&data)
                 .ok_or_else(|| anyhow::anyhow!("Invalid latent vector format"))?;
             data = chameleon.decode(&latent);
         }
-        // Fallback to AES decryption
+        // Fallback to AES decryption (without Chameleon)
         else if let Some(cipher) = &self.cipher {
             if data.len() < 12 {
                 return Err(anyhow::anyhow!("Invalid encrypted message"));
@@ -2011,6 +2093,12 @@ struct ProtocolHandlerState {
     last_output_prediction: Option<u64>,
     last_input_prediction: Option<u64>,
     pub speculation_stats: SpeculationStats,
+    /// Latent-space AEAD mode (M2)
+    latent_aead: bool,
+    /// Nonce counter for AEAD
+    nonce_counter: u64,
+    /// Session nonce for cross-session uniqueness
+    session_nonce: [u8; 4],
 }
 
 impl SpineConnection {
@@ -2041,6 +2129,25 @@ impl SpineConnection {
             &secret,
         );
         self.handler.moving_target = true;
+    }
+
+    /// Enable Chameleon + AES-GCM (M2: latent-space AEAD)
+    pub fn enable_chameleon_aead(&mut self, secret: [u8; 32]) {
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, &secret);
+        let mut aes_key = [0u8; 32];
+        hk.expand(b"spine-latent-aead-key", &mut aes_key)
+            .expect("HKDF expand");
+
+        self.handler.chameleon = Some(ChameleonKey::new(&secret));
+        self.handler.morphology = ProtocolMorphology::new_keyed(
+            u64::from_le_bytes(secret[0..8].try_into().unwrap()),
+            &secret,
+        );
+        self.handler.moving_target = true;
+
+        let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&aes_key);
+        self.handler.cipher = Some(Aes256Gcm::new(key));
+        self.handler.latent_aead = true;
     }
 
     /// Get transport mode
@@ -2140,6 +2247,9 @@ impl ProtocolHandlerState {
             last_output_prediction: None,
             last_input_prediction: None,
             speculation_stats: SpeculationStats::default(),
+            latent_aead: false,
+            nonce_counter: 0,
+            session_nonce: rand::random::<[u8; 4]>(),
         }
     }
 
@@ -2169,6 +2279,23 @@ impl ProtocolHandlerState {
             let latent = chameleon.encode(&data);
             // FAST: Zero-copy binary serialization
             data = latent.to_bytes_fast();
+
+            // M2: Latent-space AEAD
+            if self.latent_aead {
+                if let Some(cipher) = &self.cipher {
+                    self.nonce_counter = self.nonce_counter.wrapping_add(1);
+                    let mut nonce_full = [0u8; 12];
+                    nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
+                    nonce_full[8..].copy_from_slice(&self.session_nonce);
+                    let nonce = Nonce::from_slice(&nonce_full);
+                    data = cipher
+                        .encrypt(nonce, data.as_ref())
+                        .map_err(|e| anyhow::anyhow!("Latent AEAD encrypt error: {}", e))?;
+                    let mut with_nonce = nonce_full.to_vec();
+                    with_nonce.extend(data);
+                    data = with_nonce;
+                }
+            }
         } else if let Some(cipher) = &self.cipher {
             let nonce_bytes = rand::random::<[u8; 12]>();
             let nonce = Nonce::from_slice(&nonce_bytes);
@@ -2188,6 +2315,19 @@ impl ProtocolHandlerState {
 
         // Chameleon decoding
         if let Some(ref mut chameleon) = self.chameleon {
+            // M2: Latent-space AEAD — decrypt before decoding
+            if self.latent_aead {
+                if let Some(cipher) = &self.cipher {
+                    if data.len() < 12 {
+                        return Err(anyhow::anyhow!("Invalid latent AEAD message"));
+                    }
+                    let nonce = Nonce::from_slice(&data[..12]);
+                    data = cipher
+                        .decrypt(nonce, &data[12..])
+                        .map_err(|e| anyhow::anyhow!("Latent AEAD decrypt error: {}", e))?;
+                }
+            }
+
             // FAST: Zero-copy binary deserialization
             let latent = LatentVector::from_bytes_fast(&data)
                 .ok_or_else(|| anyhow::anyhow!("Invalid latent vector format"))?;

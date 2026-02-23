@@ -177,7 +177,6 @@
 - [x] **MISRA compliance** (`formal/misra/MISRA_COMPLIANCE.md`): 16 MISRA C:2012 rules mapped to Rust unsafe, 8 documented deviations with justification and kani verification links
 - [x] **349 tests passing**: 0 new (verification artifacts are external tools), 0 failures, 0 clippy warnings
 
-
 ### Phase 11: Security Remediation ✅
 
 - [x] **C1: RLWE KEM correctness**: Store public parameter `a` from keygen; encode random message m in ciphertext high bits; rounding-based decapsulation; shared secret = H(m) on both sides
@@ -237,14 +236,14 @@
 ### Phase 17: Certificate-Based Authentication
 
 - [x] **Extended TlsConfig**: 12 new fields (mutual_tls, crl_path, client_cert/key, cert_reload_secs, auto_generate, ACME settings)
-- [x] **CRL support**: Certificate Revocation List checking in ``build_server_config``
-- [x] **Certificate rotation**: ``RotatingTlsAcceptor`` with file-watcher-based hot-reload
-- [x] **Self-signed cert generation**: ``generate_self_signed()`` and ``generate_dev_certs()`` via rcgen
-- [x] **ACME cert manager**: ``AcmeCertManager`` with Let's Encrypt integration
-- [x] **Env var overrides**: 7 new TLS env vars (SPINE_TLS_CERT, _KEY, _CA, _MTLS, _CRL, _AUTO_GENERATE)
-- [x] **Agent TLS retry**: ``connect_tls_with_retry()`` with exponential backoff
-- [x] **CLI mTLS flags**: ``--client-cert`` and ``--client-key`` for ``spine connect``
-- [x] **CLI cert subcommand**: ``spine cert generate`` and ``spine cert info`` commands
+- [x] **CRL support**: Certificate Revocation List checking in `build_server_config`
+- [x] **Certificate rotation**: `RotatingTlsAcceptor` with file-watcher-based hot-reload
+- [x] **Self-signed cert generation**: `generate_self_signed()` and `generate_dev_certs()` via rcgen
+- [x] **ACME cert manager**: `AcmeCertManager` with Let's Encrypt integration
+- [x] **Env var overrides**: 7 new TLS env vars (SPINE_TLS_CERT, \_KEY, \_CA, \_MTLS, \_CRL, \_AUTO_GENERATE)
+- [x] **Agent TLS retry**: `connect_tls_with_retry()` with exponential backoff
+- [x] **CLI mTLS flags**: `--client-cert` and `--client-key` for `spine connect`
+- [x] **CLI cert subcommand**: `spine cert generate` and `spine cert info` commands
 - [x] **Gateway TLS config**: Backend TLS config propagated through AppState
 - [x] **429 tests passing**: +14 tests (8 TLS + 6 config tests), 0 failures, 0 Clippy warnings
 
@@ -314,6 +313,14 @@
 - [x] **spine-cli tests**: 15 integration tests — init scaffolding, config generation, addr/tag parsing
 - [x] **535 tests passing**: +40 tests, 0 failures, 0 Clippy warnings
 
+### Phase 24: Advanced Cryptography ✅
+
+- [x] **ML-KEM (FIPS 203)**: `KemAlgorithm` enum (Rlwe/MlKem512/MlKem768/MlKem1024/Hybrid), `mlkem_ops` module with generate/encapsulate/decapsulate for all 3 security levels, dispatch in `QuantumKeyEvolution` and `QuantumSpeculativeProtocol`
+- [x] **Hybrid KEM**: RLWE + ML-KEM-768 defense-in-depth with HKDF-combined shared secrets and length-prefixed concatenated ciphertexts
+- [x] **Latent-space AES-GCM (M2)**: Defense-in-depth AEAD on Chameleon latent vectors — HKDF-derived key, nonce from counter+session, chained in `ProtocolHandler`/`ProtocolHandlerState`/`SpineConnection` send/receive paths
+- [x] **Certificate Transparency**: RFC 6962 SCT parsing and verification, `CtPolicy`/`CtEnforcement` config, trusted log registry, SCT age/trust validation, policy enforcement
+- [x] **561 tests passing**: +26 tests (12 ML-KEM + 15 CT - 1 fix), 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
@@ -354,5 +361,5 @@
 - `spine-storage`: Persistent storage (InMemory, SQLite WAL, RocksDB LSM)
 - `spine-cache`: Tiered caching (L1 LRU, L2 file-backed, L3 remote)
 - `spine-k8s`: Kubernetes operator CRD, autoscaler, manifest generators
-- `spine-python`*: Python bindings via PyO3 + maturin (excluded from default build)
-- `spine-js`*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build)
+- `spine-python`\*: Python bindings via PyO3 + maturin (excluded from default build)
+- `spine-js`\*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build)

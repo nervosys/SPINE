@@ -18,6 +18,7 @@ sha2 = "0.10"
 aes-gcm = "0.10"
 hkdf = "0.12"
 subtle = "2.5"
+ml-kem = "0.2"
 
 [dev-dependencies]
 proptest = "1.4"

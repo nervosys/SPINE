@@ -46,6 +46,11 @@ use spine_neural::{
 use std::collections::VecDeque;
 use subtle::ConstantTimeEq;
 
+// ML-KEM (FIPS 203) post-quantum KEM
+use ml_kem::kem::{Decapsulate, Encapsulate, EncapsulationKey, DecapsulationKey};
+use ml_kem::{MlKem512, MlKem768, MlKem1024, KemCore, EncodedSizeUser, Encoded,
+    MlKem512Params, MlKem768Params, MlKem1024Params};
+
 // AES-256-GCM for authenticated encryption (replaces XOR)
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -996,6 +1001,119 @@ impl RingElement {
     }
 }
 
+/// Key Encapsulation Mechanism algorithm selection
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+pub enum KemAlgorithm {
+    /// Custom RLWE (existing implementation) — NIST Level 3 equivalent
+    Rlwe,
+    /// ML-KEM-512 (FIPS 203) — NIST Level 1
+    MlKem512,
+    /// ML-KEM-768 (FIPS 203) — NIST Level 3 (recommended)
+    #[default]
+    MlKem768,
+    /// ML-KEM-1024 (FIPS 203) — NIST Level 5
+    MlKem1024,
+    /// Hybrid: RLWE + ML-KEM-768 (defense in depth)
+    Hybrid,
+}
+
+/// ML-KEM key encapsulation result
+#[derive(Debug, Clone)]
+struct MlKemKeyPair {
+    dk_bytes: Vec<u8>,  // Decapsulation key (private)
+    ek_bytes: Vec<u8>,  // Encapsulation key (public)
+    algorithm: KemAlgorithm,
+}
+
+/// ML-KEM operations using FIPS 203
+mod mlkem_ops {
+    use super::*;
+
+    pub fn generate_512(rng: &mut StdRng) -> MlKemKeyPair {
+        let (dk, ek) = MlKem512::generate(rng);
+        MlKemKeyPair {
+            dk_bytes: dk.as_bytes().to_vec(),
+            ek_bytes: ek.as_bytes().to_vec(),
+            algorithm: KemAlgorithm::MlKem512,
+        }
+    }
+
+    pub fn generate_768(rng: &mut StdRng) -> MlKemKeyPair {
+        let (dk, ek) = MlKem768::generate(rng);
+        MlKemKeyPair {
+            dk_bytes: dk.as_bytes().to_vec(),
+            ek_bytes: ek.as_bytes().to_vec(),
+            algorithm: KemAlgorithm::MlKem768,
+        }
+    }
+
+    pub fn generate_1024(rng: &mut StdRng) -> MlKemKeyPair {
+        let (dk, ek) = MlKem1024::generate(rng);
+        MlKemKeyPair {
+            dk_bytes: dk.as_bytes().to_vec(),
+            ek_bytes: ek.as_bytes().to_vec(),
+            algorithm: KemAlgorithm::MlKem1024,
+        }
+    }
+
+    pub fn encapsulate_512(ek_bytes: &[u8], rng: &mut StdRng) -> Option<(Vec<u8>, [u8; 32])> {
+        let ek_encoded = <Encoded<EncapsulationKey<MlKem512Params>>>::try_from(ek_bytes).ok()?;
+        let ek = EncapsulationKey::<MlKem512Params>::from_bytes(&ek_encoded);
+        let (ct, ss) = ek.encapsulate(rng).ok()?;
+        let mut shared = [0u8; 32];
+        shared.copy_from_slice(ss.as_slice());
+        Some((ct.to_vec(), shared))
+    }
+
+    pub fn encapsulate_768(ek_bytes: &[u8], rng: &mut StdRng) -> Option<(Vec<u8>, [u8; 32])> {
+        let ek_encoded = <Encoded<EncapsulationKey<MlKem768Params>>>::try_from(ek_bytes).ok()?;
+        let ek = EncapsulationKey::<MlKem768Params>::from_bytes(&ek_encoded);
+        let (ct, ss) = ek.encapsulate(rng).ok()?;
+        let mut shared = [0u8; 32];
+        shared.copy_from_slice(ss.as_slice());
+        Some((ct.to_vec(), shared))
+    }
+
+    pub fn encapsulate_1024(ek_bytes: &[u8], rng: &mut StdRng) -> Option<(Vec<u8>, [u8; 32])> {
+        let ek_encoded = <Encoded<EncapsulationKey<MlKem1024Params>>>::try_from(ek_bytes).ok()?;
+        let ek = EncapsulationKey::<MlKem1024Params>::from_bytes(&ek_encoded);
+        let (ct, ss) = ek.encapsulate(rng).ok()?;
+        let mut shared = [0u8; 32];
+        shared.copy_from_slice(ss.as_slice());
+        Some((ct.to_vec(), shared))
+    }
+
+    pub fn decapsulate_512(dk_bytes: &[u8], ct_bytes: &[u8]) -> Option<[u8; 32]> {
+        let dk_encoded = <Encoded<DecapsulationKey<MlKem512Params>>>::try_from(dk_bytes).ok()?;
+        let dk = DecapsulationKey::<MlKem512Params>::from_bytes(&dk_encoded);
+        let ct = <ml_kem::Ciphertext<MlKem512>>::try_from(ct_bytes).ok()?;
+        let ss = dk.decapsulate(&ct).ok()?;
+        let mut shared = [0u8; 32];
+        shared.copy_from_slice(ss.as_slice());
+        Some(shared)
+    }
+
+    pub fn decapsulate_768(dk_bytes: &[u8], ct_bytes: &[u8]) -> Option<[u8; 32]> {
+        let dk_encoded = <Encoded<DecapsulationKey<MlKem768Params>>>::try_from(dk_bytes).ok()?;
+        let dk = DecapsulationKey::<MlKem768Params>::from_bytes(&dk_encoded);
+        let ct = <ml_kem::Ciphertext<MlKem768>>::try_from(ct_bytes).ok()?;
+        let ss = dk.decapsulate(&ct).ok()?;
+        let mut shared = [0u8; 32];
+        shared.copy_from_slice(ss.as_slice());
+        Some(shared)
+    }
+
+    pub fn decapsulate_1024(dk_bytes: &[u8], ct_bytes: &[u8]) -> Option<[u8; 32]> {
+        let dk_encoded = <Encoded<DecapsulationKey<MlKem1024Params>>>::try_from(dk_bytes).ok()?;
+        let dk = DecapsulationKey::<MlKem1024Params>::from_bytes(&dk_encoded);
+        let ct = <ml_kem::Ciphertext<MlKem1024>>::try_from(ct_bytes).ok()?;
+        let ss = dk.decapsulate(&ct).ok()?;
+        let mut shared = [0u8; 32];
+        shared.copy_from_slice(ss.as_slice());
+        Some(shared)
+    }
+}
+
 /// Quantum-resistant key pair
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuantumKeyPair {
@@ -1016,6 +1134,11 @@ pub struct QuantumKeyEvolution {
     max_history: usize,
     #[serde(skip, default = "default_rng")]
     rng: StdRng,
+    /// KEM algorithm in use
+    algorithm: KemAlgorithm,
+    /// ML-KEM keypair (when using FIPS 203 algorithms)
+    #[serde(skip)]
+    mlkem_keypair: Option<MlKemKeyPair>,
 }
 
 impl QuantumKeyEvolution {
@@ -1030,6 +1153,32 @@ impl QuantumKeyEvolution {
             key_history: VecDeque::new(),
             max_history: 100,
             rng,
+            algorithm: KemAlgorithm::Rlwe,
+            mlkem_keypair: None,
+        }
+    }
+
+    /// Create with a specific KEM algorithm
+    pub fn new_with_algorithm(params: LatticeParams, seed: u64, algorithm: KemAlgorithm) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let current_key = Self::generate_keypair(&params, &mut rng);
+        let mlkem_keypair = match algorithm {
+            KemAlgorithm::MlKem512 => Some(mlkem_ops::generate_512(&mut rng)),
+            KemAlgorithm::MlKem768 => Some(mlkem_ops::generate_768(&mut rng)),
+            KemAlgorithm::MlKem1024 => Some(mlkem_ops::generate_1024(&mut rng)),
+            KemAlgorithm::Hybrid => Some(mlkem_ops::generate_768(&mut rng)),
+            KemAlgorithm::Rlwe => None,
+        };
+
+        Self {
+            params,
+            current_key,
+            evolution_counter: 0,
+            key_history: VecDeque::new(),
+            max_history: 100,
+            rng,
+            algorithm,
+            mlkem_keypair,
         }
     }
 
@@ -1079,9 +1228,69 @@ impl QuantumKeyEvolution {
         // Generate a proper RLWE keypair that maintains the b=a*s+e invariant
         self.current_key = Self::generate_keypair(&self.params, &mut new_rng);
 
+        // Also evolve ML-KEM keypair if in use
+        if self.algorithm != KemAlgorithm::Rlwe {
+            self.mlkem_keypair = match self.algorithm {
+                KemAlgorithm::MlKem512 => Some(mlkem_ops::generate_512(&mut new_rng)),
+                KemAlgorithm::MlKem768 | KemAlgorithm::Hybrid => Some(mlkem_ops::generate_768(&mut new_rng)),
+                KemAlgorithm::MlKem1024 => Some(mlkem_ops::generate_1024(&mut new_rng)),
+                KemAlgorithm::Rlwe => None,
+            };
+        }
+
         self.evolution_counter += 1;
 
         hash
+    }
+
+    /// Encapsulate a shared secret using the current KEM algorithm
+    pub fn encapsulate(&mut self) -> (Vec<u8>, [u8; 32]) {
+        match self.algorithm {
+            KemAlgorithm::Rlwe => self.encapsulate_rlwe(),
+            KemAlgorithm::MlKem512 => self.encapsulate_mlkem(KemAlgorithm::MlKem512),
+            KemAlgorithm::MlKem768 => self.encapsulate_mlkem(KemAlgorithm::MlKem768),
+            KemAlgorithm::MlKem1024 => self.encapsulate_mlkem(KemAlgorithm::MlKem1024),
+            KemAlgorithm::Hybrid => self.encapsulate_hybrid(),
+        }
+    }
+
+    /// Encapsulate using ML-KEM (FIPS 203)
+    fn encapsulate_mlkem(&mut self, alg: KemAlgorithm) -> (Vec<u8>, [u8; 32]) {
+        let kp = self.mlkem_keypair.as_ref().expect("ML-KEM keypair required");
+        let result = match alg {
+            KemAlgorithm::MlKem512 => mlkem_ops::encapsulate_512(&kp.ek_bytes, &mut self.rng),
+            KemAlgorithm::MlKem768 => mlkem_ops::encapsulate_768(&kp.ek_bytes, &mut self.rng),
+            KemAlgorithm::MlKem1024 => mlkem_ops::encapsulate_1024(&kp.ek_bytes, &mut self.rng),
+            _ => unreachable!(),
+        };
+        result.unwrap_or_else(|| {
+            // Fallback to RLWE if ML-KEM fails
+            self.encapsulate_rlwe()
+        })
+    }
+
+    /// Encapsulate using hybrid RLWE + ML-KEM-768 (defense in depth)
+    fn encapsulate_hybrid(&mut self) -> (Vec<u8>, [u8; 32]) {
+        // Get shared secrets from both algorithms
+        let (rlwe_ct, rlwe_ss) = self.encapsulate_rlwe();
+        let (mlkem_ct, mlkem_ss) = self.encapsulate_mlkem(KemAlgorithm::MlKem768);
+
+        // Combine shared secrets via HKDF
+        let mut combined_ikm = [0u8; 64];
+        combined_ikm[..32].copy_from_slice(&rlwe_ss);
+        combined_ikm[32..].copy_from_slice(&mlkem_ss);
+        let hk = Hkdf::<Sha256>::new(None, &combined_ikm);
+        let mut hybrid_ss = [0u8; 32];
+        hk.expand(b"spine-hybrid-kem", &mut hybrid_ss).expect("HKDF expand");
+
+        // Concatenate ciphertexts with length prefix for RLWE part
+        let rlwe_len = (rlwe_ct.len() as u32).to_le_bytes();
+        let mut hybrid_ct = Vec::with_capacity(4 + rlwe_ct.len() + mlkem_ct.len());
+        hybrid_ct.extend_from_slice(&rlwe_len);
+        hybrid_ct.extend_from_slice(&rlwe_ct);
+        hybrid_ct.extend_from_slice(&mlkem_ct);
+
+        (hybrid_ct, hybrid_ss)
     }
 
     /// Encapsulate a shared secret using the public key (RLWE KEM)
@@ -1089,7 +1298,7 @@ impl QuantumKeyEvolution {
     /// Uses the stored `a` from keygen to ensure sender and receiver
     /// derive the same shared secret. Encodes a random message `m` into
     /// the high bits and recovers it via rounding on decapsulation.
-    pub fn encapsulate(&mut self) -> (Vec<u8>, [u8; 32]) {
+    fn encapsulate_rlwe(&mut self) -> (Vec<u8>, [u8; 32]) {
         // Use the SAME `a` from keygen — critical for correctness
         let a = &self.current_key.a;
         let r = RingElement::random_ternary(self.params.n, self.params.q, &mut self.rng);
@@ -1137,12 +1346,56 @@ impl QuantumKeyEvolution {
         (ciphertext, shared_secret)
     }
 
+    /// Decapsulate to recover shared secret using the current KEM algorithm
+    pub fn decapsulate(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
+        match self.algorithm {
+            KemAlgorithm::Rlwe => self.decapsulate_rlwe(ciphertext),
+            KemAlgorithm::MlKem512 => self.decapsulate_mlkem(ciphertext, KemAlgorithm::MlKem512),
+            KemAlgorithm::MlKem768 => self.decapsulate_mlkem(ciphertext, KemAlgorithm::MlKem768),
+            KemAlgorithm::MlKem1024 => self.decapsulate_mlkem(ciphertext, KemAlgorithm::MlKem1024),
+            KemAlgorithm::Hybrid => self.decapsulate_hybrid(ciphertext),
+        }
+    }
+
+    /// Decapsulate using ML-KEM (FIPS 203)
+    fn decapsulate_mlkem(&self, ciphertext: &[u8], alg: KemAlgorithm) -> Option<[u8; 32]> {
+        let kp = self.mlkem_keypair.as_ref()?;
+        match alg {
+            KemAlgorithm::MlKem512 => mlkem_ops::decapsulate_512(&kp.dk_bytes, ciphertext),
+            KemAlgorithm::MlKem768 => mlkem_ops::decapsulate_768(&kp.dk_bytes, ciphertext),
+            KemAlgorithm::MlKem1024 => mlkem_ops::decapsulate_1024(&kp.dk_bytes, ciphertext),
+            _ => None,
+        }
+    }
+
+    /// Decapsulate using hybrid RLWE + ML-KEM-768
+    fn decapsulate_hybrid(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
+        if ciphertext.len() < 4 { return None; }
+        let rlwe_len = u32::from_le_bytes(ciphertext[..4].try_into().ok()?) as usize;
+        if ciphertext.len() < 4 + rlwe_len { return None; }
+
+        let rlwe_ct = &ciphertext[4..4+rlwe_len];
+        let mlkem_ct = &ciphertext[4+rlwe_len..];
+
+        let rlwe_ss = self.decapsulate_rlwe(rlwe_ct)?;
+        let mlkem_ss = self.decapsulate_mlkem(mlkem_ct, KemAlgorithm::MlKem768)?;
+
+        let mut combined_ikm = [0u8; 64];
+        combined_ikm[..32].copy_from_slice(&rlwe_ss);
+        combined_ikm[32..].copy_from_slice(&mlkem_ss);
+        let hk = Hkdf::<Sha256>::new(None, &combined_ikm);
+        let mut hybrid_ss = [0u8; 32];
+        hk.expand(b"spine-hybrid-kem", &mut hybrid_ss).expect("HKDF expand");
+
+        Some(hybrid_ss)
+    }
+
     /// Decapsulate to recover shared secret (RLWE KEM)
     ///
     /// Recovers the encoded message by computing v - u·s, then rounding
     /// each coefficient to 0 or 1 to recover the original message m.
     /// The shared secret is H(m), matching the encapsulator.
-    pub fn decapsulate(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
+    fn decapsulate_rlwe(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
         let half = ciphertext.len() / 2;
         if half < self.params.n * 2 {
             return None;
@@ -1229,6 +1482,27 @@ impl QuantumSpeculativeProtocol {
             evolution_interval: 10,
             message_count: 0,
         }
+    }
+
+    /// Create with a specific KEM algorithm
+    pub fn new_with_algorithm(
+        transformer_config: TransformerConfig,
+        lattice_params: LatticeParams,
+        seed: u64,
+        algorithm: KemAlgorithm,
+    ) -> Self {
+        Self {
+            predictor: TransformerPredictor::new(transformer_config),
+            key_evolution: QuantumKeyEvolution::new_with_algorithm(lattice_params, seed, algorithm),
+            prediction_threshold: 0.8,
+            evolution_interval: 10,
+            message_count: 0,
+        }
+    }
+
+    /// Get the KEM algorithm in use
+    pub fn algorithm(&self) -> KemAlgorithm {
+        self.key_evolution.algorithm
     }
 
     /// Process an outgoing message with prediction and encryption
@@ -2204,5 +2478,182 @@ mod tests {
                 i
             );
         }
+    }
+
+    // ── Phase 24: ML-KEM (FIPS 203) tests ──────────────────────────────
+
+    #[test]
+    fn test_mlkem_512_round_trip() {
+        let mut rng = StdRng::seed_from_u64(1);
+        let kp = mlkem_ops::generate_512(&mut rng);
+        assert_eq!(kp.algorithm, KemAlgorithm::MlKem512);
+
+        let (ct, ss_enc) = mlkem_ops::encapsulate_512(&kp.ek_bytes, &mut rng).unwrap();
+        let ss_dec = mlkem_ops::decapsulate_512(&kp.dk_bytes, &ct).unwrap();
+        assert_eq!(ss_enc.len(), 32);
+        assert_eq!(ss_enc, ss_dec, "ML-KEM-512 shared secret mismatch");
+    }
+
+    #[test]
+    fn test_mlkem_768_round_trip() {
+        let mut rng = StdRng::seed_from_u64(2);
+        let kp = mlkem_ops::generate_768(&mut rng);
+        assert_eq!(kp.algorithm, KemAlgorithm::MlKem768);
+
+        let (ct, ss_enc) = mlkem_ops::encapsulate_768(&kp.ek_bytes, &mut rng).unwrap();
+        let ss_dec = mlkem_ops::decapsulate_768(&kp.dk_bytes, &ct).unwrap();
+        assert_eq!(ss_enc.len(), 32);
+        assert_eq!(ss_enc, ss_dec, "ML-KEM-768 shared secret mismatch");
+    }
+
+    #[test]
+    fn test_mlkem_1024_round_trip() {
+        let mut rng = StdRng::seed_from_u64(3);
+        let kp = mlkem_ops::generate_1024(&mut rng);
+        assert_eq!(kp.algorithm, KemAlgorithm::MlKem1024);
+
+        let (ct, ss_enc) = mlkem_ops::encapsulate_1024(&kp.ek_bytes, &mut rng).unwrap();
+        let ss_dec = mlkem_ops::decapsulate_1024(&kp.dk_bytes, &ct).unwrap();
+        assert_eq!(ss_enc.len(), 32);
+        assert_eq!(ss_enc, ss_dec, "ML-KEM-1024 shared secret mismatch");
+    }
+
+    #[test]
+    fn test_mlkem_different_keypairs_produce_different_secrets() {
+        let mut rng = StdRng::seed_from_u64(4);
+        let kp1 = mlkem_ops::generate_768(&mut rng);
+        let kp2 = mlkem_ops::generate_768(&mut rng);
+
+        let (_, ss1) = mlkem_ops::encapsulate_768(&kp1.ek_bytes, &mut rng).unwrap();
+        let (_, ss2) = mlkem_ops::encapsulate_768(&kp2.ek_bytes, &mut rng).unwrap();
+
+        // Overwhelmingly likely to differ (2^-256 collision probability)
+        assert_ne!(ss1, ss2, "Different keypairs should yield different secrets");
+    }
+
+    #[test]
+    fn test_mlkem_wrong_key_decapsulation_fails() {
+        let mut rng = StdRng::seed_from_u64(5);
+        let kp1 = mlkem_ops::generate_768(&mut rng);
+        let kp2 = mlkem_ops::generate_768(&mut rng);
+
+        let (ct, ss_enc) = mlkem_ops::encapsulate_768(&kp1.ek_bytes, &mut rng).unwrap();
+        // Decapsulating with wrong key should yield a different (implicit reject) secret
+        let ss_wrong = mlkem_ops::decapsulate_768(&kp2.dk_bytes, &ct).unwrap();
+        assert_ne!(
+            ss_enc, ss_wrong,
+            "Wrong DK must produce different shared secret (implicit reject)"
+        );
+    }
+
+    #[test]
+    fn test_kem_algorithm_default() {
+        assert_eq!(KemAlgorithm::default(), KemAlgorithm::MlKem768);
+    }
+
+    #[test]
+    fn test_quantum_key_evolution_with_mlkem() {
+        let params = LatticeParams {
+            n: 32,
+            q: 257,
+            p: 3,
+            sigma: 2.0,
+        };
+        let mut ke = QuantumKeyEvolution::new_with_algorithm(params, 42, KemAlgorithm::MlKem768);
+
+        // Encapsulate/decapsulate should work with ML-KEM
+        let (ct, ss_enc) = ke.encapsulate();
+        let ss_dec = ke.decapsulate(&ct).unwrap();
+        assert_eq!(ss_enc, ss_dec, "ML-KEM encaps/decaps via QuantumKeyEvolution");
+        assert!(!ct.is_empty());
+    }
+
+    #[test]
+    fn test_quantum_key_evolution_hybrid_kem() {
+        let params = LatticeParams {
+            n: 32,
+            q: 257,
+            p: 3,
+            sigma: 2.0,
+        };
+        let mut ke = QuantumKeyEvolution::new_with_algorithm(params, 42, KemAlgorithm::Hybrid);
+
+        let (ct, ss_enc) = ke.encapsulate();
+        let ss_dec = ke.decapsulate(&ct).unwrap();
+        assert_eq!(ss_enc, ss_dec, "Hybrid RLWE+ML-KEM shared secret mismatch");
+        assert_eq!(ss_enc.len(), 32, "Hybrid shared secret should be 32 bytes");
+        // Hybrid ciphertext is larger (RLWE + ML-KEM-768 concatenated)
+        assert!(ct.len() > 100, "Hybrid ciphertext should be large");
+    }
+
+    #[test]
+    fn test_mlkem_key_evolution_maintains_invariant() {
+        let params = LatticeParams {
+            n: 32,
+            q: 257,
+            p: 3,
+            sigma: 2.0,
+        };
+        let mut ke = QuantumKeyEvolution::new_with_algorithm(params, 55, KemAlgorithm::MlKem768);
+
+        for i in 0..5 {
+            ke.evolve();
+            let (ct, ss_enc) = ke.encapsulate();
+            let ss_dec = ke.decapsulate(&ct).unwrap();
+            assert_eq!(ss_enc, ss_dec, "ML-KEM must work after evolution step {}", i);
+        }
+    }
+
+    #[test]
+    fn test_quantum_speculative_protocol_with_mlkem() {
+        let config = TransformerConfig::default();
+        let params = LatticeParams {
+            n: 32,
+            q: 257,
+            p: 3,
+            sigma: 2.0,
+        };
+
+        let mut alice = QuantumSpeculativeProtocol::new_with_algorithm(
+            config.clone(),
+            params.clone(),
+            42,
+            KemAlgorithm::MlKem768,
+        );
+        let mut bob = QuantumSpeculativeProtocol::new_with_algorithm(
+            config,
+            params,
+            42,
+            KemAlgorithm::MlKem768,
+        );
+
+        assert_eq!(alice.algorithm(), KemAlgorithm::MlKem768);
+        assert_eq!(bob.algorithm(), KemAlgorithm::MlKem768);
+
+        let msg = b"ML-KEM secured message";
+        let quantum_msg = alice.send(msg);
+        let received = bob.receive(&quantum_msg);
+        assert!(received.is_some());
+        assert_eq!(received.unwrap(), msg);
+    }
+
+    #[test]
+    fn test_mlkem_ciphertext_sizes() {
+        let mut rng = StdRng::seed_from_u64(6);
+        let kp512 = mlkem_ops::generate_512(&mut rng);
+        let kp768 = mlkem_ops::generate_768(&mut rng);
+        let kp1024 = mlkem_ops::generate_1024(&mut rng);
+
+        let (ct512, _) = mlkem_ops::encapsulate_512(&kp512.ek_bytes, &mut rng).unwrap();
+        let (ct768, _) = mlkem_ops::encapsulate_768(&kp768.ek_bytes, &mut rng).unwrap();
+        let (ct1024, _) = mlkem_ops::encapsulate_1024(&kp1024.ek_bytes, &mut rng).unwrap();
+
+        assert_eq!(ct512.len(), 768, "ML-KEM-512 ciphertext should be 768 bytes");
+        assert_eq!(ct768.len(), 1088, "ML-KEM-768 ciphertext should be 1088 bytes");
+        assert_eq!(ct1024.len(), 1568, "ML-KEM-1024 ciphertext should be 1568 bytes");
+
+        // Monotonically increasing with security level
+        assert!(ct512.len() < ct768.len());
+        assert!(ct768.len() < ct1024.len());
     }
 }

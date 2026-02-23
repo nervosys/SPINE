@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 535 tests · 0 warnings · Apache 2.0
+> 25 Rust crates · 561 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -200,7 +200,7 @@
 - [x] **Paper update**: paper.typ updated to 25 crates, 402 tests, ~68k LOC
 - [x] **ROADMAP**: Added Phase 13-14 entries and populated Planned section
 
-### Phase 15 — Workspace Completeness & CI Hardening
+### Phase 15 — Workspace Completeness & CI Hardening ✅
 
 - [x] **4 missing crates added**: spine-gpu, spine-storage, spine-cache, spine-k8s added to workspace members (were on disk but excluded from CI)
 - [x] **Clippy fixes**: Removed unused imports (spine-cache, spine-k8s), converted match→if-let (spine-k8s)
@@ -209,7 +209,7 @@
 - [x] **CI status badge**: Added GitHub Actions CI badge to README
 - [x] **README test table**: Added spine-gpu, spine-storage, spine-cache, spine-k8s, spine-parser, spine-core rows
 
-### Phase 16 — Quality Infrastructure
+### Phase 16 — Quality Infrastructure ✅
 
 - [x] **Accurate test table**: Per-crate counts verified via `cargo test --workspace --list`, sorted by count descending
 - [x] **spine-agent tests**: 11 unit tests covering SDK API, protocol types, connection handling, compiler re-exports
@@ -294,13 +294,26 @@
 - [x] **Clippy clean**: Auto-fixed 28 clone-on-Copy warnings (mesh.rs, compiler)
 - [x] 495 tests passing, 0 failures, 0 Clippy warnings
 
+### Phase 23 — Robustness & Quality ✅
+
+- [x] **deny.toml v0.19 migration**: Complete rewrite for cargo-deny v0.19 format; removed deprecated fields; license exceptions; 13 advisory ignores
+- [x] **License field audit**: Added `license.workspace = true` to 16 crates; fixed spine-stream MIT → Apache-2.0
+- [x] **Error hardening**: Replaced 69 production `.unwrap()` calls across 5 crates with proper error propagation
+- [x] **spine-wasm tests**: 28 tests (was 3) — compiler output, execution pipeline, stack ops, serialization
+- [x] **spine-cli tests**: 15 integration tests — init scaffolding, config generation, addr/tag parsing
+- [x] 535 tests passing (+40 tests), 0 failures, 0 Clippy warnings
+
+### Phase 24 — Advanced Cryptography ✅
+
+- [x] **ML-KEM (FIPS 203)**: `KemAlgorithm` enum (Rlwe/MlKem512/MlKem768/MlKem1024/Hybrid), `mlkem_ops` module with generate/encapsulate/decapsulate for all 3 security levels, dispatch in `QuantumKeyEvolution` and `QuantumSpeculativeProtocol`
+- [x] **Hybrid KEM**: RLWE + ML-KEM-768 defense-in-depth with HKDF-combined shared secrets and length-prefixed concatenated ciphertexts
+- [x] **Latent-space AES-GCM (M2)**: Defense-in-depth AEAD on Chameleon latent vectors — HKDF-derived key, nonce from counter+session, chained in `ProtocolHandler`/`ProtocolHandlerState`/`SpineConnection` send/receive paths
+- [x] **Certificate Transparency**: RFC 6962 SCT parsing and verification, `CtPolicy`/`CtEnforcement` config, trusted log registry (Google/Cloudflare/Let's Encrypt), SCT age/trust validation, `check_certificate()` policy enforcement
+- [x] 561 tests passing (+26 tests: 12 ML-KEM + 15 CT − 1 fix), 0 failures, 0 Clippy warnings
+
+---
+
 ## Planned
-
-### Advanced Cryptography
-
-- [ ] M2: Latent-space AES-GCM (encrypt latent vectors directly in embedding space)
-- [ ] ML-KEM (FIPS 203) as alternative to custom RLWE
-- [ ] Certificate transparency log integration
 
 ### Ecosystem Expansion
 
@@ -351,9 +364,9 @@
 | `spine-knowledge` | Bioinspired memory (episodic/semantic/working/collective, CRDT) |
 | `spine-cli`       | CLI tool: init, connect, query, deploy, benchmark, status       |
 | `spine-gateway`   | REST API gateway with OpenAPI/Swagger UI (axum + utoipa)        |
-| `spine-gpu`       | GPU compute: CpuBackend (SIMD), WgpuBackend (WGSL shaders)     |
+| `spine-gpu`       | GPU compute: CpuBackend (SIMD), WgpuBackend (WGSL shaders)      |
 | `spine-storage`   | Persistent storage: InMemory, SQLite (WAL), RocksDB (LSM)       |
-| `spine-cache`     | Tiered caching: L1 LRU, L2 file-backed, L3 remote              |
+| `spine-cache`     | Tiered caching: L1 LRU, L2 file-backed, L3 remote               |
 | `spine-k8s`       | Kubernetes operator: CRD, autoscaler, manifest generators       |
 | `spine-python`*   | Python bindings via PyO3 + maturin                              |
 | `spine-js`*       | TypeScript/WASM bindings via wasm-bindgen + wasm-pack           |
