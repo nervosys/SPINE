@@ -26,7 +26,8 @@ pub fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     if keys.is_empty() {
         return Err(anyhow::anyhow!("No private key found"));
     }
-    Ok(keys.into_iter().next().unwrap().into())
+    // Safe: checked !keys.is_empty() above
+    Ok(keys.into_iter().next().expect("verified non-empty").into())
 }
 
 pub fn create_tls_acceptor(

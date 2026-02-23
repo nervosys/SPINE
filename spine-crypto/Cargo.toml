@@ -2,6 +2,7 @@
 name = "spine-crypto"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 authors.workspace = true
 description = "Advanced cryptographic primitives for SPINE including transformer prediction and post-quantum key evolution"
 

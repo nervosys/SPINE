@@ -2,6 +2,7 @@
 name = "spine-protocol"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 authors.workspace = true
 description = "Low-latency communication protocols for SPINE"
 

@@ -2,6 +2,7 @@
 name = "spine-cache"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 authors.workspace = true
 description = "Tiered caching system for SPINE (L1 in-memory, L2 mmap'd, L3 remote)"
 

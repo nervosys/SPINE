@@ -2,6 +2,7 @@
 name = "spine-cluster"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 authors.workspace = true
 description = "Distributed agent coordination for SPINE"
 

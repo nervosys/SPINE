@@ -2,6 +2,7 @@
 name = "spine-cli"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 authors.workspace = true
 description = "Command-line interface for the SPINE agentic web stack"
 
@@ -30,3 +31,6 @@ uuid = { version = "1", features = ["v4"] }
 reqwest = { workspace = true }
 rustls-pemfile = "2"
 tokio-rustls = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

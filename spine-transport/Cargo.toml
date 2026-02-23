@@ -2,6 +2,7 @@
 name = "spine-transport"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 authors.workspace = true
 description = "High-performance zero-copy transport layer for SPINE"
 

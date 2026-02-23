@@ -6483,6 +6483,7 @@ dependencies = [
  "spine-protocol",
  "spine-transport",
  "tabled",
+ "tempfile",
  "tokio",
  "tokio-rustls",
  "toml",

@@ -1,7 +1,7 @@
 // Allow fire-and-forget async patterns for distributed operations
 #![allow(clippy::let_underscore_future)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use axum::{routing::get, Router};
 use dashmap::DashMap;
 use prometheus::{Encoder, TextEncoder};
@@ -153,10 +153,11 @@ impl BrowserState {
                 let entry = entry?;
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    let id = path.file_stem().unwrap().to_str().unwrap().to_string();
-                    let json = std::fs::read_to_string(&path)?;
-                    let session: Session = serde_json::from_str(&json)?;
-                    self.sessions.insert(id, session);
+                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) {
+                        let json = std::fs::read_to_string(&path)?;
+                        let session: Session = serde_json::from_str(&json)?;
+                        self.sessions.insert(id, session);
+                    }
                 }
             }
         }
@@ -167,10 +168,11 @@ impl BrowserState {
                 let entry = entry?;
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    let id = path.file_stem().unwrap().to_str().unwrap().to_string();
-                    let json = std::fs::read_to_string(&path)?;
-                    let entries: Vec<KnowledgeEntry> = serde_json::from_str(&json)?;
-                    self.knowledge_base.insert(id, entries);
+                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) {
+                        let json = std::fs::read_to_string(&path)?;
+                        let entries: Vec<KnowledgeEntry> = serde_json::from_str(&json)?;
+                        self.knowledge_base.insert(id, entries);
+                    }
                 }
             }
         }
@@ -288,7 +290,7 @@ async fn handle_command(
                     Response {
                         id: request_id,
                         result: Some(serde_json::json!({
-                            "parsed_ur": serde_json::to_value(ur).unwrap(),
+                            "parsed_ur": serde_json::to_value(ur).unwrap_or_default(),
                             "vdom_tree": vdom_tree,
                             "vdom_ur": vdom_ur,
                         })),
@@ -432,7 +434,7 @@ async fn handle_command(
                                 tags: tags.clone(),
                                 timestamp_ns: std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
+                                    .unwrap_or_default()
                                     .as_nanos()
                                     as u64,
                             };
@@ -671,25 +673,33 @@ async fn handle_command(
         }
         BrowserCommand::TransferSession { target_node_id } => {
             if let Some(session) = state.sessions.get(session_id) {
-                let data = serde_json::to_vec(&*session).unwrap();
-                let cluster = state.cluster.lock().await;
-                if let Err(e) = cluster
-                    .send_session_data(session_id.to_string(), data)
-                    .await
-                {
-                    Response {
+                match serde_json::to_vec(&*session) {
+                    Ok(data) => {
+                        let cluster = state.cluster.lock().await;
+                        if let Err(e) = cluster
+                            .send_session_data(session_id.to_string(), data)
+                            .await
+                        {
+                            Response {
+                                id: request_id,
+                                result: None,
+                                error: Some(format!("Transfer failed: {}", e)),
+                            }
+                        } else {
+                            Response {
+                                id: request_id,
+                                result: Some(
+                                    serde_json::json!({ "status": "transferred", "target": target_node_id }),
+                                ),
+                                error: None,
+                            }
+                        }
+                    }
+                    Err(e) => Response {
                         id: request_id,
                         result: None,
-                        error: Some(format!("Transfer failed: {}", e)),
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: Some(
-                            serde_json::json!({ "status": "transferred", "target": target_node_id }),
-                        ),
-                        error: None,
-                    }
+                        error: Some(format!("Serialization failed: {}", e)),
+                    },
                 }
             } else {
                 Response {
@@ -939,7 +949,7 @@ async fn handle_command(
             match protocol.transmit(&data, domain_enum).await {
                 Ok(stats) => Response {
                     id: request_id,
-                    result: Some(serde_json::to_value(stats).unwrap()),
+                    result: Some(serde_json::to_value(stats).unwrap_or_default()),
                     error: None,
                 },
                 Err(e) => Response {
@@ -999,9 +1009,9 @@ async fn main() -> Result<()> {
 
     let port = config.server.port;
     let cluster_port = port + config.cluster.port_offset;
-    let cluster_addr = format!("{}:{}", config.server.host, cluster_port)
+    let cluster_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, cluster_port)
         .parse()
-        .unwrap();
+        .context("invalid cluster address")?;
 
     let capabilities = NodeCapabilities {
         supports_wasm: true,
@@ -1076,8 +1086,8 @@ async fn main() -> Result<()> {
             let encoder = TextEncoder::new();
             let metric_families = prometheus::gather();
             let mut buffer = vec![];
-            encoder.encode(&metric_families, &mut buffer).unwrap();
-            String::from_utf8(buffer).unwrap()
+            let _ = encoder.encode(&metric_families, &mut buffer);
+            String::from_utf8(buffer).unwrap_or_default()
         }))
         .route("/health", get(move || {
             let state = health_state.clone();
@@ -1147,12 +1157,20 @@ async fn main() -> Result<()> {
 
     let metrics_port = config.server.metrics_port;
     tokio::spawn(async move {
-        let addr: std::net::SocketAddr = format!("0.0.0.0:{}", metrics_port).parse().unwrap();
+        let addr: std::net::SocketAddr = match format!("0.0.0.0:{}", metrics_port).parse() {
+            Ok(a) => a,
+            Err(e) => {
+                error!("Invalid metrics address: {}", e);
+                return;
+            }
+        };
         info!("Health & metrics server on http://{}", addr);
-        axum::Server::bind(&addr)
+        if let Err(e) = axum::Server::bind(&addr)
             .serve(metrics_app.into_make_service())
             .await
-            .unwrap();
+        {
+            error!("Metrics server error: {}", e);
+        }
     });
 
     // Start cluster event listener
@@ -1658,7 +1676,7 @@ async fn main() -> Result<()> {
     {
         let quic_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, quic_port)
             .parse()
-            .unwrap();
+            .context("invalid QUIC address")?;
         let quic_builder = spine_protocol::QuicEndpointBuilder::new();
         let quic_endpoint = quic_builder.build_server(quic_addr)?;
         info!("QUIC listening on {}", quic_addr);
@@ -2056,7 +2074,7 @@ where
                                 if let Ok(ur) = parse_html(html) {
                                     return Some(Message::PreComputed(PreComputedResponse {
                                         request_hash: predicted_hash,
-                                        result: serde_json::to_value(ur).unwrap(),
+                                        result: serde_json::to_value(ur).unwrap_or_default(),
                                         confidence: 0.85,
                                         alternatives: Vec::new(),
                                     }));

@@ -109,7 +109,7 @@ pub struct HlbToWatCompiler;
 
 impl HlbToWatCompiler {
     /// Compile HLB binary to WAT (WebAssembly Text)
-    pub fn compile(binary: &SpineBinary) -> String {
+    pub fn compile(binary: &SpineBinary) -> Result<String> {
         let mut wat = String::new();
 
         // Module header
@@ -339,7 +339,9 @@ impl HlbToWatCompiler {
         for instruction in &binary.instructions {
             match instruction {
                 Instruction::DefineElement { id, tag } => {
-                    let (offset, len) = string_offsets.get(tag).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(tag)
+                        .context("missing string offset for tag")?;
                     wat.push_str(&format!("    ;; DefineElement id={} tag=\"{}\"\n", id, tag));
                     wat.push_str(&format!(
                         "    (call $define_element (i32.const {}) (i32.const {}) (i32.const {}))\n",
@@ -348,8 +350,12 @@ impl HlbToWatCompiler {
                 }
 
                 Instruction::SetAttribute { id, key, value } => {
-                    let (key_offset, key_len) = string_offsets.get(key).unwrap();
-                    let (val_offset, val_len) = string_offsets.get(value).unwrap();
+                    let (key_offset, key_len) = string_offsets
+                        .get(key)
+                        .context("missing string offset for attribute key")?;
+                    let (val_offset, val_len) = string_offsets
+                        .get(value)
+                        .context("missing string offset for attribute value")?;
                     wat.push_str(&format!(
                         "    ;; SetAttribute id={} key=\"{}\" value=\"{}\"\n",
                         id, key, value
@@ -375,9 +381,13 @@ impl HlbToWatCompiler {
                 }
 
                 Instruction::EmitEvent { name, payload } => {
-                    let (name_offset, name_len) = string_offsets.get(name).unwrap();
+                    let (name_offset, name_len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for event name")?;
                     let payload_str = payload.to_string();
-                    let (payload_offset, payload_len) = string_offsets.get(&payload_str).unwrap();
+                    let (payload_offset, payload_len) = string_offsets
+                        .get(&payload_str)
+                        .context("missing string offset for event payload")?;
                     wat.push_str(&format!("    ;; EmitEvent name=\"{}\"\n", name));
                     wat.push_str(&format!(
                         "    (call $emit_event (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))\n",
@@ -405,9 +415,13 @@ impl HlbToWatCompiler {
                 }
 
                 Instruction::DeclareState { name, initial_json } => {
-                    let (name_offset, name_len) = string_offsets.get(name).unwrap();
+                    let (name_offset, name_len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for state name")?;
                     let initial_str = initial_json.to_string();
-                    let (val_offset, val_len) = string_offsets.get(&initial_str).unwrap();
+                    let (val_offset, val_len) = string_offsets
+                        .get(&initial_str)
+                        .context("missing string offset for state initial value")?;
                     wat.push_str(&format!("    ;; DeclareState name=\"{}\"\n", name));
                     wat.push_str(&format!(
                         "    (call $declare_state (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))\n",
@@ -416,9 +430,13 @@ impl HlbToWatCompiler {
                 }
 
                 Instruction::UpdateState { name, value_json } => {
-                    let (name_offset, name_len) = string_offsets.get(name).unwrap();
+                    let (name_offset, name_len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for update state name")?;
                     let value_str = value_json.to_string();
-                    let (val_offset, val_len) = string_offsets.get(&value_str).unwrap();
+                    let (val_offset, val_len) = string_offsets
+                        .get(&value_str)
+                        .context("missing string offset for update state value")?;
                     wat.push_str(&format!("    ;; UpdateState name=\"{}\"\n", name));
                     wat.push_str(&format!(
                         "    (call $update_state (i32.const {}) (i32.const {}) (i32.const {}) (i32.const {}))\n",
@@ -438,7 +456,9 @@ impl HlbToWatCompiler {
                 // --- Control Flow & Stack Operations ---
                 Instruction::Push(val) => {
                     let val_str = val.to_string();
-                    let (offset, len) = string_offsets.get(&val_str).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(&val_str)
+                        .context("missing string offset for push value")?;
                     wat.push_str(&format!(
                         "    (call $push_value (i32.const {}) (i32.const {}))\n",
                         offset, len
@@ -448,14 +468,18 @@ impl HlbToWatCompiler {
                     wat.push_str("    (call $pop_value)\n");
                 }
                 Instruction::Load(name) => {
-                    let (offset, len) = string_offsets.get(name).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for load variable")?;
                     wat.push_str(&format!(
                         "    (call $load_var (i32.const {}) (i32.const {}))\n",
                         offset, len
                     ));
                 }
                 Instruction::Store(name) => {
-                    let (offset, len) = string_offsets.get(name).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for store variable")?;
                     wat.push_str(&format!(
                         "    (call $store_var (i32.const {}) (i32.const {}))\n",
                         offset, len
@@ -483,7 +507,9 @@ impl HlbToWatCompiler {
                     wat.push_str(&format!("    ;; JumpIfNot to {}\n", target));
                 }
                 Instruction::Call { name, num_args } => {
-                    let (offset, len) = string_offsets.get(name).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for call function name")?;
                     wat.push_str(&format!(
                         "    (call $call_func (i32.const {}) (i32.const {}) (i32.const {}))\n",
                         offset, len, num_args
@@ -504,7 +530,9 @@ impl HlbToWatCompiler {
                     ));
                 }
                 Instruction::SetAttributeFromStack { id, key } => {
-                    let (offset, len) = string_offsets.get(key).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(key)
+                        .context("missing string offset for stack attribute key")?;
                     wat.push_str(&format!("    (call $set_attribute_from_stack (i32.const {}) (i32.const {}) (i32.const {}))\n", id, offset, len));
                 }
                 Instruction::AddChildFromStack {
@@ -517,7 +545,9 @@ impl HlbToWatCompiler {
                     ));
                 }
                 Instruction::EmitEventFromStack { name } => {
-                    let (offset, len) = string_offsets.get(name).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for stack event name")?;
                     wat.push_str(&format!(
                         "    (call $emit_event_from_stack (i32.const {}) (i32.const {}))\n",
                         offset, len
@@ -527,14 +557,18 @@ impl HlbToWatCompiler {
                     wat.push_str("    (call $define_text_from_stack)\n");
                 }
                 Instruction::DeclareStateFromStack { name } => {
-                    let (offset, len) = string_offsets.get(name).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for declare state name")?;
                     wat.push_str(&format!(
                         "    (call $declare_state_from_stack (i32.const {}) (i32.const {}))\n",
                         offset, len
                     ));
                 }
                 Instruction::UpdateStateFromStack { name } => {
-                    let (offset, len) = string_offsets.get(name).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(name)
+                        .context("missing string offset for update state from stack name")?;
                     wat.push_str(&format!(
                         "    (call $update_state_from_stack (i32.const {}) (i32.const {}))\n",
                         offset, len
@@ -558,7 +592,9 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                    let (offset, len) = string_offsets.get(&tags_json).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(&tags_json)
+                        .context("missing string offset for store knowledge tags")?;
                     wat.push_str(&format!(
                         "    (call $store_knowledge_from_stack (i32.const {}) (i32.const {}))\n",
                         offset, len
@@ -576,7 +612,9 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                    let (offset, len) = string_offsets.get(&tags_json).unwrap();
+                    let (offset, len) = string_offsets
+                        .get(&tags_json)
+                        .context("missing string offset for query knowledge tags")?;
                     wat.push_str(&format!("    (call $query_knowledge_from_stack (i32.const {}) (i32.const {}) (i32.const {}))\n", offset, len, limit));
                 }
             }
@@ -587,7 +625,7 @@ impl HlbToWatCompiler {
         wat.push_str("  )\n");
         wat.push_str(")\n");
 
-        wat
+        Ok(wat)
     }
 }
 
@@ -635,7 +673,7 @@ impl WasmRuntime {
         let compile_start = std::time::Instant::now();
 
         // Compile HLB to WAT
-        let wat = HlbToWatCompiler::compile(binary);
+        let wat = HlbToWatCompiler::compile(binary)?;
 
         // Parse WAT to WASM binary
         let wasm_bytes = wat::parse_str(&wat).context("Failed to parse WAT")?;
@@ -897,7 +935,9 @@ impl WasmRuntime {
                         // Add
                         match (left, right) {
                             (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
-                                serde_json::json!(l.as_f64().unwrap() + r.as_f64().unwrap())
+                                serde_json::json!(
+                                    l.as_f64().unwrap_or(0.0) + r.as_f64().unwrap_or(0.0)
+                                )
                             }
                             (serde_json::Value::String(l), serde_json::Value::String(r)) => {
                                 serde_json::Value::String(format!("{}{}", l, r))
@@ -909,7 +949,9 @@ impl WasmRuntime {
                         // Sub
                         match (left, right) {
                             (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
-                                serde_json::json!(l.as_f64().unwrap() - r.as_f64().unwrap())
+                                serde_json::json!(
+                                    l.as_f64().unwrap_or(0.0) - r.as_f64().unwrap_or(0.0)
+                                )
                             }
                             _ => serde_json::Value::Null,
                         }
@@ -918,7 +960,9 @@ impl WasmRuntime {
                         // Mul
                         match (left, right) {
                             (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
-                                serde_json::json!(l.as_f64().unwrap() * r.as_f64().unwrap())
+                                serde_json::json!(
+                                    l.as_f64().unwrap_or(0.0) * r.as_f64().unwrap_or(0.0)
+                                )
                             }
                             _ => serde_json::Value::Null,
                         }
@@ -927,9 +971,9 @@ impl WasmRuntime {
                         // Div
                         match (left, right) {
                             (serde_json::Value::Number(l), serde_json::Value::Number(r)) => {
-                                let r_val = r.as_f64().unwrap();
+                                let r_val = r.as_f64().unwrap_or(0.0);
                                 if r_val != 0.0 {
-                                    serde_json::json!(l.as_f64().unwrap() / r_val)
+                                    serde_json::json!(l.as_f64().unwrap_or(0.0) / r_val)
                                 } else {
                                     serde_json::Value::Null
                                 }
@@ -1376,7 +1420,7 @@ impl WasmRuntime {
                         // Neg
                         match val {
                             serde_json::Value::Number(n) => {
-                                serde_json::json!(-n.as_f64().unwrap())
+                                serde_json::json!(-n.as_f64().unwrap_or(0.0))
                             }
                             _ => serde_json::Value::Null,
                         }
@@ -1523,27 +1567,31 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
-    #[test]
-    fn test_compile_simple_hlb_to_wat() {
-        let binary = SpineBinary {
-            instructions: vec![
-                Instruction::DefineElement {
-                    id: 1,
-                    tag: "div".to_string(),
-                },
-                Instruction::SetAttribute {
-                    id: 1,
-                    key: "class".to_string(),
-                    value: "container".to_string(),
-                },
-            ],
+    fn empty_binary(instructions: Vec<Instruction>) -> SpineBinary {
+        SpineBinary {
+            instructions,
             data: Vec::new(),
             render_start: 0,
             exported_functions: HashMap::new(),
             capabilities: Vec::new(),
-        };
+        }
+    }
 
-        let wat = HlbToWatCompiler::compile(&binary);
+    #[test]
+    fn test_compile_simple_hlb_to_wat() {
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 1,
+                tag: "div".to_string(),
+            },
+            Instruction::SetAttribute {
+                id: 1,
+                key: "class".to_string(),
+                value: "container".to_string(),
+            },
+        ]);
+
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
 
         assert!(wat.contains("(module"));
         assert!(wat.contains("define_element"));
@@ -1555,31 +1603,25 @@ mod tests {
     fn test_wasm_execution() {
         let runtime = WasmRuntime::new().unwrap();
 
-        let binary = SpineBinary {
-            instructions: vec![
-                Instruction::DefineElement {
-                    id: 1,
-                    tag: "div".to_string(),
-                },
-                Instruction::DefineElement {
-                    id: 2,
-                    tag: "span".to_string(),
-                },
-                Instruction::AddChild {
-                    parent_id: 1,
-                    child_id: 2,
-                },
-                Instruction::SetAttribute {
-                    id: 2,
-                    key: "text".to_string(),
-                    value: "Hello".to_string(),
-                },
-            ],
-            data: Vec::new(),
-            render_start: 0,
-            exported_functions: HashMap::new(),
-            capabilities: Vec::new(),
-        };
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 1,
+                tag: "div".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 2,
+                tag: "span".to_string(),
+            },
+            Instruction::AddChild {
+                parent_id: 1,
+                child_id: 2,
+            },
+            Instruction::SetAttribute {
+                id: 2,
+                key: "text".to_string(),
+                value: "Hello".to_string(),
+            },
+        ]);
 
         let result = runtime.execute(&binary).unwrap();
 
@@ -1591,20 +1633,359 @@ mod tests {
     fn test_wasm_events() {
         let runtime = WasmRuntime::new().unwrap();
 
-        let binary = SpineBinary {
-            instructions: vec![Instruction::EmitEvent {
-                name: "click".to_string(),
-                payload: serde_json::json!({"id": 42}),
-            }],
-            data: Vec::new(),
-            render_start: 0,
-            exported_functions: HashMap::new(),
-            capabilities: Vec::new(),
-        };
+        let binary = empty_binary(vec![Instruction::EmitEvent {
+            name: "click".to_string(),
+            payload: serde_json::json!({"id": 42}),
+        }]);
 
         let result = runtime.execute(&binary).unwrap();
 
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.events[0].name, "click");
+    }
+
+    #[test]
+    fn test_escape_wat_string_basic() {
+        assert_eq!(escape_wat_string("hello"), "hello");
+        assert_eq!(escape_wat_string("hello world"), "hello world");
+    }
+
+    #[test]
+    fn test_escape_wat_string_special_chars() {
+        assert_eq!(escape_wat_string("say \"hi\""), "say \\\"hi\\\"");
+        assert_eq!(escape_wat_string("back\\slash"), "back\\\\slash");
+        assert_eq!(escape_wat_string("new\nline"), "new\\nline");
+        assert_eq!(escape_wat_string("tab\there"), "tab\\there");
+        assert_eq!(escape_wat_string("cr\rhere"), "cr\\rhere");
+    }
+
+    #[test]
+    fn test_compile_empty_binary() {
+        let binary = empty_binary(vec![]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("(module"));
+        assert!(wat.contains("(i32.const 0)"));
+        assert!(wat.contains("(export \"execute\")"));
+    }
+
+    #[test]
+    fn test_execute_empty_binary() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![]);
+        let result = runtime.execute(&binary).unwrap();
+        assert_eq!(result.elements.len(), 0);
+        assert_eq!(result.events.len(), 0);
+        assert_eq!(result.actions.len(), 0);
+        assert_eq!(result.stats.instructions_executed, 0);
+    }
+
+    #[test]
+    fn test_compile_declare_state() {
+        let binary = empty_binary(vec![Instruction::DeclareState {
+            name: "counter".to_string(),
+            initial_json: serde_json::json!(0),
+        }]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("declare_state"));
+        assert!(wat.contains("counter"));
+    }
+
+    #[test]
+    fn test_compile_update_state() {
+        let binary = empty_binary(vec![
+            Instruction::DeclareState {
+                name: "x".to_string(),
+                initial_json: serde_json::json!(1),
+            },
+            Instruction::UpdateState {
+                name: "x".to_string(),
+                value_json: serde_json::json!(2),
+            },
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("update_state"));
+    }
+
+    #[test]
+    fn test_execute_state_declaration() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![Instruction::DeclareState {
+            name: "counter".to_string(),
+            initial_json: serde_json::json!(42),
+        }]);
+        let result = runtime.execute(&binary).unwrap();
+        // DeclareState emits a state_declared event
+        assert!(result.events.iter().any(|e| e.name == "state_declared"));
+    }
+
+    #[test]
+    fn test_compile_morph_protocol() {
+        let binary = empty_binary(vec![Instruction::MorphProtocol { seed: 12345 }]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("morph_protocol"));
+        assert!(wat.contains("12345"));
+    }
+
+    #[test]
+    fn test_compile_stream_latent() {
+        let binary = empty_binary(vec![Instruction::StreamLatent {
+            vector: vec![1.0, 2.0, 3.0],
+        }]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("stream_latent"));
+        assert!(wat.contains("3")); // dimension count
+    }
+
+    #[test]
+    fn test_compile_decoy() {
+        let binary = empty_binary(vec![Instruction::Decoy {
+            noise: vec![0.1, 0.2],
+        }]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("inject_decoy"));
+    }
+
+    #[test]
+    fn test_compile_push_pop() {
+        let binary = empty_binary(vec![
+            Instruction::Push(serde_json::json!("hello")),
+            Instruction::Pop,
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("push_value"));
+        assert!(wat.contains("pop_value"));
+    }
+
+    #[test]
+    fn test_compile_load_store_var() {
+        let binary = empty_binary(vec![
+            Instruction::Push(serde_json::json!(99)),
+            Instruction::Store("x".to_string()),
+            Instruction::Load("x".to_string()),
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("store_var"));
+        assert!(wat.contains("load_var"));
+    }
+
+    #[test]
+    fn test_compile_binop() {
+        use spine_protocol::ProtocolBinOp;
+        let binary = empty_binary(vec![Instruction::BinOp(ProtocolBinOp::Add)]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("bin_op"));
+    }
+
+    #[test]
+    fn test_compile_call() {
+        let binary = empty_binary(vec![Instruction::Call {
+            name: "my_func".to_string(),
+            num_args: 2,
+        }]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("call_func"));
+        assert!(wat.contains("my_func"));
+    }
+
+    #[test]
+    fn test_compile_navigate_from_stack() {
+        let binary = empty_binary(vec![Instruction::NavigateFromStack]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("navigate_from_stack"));
+    }
+
+    #[test]
+    fn test_compile_search_from_stack() {
+        let binary = empty_binary(vec![Instruction::SearchFromStack]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("search_from_stack"));
+    }
+
+    #[test]
+    fn test_execute_multiple_elements() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 1,
+                tag: "html".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 2,
+                tag: "head".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 3,
+                tag: "body".to_string(),
+            },
+            Instruction::AddChild {
+                parent_id: 1,
+                child_id: 2,
+            },
+            Instruction::AddChild {
+                parent_id: 1,
+                child_id: 3,
+            },
+        ]);
+        let result = runtime.execute(&binary).unwrap();
+        assert_eq!(result.elements.len(), 3);
+        assert_eq!(result.elements[0].tag, "html");
+        assert_eq!(result.elements[1].tag, "head");
+        assert_eq!(result.elements[2].tag, "body");
+        assert_eq!(result.elements[1].parent_id, Some(1));
+        assert_eq!(result.elements[2].parent_id, Some(1));
+    }
+
+    #[test]
+    fn test_execute_multiple_events() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![
+            Instruction::EmitEvent {
+                name: "load".to_string(),
+                payload: serde_json::json!(null),
+            },
+            Instruction::EmitEvent {
+                name: "ready".to_string(),
+                payload: serde_json::json!({"status": "ok"}),
+            },
+        ]);
+        let result = runtime.execute(&binary).unwrap();
+        assert_eq!(result.events.len(), 2);
+        assert_eq!(result.events[0].name, "load");
+        assert_eq!(result.events[1].name, "ready");
+    }
+
+    #[test]
+    fn test_execute_set_attribute_creates_attr() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 1,
+                tag: "div".to_string(),
+            },
+            Instruction::SetAttribute {
+                id: 1,
+                key: "class".to_string(),
+                value: "main".to_string(),
+            },
+            Instruction::SetAttribute {
+                id: 1,
+                key: "id".to_string(),
+                value: "root".to_string(),
+            },
+        ]);
+        let result = runtime.execute(&binary).unwrap();
+        assert_eq!(result.elements[0].attributes.get("class").unwrap(), "main");
+        assert_eq!(result.elements[0].attributes.get("id").unwrap(), "root");
+    }
+
+    #[test]
+    fn test_wasm_stats_populated() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![Instruction::DefineElement {
+            id: 1,
+            tag: "p".to_string(),
+        }]);
+        let result = runtime.execute(&binary).unwrap();
+        assert!(result.stats.wasm_size_bytes > 0);
+        assert_eq!(result.stats.memory_used_bytes, 65536);
+        assert_eq!(result.stats.instructions_executed, 1);
+    }
+
+    #[test]
+    fn test_wasm_runtime_default() {
+        let runtime = WasmRuntime::default();
+        let binary = empty_binary(vec![]);
+        let result = runtime.execute(&binary).unwrap();
+        assert_eq!(result.stats.instructions_executed, 0);
+    }
+
+    #[test]
+    fn test_wasm_action_variants() {
+        // Just test that the enum variants serialize/deserialize correctly
+        let actions = vec![
+            WasmAction::Navigate("https://example.com".into()),
+            WasmAction::Search("rust lang".into()),
+            WasmAction::StoreKnowledge {
+                key: "k".into(),
+                value: serde_json::json!(1),
+                tags: vec!["t".into()],
+            },
+            WasmAction::QueryKnowledge {
+                query: "q".into(),
+                tags: vec![],
+                limit: 5,
+            },
+            WasmAction::Reason("why?".into()),
+        ];
+        for action in &actions {
+            let json = serde_json::to_string(action).unwrap();
+            let _: WasmAction = serde_json::from_str(&json).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_wasm_execution_result_serialization() {
+        let result = WasmExecutionResult {
+            elements: vec![WasmElement {
+                id: 1,
+                tag: "div".into(),
+                attributes: HashMap::new(),
+                parent_id: None,
+            }],
+            events: vec![WasmEvent {
+                name: "test".into(),
+                payload: serde_json::json!(null),
+            }],
+            latent_streams: vec![vec![1.0, 2.0]],
+            actions: vec![],
+            stats: WasmStats::default(),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deser: WasmExecutionResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deser.elements.len(), 1);
+        assert_eq!(deser.events.len(), 1);
+    }
+
+    #[test]
+    fn test_compile_add_child() {
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 10,
+                tag: "ul".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 20,
+                tag: "li".to_string(),
+            },
+            Instruction::AddChild {
+                parent_id: 10,
+                child_id: 20,
+            },
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("add_child"));
+        assert!(wat.contains("i32.const 10"));
+        assert!(wat.contains("i32.const 20"));
+    }
+
+    #[test]
+    fn test_compile_instruction_count_return() {
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 1,
+                tag: "a".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 2,
+                tag: "b".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 3,
+                tag: "c".to_string(),
+            },
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        // The function returns the instruction count as i32.const N
+        assert!(wat.contains("(i32.const 3)"));
     }
 }

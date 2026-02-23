@@ -1,0 +1,634 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.85s
+     Running unittests src\lib.rs (target\debug\deps\spine_agent-183b80c867237dfd.exe)
+tests::test_agent_client_speculation_stats_type: test
+tests::test_browser_command_serialization: test
+tests::test_compiler_reexport: test
+tests::test_compiler_reexport_error: test
+tests::test_connect_invalid_address: test
+tests::test_connect_with_retry_fails_fast: test
+tests::test_latent_message: test
+tests::test_message_variants: test
+tests::test_ping_message: test
+tests::test_request_response_protocol: test
+tests::test_wasm_execution_result_default: test
+
+11 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_agentic-80a221fc7fc01cf1.exe)
+identity::tests::test_cross_verify_with_dalek: test
+identity::tests::test_from_seed_deterministic_identity: test
+identity::tests::test_keypair_deterministic_from_seed: test
+identity::tests::test_keypair_generate_and_sign: test
+identity::tests::test_keypair_reject_tampered_message: test
+identity::tests::test_keypair_reject_wrong_key: test
+identity::tests::test_public_identity: test
+identity::tests::test_real_ed25519_curve_operations: test
+identity::tests::test_reject_invalid_signature_length: test
+identity::tests::test_signed_envelope: test
+identity::tests::test_signed_envelope_reject_tampered: test
+identity::tests::test_signing_identity_create: test
+identity::tests::test_signing_identity_sign_verify: test
+mesh::tests::test_add_and_list_peers: test
+mesh::tests::test_broadcast_deliver_and_forward: test
+mesh::tests::test_create_signed_envelope: test
+mesh::tests::test_gossip_generation: test
+mesh::tests::test_gossip_ignores_banned: test
+mesh::tests::test_gossip_ignores_self: test
+mesh::tests::test_gossip_processing: test
+mesh::tests::test_gossip_respects_max_peers: test
+mesh::tests::test_mesh_node_creation: test
+mesh::tests::test_mesh_stats_snapshot: test
+mesh::tests::test_message_dedup: test
+mesh::tests::test_no_self_peer: test
+mesh::tests::test_peer_state_transitions: test
+mesh::tests::test_prepare_forward: test
+mesh::tests::test_prepare_forward_ttl_one_drops: test
+mesh::tests::test_process_envelope_dedup: test
+mesh::tests::test_process_envelope_deliver: test
+mesh::tests::test_process_envelope_forward: test
+mesh::tests::test_process_envelope_ttl_expired: test
+mesh::tests::test_resolve_next_hop_direct: test
+mesh::tests::test_resolve_next_hop_routed: test
+mesh::tests::test_routing_from_hops: test
+mesh::tests::test_routing_table: test
+mesh::tests::test_signature_verification: test
+tests::test_agent_creation: test
+tests::test_agent_profile_with_ontology: test
+tests::test_disclosed_ontology_verify_hash: test
+tests::test_intention_creation: test
+tests::test_knowledge_graph: test
+tests::test_ontology_access_control: test
+tests::test_ontology_access_control_disclose_for: test
+tests::test_ontology_crypto_hash_deterministic: test
+tests::test_ontology_crypto_hash_distinct: test
+tests::test_ontology_disclosed_view_visibility: test
+tests::test_ontology_hash_verification: test
+tests::test_ontology_neural_hash_similarity: test
+tests::test_ontology_registry_discovery: test
+tests::test_ontology_registry_hash_discovery: test
+tests::test_ontology_registry_neural_discovery: test
+tests::test_ontology_registry_unregister: test
+tests::test_ontology_term_creation: test
+tests::test_ontology_whole_hash: test
+tests::test_resource_locator: test
+
+56 tests, 0 benchmarks
+     Running unittests src\main.rs (target\debug\deps\spine_browser-42bae7a0f3e5e8f7.exe)
+0 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_cache-9107db7a112282a2.exe)
+tests::test_l1_basic_operations: test
+tests::test_l1_byte_limit: test
+tests::test_l1_clear: test
+tests::test_l1_lru_eviction: test
+tests::test_l1_stats: test
+tests::test_l1_ttl_expiration: test
+tests::test_l2_basic_operations: test
+tests::test_l2_ttl: test
+tests::test_noop_remote_cache: test
+tests::test_tiered_cache_clear: test
+tests::test_tiered_cache_hit_rate: test
+tests::test_tiered_cache_l1_only: test
+tests::test_tiered_cache_remove: test
+tests::test_tiered_cache_ttl: test
+tests::test_tiered_cache_with_l2: test
+tests::test_tiered_cache_with_l3: test
+
+16 tests, 0 benchmarks
+     Running unittests src\main.rs (target\debug\deps\spine-a84ef280564d69a6.exe)
+0 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_cluster-2bb348e4899ce381.exe)
+marketplace::tests::test_add_remove_capability: test
+marketplace::tests::test_audit_log: test
+marketplace::tests::test_bid_price_too_low: test
+marketplace::tests::test_bid_workflow: test
+marketplace::tests::test_contract_failure: test
+marketplace::tests::test_deregister: test
+marketplace::tests::test_find_composite: test
+marketplace::tests::test_register_and_lookup: test
+marketplace::tests::test_reject_bid: test
+marketplace::tests::test_search_by_keyword: test
+marketplace::tests::test_search_by_tag: test
+marketplace::tests::test_search_by_transport: test
+marketplace::tests::test_search_max_price: test
+marketplace::tests::test_stats: test
+raft::tests::test_kv_state_machine: test
+raft::tests::test_kv_state_machine_nodes: test
+raft::tests::test_kv_state_machine_snapshot: test
+raft::tests::test_persistent_state_default: test
+raft::tests::test_raft_cluster_election: test
+raft::tests::test_raft_config_default: test
+raft::tests::test_raft_log_replication: test
+raft::tests::test_raft_node_initial_state: test
+raft::tests::test_raft_single_node_election: test
+raft::tests::test_raft_status: test
+raft::tests::test_raft_submit_command: test
+sybil::tests::test_consensus_basic: test
+sybil::tests::test_pow_invalid_nonce_rejected: test
+sybil::tests::test_pow_mine_and_verify: test
+sybil::tests::test_pow_wrong_node_rejected: test
+sybil::tests::test_register_with_pow: test
+sybil::tests::test_register_with_pow_insufficient_difficulty: test
+sybil::tests::test_reputation_basic: test
+sybil::tests::test_slashing: test
+tests::test_cluster_client: test
+tests::test_load_balancing: test
+tests::test_node_creation: test
+tests::test_session_registration: test
+
+37 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_compiler-12eb0c44278dfe62.exe)
+tests::test_compile_comment_ignored: test
+tests::test_compile_conditional: test
+tests::test_compile_expressions: test
+tests::test_compile_for_loop: test
+tests::test_compile_nested_elements: test
+tests::test_compile_simple_element: test
+tests::test_compile_with_text: test
+tests::test_function_inlining: test
+tests::test_parse_expression_operators: test
+tests::test_span_merge: test
+tests::test_type_check_function_arg_count: test
+tests::test_type_check_function_return_type: test
+tests::test_type_check_mismatch_detected: test
+tests::test_type_check_multiple_errors: test
+tests::test_type_check_navigate_requires_string: test
+tests::test_type_check_undefined_variable: test
+tests::test_type_check_valid_program: test
+tests::test_type_error_format: test
+tests::test_type_error_line_col: test
+tests::test_type_error_span_display: test
+tests::test_type_errors_collection: test
+
+21 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_core-62a61c64c50325b6.exe)
+config::tests::test_default_config: test
+config::tests::test_partial_toml: test
+config::tests::test_toml_roundtrip: test
+tls::tests::test_acme_cert_manager_needs_renewal: test
+tls::tests::test_build_server_config_no_client_auth: test
+tls::tests::test_build_server_config_with_mtls: test
+tls::tests::test_create_tls_acceptor_self_signed: test
+tls::tests::test_generate_dev_certs: test
+tls::tests::test_generate_self_signed: test
+tls::tests::test_rotating_acceptor_reload: test
+
+10 tests, 0 benchmarks
+     Running unittests src\main.rs (target\debug\deps\spine_core-782c8aa42d155c6a.exe)
+config::tests::test_default_config: test
+config::tests::test_partial_toml: test
+config::tests::test_toml_roundtrip: test
+tls::tests::test_acme_cert_manager_needs_renewal: test
+tls::tests::test_build_server_config_no_client_auth: test
+tls::tests::test_build_server_config_with_mtls: test
+tls::tests::test_create_tls_acceptor_self_signed: test
+tls::tests::test_generate_dev_certs: test
+tls::tests::test_generate_self_signed: test
+tls::tests::test_rotating_acceptor_reload: test
+
+10 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_crypto-db15758f5c4e1c50.exe)
+tests::test_aead_tampered_ciphertext_rejected: test
+tests::test_aes_gcm_round_trip: test
+tests::test_encapsulation: test
+tests::test_kem_shared_secret_match: test
+tests::test_key_evolution: test
+tests::test_key_evolution_deterministic_hkdf: test
+tests::test_key_evolution_forward_secrecy: test
+tests::test_key_evolution_history_integrity: test
+tests::test_key_evolution_maintains_kem_invariant: test
+tests::test_lattice_params_security_levels: test
+tests::test_layer_norm: test
+tests::test_miras_predictor_anomaly_level: test
+tests::test_miras_predictor_basic: test
+tests::test_miras_predictor_combined_surprise: test
+tests::test_miras_predictor_reset: test
+tests::test_miras_predictor_variants: test
+tests::test_positional_encoding: test
+tests::test_prediction_efficiency: test
+tests::test_quantum_protocol_message_integrity: test
+tests::test_quantum_speculative_protocol: test
+tests::test_ring_operations: test
+tests::test_rlwe_gaussian_distribution: test
+tests::test_rlwe_ring_arithmetic_correctness: test
+tests::test_rlwe_ternary_distribution: test
+tests::test_tampered_ciphertext_detection: test
+tests::test_titans_anomaly_detection: test
+tests::test_titans_predictor: test
+tests::test_titans_predictor_statistical_properties: test
+
+28 tests, 0 benchmarks
+     Running tests\proptest_crypto.rs (target\debug\deps\proptest_crypto-f4a46bcc6a10daaa.exe)
+encapsulate_decapsulate_roundtrip: test
+key_evolution_changes_hash: test
+key_evolution_deterministic: test
+key_verify_evolution: test
+quantum_speculative_roundtrip: test
+ring_add_associative: test
+ring_add_commutative: test
+ring_bytes_roundtrip: test
+ring_scale_identity: test
+ring_scale_zero: test
+ring_sub_self_is_zero: test
+titans_predict_no_panic: test
+titans_surprise_nonnegative: test
+
+13 tests, 0 benchmarks
+     Running unittests src\main.rs (target\debug\deps\spine_gateway-b325c772ee4be806.exe)
+tests::test_app_state_counters: test
+tests::test_compile_hls_offline: test
+tests::test_error_response: test
+tests::test_grafana_dashboard_exists: test
+tests::test_health_response_serialization: test
+tests::test_openapi_schema_valid: test
+tests::test_parse_html_offline: test
+
+7 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_gpu-617b25538018ac0d.exe)
+tests::test_cpu_activations: test
+tests::test_cpu_attention: test
+tests::test_cpu_cosine_similarity: test
+tests::test_cpu_dot_product: test
+tests::test_cpu_layer_norm: test
+tests::test_cpu_mat_mul: test
+tests::test_cpu_mat_vec_mul: test
+tests::test_cpu_softmax: test
+tests::test_cpu_vae_reparameterize: test
+tests::test_gpu_accelerator_auto_select: test
+tests::test_gpu_accelerator_cpu_fallback: test
+tests::test_vae_encode_forward: test
+
+12 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_human-54852e990364a157.exe)
+tests::test_human_interaction: test
+tests::test_transpile_simple: test
+
+2 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_k8s-52bf61ee43f0372b.exe)
+tests::test_cluster_phase_serialization: test
+tests::test_default_cluster_spec: test
+tests::test_deployment_with_env_vars: test
+tests::test_generate_deployment_manifest: test
+tests::test_generate_hpa_manifest: test
+tests::test_generate_service_manifest: test
+tests::test_health_check_defaults: test
+tests::test_scaling_connection_based: test
+tests::test_scaling_decision_no_change: test
+tests::test_scaling_decision_scale_down: test
+tests::test_scaling_decision_scale_up_cpu: test
+tests::test_scaling_respects_max: test
+tests::test_scaling_respects_min: test
+
+13 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_kernel-af23a7a39a613501.exe)
+alloc::tests::test_arena_allocator: test
+alloc::tests::test_bump_allocator: test
+alloc::tests::test_slab_allocator: test
+atomic::tests::test_atomic_flags: test
+atomic::tests::test_lock_free_stack: test
+atomic::tests::test_lock_free_stack_concurrent: test
+atomic::tests::test_padded_counter: test
+atomic::tests::test_seq_lock: test
+atomic::tests::test_seq_lock_concurrent_writers: test
+atomic::tests::test_tagged_ptr_preserves_address: test
+cache::tests::test_cache_line_alignment: test
+cache::tests::test_cache_line_array: test
+cache::tests::test_cache_line_size: test
+cache::tests::test_prefetch_iter: test
+ring::tests::test_mpsc_basic: test
+ring::tests::test_mpsc_concurrent: test
+ring::tests::test_spsc_basic: test
+ring::tests::test_spsc_concurrent: test
+ring::tests::test_spsc_full: test
+simd::tests::test_dot_product: test
+simd::tests::test_matmul_flat: test
+simd::tests::test_softmax: test
+simd::tests::test_vec_scale_add: test
+syscall::tests::test_get_cpu: test
+syscall::tests::test_mmap: test
+syscall::tests::test_numa_info: test
+tests::test_align_down: test
+tests::test_align_up: test
+tests::test_is_aligned: test
+time::tests::test_calibration: test
+time::tests::test_deadline: test
+time::tests::test_rate_limiter: test
+time::tests::test_rdtsc: test
+time::tests::test_timing_stats: test
+time::tests::test_tsc_timer: test
+
+35 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_knowledge-7fbe7302e4e2b293.exe)
+tests::test_collective_memory: test
+tests::test_confirmation: test
+tests::test_episodic: test
+tests::test_gset: test
+tests::test_lww_register: test
+tests::test_semantic: test
+tests::test_unified: test
+tests::test_vector_clock: test
+tests::test_working: test
+
+9 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_neural-7b9e515e3411c79b.exe)
+tests::test_attention_forward: test
+tests::test_dense_layer_forward: test
+tests::test_memora_memory: test
+tests::test_miras_encoder_surprise_tracking: test
+tests::test_miras_loss_functions: test
+tests::test_miras_loss_gradients: test
+tests::test_miras_memory_enum: test
+tests::test_miras_neural_encoder: test
+tests::test_miras_outlier_robustness: test
+tests::test_moneta_memory: test
+tests::test_moving_target_consistency: test
+tests::test_neural_encoder_encode_decode: test
+tests::test_prediction: test
+tests::test_retention_gate: test
+tests::test_titans_memory_forward: test
+tests::test_titans_surprise_detection: test
+tests::test_training: test
+tests::test_variational_encoder: test
+tests::test_yaad_memory: test
+
+19 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_parser-d542efffc67b614e.exe)
+0 tests, 0 benchmarks
+     Running tests\proptest_parser.rs (target\debug\deps\proptest_parser-b0f6d3c8adbedbcd.exe)
+parse_empty_string: test
+parse_heading_levels: test
+parse_html_never_panics: test
+parse_links: test
+parse_nested_html: test
+parse_preserves_title: test
+parse_valid_html_ok: test
+ur_json_roundtrip: test
+
+8 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_protocol-76149043b80d5749.exe)
+replay::tests::shared_trace_log_thread_safety: test
+replay::tests::trace_log_record_and_query: test
+replay::tests::trace_log_serialization_roundtrip: test
+replay::tests::trace_save_load_roundtrip: test
+replay::tests::trace_summary: test
+replay::tests::verify_ordering_correct: test
+replay::tests::verify_serialization_passes: test
+tests::test_activation_genes: test
+tests::test_adversarial_matchup: test
+tests::test_arms_race_summary: test
+tests::test_attacker_crossover: test
+tests::test_attacker_genome_random: test
+tests::test_attacker_mutation: test
+tests::test_benchmark_protocol: test
+tests::test_chameleon_key_basic: test
+tests::test_chameleon_key_miras: test
+tests::test_chameleon_miras_variants: test
+tests::test_coevolutionary_arena_creation: test
+tests::test_coevolutionary_evolution: test
+tests::test_coevolutionary_generation: test
+tests::test_decorrelation_genes: test
+tests::test_defender_crossover: test
+tests::test_defender_genome_random: test
+tests::test_defender_mutation: test
+tests::test_evolved_protocol_encode_decode: test
+tests::test_padding_strategies: test
+tests::test_protocol_genome_crossover: test
+tests::test_protocol_genome_mutation: test
+tests::test_protocol_genome_random: test
+tests::test_protocol_morphology: test
+tests::test_protocol_population_creation: test
+tests::test_protocol_population_evolution: test
+tests::test_speculative_predictor: test
+tests::test_statistical_methods: test
+
+34 tests, 0 benchmarks
+     Running tests\chaos.rs (target\debug\deps\chaos-0e03ea0912c03611.exe)
+chaos_abrupt_client_drop: test
+chaos_arbitrary_message_survives_roundtrip: test
+chaos_bidirectional_flood: test
+chaos_connection_drop_mid_session: test
+chaos_corrupted_frame_header: test
+chaos_encrypted_connection_drop: test
+chaos_large_payload: test
+chaos_many_small_messages: test
+chaos_mismatched_encryption_keys: test
+chaos_random_buffer_size_works: test
+chaos_rapid_reconnection: test
+chaos_truncated_message: test
+chaos_zero_length_message: test
+
+13 tests, 0 benchmarks
+     Running tests\integration.rs (target\debug\deps\integration-50ba7dc52cfcd610.exe)
+protocol_all_command_types: test
+protocol_bidirectional_interleaved: test
+protocol_chameleon_encoding: test
+protocol_concurrent_sessions: test
+protocol_encrypted_multiple_messages: test
+protocol_encrypted_roundtrip: test
+protocol_morph_changes_morphology: test
+protocol_plaintext_latent_vector: test
+protocol_plaintext_ping_pong: test
+protocol_plaintext_request_response: test
+protocol_stress_100_messages: test
+
+11 tests, 0 benchmarks
+     Running tests\proptest_protocol.rs (target\debug\deps\proptest_protocol-d43e6ba6a6ef0dfc.exe)
+chameleon_encode_produces_output: test
+chameleon_epoch_monotonic: test
+latent_vector_bincode_roundtrip: test
+latent_vector_bytes_into_roundtrip: test
+latent_vector_bytes_roundtrip: test
+latent_vector_size_deterministic: test
+message_json_roundtrip: test
+request_json_roundtrip: test
+response_json_roundtrip: test
+
+9 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_recursive-6d92d395c24193b6.exe)
+llm_dispatchers::tests::test_adaptive_fallback: test
+llm_dispatchers::tests::test_anthropic_config_default: test
+llm_dispatchers::tests::test_load_balanced_round_robin: test
+llm_dispatchers::tests::test_offline_dispatcher: test
+llm_dispatchers::tests::test_openai_config_default: test
+tests::test_chunk_id: test
+tests::test_context_variable_chunking: test
+tests::test_extract_keywords: test
+tests::test_get_lines: test
+tests::test_keyword_search: test
+tests::test_line_count: test
+tests::test_recursive_lm: test
+tests::test_regex_search: test
+tests::test_repl_environment: test
+tests::test_session_id: test
+
+15 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_storage-4742fdad426e0b69.exe)
+tests::test_batch_put: test
+tests::test_create_backend_in_memory: test
+tests::test_in_memory_backend: test
+tests::test_in_memory_namespaces: test
+tests::test_sqlite_backend: test
+tests::test_sqlite_batch_put: test
+tests::test_sqlite_namespaces: test
+tests::test_storage_config_default: test
+tests::test_typed_storage: test
+
+9 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_stream-acf0017eb7bcb3d4.exe)
+channel::tests::test_bounded_channel: test
+channel::tests::test_bounded_channel_backpressure: test
+channel::tests::test_broadcast_channel: test
+channel::tests::test_message_channel: test
+channel::tests::test_request_response: test
+channel::tests::test_spsc_ring_buffer: test
+chunk::tests::test_checksum_verification: test
+chunk::tests::test_chunk_send_receive: test
+chunk::tests::test_compression: test
+chunk::tests::test_streaming_chunker: test
+flow::tests::test_flow_controller_acquire_release: test
+flow::tests::test_flow_controller_congestion: test
+flow::tests::test_flow_pause_resume: test
+flow::tests::test_leaky_bucket: test
+flow::tests::test_rtt_estimator: test
+flow::tests::test_token_bucket: test
+latent::tests::test_latent_batch: test
+latent::tests::test_latent_vector_operations: test
+latent::tests::test_latent_vector_serialization: test
+latent::tests::test_normalize: test
+latent::tests::test_quantization: test
+multiplex::tests::test_multiplexer_open_close: test
+multiplex::tests::test_scheduler_weighted_fair_queuing: test
+multiplex::tests::test_stream_routing: test
+priority::tests::test_deadline_queue: test
+priority::tests::test_multi_level_queue: test
+priority::tests::test_priority_queue_fifo_within_priority: test
+priority::tests::test_priority_queue_ordering: test
+priority::tests::test_weighted_fair_queue: test
+reactive::tests::test_backpressure_stats: test
+reactive::tests::test_backpressure_stream: test
+reactive::tests::test_windowed_stream: test
+tests::test_compression_algorithms: test
+tests::test_stream_config_presets: test
+tests::test_stream_handle_send: test
+
+35 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_transport-f363e7e2af85d315.exe)
+buffer::tests::test_hierarchical_allocator: test
+buffer::tests::test_ring_buffer_basic: test
+buffer::tests::test_ring_buffer_wrap_around: test
+buffer::tests::test_slab_allocator: test
+buffer::tests::test_vectored_buffer: test
+coalesce::tests::test_batch_compression: test
+coalesce::tests::test_coalesce_channel: test
+coalesce::tests::test_coalescer_basic: test
+coalesce::tests::test_config_presets: test
+congestion::tests::test_adaptive_batch_sizer: test
+congestion::tests::test_bbr_bdp_calculation: test
+congestion::tests::test_bbr_startup: test
+congestion::tests::test_rate_limiter: test
+connection::tests::test_health_monitor: test
+frame::tests::test_frame_aggregator: test
+frame::tests::test_frame_builder: test
+frame::tests::test_frame_codec_encode_decode: test
+frame::tests::test_frame_fragmenter: test
+metrics::tests::test_counter: test
+metrics::tests::test_gauge: test
+metrics::tests::test_histogram: test
+metrics::tests::test_metrics_json: test
+metrics::tests::test_metrics_registry: test
+metrics::tests::test_rate_tracker: test
+metrics::tests::test_transport_metrics: test
+plugin::tests::test_builder_pattern: test
+plugin::tests::test_connect_disconnect_notifications: test
+plugin::tests::test_empty_pipeline: test
+plugin::tests::test_metrics_plugin: test
+plugin::tests::test_metrics_snapshot: test
+plugin::tests::test_pipeline_names: test
+plugin::tests::test_pipeline_ordering: test
+plugin::tests::test_pipeline_remove: test
+plugin::tests::test_rate_limiter: test
+plugin::tests::test_size_limiter: test
+plugin::tests::test_tagging_plugin: test
+pool::tests::test_endpoint_pool: test
+pool::tests::test_pool_add: test
+pool::tests::test_pool_config_default: test
+pool::tests::test_pool_stats: test
+tests::test_config_presets: test
+tests::test_frame_compression_lz4: test
+tests::test_frame_compression_zstd: test
+tests::test_frame_header_serialization: test
+websocket::tests::test_binary_message_format: test
+websocket::tests::test_frame_roundtrip_encoding: test
+
+46 tests, 0 benchmarks
+     Running tests\proptest_transport.rs (target\debug\deps\proptest_transport-1269211fea047e37.exe)
+frame_codec_roundtrip: test
+frame_codec_zerocopy_roundtrip: test
+frame_compression_roundtrip_lz4: test
+frame_compression_roundtrip_zstd: test
+frame_encoded_size: test
+frame_header_flags_roundtrip: test
+frame_header_roundtrip: test
+ring_buffer_capacity_respected: test
+ring_buffer_read_never_exceeds_write: test
+ring_buffer_roundtrip: test
+slab_allocator_borrow_return: test
+
+11 tests, 0 benchmarks
+     Running unittests src\lib.rs (target\debug\deps\spine_wasm-223dd90cecf5de7e.exe)
+tests::test_compile_simple_hlb_to_wat: test
+tests::test_wasm_events: test
+tests::test_wasm_execution: test
+
+3 tests, 0 benchmarks
+   Doc-tests spine_agent
+spine-agent\src\lib.rs - AgentClient<TcpStream>::connect_with_retry (line 50): test
+
+1 test, 0 benchmarks
+   Doc-tests spine_agentic
+0 tests, 0 benchmarks
+   Doc-tests spine_cache
+0 tests, 0 benchmarks
+   Doc-tests spine_cluster
+spine-cluster\src\marketplace.rs - marketplace (line 27): test
+
+1 test, 0 benchmarks
+   Doc-tests spine_compiler
+0 tests, 0 benchmarks
+   Doc-tests spine_core
+0 tests, 0 benchmarks
+   Doc-tests spine_crypto
+0 tests, 0 benchmarks
+   Doc-tests spine_gpu
+0 tests, 0 benchmarks
+   Doc-tests spine_human
+0 tests, 0 benchmarks
+   Doc-tests spine_k8s
+0 tests, 0 benchmarks
+   Doc-tests spine_kernel
+spine-kernel\src\syscall.rs - syscall::MappedRegion (line 162): test
+
+1 test, 0 benchmarks
+   Doc-tests spine_knowledge
+0 tests, 0 benchmarks
+   Doc-tests spine_neural
+0 tests, 0 benchmarks
+   Doc-tests spine_parser
+0 tests, 0 benchmarks
+   Doc-tests spine_protocol
+spine-protocol\src\replay.rs - replay (line 21): test
+
+1 test, 0 benchmarks
+   Doc-tests spine_recursive
+spine-recursive\src\lib.rs - (line 49): test
+
+1 test, 0 benchmarks
+   Doc-tests spine_storage
+0 tests, 0 benchmarks
+   Doc-tests spine_stream
+0 tests, 0 benchmarks
+   Doc-tests spine_transport
+spine-transport\src\websocket.rs - websocket (line 25): test
+spine-transport\src\websocket.rs - websocket (line 31): test
+
+2 tests, 0 benchmarks
+   Doc-tests spine_wasm
+0 tests, 0 benchmarks

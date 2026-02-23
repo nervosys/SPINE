@@ -146,14 +146,16 @@ impl HumanTranspiler {
         hls_source.push_str("capability storage\n\n");
 
         // Extract global styles from <style> tags
-        let style_selector = scraper::Selector::parse("style").unwrap();
+        let style_selector = scraper::Selector::parse("style")
+            .map_err(|_| anyhow::anyhow!("Invalid CSS selector: style"))?;
         let mut global_css = css.to_string();
         for style_node in document.select(&style_selector) {
             global_css.push_str(&style_node.text().collect::<String>());
         }
 
         // Extract global scripts from <script> tags
-        let script_selector = scraper::Selector::parse("script").unwrap();
+        let script_selector = scraper::Selector::parse("script")
+            .map_err(|_| anyhow::anyhow!("Invalid CSS selector: script"))?;
         let mut global_js = js.to_string();
         for script_node in document.select(&script_selector) {
             global_js.push_str(&script_node.text().collect::<String>());
@@ -170,7 +172,8 @@ impl HumanTranspiler {
         hls_source.push_str("  element Root {\n");
 
         // Traverse the body
-        let body_selector = scraper::Selector::parse("body").unwrap();
+        let body_selector = scraper::Selector::parse("body")
+            .map_err(|_| anyhow::anyhow!("Invalid CSS selector: body"))?;
         if let Some(body) = document.select(&body_selector).next() {
             for child in body.children() {
                 Self::convert_node(child, &mut hls_source, 2);
@@ -193,18 +196,28 @@ impl HumanTranspiler {
         let mut info = SemanticInfo::default();
 
         // Title extraction
-        let title_selector = scraper::Selector::parse("title").unwrap();
+        let Ok(title_selector) = scraper::Selector::parse("title") else {
+            return info;
+        };
         if let Some(title) = doc.select(&title_selector).next() {
             info.title = title.text().collect();
         }
 
         // Page type inference
-        let form_selector = scraper::Selector::parse("form").unwrap();
-        let article_selector = scraper::Selector::parse("article").unwrap();
-        let search_selector =
+        let Ok(form_selector) = scraper::Selector::parse("form") else {
+            return info;
+        };
+        let Ok(article_selector) = scraper::Selector::parse("article") else {
+            return info;
+        };
+        let Ok(search_selector) =
             scraper::Selector::parse("input[type='search'], input[name='q'], input[name='query']")
-                .unwrap();
-        let login_selector = scraper::Selector::parse("input[type='password']").unwrap();
+        else {
+            return info;
+        };
+        let Ok(login_selector) = scraper::Selector::parse("input[type='password']") else {
+            return info;
+        };
 
         if doc.select(&form_selector).next().is_some() {
             info.page_type = PageType::Interactive;
@@ -232,7 +245,9 @@ impl HumanTranspiler {
         }
 
         // Inferred state from inputs
-        let input_selector = scraper::Selector::parse("input[name]").unwrap();
+        let Ok(input_selector) = scraper::Selector::parse("input[name]") else {
+            return info;
+        };
         for input in doc.select(&input_selector) {
             if let Some(name) = input.value().attr("name") {
                 let safe_name = name.replace("-", "_").replace(" ", "_");
@@ -447,7 +462,11 @@ impl ReasoningEngine {
         }
 
         // Sort by confidence
-        suggestions.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap());
+        suggestions.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         suggestions
     }
 

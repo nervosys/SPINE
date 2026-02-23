@@ -123,7 +123,9 @@ impl L1Cache {
 
         let size = value.len();
         let entry = CacheEntry::new(value, ttl);
-        let mut entries = self.entries.write().unwrap();
+        let Ok(mut entries) = self.entries.write() else {
+            return;
+        };
         if let Some(old) = entries.insert(key.to_string(), entry) {
             if let Ok(mut bytes) = self.current_bytes.write() {
                 *bytes = bytes.saturating_sub(old.value.len());
@@ -136,7 +138,9 @@ impl L1Cache {
 
     /// Remove a value from the cache.
     pub fn remove(&self, key: &str) -> bool {
-        let mut entries = self.entries.write().unwrap();
+        let Ok(mut entries) = self.entries.write() else {
+            return false;
+        };
         if let Some(entry) = entries.remove(key) {
             if let Ok(mut bytes) = self.current_bytes.write() {
                 *bytes = bytes.saturating_sub(entry.value.len());
@@ -149,8 +153,12 @@ impl L1Cache {
 
     /// Evict entries to make room for a new value.
     fn evict_if_needed(&self, needed_bytes: usize) {
-        let mut entries = self.entries.write().unwrap();
-        let mut bytes = self.current_bytes.write().unwrap();
+        let Ok(mut entries) = self.entries.write() else {
+            return;
+        };
+        let Ok(mut bytes) = self.current_bytes.write() else {
+            return;
+        };
 
         // First pass: remove expired entries
         let expired: Vec<String> = entries
@@ -186,8 +194,22 @@ impl L1Cache {
 
     /// Get cache statistics.
     pub fn stats(&self) -> CacheStats {
-        let entries = self.entries.read().unwrap();
-        let bytes = self.current_bytes.read().unwrap();
+        let Ok(entries) = self.entries.read() else {
+            return CacheStats {
+                entry_count: 0,
+                byte_count: 0,
+                max_entries: self.max_entries,
+                max_bytes: self.max_bytes,
+            };
+        };
+        let Ok(bytes) = self.current_bytes.read() else {
+            return CacheStats {
+                entry_count: entries.len(),
+                byte_count: 0,
+                max_entries: self.max_entries,
+                max_bytes: self.max_bytes,
+            };
+        };
         CacheStats {
             entry_count: entries.len(),
             byte_count: *bytes,
@@ -198,9 +220,13 @@ impl L1Cache {
 
     /// Clear all entries.
     pub fn clear(&self) {
-        let mut entries = self.entries.write().unwrap();
+        let Ok(mut entries) = self.entries.write() else {
+            return;
+        };
         entries.clear();
-        *self.current_bytes.write().unwrap() = 0;
+        if let Ok(mut bytes) = self.current_bytes.write() {
+            *bytes = 0;
+        }
     }
 }
 
@@ -557,12 +583,14 @@ impl TieredCache {
 
     /// Get tiered cache metrics.
     pub fn metrics(&self) -> TieredCacheMetrics {
-        self.metrics.read().unwrap().clone()
+        self.metrics.read().map(|m| m.clone()).unwrap_or_default()
     }
 
     /// Get cache hit rate.
     pub fn hit_rate(&self) -> f64 {
-        let m = self.metrics.read().unwrap();
+        let Ok(m) = self.metrics.read() else {
+            return 0.0;
+        };
         if m.total_gets == 0 {
             return 0.0;
         }

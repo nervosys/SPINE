@@ -4,7 +4,7 @@ version = "1.0.0"
 edition = "2021"
 description = "High-performance streaming layer for SPINE bioinspired agentic web stack"
 authors = ["Nervosys"]
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # Async runtime
@@ -53,6 +53,3 @@ default = ["backpressure", "multiplexing"]
 backpressure = []
 multiplexing = []
 priority-queues = []
-
-
-

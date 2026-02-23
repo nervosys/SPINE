@@ -3,13 +3,13 @@ use rustls::ClientConfig;
 use rustls::RootCertStore;
 use spine_human::HumanInteractionEngine;
 use spine_parser::UnifiedRepresentation;
-use tracing::instrument;
 use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
+use tracing::instrument;
 
 // Re-export the compiler for convenience
 pub use spine_compiler::Compiler;
@@ -284,7 +284,10 @@ where
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
-        let ur: UnifiedRepresentation = serde_json::from_value(res.result.unwrap())?;
+        let ur: UnifiedRepresentation = serde_json::from_value(
+            res.result
+                .ok_or_else(|| anyhow::anyhow!("Missing result in response"))?,
+        )?;
         Ok(ur)
     }
 
@@ -293,7 +296,7 @@ where
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
-        let html = res.result.unwrap()["html"]
+        let html = res.result.unwrap_or_default()["html"]
             .as_str()
             .unwrap_or_default()
             .to_string();
@@ -374,7 +377,10 @@ where
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
-        let result: spine_wasm::WasmExecutionResult = serde_json::from_value(res.result.unwrap())?;
+        let result: spine_wasm::WasmExecutionResult = serde_json::from_value(
+            res.result
+                .ok_or_else(|| anyhow::anyhow!("Missing result in response"))?,
+        )?;
         Ok(result)
     }
 
@@ -386,7 +392,7 @@ where
             anyhow::bail!(err);
         }
         let latent: Vec<f32> =
-            serde_json::from_value(res.result.unwrap()["latent_vector"].clone())?;
+            serde_json::from_value(res.result.unwrap_or_default()["latent_vector"].clone())?;
         Ok(latent)
     }
 
@@ -426,7 +432,7 @@ where
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
-        Ok(res.result.unwrap())
+        Ok(res.result.unwrap_or_default())
     }
 
     pub async fn transfer_session(&mut self, target_node_id: uuid::Uuid) -> anyhow::Result<()> {
@@ -499,7 +505,7 @@ where
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
-        let results = res.result.unwrap()["results"]
+        let results = res.result.unwrap_or_default()["results"]
             .as_array()
             .cloned()
             .unwrap_or_default();
@@ -524,7 +530,7 @@ where
             anyhow::bail!(err);
         }
         let history: Vec<BrowserCommand> =
-            serde_json::from_value(res.result.unwrap()["history"].clone())?;
+            serde_json::from_value(res.result.unwrap_or_default()["history"].clone())?;
         Ok(history)
     }
 
@@ -557,7 +563,7 @@ where
             anyhow::bail!(err);
         }
         let capabilities: Vec<String> =
-            serde_json::from_value(res.result.unwrap()["capabilities"].clone())?;
+            serde_json::from_value(res.result.unwrap_or_default()["capabilities"].clone())?;
         Ok(capabilities)
     }
 
@@ -634,7 +640,7 @@ where
             .and_then(|v| {
                 v.get("plan_id")
                     .and_then(|id| id.as_str())
-                    .map(|s| uuid::Uuid::parse_str(s).unwrap())
+                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
             })
             .ok_or_else(|| anyhow::anyhow!("Missing plan_id in response"))?;
         Ok(plan_id)
@@ -705,7 +711,6 @@ where
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -786,7 +791,9 @@ mod tests {
 
     #[test]
     fn test_ping_message() {
-        let msg = Message::Ping { timestamp: 1234567890 };
+        let msg = Message::Ping {
+            timestamp: 1234567890,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         let rt: Message = serde_json::from_str(&json).unwrap();
         match rt {
@@ -816,12 +823,9 @@ mod tests {
     #[tokio::test]
     async fn test_connect_with_retry_fails_fast() {
         // With 0 retries and invalid addr, should fail immediately
-        let result = AgentClient::connect_with_retry(
-            "127.0.0.1:1",
-            0,
-            std::time::Duration::from_millis(1),
-        )
-        .await;
+        let result =
+            AgentClient::connect_with_retry("127.0.0.1:1", 0, std::time::Duration::from_millis(1))
+                .await;
         assert!(result.is_err());
         assert!(result.is_err());
     }
