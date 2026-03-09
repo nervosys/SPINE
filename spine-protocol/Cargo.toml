@@ -19,7 +19,7 @@ log.workspace = true
 tokio.workspace = true
 # For high throughput, maybe tonic (gRPC) or a custom binary protocol
 # For now, let's stick to basic networking
-bytes = "1.5"
+bytes = "1.11"
 zstd = "0.12"
 aes-gcm = "0.10"
 hmac = "0.12"
@@ -33,7 +33,7 @@ rustls.workspace = true
 tokio-rustls.workspace = true
 # High-performance binary serialization (5-10x faster than JSON)
 bincode = "1.3"
-bytemuck = { version = "1.14", features = ["derive"] }
+bytemuck = { version = "1.25", features = ["derive"] }
 
 # QUIC transport (optional, for fallback/0-RTT connections)
 quinn = { version = "0.11", optional = true }
