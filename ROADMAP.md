@@ -330,12 +330,12 @@
 
 ## Planned
 
-### Phase 27: Swarm Intelligence v2
+### Phase 27: Swarm Intelligence v2 ✅
 
-- [ ] Emergent coordination protocols (stigmergy, pheromone-inspired signaling)
-- [ ] Collective decision-making with Byzantine fault tolerance
-- [ ] Adaptive swarm topology (auto-partition, merge, hierarchical clustering)
-- [ ] Cross-swarm federation with trust boundary enforcement
+- [x] Emergent coordination protocols (stigmergy, pheromone-inspired signaling)
+- [x] Collective decision-making with Byzantine fault tolerance
+- [x] Adaptive swarm topology (auto-partition, merge, hierarchical clustering)
+- [x] Cross-swarm federation with trust boundary enforcement
 
 ### Phase 28: Observability & Debugging
 

@@ -336,6 +336,14 @@
 - [x] **Agent-to-agent contracts** (`src/spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
 - [x] **626 tests passing**: +47 tests, 0 failures, 0 Clippy warnings
 
+### Phase 27: Swarm Intelligence v2 ✅
+
+- [x] **Emergent stigmergy** (`src/spine-agentic/src/stigmergy.rs`): Pheromone-inspired coordination with exponential decay, reinforcement, capacity pruning, multi-kind sensing (Trail/Warning/Resource/Recruitment/Explored/Consensus/Custom), intensity aggregation, strongest-signal discovery
+- [x] **BFT consensus** (`src/spine-agentic/src/consensus.rs`): Byzantine fault tolerant collective decision-making with weighted trust voting, 5 quorum rules (Majority/SuperMajority/Unanimous/Threshold/BFT), ranked Borda count, weighted allocation, equivocation detection, byzantine agent exclusion, SHA-256 proposal integrity
+- [x] **Adaptive topology** (`src/spine-agentic/src/topology.rs`): Dynamic swarm restructuring with auto-partition on overload, merge on underutilization, capability-affinity-based bisection, agent migration, leader election, hierarchical clustering, event audit log
+- [x] **Cross-swarm federation** (`src/spine-agentic/src/federation.rs`): Trust boundary enforcement with 5-tier trust (Untrusted→Integrated), 8 permission types, policy conditions (time window/rate limit/capability/concurrency), request lifecycle, capability discovery, SHA-256 request integrity
+- [x] **668 tests passing**: +42 tests, 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
