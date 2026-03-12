@@ -337,24 +337,43 @@
 - [x] Adaptive swarm topology (auto-partition, merge, hierarchical clustering)
 - [x] Cross-swarm federation with trust boundary enforcement
 
-### Phase 28: Observability & Debugging
+### Phase 28: Observability & Debugging ✔
 
 - [x] Distributed tracing across mesh hops (OpenTelemetry integration)
 - [x] Agent replay debugger (deterministic re-execution from trace logs)
 - [x] Live swarm visualizer (topology, message flow, resource heatmaps)
 - [x] Anomaly detection on agent behavior (drift, deadlock, livelock)
 
-### Phase 29: Performance & Hardening
+### Phase 29: Performance & Hardening ✔
 
 - [x] `#![no_std]` core for embedded/WASM targets (spine-nostd crate: Q8.8 fixed-point, FNV hashing, frame codec)
 - [x] io_uring transport backend (Linux kernel bypass at scale, UringBackend with batched I/O)
 - [x] Formal verification of mesh routing invariants (TLA+ spec: TTL monotonicity, deduplication, no-loop, convergence)
 - [x] Chaos engineering framework (FaultInjector, ChaosScenario, CampaignRunner with 10 fault types)
 
-### Future Ecosystem
+### Phase 30: Embedded Runtime ✔
 
-- [ ] Browser extension for human-agent hybrid browsing
-- [ ] Embedded runtime for edge/IoT agent deployments
+- [x] `spine-embedded` crate: minimal agent runtime for ARM Cortex-M, ESP32, RISC-V
+- [x] `EmbeddedAgent` with fixed-size inbox/outbox `MessageRing` (no heap)
+- [x] `RoutingTable` for multi-hop forwarding with TTL and shortest-path updates
+- [x] `SensorBridge` for normalizing raw sensor data into Q8.8 latent vectors
+- [x] `WatchdogTimer` for real-time deadline monitoring
+- [x] 24 tests passing, all stack-allocated, zero dependencies beyond `spine-nostd`
+
+### Phase 31: Browser Extension ✔
+
+- [x] Chrome/Firefox WebExtension (Manifest V3) in `extension/`
+- [x] Background service worker with WebSocket connection to local SPINE node
+- [x] Content script for UR extraction (headings, links, text blocks, meta tags)
+- [x] Agent command handling: highlight, extract, navigate, annotate, query
+- [x] Popup UI with connection status, statistics, UR preview
+
+### Phase 32: Final Polish ✔
+
+- [x] README: badge 561$([char]0x2192)784 tests, crate count 25$([char]0x2192)28, test table updated with per-crate counts
+- [x] Architecture section: added Infrastructure, Bindings & Interop layers with all missing crate descriptions
+- [x] ROADMAP: Phases 28-32 marked complete, Future Ecosystem items resolved
+- [x] 784 tests passing across 28 crates, 0 failures, 0 Clippy warnings
 
 ------
 

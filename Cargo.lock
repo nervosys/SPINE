@@ -6635,6 +6635,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "spine-embedded"
+version = "0.1.0"
+dependencies = [
+ "spine-nostd",
+]
+
+[[package]]
 name = "spine-ffi"
 version = "1.0.0"
 dependencies = [

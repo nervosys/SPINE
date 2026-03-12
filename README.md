@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-561%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-784%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Path INterconnecting Entities) is a **headless semantic browser with adaptive encryption** — not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
 
@@ -45,7 +45,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 
 ## Core Components
 
-SPINE is composed of 25 specialized crates organized into a cohesive bioinspired architecture:
+SPINE is composed of 28 specialized crates organized into a cohesive bioinspired architecture:
 
 ### Kernel Layer
 
@@ -78,9 +78,26 @@ SPINE is composed of 25 specialized crates organized into a cohesive bioinspired
 - **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
 - **`spine-human`**: Legacy web bridge (compatibility layer) with realistic mouse paths, typing delays, and human-like interaction patterns.
 
+### Infrastructure Layer
+
+- **`spine-gpu`**: GPU compute abstraction with `CpuBackend` (SIMD 8-wide) and `WgpuBackend` (WGSL shaders).
+- **`spine-storage`**: Persistent storage backends — InMemory, SQLite (WAL mode), and RocksDB (column families).
+- **`spine-cache`**: Tiered caching — L1 in-memory LRU (TTL, byte limits), L2 file-backed, L3 remote.
+- **`spine-k8s`**: Kubernetes operator with CRD, autoscaler, and manifest generators.
+
 ### Application Layer
 
 - **`spine-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
+- **`spine-cli`**: Command-line tool with init, connect (REPL), query, deploy, benchmark, and status commands.
+- **`spine-gateway`**: REST API gateway with OpenAPI/Swagger UI (axum + utoipa).
+
+### Bindings & Interop
+
+- **`spine-ffi`**: C FFI bindings (cdylib/staticlib) for language interop (Go, Java, Kotlin).
+- **`spine-nostd`**: `#![no_std]` core primitives — Q8.8 fixed-point, FNV hashing, frame codec for embedded/WASM.
+- **`spine-embedded`**: Minimal agent runtime for embedded/IoT targets (ARM Cortex-M, ESP32, RISC-V).
+- **`spine-python`**\*: Python bindings via PyO3 + maturin (excluded from default build).
+- **`spine-js`**\*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build).
 
 ## Intelligence Layer
 
@@ -649,7 +666,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (27 Crates)
+### The SPINE Stack (28 Crates)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -1024,7 +1041,7 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 27 crates:
+SPINE includes comprehensive test coverage across all 28 crates:
 
 ```bash
 # Run all tests
@@ -1036,19 +1053,22 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (626 tests)
+### Test Summary (784 tests)
 
 | Crate           | Tests | Description                                              |
 | --------------- | ----- | -------------------------------------------------------- |
-| spine-agentic   | 103   | Lifecycle, sandbox, scheduler, contracts, ontology, mesh |
+| spine-agentic   | 207   | Lifecycle, sandbox, scheduler, contracts, mesh, swarm    |
 | spine-protocol  | 67    | Chameleon protocol, chaos, integration, property         |
 | spine-transport | 57    | Zero-copy I/O, BBR, connection pooling, property         |
-| spine-crypto    | 52    | RLWE, ML-KEM, Titans predictor, MIRAS, property          |
+| spine-crypto    | 52    | RLWE, ML-KEM, Titans predictor, MIRAS, property         |
 | spine-cluster   | 37    | Load balancing, session management, Sybil resistance     |
+| spine-core      | 35    | Session orchestration, config, TLS/cert, CT logs         |
 | spine-kernel    | 35    | SIMD, allocators, atomics, ring buffers                  |
 | spine-stream    | 35    | Reactive streams, multiplexing, flow                     |
-| spine-core      | 35    | Session orchestration, config, TLS/cert, CT logs         |
-| spine-wasm      | 28    | HLB → WASM compilation, execution, stack ops             |
+| spine-nostd     | 30    | Fixed-point math, FNV hashing, frame codec               |
+| spine-wasm      | 28    | HLB compilation, execution, stack ops                    |
+| spine-embedded  | 24    | Agent runtime, ring buffers, routing, watchdog           |
+| spine-compiler  | 21    | HLS parsing, type checking, compilation                  |
 | spine-neural    | 19    | VAE, attention, memory variants                          |
 | spine-ffi       | 18    | C FFI null-safety, parse, compile, version               |
 | spine-cache     | 16    | LRU, tiered caching, TTL eviction                        |
@@ -1056,9 +1076,8 @@ cargo test -p spine-crypto
 | spine-cli       | 15    | Init scaffolding, config, addr/tag parsing               |
 | spine-k8s       | 13    | CRD generation, autoscaling, manifests                   |
 | spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders                  |
-| spine-agent     | 11    | SDK API, protocol types, connection handling             |
+| spine-agent     | 11    | SDK API, protocol types, connection handling              |
 | spine-knowledge | 9     | Episodic, semantic, collective memory                    |
-| spine-compiler  | 9     | HLS parsing, compilation, optimization                   |
 | spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                       |
 | spine-parser    | 8     | HTML parsing, UR extraction, property tests              |
 | spine-gateway   | 7     | REST API gateway, health checks                          |

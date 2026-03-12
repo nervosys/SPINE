@@ -358,7 +358,7 @@
 - [x] **io_uring transport backend** (`src/spine-transport/src/uring_backend.rs`): `UringBackend` wrapping `UringRing` with per-connection state tracking, batched `submit_send`/`submit_recv`, `process_completions` with success/error callbacks, `UringBackendStats` (AtomicU64 counters), feature-gated `#[cfg(all(target_os = "linux", feature = "io-uring"))]`
 - [x] **Formal verification of mesh routing** (`formal/tla/MeshRouting.tla`): TLA+ specification modeling MeshNode routing tables, multi-hop message delivery, gossip peer discovery, TTL-based forwarding; 7 invariants (TTLMonotonicity, DeduplicationInvariant, PathBounded, NoRoutingLoops, ValidRoutes, SelfRouteZero, DeliveryCorrectness); 2 temporal properties (EventualResolution, GossipConvergence); model checking config (`MeshRouting_MC.tla`)
 - [x] **Chaos engineering framework** (`src/spine-agentic/src/chaos.rs`): 10 `FaultType` variants (MessageDrop/Delay/Corruption, AgentCrash/Hang, NetworkPartition, ResourceExhaustion, ClockSkew, MessageDuplicate, BandwidthThrottle), `ChaosScenario` with SHA-256 integrity verification, 4 predefined scenarios (rolling_crashes, network_split, gradual_degradation, combined_faults), `FaultInjector` with activation/expiry/audit log, `CampaignRunner` with anomaly detector integration and per-step verdict evaluation
-- [x] **760 tests passing**: +52 tests (30 spine-nostd + 20 chaos + 2 doc), 0 failures, 0 Clippy warnings
+- [x] **784 tests passing**: +52 tests (30 spine-nostd + 20 chaos + 2 doc), 0 failures, 0 Clippy warnings
 
 ### Performance Benchmarks
 
@@ -375,7 +375,7 @@
 | **SPSC Ring Push/Pop**       | **1.36 ns**      |
 | **RDTSC Read**               | **9.3 ns**       |
 
-### Workspace Structure (27 crates)
+### Workspace Structure (28 crates)
 
 - `spine-kernel`: Ultra-low-level hardware primitives (SIMD, allocators, atomics, ring buffers, RDTSC timing)
 - `spine-core`: Multi-session orchestration engine
@@ -401,5 +401,9 @@
 - `spine-cache`: Tiered caching (L1 LRU, L2 file-backed, L3 remote)
 - `spine-k8s`: Kubernetes operator CRD, autoscaler, manifest generators
 - `spine-ffi`: C FFI bindings for language interop (Go, Java, etc.)
+- `spine-nostd`: `#![no_std]` core primitives (Q8.8 fixed-point, FNV hashing, frame codec)
+- `spine-embedded`: Minimal agent runtime for embedded/IoT targets
+- `spine-nostd`: `#![no_std]` core primitives (Q8.8 fixed-point, FNV hashing, frame codec)
+- `spine-embedded`: Minimal agent runtime for embedded/IoT targets
 - `spine-python`\*: Python bindings via PyO3 + maturin (excluded from default build)
 - `spine-js`\*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build)
