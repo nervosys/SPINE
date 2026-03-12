@@ -1,7 +1,7 @@
-# Split and trim spine-agentic/src/lib.rs
+# Split and trim src/spine-agentic/src/lib.rs
 # Remove dead code sections and extract ontology into its own module
 
-$f = 'c:\Users\adamm\dev\nervosys\web\Hyperlight\spine-agentic\src\lib.rs'
+$f = 'c:\Users\adamm\dev\nervosys\web\Hyperlight\src\spine-agentic\src\lib.rs'
 $lines = [System.IO.File]::ReadAllLines($f)
 Write-Host "Original lines: $($lines.Count)"
 

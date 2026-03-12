@@ -670,7 +670,8 @@ mod tests {
     #[test]
     fn test_grafana_dashboard_exists() {
         assert!(std::path::Path::new("deploy/grafana/spine-dashboard.json").exists()
-            || std::path::Path::new("../deploy/grafana/spine-dashboard.json").exists());
+            || std::path::Path::new("../deploy/grafana/spine-dashboard.json").exists()
+            || std::path::Path::new("../../deploy/grafana/spine-dashboard.json").exists());
     }
 
 }

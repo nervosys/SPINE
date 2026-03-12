@@ -78,9 +78,9 @@ func main() {
 
 ```bash
 # Set library paths (adjust for your OS)
-export CGO_LDFLAGS="-L../target/release -lspine_ffi"
+export CGO_LDFLAGS="-L../../target/release -lspine_ffi"
 export CGO_CFLAGS="-I../spine-ffi/include"
-export LD_LIBRARY_PATH="../target/release:$LD_LIBRARY_PATH"
+export LD_LIBRARY_PATH="../../target/release:$LD_LIBRARY_PATH"
 
 # Build
 go build ./...

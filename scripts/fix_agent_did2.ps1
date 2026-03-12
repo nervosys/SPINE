@@ -1,4 +1,4 @@
-$f = 'c:\Users\adamm\dev\nervosys\web\Hyperlight\spine-agentic\src\lib.rs'
+$f = 'c:\Users\adamm\dev\nervosys\web\Hyperlight\src\spine-agentic\src\lib.rs'
 $lines = [System.Collections.Generic.List[string]]([System.IO.File]::ReadAllLines($f))
 Write-Host "Total lines: $($lines.Count)"
 

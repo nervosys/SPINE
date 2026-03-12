@@ -1,5 +1,5 @@
 """
-Split spine-agentic/src/lib.rs god-object into modules and remove dead code.
+Split src/spine-agentic/src/lib.rs god-object into modules and remove dead code.
 
 Strategy:
 1. Read the entire file
@@ -11,7 +11,7 @@ Strategy:
 import re
 import os
 
-BASE = r'c:\Users\adamm\dev\nervosys\web\Hyperlight\spine-agentic\src'
+BASE = r'c:\Users\adamm\dev\nervosys\web\Hyperlight\src\spine-agentic\src'
 LIB_PATH = os.path.join(BASE, 'lib.rs')
 
 with open(LIB_PATH, 'r', encoding='utf-8') as f:

@@ -17,36 +17,36 @@ WORKDIR /build
 
 # Cache dependencies first
 COPY Cargo.toml Cargo.lock* ./
-COPY spine-core/Cargo.toml spine-core/Cargo.toml
-COPY spine-parser/Cargo.toml spine-parser/Cargo.toml
-COPY spine-protocol/Cargo.toml spine-protocol/Cargo.toml
-COPY spine-agent/Cargo.toml spine-agent/Cargo.toml
-COPY spine-compiler/Cargo.toml spine-compiler/Cargo.toml
-COPY spine-wasm/Cargo.toml spine-wasm/Cargo.toml
-COPY spine-cluster/Cargo.toml spine-cluster/Cargo.toml
-COPY spine-neural/Cargo.toml spine-neural/Cargo.toml
-COPY spine-crypto/Cargo.toml spine-crypto/Cargo.toml
-COPY spine-human/Cargo.toml spine-human/Cargo.toml
-COPY spine-browser/Cargo.toml spine-browser/Cargo.toml
-COPY spine-agentic/Cargo.toml spine-agentic/Cargo.toml
-COPY spine-transport/Cargo.toml spine-transport/Cargo.toml
-COPY spine-stream/Cargo.toml spine-stream/Cargo.toml
-COPY spine-recursive/Cargo.toml spine-recursive/Cargo.toml
-COPY spine-knowledge/Cargo.toml spine-knowledge/Cargo.toml
-COPY spine-kernel/Cargo.toml spine-kernel/Cargo.toml
-COPY spine-cli/Cargo.toml spine-cli/Cargo.toml
-COPY spine-gateway/Cargo.toml spine-gateway/Cargo.toml
+COPY src/spine-core/Cargo.toml src/spine-core/Cargo.toml
+COPY src/spine-parser/Cargo.toml src/spine-parser/Cargo.toml
+COPY src/spine-protocol/Cargo.toml src/spine-protocol/Cargo.toml
+COPY src/spine-agent/Cargo.toml src/spine-agent/Cargo.toml
+COPY src/spine-compiler/Cargo.toml src/spine-compiler/Cargo.toml
+COPY src/spine-wasm/Cargo.toml src/spine-wasm/Cargo.toml
+COPY src/spine-cluster/Cargo.toml src/spine-cluster/Cargo.toml
+COPY src/spine-neural/Cargo.toml src/spine-neural/Cargo.toml
+COPY src/spine-crypto/Cargo.toml src/spine-crypto/Cargo.toml
+COPY src/spine-human/Cargo.toml src/spine-human/Cargo.toml
+COPY src/spine-browser/Cargo.toml src/spine-browser/Cargo.toml
+COPY src/spine-agentic/Cargo.toml src/spine-agentic/Cargo.toml
+COPY src/spine-transport/Cargo.toml src/spine-transport/Cargo.toml
+COPY src/spine-stream/Cargo.toml src/spine-stream/Cargo.toml
+COPY src/spine-recursive/Cargo.toml src/spine-recursive/Cargo.toml
+COPY src/spine-knowledge/Cargo.toml src/spine-knowledge/Cargo.toml
+COPY src/spine-kernel/Cargo.toml src/spine-kernel/Cargo.toml
+COPY src/spine-cli/Cargo.toml src/spine-cli/Cargo.toml
+COPY src/spine-gateway/Cargo.toml src/spine-gateway/Cargo.toml
 
 # Create stub lib.rs files for dependency caching
-RUN for dir in spine-*/; do \
+RUN for dir in src/spine-*/; do \
     mkdir -p "$dir/src"; \
     echo "" > "$dir/src/lib.rs"; \
     done && \
     # Create stub main.rs for binary crates
-    echo "fn main() {}" > spine-core/src/main.rs && \
-    echo "fn main() {}" > spine-cli/src/main.rs && \
-    echo "fn main() {}" > spine-gateway/src/main.rs && \
-    echo "fn main() {}" > spine-browser/src/main.rs
+    echo "fn main() {}" > src/spine-core/src/main.rs && \
+    echo "fn main() {}" > src/spine-cli/src/main.rs && \
+    echo "fn main() {}" > src/spine-gateway/src/main.rs && \
+    echo "fn main() {}" > src/spine-browser/src/main.rs
 
 # Build dependencies (cached layer)
 RUN cargo build --release --workspace 2>/dev/null || true
@@ -55,7 +55,7 @@ RUN cargo build --release --workspace 2>/dev/null || true
 COPY . .
 
 # Touch all source files to invalidate stubs
-RUN find spine-*/src -name "*.rs" -exec touch {} +
+RUN find src/spine-*/src -name "*.rs" -exec touch {} +
 
 # Build release binaries
 RUN cargo build --release \

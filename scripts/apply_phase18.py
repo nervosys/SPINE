@@ -4,7 +4,7 @@ import re
 # ============================================================
 # 1. Gateway: add metrics() endpoint function before main()
 # ============================================================
-gw = "spine-gateway/src/main.rs"
+gw = "src/spine-gateway/src/main.rs"
 with open(gw, "r", encoding="utf-8") as f:
     src = f.read()
 
@@ -87,7 +87,7 @@ with open(gw, "w", encoding="utf-8", newline="\n") as f:
 # ============================================================
 # 3. Agent: add #[instrument] to key methods
 # ============================================================
-agent = "spine-agent/src/lib.rs"
+agent = "src/spine-agent/src/lib.rs"
 with open(agent, "r", encoding="utf-8") as f:
     src = f.read()
 

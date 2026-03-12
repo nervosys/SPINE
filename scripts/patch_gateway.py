@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Patch spine-gateway/src/main.rs to add /metrics endpoint, route, and tests."""
+"""Patch src/spine-gateway/src/main.rs to add /metrics endpoint, route, and tests."""
 import sys
 
-f = r"c:\Users\adamm\dev\nervosys\web\Hyperlight\spine-gateway\src\main.rs"
+f = r"c:\Users\adamm\dev\nervosys\web\Hyperlight\src\spine-gateway\src\main.rs"
 with open(f, "r", encoding="utf-8") as fh:
     c = fh.read()
 

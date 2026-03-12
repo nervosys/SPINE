@@ -9,10 +9,10 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-spine-protocol = { path = "../spine-protocol" }
-spine-parser = { path = "../spine-parser" }
-spine-transport = { path = "../spine-transport" }
-spine-crypto = { path = "../spine-crypto" }
+spine-protocol = { path = "../src/spine-protocol" }
+spine-parser = { path = "../src/spine-parser" }
+spine-transport = { path = "../src/spine-transport" }
+spine-crypto = { path = "../src/spine-crypto" }
 serde_json = "1.0"
 bytes = "1.5"
 

@@ -29,14 +29,14 @@
 //
 // Then set CGO flags to point at the library:
 //
-//	export CGO_LDFLAGS="-L../target/release -lspine_ffi"
+//	export CGO_LDFLAGS="-L../../target/release -lspine_ffi"
 //	export CGO_CFLAGS="-I../spine-ffi/include"
 //	go build ./...
 package spine
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../spine-ffi/include
-#cgo LDFLAGS: -L${SRCDIR}/../target/release -lspine_ffi -lm -ldl -lpthread
+#cgo LDFLAGS: -L${SRCDIR}/../../target/release -lspine_ffi -lm -ldl -lpthread
 #include "spine.h"
 #include <stdlib.h>
 */

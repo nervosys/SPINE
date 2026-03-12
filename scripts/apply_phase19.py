@@ -1,7 +1,7 @@
 """Phase 19: HLS Type System - Add source locations, stronger inference,
 typed function enforcement, and structured compile-time errors."""
 
-COMPILER = "spine-compiler/src/lib.rs"
+COMPILER = "src/spine-compiler/src/lib.rs"
 
 with open(COMPILER, "r", encoding="utf-8") as f:
     src = f.read()

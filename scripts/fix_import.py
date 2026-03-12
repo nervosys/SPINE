@@ -1,5 +1,5 @@
 """Fix unused IntoResponse import in gateway."""
-gw = "spine-gateway/src/main.rs"
+gw = "src/spine-gateway/src/main.rs"
 with open(gw, "r", encoding="utf-8") as f:
     src = f.read()
 

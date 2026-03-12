@@ -585,5 +585,5 @@ Common errors:
 ## References
 
 - [SPINE Architecture](ARCHITECTURE.md)
-- [HLB Instruction Set](spine-protocol/src/lib.rs)
-- [Compiler Implementation](spine-compiler/src/lib.rs)
+- [HLB Instruction Set](src/spine-protocol/src/lib.rs)
+- [Compiler Implementation](src/spine-compiler/src/lib.rs)

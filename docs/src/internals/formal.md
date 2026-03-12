@@ -26,7 +26,7 @@ Models the X3DH + RLWE key exchange with 10 security lemmas:
 
 ## Kani — Bounded Model Checking
 
-**File**: `spine-kernel/src/kani_harnesses.rs`
+**File**: `src/spine-kernel/src/kani_harnesses.rs`
 
 15 verification harnesses for unsafe Rust code:
 - **Allocators**: BumpAllocator, SlabAllocator, ArenaAllocator bounds

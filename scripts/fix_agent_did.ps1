@@ -1,4 +1,4 @@
-$f = 'c:\Users\adamm\dev\nervosys\web\Hyperlight\spine-agentic\src\lib.rs'
+$f = 'c:\Users\adamm\dev\nervosys\web\Hyperlight\src\spine-agentic\src\lib.rs'
 $c = [System.IO.File]::ReadAllText($f)
 
 # 1. Add signing_key field to AgentDID struct

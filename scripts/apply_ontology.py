@@ -5,7 +5,7 @@ Integrates with AgentRegistry, KnowledgeGraph, and marketplace.
 """
 import re
 
-AGENTIC = "spine-agentic/src/lib.rs"
+AGENTIC = "src/spine-agentic/src/lib.rs"
 
 with open(AGENTIC, "r", encoding="utf-8") as f:
     src = f.read()

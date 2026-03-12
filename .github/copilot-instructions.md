@@ -142,7 +142,7 @@
 - [x] **Fuzz testing**: 5 cargo-fuzz targets for parser HTML, latent vectors, frame decode, message deser, frame headers
 - [x] **Integration test harness**: 11 multi-session in-process tests (plaintext, encrypted, chameleon, concurrent, stress)
 - [x] **Coverage tracking**: scripts/coverage.sh with HTML/JSON/LCOV modes via cargo-llvm-cov
-- [x] **Deterministic replay**: TraceLog, ReplayVerifier, TraceSummary in spine-protocol/src/replay.rs
+- [x] **Deterministic replay**: TraceLog, ReplayVerifier, TraceSummary in src/spine-protocol/src/replay.rs
 - [x] **Chaos testing**: 13 tests (random disconnects, corrupted headers, truncated messages, rapid reconnect, floods)
 - [x] **Bug fixes from testing**: header_size minimum bound, morphology evolution ordering, bytemuck alignment fallback
 - [x] **321 tests passing**: +72 tests, 0 failures, 0 clippy warnings
@@ -172,7 +172,7 @@
 
 - [x] **TLA+ specification** (`formal/tla/ChameleonProtocol.tla`): Chameleon Protocol state machine with epoch monotonicity, synchronized evolution invariant, morphology abstraction, decoy messages, TLC model checking config
 - [x] **Tamarin prover model** (`formal/tamarin/SpineKeyExchange.spthy`): X3DH + RLWE key exchange with 10 security lemmas (secrecy, PFS, KCI), three security levels, key evolution rules
-- [x] **Kani model checking** (`spine-kernel/src/kani_harnesses.rs`): 15 bounded verification harnesses for unsafe code (allocators, lock-free structures, ring buffers, SIMD)
+- [x] **Kani model checking** (`src/spine-kernel/src/kani_harnesses.rs`): 15 bounded verification harnesses for unsafe code (allocators, lock-free structures, ring buffers, SIMD)
 - [x] **Cryptographic audit** (`formal/audit/CRYPTO_AUDIT.md`): 13 findings (2 critical, 4 high, 4 medium, 3 low) with remediation priorities and third-party audit scope
 - [x] **MISRA compliance** (`formal/misra/MISRA_COMPLIANCE.md`): 16 MISRA C:2012 rules mapped to Rust unsafe, 8 documented deviations with justification and kani verification links
 - [x] **349 tests passing**: 0 new (verification artifacts are external tools), 0 failures, 0 clippy warnings
@@ -296,7 +296,7 @@
 
 - [x] **Ed25519 crypto fix**: Replaced homebrew Ed25519 with `ed25519-dalek` v2; real `SigningKey`/`VerifyingKey` with CSPRNG keygen
 - [x] **AgentDID real signing**: Swapped stub `[0u8; 64]` signatures for actual Ed25519 signing/verification
-- [x] **Dead code removal**: Trimmed `spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−41%)
+- [x] **Dead code removal**: Trimmed `src/spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−41%)
 - [x] **Broken example cleanup**: Deleted 8 obsolete examples, retained 5 working ones
 - [x] **Message type unification**: `From<AgentMessage> ↔ AgentMessageCompact` conversion traits
 - [x] **MeshTransport TCP layer**: Length-prefixed framing with `listen()`, `send_to()`, `gossip()`
@@ -330,10 +330,10 @@
 
 ### Phase 26: Autonomous Agent Runtime ✅
 
-- [x] **Persistent agent lifecycle** (`spine-agentic/src/lifecycle.rs`): AgentState machine (7 states), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow, configurable capacity limits
-- [x] **WASM capability sandboxing** (`spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry
-- [x] **Distributed task scheduler** (`spine-agentic/src/scheduler.rs`): Priority WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement
-- [x] **Agent-to-agent contracts** (`spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
+- [x] **Persistent agent lifecycle** (`src/spine-agentic/src/lifecycle.rs`): AgentState machine (7 states), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow, configurable capacity limits
+- [x] **WASM capability sandboxing** (`src/spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry
+- [x] **Distributed task scheduler** (`src/spine-agentic/src/scheduler.rs`): Priority WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement
+- [x] **Agent-to-agent contracts** (`src/spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
 - [x] **626 tests passing**: +47 tests, 0 failures, 0 Clippy warnings
 
 ### Performance Benchmarks
