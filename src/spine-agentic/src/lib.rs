@@ -54,12 +54,16 @@
 
 use chrono::{DateTime, Utc};
 
+pub mod consensus;
 pub mod contract;
+pub mod federation;
 pub mod identity;
 pub mod lifecycle;
 pub mod mesh;
 pub mod sandbox;
 pub mod scheduler;
+pub mod stigmergy;
+pub mod topology;
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
