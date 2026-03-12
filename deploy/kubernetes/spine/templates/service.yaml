@@ -1,0 +1,54 @@
+# -- Headless Service for StatefulSet DNS resolution
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "spine.core.headlessServiceName" . }}
+  labels:
+    {{- include "spine.core.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "spine.core.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: spine
+      port: {{ .Values.core.ports.spine }}
+      targetPort: spine
+      protocol: TCP
+    - name: websocket
+      port: {{ .Values.core.ports.websocket }}
+      targetPort: websocket
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.core.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP
+---
+# -- Client-facing Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "spine.fullname" . }}
+  labels:
+    {{- include "spine.core.labels" . | nindent 4 }}
+  {{- with .Values.core.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.core.service.type }}
+  selector:
+    {{- include "spine.core.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: spine
+      port: {{ .Values.core.ports.spine }}
+      targetPort: spine
+      protocol: TCP
+    - name: websocket
+      port: {{ .Values.core.ports.websocket }}
+      targetPort: websocket
+      protocol: TCP
+    - name: metrics
+      port: {{ .Values.core.ports.metrics }}
+      targetPort: metrics
+      protocol: TCP

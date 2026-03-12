@@ -54,8 +54,12 @@
 
 use chrono::{DateTime, Utc};
 
+pub mod contract;
 pub mod identity;
+pub mod lifecycle;
 pub mod mesh;
+pub mod sandbox;
+pub mod scheduler;
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};

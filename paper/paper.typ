@@ -168,7 +168,7 @@ SPINE comprises 17 specialized Rust crates organized into seven layers:
     └─────────────────────────────────┘
     ```
   ],
-  caption: [SPINE architecture layers (25 crates)],
+  caption: [SPINE architecture layers (27 crates)],
 )
 
 == Three Foundational Principles
@@ -1739,12 +1739,12 @@ Four optimization phases were applied systematically:
 3. *Kernel primitives*: SIMD intrinsics, custom allocators, lock-free ring buffers
 4. *Hot-path elimination*: Buffer reuse, caching, single-pass algorithms, stack allocation
 
-Each phase was validated against the full test suite (561 tests) with 0 regressions and 0 Clippy warnings.
+Each phase was validated against the full test suite (579 tests) with 0 regressions and 0 Clippy warnings.
 
 == Test Coverage
 
-- 415 unit and integration tests
-- 25 crates with full API coverage
+- 579 unit and integration tests
+- 27 crates with full API coverage
 - Criterion benchmarks for all hot paths
 - Property-based testing for protocol correctness
 - 12 dedicated RLWE security tests
@@ -1790,7 +1790,7 @@ We provide a rigorous examination of each SPINE component, validating both theor
     [Human Interaction], [Proven], [2], [Mouse paths, typing delays],
     [Kernel Primitives], [Proven], [32], [SIMD, allocators, ring buffers],
   ),
-  caption: [Validation status by component (561 tests total)],
+  caption: [Validation status by component (579 tests total)],
 )
 
 == Validated Capabilities
@@ -1963,9 +1963,9 @@ SPINE demonstrates that purpose-built AI web infrastructure achieves orders-of-m
 
 == Unified Vision
 
-The 25 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, unified memory provides distributed knowledge, and kernel primitives maximize hardware utilization—all backed by quantum-resistant cryptography.
+The 27 crates work together as a cohesive stack: agents use the SDK to fetch pages, parsers extract semantics, recursive models handle unlimited context, compilers execute programs, protocols evolve through genetic algorithms, transport moves data efficiently, clusters coordinate swarms, unified memory provides distributed knowledge, kernel primitives maximize hardware utilization, and C FFI/Go bindings enable cross-language integration—all backed by quantum-resistant cryptography.
 
-*25 crates. 561 tests. ~68,000 lines of Rust. A headless semantic browser for AI agents.*
+*27 crates. 579 tests. ~70,000 lines of Rust. A headless semantic browser for AI agents.*
 
 The complete implementation is available as open-source code at github.com/nervosys/SPINE.
 

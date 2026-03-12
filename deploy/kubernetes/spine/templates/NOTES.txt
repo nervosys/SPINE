@@ -1,0 +1,43 @@
+SPINE has been deployed!
+
+1. Get the SPINE server address:
+{{- if eq .Values.core.service.type "LoadBalancer" }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to be available.
+  Watch the status:
+    kubectl get svc {{ include "spine.fullname" . }} -n {{ .Release.Namespace }} -w
+
+  export SPINE_HOST=$(kubectl get svc {{ include "spine.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  export SPINE_PORT={{ .Values.core.ports.spine }}
+{{- else if eq .Values.core.service.type "NodePort" }}
+  export SPINE_HOST=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+  export SPINE_PORT=$(kubectl get svc {{ include "spine.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.spec.ports[?(@.name=="spine")].nodePort}')
+{{- else }}
+  kubectl port-forward svc/{{ include "spine.fullname" . }} {{ .Values.core.ports.spine }}:{{ .Values.core.ports.spine }} -n {{ .Release.Namespace }}
+  export SPINE_HOST=127.0.0.1
+  export SPINE_PORT={{ .Values.core.ports.spine }}
+{{- end }}
+
+2. Connect with the SPINE CLI:
+    spine connect $SPINE_HOST:$SPINE_PORT
+
+{{- if .Values.gateway.enabled }}
+
+3. Access the Gateway API:
+  {{- if .Values.gateway.ingress.enabled }}
+  {{- range .Values.gateway.ingress.hosts }}
+    http{{ if $.Values.gateway.ingress.tls }}s{{ end }}://{{ .host }}
+  {{- end }}
+  {{- else }}
+    kubectl port-forward svc/{{ include "spine.fullname" . }}-gateway {{ .Values.gateway.port }}:{{ .Values.gateway.port }} -n {{ .Release.Namespace }}
+    Open http://127.0.0.1:{{ .Values.gateway.port }}/swagger-ui/ for the API explorer
+  {{- end }}
+{{- end }}
+
+4. Check cluster health:
+    kubectl get pods -l "{{ include "spine.selectorLabels" . | replace ": " "=" | replace "\n" "," }}" -n {{ .Release.Namespace }}
+
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+
+5. Prometheus metrics are being scraped via ServiceMonitor.
+   Import the Grafana dashboard from deploy/grafana/spine-dashboard.json.
+{{- end }}

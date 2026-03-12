@@ -1,0 +1,18 @@
+[package]
+name = "spine-ffi"
+version = "1.0.0"
+edition = "2021"
+license.workspace = true
+description = "C FFI bindings for SPINE agentic web stack"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+spine-agent = { path = "../spine-agent" }
+spine-parser = { path = "../spine-parser" }
+spine-compiler = { path = "../spine-compiler" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde_json = "1"
+libc = "0.2"

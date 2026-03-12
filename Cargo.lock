@@ -6635,6 +6635,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "spine-ffi"
+version = "1.0.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "spine-agent",
+ "spine-compiler",
+ "spine-parser",
+ "tokio",
+]
+
+[[package]]
 name = "spine-gateway"
 version = "1.0.0"
 dependencies = [

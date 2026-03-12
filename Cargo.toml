@@ -23,6 +23,7 @@ members = [
     "spine-storage",
     "spine-cache",
     "spine-k8s",
+    "spine-ffi",
 ]
 exclude = ["spine-python", "spine-js"]
 resolver = "2"

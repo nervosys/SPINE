@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **Headless semantic browser with adaptive encryption for AI agents**
-> 25 Rust crates · 561 tests · 0 warnings · Apache 2.0
+> 27 Rust crates · 626 tests · 0 warnings · Apache 2.0
 
 ---
 
@@ -311,16 +311,50 @@
 - [x] **Certificate Transparency**: RFC 6962 SCT parsing and verification, `CtPolicy`/`CtEnforcement` config, trusted log registry (Google/Cloudflare/Let's Encrypt), SCT age/trust validation, `check_certificate()` policy enforcement
 - [x] 561 tests passing (+26 tests: 12 ML-KEM + 15 CT − 1 fix), 0 failures, 0 Clippy warnings
 
+### Phase 25 — Ecosystem Expansion ✅
+
+- [x] **Official Helm chart** (`deploy/kubernetes/spine/`): Production Kubernetes deployment with Chart.yaml, configurable values.yaml, StatefulSet (core), Deployment (gateway), headless + client Services, ConfigMap, ServiceAccount + RBAC, HPA autoscaling, Ingress, PodDisruptionBudget, NetworkPolicy, ServiceMonitor, NOTES.txt
+- [x] **C FFI crate** (`spine-ffi`): `cdylib`/`staticlib` with 16 exported functions — connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, morph, get_capabilities, store/query_knowledge, parse_html, compile_hls, version, free_string; C header in `include/spine.h`; thread-local error handling
+- [x] **Go bindings** (`spine-go`): cgo-based Go package with `Client` type, `UnifiedRepresentation`/`SpineBinary`/`ExecutionResult` structs, offline `ParseHTML`/`CompileHLS`/`Version` functions, 6 Go tests, README with usage examples
+- [x] 579 tests passing (+18 FFI tests), 0 failures, 0 Clippy warnings
+
+### Phase 26 — Autonomous Agent Runtime ✅
+
+- [x] **Persistent agent lifecycle** (`spine-agentic/src/lifecycle.rs`): AgentState machine (Spawning→Running→Suspended→Migrating→Stopped→Terminated→Failed), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow (begin→accept→complete), configurable capacity limits
+- [x] **WASM capability sandboxing** (`spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry for policy management
+- [x] **Distributed task scheduler** (`spine-agentic/src/scheduler.rs`): Priority-based WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement, configurable overload/steal thresholds
+- [x] **Agent-to-agent contracts** (`spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
+- [x] 626 tests passing (+47 tests), 0 failures, 0 Clippy warnings
+
 ---
 
 ## Planned
 
-### Ecosystem Expansion
+### Phase 27: Swarm Intelligence v2
 
-- [ ] Go bindings (cgo + spine-go)
-- [ ] Java/Kotlin bindings (JNI)
-- [ ] Official Helm chart for Kubernetes deployments
+- [ ] Emergent coordination protocols (stigmergy, pheromone-inspired signaling)
+- [ ] Collective decision-making with Byzantine fault tolerance
+- [ ] Adaptive swarm topology (auto-partition, merge, hierarchical clustering)
+- [ ] Cross-swarm federation with trust boundary enforcement
+
+### Phase 28: Observability & Debugging
+
+- [ ] Distributed tracing across mesh hops (OpenTelemetry integration)
+- [ ] Agent replay debugger (deterministic re-execution from trace logs)
+- [ ] Live swarm visualizer (topology, message flow, resource heatmaps)
+- [ ] Anomaly detection on agent behavior (drift, deadlock, livelock)
+
+### Phase 29: Performance & Hardening
+
+- [ ] `#![no_std]` core for embedded/WASM targets
+- [ ] io_uring transport backend (Linux kernel bypass at scale)
+- [ ] Formal verification of mesh routing invariants (TLA+/Kani)
+- [ ] Chaos engineering framework (automated fault injection campaigns)
+
+### Future Ecosystem
+
 - [ ] Browser extension for human-agent hybrid browsing
+- [ ] Embedded runtime for edge/IoT agent deployments
 
 ------
 
@@ -341,7 +375,7 @@
 
 ---
 
-## Workspace (25 crates)
+## Workspace (27 crates)
 
 | Crate             | Purpose                                                         |
 | ----------------- | --------------------------------------------------------------- |
@@ -368,7 +402,14 @@
 | `spine-storage`   | Persistent storage: InMemory, SQLite (WAL), RocksDB (LSM)       |
 | `spine-cache`     | Tiered caching: L1 LRU, L2 file-backed, L3 remote               |
 | `spine-k8s`       | Kubernetes operator: CRD, autoscaler, manifest generators       |
+| `spine-ffi`       | C FFI bindings for Go/Java/Kotlin/etc. language interop         |
 | `spine-python`*   | Python bindings via PyO3 + maturin                              |
 | `spine-js`*       | TypeScript/WASM bindings via wasm-bindgen + wasm-pack           |
 
 \* Excluded from default workspace build (requires Python/wasm32 toolchains)
+
+**Non-Rust packages:**
+
+| Package    | Purpose                         |
+| ---------- | ------------------------------- |
+| `spine-go` | Go bindings via cgo + spine-ffi |

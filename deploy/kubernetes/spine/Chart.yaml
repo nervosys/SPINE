@@ -1,0 +1,20 @@
+apiVersion: v2
+name: spine
+description: SPINE — Headless semantic browser with adaptive encryption for AI agents
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+home: https://github.com/nervosys/SPINE
+sources:
+  - https://github.com/nervosys/SPINE
+maintainers:
+  - name: Nervosys LLC
+    url: https://github.com/nervosys
+keywords:
+  - spine
+  - agentic
+  - ai
+  - semantic-browser
+  - encryption
+  - web-stack
+icon: https://raw.githubusercontent.com/nervosys/SPINE/master/docs/icon.png

@@ -1288,3 +1288,28 @@ enum StreamPayload {
 ## 25. spine-js (excluded from workspace)
 
 **Purpose**: TypeScript/WASM bindings via wasm-bindgen + wasm-pack. Exposes parseHtml(), compileHls().
+
+---
+
+## 26. spine-ffi
+
+**Purpose**: C-compatible foreign function interface for cross-language interop.
+
+**Key Components**:
+
+- **16 Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, morph, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
+- **C Header**: `include/spine.h` with full documentation
+- **Thread-Local Error Handling**: `spine_last_error()` for retrieving error messages
+- **Build Targets**: `cdylib` (.so/.dylib/.dll) and `staticlib` (.a/.lib)
+
+---
+
+## 27. spine-go (non-Rust)
+
+**Purpose**: Go bindings using cgo and the spine-ffi C library.
+
+**Key Components**:
+
+- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, Search, ExecuteHLS, Ping, Morph, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
+- **Offline Functions**: ParseHTML, CompileHLS, Version (no server needed)
+- **Go-Native Types**: UnifiedRepresentation, Element, SpineBinary, ExecutionResult

@@ -649,7 +649,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (25 Crates)
+### The SPINE Stack (27 Crates)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -658,6 +658,7 @@ SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint
 5. **Agent Layer**: `spine-agent` (SDK), `spine-agentic` (swarm intelligence), `spine-cluster` (distributed coordination with Sybil resistance).
 6. **Compatibility Layer**: `spine-human` — legacy web bridge for bot-detection bypass.
 7. **Application Layer**: `spine-browser` — cross-platform GUI browser.
+8. **Bindings Layer**: `spine-ffi` (C FFI), `spine-go` (Go/cgo), `spine-python`* (PyO3), `spine-js`* (WASM).
 
 ### Semantic Extraction Pipeline
 
@@ -1023,7 +1024,7 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 25 crates:
+SPINE includes comprehensive test coverage across all 27 crates:
 
 ```bash
 # Run all tests
@@ -1035,32 +1036,33 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (561 tests)
+### Test Summary (626 tests)
 
-| Crate           | Tests | Description                                          |
-| --------------- | ----- | ---------------------------------------------------- |
-| spine-protocol  | 67    | Chameleon protocol, chaos, integration, property     |
-| spine-transport | 57    | Zero-copy I/O, BBR, connection pooling, property     |
-| spine-crypto    | 52    | RLWE, ML-KEM, Titans predictor, MIRAS, property      |
-| spine-cluster   | 37    | Load balancing, session management, Sybil resistance |
-| spine-kernel    | 35    | SIMD, allocators, atomics, ring buffers              |
-| spine-stream    | 35    | Reactive streams, multiplexing, flow                 |
-| spine-neural    | 19    | VAE, attention, memory variants                      |
-| spine-cache     | 16    | LRU, tiered caching, TTL eviction                    |
-| spine-recursive | 15    | Infinite context, LLM dispatchers                    |
-| spine-k8s       | 13    | CRD generation, autoscaling, manifests               |
-| spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders              |
-| spine-agent     | 11    | SDK API, protocol types, connection handling         |
-| spine-knowledge | 9     | Episodic, semantic, collective memory                |
-| spine-compiler  | 9     | HLS parsing, compilation, optimization               |
-| spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                   |
-| spine-parser    | 8     | HTML parsing, UR extraction, property tests          |
-| spine-core      | 35    | Session orchestration, config, TLS/cert, CT logs     |
-| spine-gateway   | 7     | REST API gateway, health checks                      |
-| spine-agentic   | 4     | Agent creation, knowledge graph                      |
-| spine-wasm      | 28    | HLB → WASM compilation, execution, stack ops         |
-| spine-cli       | 15    | Init scaffolding, config, addr/tag parsing           |
-| spine-human     | 2     | Human interaction patterns                           |
+| Crate           | Tests | Description                                              |
+| --------------- | ----- | -------------------------------------------------------- |
+| spine-agentic   | 103   | Lifecycle, sandbox, scheduler, contracts, ontology, mesh |
+| spine-protocol  | 67    | Chameleon protocol, chaos, integration, property         |
+| spine-transport | 57    | Zero-copy I/O, BBR, connection pooling, property         |
+| spine-crypto    | 52    | RLWE, ML-KEM, Titans predictor, MIRAS, property          |
+| spine-cluster   | 37    | Load balancing, session management, Sybil resistance     |
+| spine-kernel    | 35    | SIMD, allocators, atomics, ring buffers                  |
+| spine-stream    | 35    | Reactive streams, multiplexing, flow                     |
+| spine-core      | 35    | Session orchestration, config, TLS/cert, CT logs         |
+| spine-wasm      | 28    | HLB → WASM compilation, execution, stack ops             |
+| spine-neural    | 19    | VAE, attention, memory variants                          |
+| spine-ffi       | 18    | C FFI null-safety, parse, compile, version               |
+| spine-cache     | 16    | LRU, tiered caching, TTL eviction                        |
+| spine-recursive | 15    | Infinite context, LLM dispatchers                        |
+| spine-cli       | 15    | Init scaffolding, config, addr/tag parsing               |
+| spine-k8s       | 13    | CRD generation, autoscaling, manifests                   |
+| spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders                  |
+| spine-agent     | 11    | SDK API, protocol types, connection handling             |
+| spine-knowledge | 9     | Episodic, semantic, collective memory                    |
+| spine-compiler  | 9     | HLS parsing, compilation, optimization                   |
+| spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                       |
+| spine-parser    | 8     | HTML parsing, UR extraction, property tests              |
+| spine-gateway   | 7     | REST API gateway, health checks                          |
+| spine-human     | 2     | Human interaction patterns                               |
 
 ### Benchmarks
 

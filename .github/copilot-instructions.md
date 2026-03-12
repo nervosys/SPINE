@@ -321,6 +321,21 @@
 - [x] **Certificate Transparency**: RFC 6962 SCT parsing and verification, `CtPolicy`/`CtEnforcement` config, trusted log registry, SCT age/trust validation, policy enforcement
 - [x] **561 tests passing**: +26 tests (12 ML-KEM + 15 CT - 1 fix), 0 failures, 0 Clippy warnings
 
+### Phase 25: Ecosystem Expansion ✅
+
+- [x] **Official Helm chart** (`deploy/kubernetes/spine/`): Production K8s deployment with StatefulSet, Deployment, Services, ConfigMap, RBAC, HPA, Ingress, PDB, NetworkPolicy, ServiceMonitor
+- [x] **C FFI crate** (`spine-ffi`): `cdylib`/`staticlib` with 16 exported functions, C header, thread-local error handling
+- [x] **Go bindings** (`spine-go`): cgo-based Go package with Client, UnifiedRepresentation, SpineBinary types, offline ParseHTML/CompileHLS
+- [x] **579 tests passing**: +18 FFI tests, 0 failures, 0 Clippy warnings
+
+### Phase 26: Autonomous Agent Runtime ✅
+
+- [x] **Persistent agent lifecycle** (`spine-agentic/src/lifecycle.rs`): AgentState machine (7 states), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow, configurable capacity limits
+- [x] **WASM capability sandboxing** (`spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry
+- [x] **Distributed task scheduler** (`spine-agentic/src/scheduler.rs`): Priority WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement
+- [x] **Agent-to-agent contracts** (`spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
+- [x] **626 tests passing**: +47 tests, 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
@@ -336,7 +351,7 @@
 | **SPSC Ring Push/Pop**       | **1.36 ns**      |
 | **RDTSC Read**               | **9.3 ns**       |
 
-### Workspace Structure (25 crates)
+### Workspace Structure (27 crates)
 
 - `spine-kernel`: Ultra-low-level hardware primitives (SIMD, allocators, atomics, ring buffers, RDTSC timing)
 - `spine-core`: Multi-session orchestration engine
@@ -361,5 +376,6 @@
 - `spine-storage`: Persistent storage (InMemory, SQLite WAL, RocksDB LSM)
 - `spine-cache`: Tiered caching (L1 LRU, L2 file-backed, L3 remote)
 - `spine-k8s`: Kubernetes operator CRD, autoscaler, manifest generators
+- `spine-ffi`: C FFI bindings for language interop (Go, Java, etc.)
 - `spine-python`\*: Python bindings via PyO3 + maturin (excluded from default build)
 - `spine-js`\*: TypeScript/WASM bindings via wasm-bindgen + wasm-pack (excluded from default build)

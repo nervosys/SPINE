@@ -1,0 +1,223 @@
+# =============================================================================
+# SPINE Helm Chart — Default Values
+# =============================================================================
+
+# -- Global settings
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Container image
+image:
+  repository: ghcr.io/nervosys/spine
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# =============================================================================
+# SPINE Core (StatefulSet)
+# =============================================================================
+core:
+  # -- Number of SPINE server replicas
+  replicas: 3
+
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # -- Ports
+  ports:
+    spine: 8080
+    websocket: 8081
+    metrics: 9090
+
+  # -- Persistent storage for sessions
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+    mountPath: /app/sessions
+
+  # -- Health check configuration
+  healthCheck:
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  # -- SPINE server configuration (spine.toml)
+  config:
+    server:
+      host: "0.0.0.0"
+      port: 8080
+      metricsPort: 9090
+      maxSessions: 1000
+      idleTimeoutSecs: 300
+    logging:
+      format: json
+      level: info
+
+  # -- Extra environment variables
+  env: {}
+
+  # -- Node selector
+  nodeSelector: {}
+
+  # -- Tolerations
+  tolerations: []
+
+  # -- Pod affinity rules
+  affinity: {}
+
+  # -- Pod annotations
+  podAnnotations: {}
+
+  # -- Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  # -- Container security context
+  securityContext:
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+
+  # -- Service type
+  service:
+    type: ClusterIP
+    annotations: {}
+
+  # -- Update strategy
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+# =============================================================================
+# SPINE Gateway (Deployment)
+# =============================================================================
+gateway:
+  enabled: true
+
+  # -- Number of gateway replicas
+  replicas: 2
+
+  # -- Resource requests and limits
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # -- Gateway port
+  port: 9091
+
+  # -- Service type
+  service:
+    type: ClusterIP
+    annotations: {}
+
+  # -- Ingress configuration
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: spine.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+
+  # -- Pod annotations
+  podAnnotations: {}
+
+  # -- Node selector
+  nodeSelector: {}
+
+  # -- Tolerations
+  tolerations: []
+
+  # -- Affinity
+  affinity: {}
+
+# =============================================================================
+# TLS Configuration
+# =============================================================================
+tls:
+  # -- Enable TLS for SPINE protocol
+  enabled: false
+  # -- Existing secret name containing tls.crt and tls.key
+  existingSecret: ""
+  # -- Enable mutual TLS (client certificate verification)
+  mutualTls: false
+  # -- Auto-generate self-signed certificates (dev/test only)
+  autoGenerate: false
+
+# =============================================================================
+# Autoscaling (HPA)
+# =============================================================================
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  # -- Custom metrics (requires metrics-server or Prometheus adapter)
+  customMetrics: []
+  #   - type: Pods
+  #     pods:
+  #       metric:
+  #         name: spine_sessions_active
+  #       target:
+  #         type: AverageValue
+  #         averageValue: "100"
+
+# =============================================================================
+# Service Account & RBAC
+# =============================================================================
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+# =============================================================================
+# Monitoring
+# =============================================================================
+monitoring:
+  # -- Enable Prometheus ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+  # -- Enable Grafana dashboard ConfigMap
+  grafanaDashboard:
+    enabled: false
+
+# =============================================================================
+# Pod Disruption Budget
+# =============================================================================
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# =============================================================================
+# Network Policy
+# =============================================================================
+networkPolicy:
+  enabled: false

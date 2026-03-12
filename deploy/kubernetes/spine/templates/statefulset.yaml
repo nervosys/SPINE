@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "spine.fullname" . }}
+  labels:
+    {{- include "spine.core.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "spine.core.headlessServiceName" . }}
+  replicas: {{ .Values.core.replicas }}
+  selector:
+    matchLabels:
+      {{- include "spine.core.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: {{ .Values.core.updateStrategy.type }}
+    {{- if eq .Values.core.updateStrategy.type "RollingUpdate" }}
+    rollingUpdate:
+      maxUnavailable: {{ .Values.core.updateStrategy.rollingUpdate.maxUnavailable }}
+    {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "spine.core.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.core.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "spine.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.core.podSecurityContext | nindent 8 }}
+      containers:
+        - name: spine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["spine-core"]
+          securityContext:
+            {{- toYaml .Values.core.securityContext | nindent 12 }}
+          ports:
+            - name: spine
+              containerPort: {{ .Values.core.ports.spine }}
+              protocol: TCP
+            - name: websocket
+              containerPort: {{ .Values.core.ports.websocket }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.core.ports.metrics }}
+              protocol: TCP
+          env:
+            - name: SPINE_SERVER_HOST
+              value: "0.0.0.0"
+            - name: SPINE_SERVER_PORT
+              value: {{ .Values.core.ports.spine | quote }}
+            - name: SPINE_SERVER_METRICS_PORT
+              value: {{ .Values.core.ports.metrics | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.core.config.logging.level }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- range $key, $val := .Values.core.env }}
+            - name: {{ $key }}
+              value: {{ $val | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            initialDelaySeconds: {{ .Values.core.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.core.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.core.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.core.healthCheck.failureThreshold }}
+            successThreshold: {{ .Values.core.healthCheck.successThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: {{ .Values.core.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.core.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.core.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.core.healthCheck.failureThreshold }}
+            successThreshold: {{ .Values.core.healthCheck.successThreshold }}
+          resources:
+            {{- toYaml .Values.core.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/spine.toml
+              subPath: spine.toml
+              readOnly: true
+            {{- if .Values.core.persistence.enabled }}
+            - name: sessions
+              mountPath: {{ .Values.core.persistence.mountPath }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /app/certs
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "spine.fullname" . }}-config
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret | default (printf "%s-tls" (include "spine.fullname" .)) }}
+        {{- end }}
+      {{- with .Values.core.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.core.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.core.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.core.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: sessions
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.core.persistence.storageClass }}
+        storageClassName: {{ .Values.core.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.core.persistence.size }}
+  {{- end }}

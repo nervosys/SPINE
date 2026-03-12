@@ -34,19 +34,19 @@
 
 ### Infrastructure
 
-| Crate             | Type    | Description                                                              |
-| ----------------- | ------- | ------------------------------------------------------------------------ |
-| `spine-transport` | Library | Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system   |
-| `spine-stream`    | Library | Reactive streams, multiplexing, flow control, priority queuing           |
+| Crate             | Type    | Description                                                             |
+| ----------------- | ------- | ----------------------------------------------------------------------- |
+| `spine-transport` | Library | Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system  |
+| `spine-stream`    | Library | Reactive streams, multiplexing, flow control, priority queuing          |
 | `spine-crypto`    | Library | Titans prediction, quantum cryptography, X3DH, MIRAS memory             |
-| `spine-neural`    | Library | VAE encoder, Titans memory, attention, learned projections               |
+| `spine-neural`    | Library | VAE encoder, Titans memory, attention, learned projections              |
 | `spine-cluster`   | Library | Distributed coordination, Raft consensus, Sybil resistance, marketplace |
 | `spine-wasm`      | Library | WebAssembly runtime (wasmtime) for HLS execution                        |
-| `spine-human`     | Library | Legacy web bridge — realistic mouse/keyboard simulation                  |
-| `spine-recursive` | Library | Recursive Language Model for infinite context (10M+ chars)               |
+| `spine-human`     | Library | Legacy web bridge — realistic mouse/keyboard simulation                 |
+| `spine-recursive` | Library | Recursive Language Model for infinite context (10M+ chars)              |
 | `spine-gpu`       | Library | GPU compute abstraction (CPU SIMD fallback, wgpu Vulkan/Metal/DX12)     |
 | `spine-storage`   | Library | Persistent storage (InMemory, SQLite WAL, RocksDB LSM)                  |
-| `spine-cache`     | Library | Tiered caching (L1 LRU, L2 file-backed, L3 remote)                     |
+| `spine-cache`     | Library | Tiered caching (L1 LRU, L2 file-backed, L3 remote)                      |
 | `spine-k8s`       | Library | Kubernetes operator CRD, autoscaler, manifest generators                |
 
 ### Primitives
@@ -55,12 +55,14 @@
 | -------------- | ------- | -------------------------------------------------------------------------- |
 | `spine-kernel` | Library | SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC |
 
-### Bindings (excluded from default build)
+### Bindings
 
-| Crate          | Type    | Description                                           |
-| -------------- | ------- | ----------------------------------------------------- |
-| `spine-python` | Library | Python bindings via PyO3 + maturin                    |
-| `spine-js`     | Library | TypeScript/WASM bindings via wasm-bindgen + wasm-pack |
+| Crate          | Type    | Description                                            |
+| -------------- | ------- | ------------------------------------------------------ |
+| `spine-ffi`    | Library | C FFI bindings (cdylib/staticlib) for language interop |
+| `spine-python` | Library | Python bindings via PyO3 + maturin (excluded)          |
+| `spine-js`     | Library | TypeScript/WASM bindings via wasm-bindgen (excluded)   |
+| `spine-go`     | Go pkg  | Go bindings via cgo + spine-ffi (non-Rust)             |
 
 ## Dependency Graph (simplified)
 

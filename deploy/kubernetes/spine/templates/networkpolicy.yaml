@@ -1,0 +1,61 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "spine.fullname" . }}
+  labels:
+    {{- include "spine.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "spine.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow intra-cluster SPINE communication
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "spine.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.core.ports.spine }}
+          protocol: TCP
+        - port: {{ .Values.core.ports.websocket }}
+          protocol: TCP
+        - port: {{ .Values.core.ports.metrics }}
+          protocol: TCP
+    # Allow gateway to reach core
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "spine.gateway.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: {{ .Values.core.ports.spine }}
+          protocol: TCP
+    # Allow external access to gateway
+    - from: []
+      ports:
+        - port: {{ .Values.gateway.port }}
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow intra-cluster
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "spine.selectorLabels" . | nindent 14 }}
+    # Allow external HTTPS (for web fetching)
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+{{- end }}

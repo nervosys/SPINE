@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "spine.fullname" . }}-config
+  labels:
+    {{- include "spine.core.labels" . | nindent 4 }}
+data:
+  spine.toml: |
+    [server]
+    host = "{{ .Values.core.config.server.host }}"
+    port = {{ .Values.core.config.server.port }}
+    metrics_port = {{ .Values.core.config.server.metricsPort }}
+    max_sessions = {{ .Values.core.config.server.maxSessions }}
+    idle_timeout_secs = {{ .Values.core.config.server.idleTimeoutSecs }}
+
+    [logging]
+    format = "{{ .Values.core.config.logging.format }}"
+    level = "{{ .Values.core.config.logging.level }}"
+
+    [tls]
+    enabled = {{ .Values.tls.enabled }}
+    {{- if .Values.tls.enabled }}
+    cert_path = "/app/certs/tls.crt"
+    key_path = "/app/certs/tls.key"
+    mutual_tls = {{ .Values.tls.mutualTls }}
+    {{- end }}
