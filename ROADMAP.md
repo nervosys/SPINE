@@ -339,10 +339,10 @@
 
 ### Phase 28: Observability & Debugging
 
-- [ ] Distributed tracing across mesh hops (OpenTelemetry integration)
-- [ ] Agent replay debugger (deterministic re-execution from trace logs)
-- [ ] Live swarm visualizer (topology, message flow, resource heatmaps)
-- [ ] Anomaly detection on agent behavior (drift, deadlock, livelock)
+- [x] Distributed tracing across mesh hops (OpenTelemetry integration)
+- [x] Agent replay debugger (deterministic re-execution from trace logs)
+- [x] Live swarm visualizer (topology, message flow, resource heatmaps)
+- [x] Anomaly detection on agent behavior (drift, deadlock, livelock)
 
 ### Phase 29: Performance & Hardening
 

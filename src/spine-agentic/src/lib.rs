@@ -54,16 +54,20 @@
 
 use chrono::{DateTime, Utc};
 
+pub mod anomaly;
 pub mod consensus;
 pub mod contract;
 pub mod federation;
 pub mod identity;
 pub mod lifecycle;
 pub mod mesh;
+pub mod replay;
 pub mod sandbox;
 pub mod scheduler;
 pub mod stigmergy;
 pub mod topology;
+pub mod tracing;
+pub mod visualizer;
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};

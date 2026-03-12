@@ -344,6 +344,14 @@
 - [x] **Cross-swarm federation** (`src/spine-agentic/src/federation.rs`): Trust boundary enforcement with 5-tier trust (Untrusted→Integrated), 8 permission types, policy conditions (time window/rate limit/capability/concurrency), request lifecycle, capability discovery, SHA-256 request integrity
 - [x] **668 tests passing**: +42 tests, 0 failures, 0 Clippy warnings
 
+### Phase 28: Observability & Debugging ✅
+
+- [x] **Distributed tracing** (`src/spine-agentic/src/tracing.rs`): AgentSpan with trace_id/span_id/parent hierarchy, SpanStatus (InProgress/Ok/Error), SpanEvent with timestamps, TraceContext wire propagation via header serialization, TraceCollector with DashMap storage and capacity eviction, trace queries (root_span, max_hops, slow_spans, error_spans, agent_spans)
+- [x] **Agent replay debugger** (`src/spine-agentic/src/replay.rs`): ReplayLog with SHA-256 integrity, ReplayEntry with 7 kinds (MessageReceived/Sent, Decision, StateTransition, TaskAction, ExternalEvent, Error), ReplayDebugger with breakpoints, state verification callbacks, divergence detection between logs, step/continue/run-to-end execution
+- [x] **Swarm visualizer data** (`src/spine-agentic/src/visualizer.rs`): SwarmSnapshot with nodes/edges/clusters/message-flows/resource-heatmap, NodeSnapshot with state/load/capabilities, EdgeSnapshot with latency/bandwidth, ClusterSnapshot, MessageFlow, ResourceCell, SnapshotRecorder with time-series extraction for load and message volume
+- [x] **Anomaly detection** (`src/spine-agentic/src/anomaly.rs`): AnomalyDetector with sliding-window MetricSamples, 4 detectors: spike (σ-based), drift (linear regression on throughput), livelock (low progress + non-zero throughput), deadlock (zero throughput + high queue depth), configurable thresholds, severity classification, evidence collection
+- [x] **708 tests passing**: +40 tests (12 tracing + 9 replay + 11 visualizer + 11 anomaly - 3 overlap), 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |
