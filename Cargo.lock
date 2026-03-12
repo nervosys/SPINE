@@ -6765,6 +6765,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "spine-nostd"
+version = "1.0.0"
+
+[[package]]
 name = "spine-parser"
 version = "1.0.0"
 dependencies = [

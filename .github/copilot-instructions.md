@@ -352,6 +352,14 @@
 - [x] **Anomaly detection** (`src/spine-agentic/src/anomaly.rs`): AnomalyDetector with sliding-window MetricSamples, 4 detectors: spike (σ-based), drift (linear regression on throughput), livelock (low progress + non-zero throughput), deadlock (zero throughput + high queue depth), configurable thresholds, severity classification, evidence collection
 - [x] **708 tests passing**: +40 tests (12 tracing + 9 replay + 11 visualizer + 11 anomaly - 3 overlap), 0 failures, 0 Clippy warnings
 
+### Phase 29: Performance & Hardening ✅
+
+- [x] **`#![no_std]` core** (`src/spine-nostd/`): New crate (crate #28) with `#![no_std]`, Q8.8 fixed-point `LatentVectorFixed<N>`, `AgentIdBytes` (16-byte UUID), `FrameHeader` (12-byte wire format), `encode_frame_header`/`decode_frame_header` codec, Adler-32 checksums, FNV-1a 32/64-bit hashing, fixed-point `dot_product`/`cosine_similarity`/`softmax`/`isqrt`, zero-allocation design
+- [x] **io_uring transport backend** (`src/spine-transport/src/uring_backend.rs`): `UringBackend` wrapping `UringRing` with per-connection state tracking, batched `submit_send`/`submit_recv`, `process_completions` with success/error callbacks, `UringBackendStats` (AtomicU64 counters), feature-gated `#[cfg(all(target_os = "linux", feature = "io-uring"))]`
+- [x] **Formal verification of mesh routing** (`formal/tla/MeshRouting.tla`): TLA+ specification modeling MeshNode routing tables, multi-hop message delivery, gossip peer discovery, TTL-based forwarding; 7 invariants (TTLMonotonicity, DeduplicationInvariant, PathBounded, NoRoutingLoops, ValidRoutes, SelfRouteZero, DeliveryCorrectness); 2 temporal properties (EventualResolution, GossipConvergence); model checking config (`MeshRouting_MC.tla`)
+- [x] **Chaos engineering framework** (`src/spine-agentic/src/chaos.rs`): 10 `FaultType` variants (MessageDrop/Delay/Corruption, AgentCrash/Hang, NetworkPartition, ResourceExhaustion, ClockSkew, MessageDuplicate, BandwidthThrottle), `ChaosScenario` with SHA-256 integrity verification, 4 predefined scenarios (rolling_crashes, network_split, gradual_degradation, combined_faults), `FaultInjector` with activation/expiry/audit log, `CampaignRunner` with anomaly detector integration and per-step verdict evaluation
+- [x] **760 tests passing**: +52 tests (30 spine-nostd + 20 chaos + 2 doc), 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |

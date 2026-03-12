@@ -55,6 +55,7 @@
 use chrono::{DateTime, Utc};
 
 pub mod anomaly;
+pub mod chaos;
 pub mod consensus;
 pub mod contract;
 pub mod federation;

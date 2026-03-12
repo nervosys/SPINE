@@ -1,0 +1,15 @@
+[package]
+name = "spine-nostd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "no_std core primitives for SPINE on embedded/WASM targets"
+
+[features]
+default = []
+alloc = []
+
+[dependencies]
+
+[dev-dependencies]

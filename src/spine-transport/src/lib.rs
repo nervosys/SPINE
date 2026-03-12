@@ -51,6 +51,9 @@ pub mod websocket;
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
 pub mod uring;
 
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+pub mod uring_backend;
+
 pub use buffer::*;
 pub use coalesce::*;
 pub use congestion::*;

@@ -346,10 +346,10 @@
 
 ### Phase 29: Performance & Hardening
 
-- [ ] `#![no_std]` core for embedded/WASM targets
-- [ ] io_uring transport backend (Linux kernel bypass at scale)
-- [ ] Formal verification of mesh routing invariants (TLA+/Kani)
-- [ ] Chaos engineering framework (automated fault injection campaigns)
+- [x] `#![no_std]` core for embedded/WASM targets (spine-nostd crate: Q8.8 fixed-point, FNV hashing, frame codec)
+- [x] io_uring transport backend (Linux kernel bypass at scale, UringBackend with batched I/O)
+- [x] Formal verification of mesh routing invariants (TLA+ spec: TTL monotonicity, deduplication, no-loop, convergence)
+- [x] Chaos engineering framework (FaultInjector, ChaosScenario, CampaignRunner with 10 fault types)
 
 ### Future Ecosystem
 
