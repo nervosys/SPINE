@@ -3404,6 +3404,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdd7bddefd0a8833b88a4b68f90dae22c7450d11b354198baee3874fd811b344"
+dependencies = [
+ "bitflags 2.10.0",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6735,7 +6746,7 @@ dependencies = [
  "criterion",
  "crossbeam-queue",
  "crossbeam-utils",
- "io-uring",
+ "io-uring 0.7.11",
  "libc",
  "memmap2",
  "parking_lot",
@@ -6905,7 +6916,7 @@ dependencies = [
  "crossbeam-queue",
  "dashmap 5.5.3",
  "futures",
- "io-uring",
+ "io-uring 0.7.11",
  "log",
  "lz4_flex",
  "memmap2",
@@ -7389,7 +7400,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "748482e3e13584a34664a710168ad5068e8cb1d968aa4ffa887e83ca6dd27967"
 dependencies = [
  "futures-util",
- "io-uring",
+ "io-uring 0.6.4",
  "libc",
  "slab",
  "socket2 0.4.10",
