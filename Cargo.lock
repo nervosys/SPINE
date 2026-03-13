@@ -1721,19 +1721,6 @@ dependencies = [
 
 [[package]]
 name = "dashmap"
-version = "5.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "978747c1d849a7d2ee5e8adc0159961c48fb7e5db2f06af6723b80123bb53856"
-dependencies = [
- "cfg-if",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
-name = "dashmap"
 version = "6.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
@@ -6464,7 +6451,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "criterion",
- "dashmap 5.5.3",
+ "dashmap",
  "ed25519-dalek",
  "futures",
  "log",
@@ -6549,7 +6536,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "argon2",
- "dashmap 5.5.3",
+ "dashmap",
  "log",
  "rand 0.8.5",
  "serde",
@@ -6582,7 +6569,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.6.20",
- "dashmap 6.1.0",
+ "dashmap",
  "env_logger",
  "lazy_static",
  "log",
@@ -6662,7 +6649,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
- "dashmap 5.5.3",
+ "dashmap",
  "env_logger",
  "log",
  "serde",
@@ -6750,7 +6737,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
- "dashmap 5.5.3",
+ "dashmap",
  "serde",
  "serde_json",
  "sha2",
@@ -6833,7 +6820,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "criterion",
- "dashmap 5.5.3",
+ "dashmap",
  "rand 0.8.5",
  "regex",
  "reqwest",
@@ -6872,7 +6859,7 @@ dependencies = [
  "crc32fast",
  "criterion",
  "crossbeam-channel",
- "dashmap 5.5.3",
+ "dashmap",
  "futures",
  "lz4_flex",
  "parking_lot",
@@ -6903,7 +6890,7 @@ dependencies = [
  "criterion",
  "crossbeam-channel",
  "crossbeam-queue",
- "dashmap 5.5.3",
+ "dashmap",
  "futures",
  "io-uring",
  "log",
