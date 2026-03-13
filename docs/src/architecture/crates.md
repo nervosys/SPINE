@@ -1,6 +1,6 @@
 # Crate Map
 
-## Workspace Crates (25 total)
+## Workspace Crates (26 total)
 
 ### User-Facing
 
@@ -51,9 +51,11 @@
 
 ### Primitives
 
-| Crate          | Type    | Description                                                                |
-| -------------- | ------- | -------------------------------------------------------------------------- |
-| `spine-kernel` | Library | SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC |
+| Crate            | Type    | Description                                                                |
+| ---------------- | ------- | -------------------------------------------------------------------------- |
+| `spine-kernel`   | Library | SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC |
+| `spine-nostd`    | Library | `#![no_std]` core primitives (Q8.8 fixed-point, FNV hashing, frame codec)  |
+| `spine-embedded` | Library | Minimal agent runtime for embedded/IoT targets                             |
 
 ### Bindings
 

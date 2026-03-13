@@ -385,6 +385,17 @@
 - [x] **Criterion benchmarks**: Protocol hot-path performance baselines established
 - [x] **816 tests passing**: +19 ontology vocab tests, 0 failures, 0 Clippy warnings
 
+
+### Phase 37: Structured Data Extraction $([char]0x2714)
+
+- [x] **ExtractionSchema**: Declarative schema with CSS selectors, field types, transforms
+- [x] **SchemaRegistry**: Multi-schema registration and extraction
+- [x] **FieldType system**: Text, Integer, Float, Boolean, Url, List, nested Record
+- [x] **Transform pipeline**: Trim, Lowercase, Uppercase, RegexCapture
+- [x] **Attribute extraction**: Element attributes (href, src, data-*) or text content
+- [x] **Nested records**: Recursive sub-document extraction via Record type
+- [x] **915 tests passing**: +18 extraction tests, 0 failures, 0 Clippy warnings
+
 ### Performance Benchmarks
 
 | Component                    | Throughput       |

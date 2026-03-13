@@ -404,6 +404,19 @@
 - [x] **Criterion benchmarks**: Performance baselines established for protocol hot paths
 - [x] 816 tests passing across 28 crates, 0 failures, 0 Clippy warnings
 
+
+### Phase 37: Structured Data Extraction
+
+- [x] **ExtractionSchema**: Declarative schema definition with CSS selectors, field types, and transforms
+- [x] **SchemaRegistry**: Register and manage multiple extraction schemas
+- [x] **FieldType system**: Text, Integer, Float, Boolean, Url, List, nested Record types
+- [x] **Transform pipeline**: Trim, Lowercase, Uppercase, RegexCapture — applied in sequence
+- [x] **Attribute extraction**: Extract element attributes (href, src, data-*) or text content
+- [x] **Nested records**: Recursive extraction of sub-documents via Record field type
+- [x] **Validation**: Required field enforcement, type coercion errors, warnings for optional misses
+- [x] **Serde roundtrip**: Full JSON serialization/deserialization for schemas and extracted data
+- [x] 915 tests passing across 28 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks

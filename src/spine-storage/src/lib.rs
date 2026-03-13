@@ -780,4 +780,144 @@ mod tests {
         backend.put("test", b"k", b"v").unwrap();
         assert_eq!(backend.get("test", b"k").unwrap(), Some(b"v".to_vec()));
     }
+
+    #[test]
+    fn test_put_overwrites_value() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns", b"key", b"value1").unwrap();
+        backend.put("ns", b"key", b"value2").unwrap();
+        assert_eq!(backend.get("ns", b"key").unwrap(), Some(b"value2".to_vec()));
+    }
+
+    #[test]
+    fn test_delete_nonexistent_is_noop() {
+        let backend = InMemoryBackend::new();
+        let result = backend.delete("ns", b"missing");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_scan_empty_namespace() {
+        let backend = InMemoryBackend::new();
+        let results = backend.scan("empty_ns", Some(b"a")).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_scan_no_prefix_returns_all() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns", b"a1", b"v1").unwrap();
+        backend.put("ns", b"b1", b"v2").unwrap();
+        let results = backend.scan("ns", None).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_prefix_filtering() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns", b"apple", b"v1").unwrap();
+        backend.put("ns", b"apricot", b"v2").unwrap();
+        backend.put("ns", b"banana", b"v3").unwrap();
+        let results = backend.scan("ns", Some(b"ap")).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_count_empty_namespace() {
+        let backend = InMemoryBackend::new();
+        assert_eq!(backend.count("empty").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_exists_returns_false_for_missing() {
+        let backend = InMemoryBackend::new();
+        assert!(!backend.exists("ns", b"missing").unwrap());
+    }
+
+    #[test]
+    fn test_exists_returns_true_after_put() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns", b"key", b"val").unwrap();
+        assert!(backend.exists("ns", b"key").unwrap());
+    }
+
+    #[test]
+    fn test_clear_and_reuse_namespace() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns", b"k1", b"v1").unwrap();
+        backend.put("ns", b"k2", b"v2").unwrap();
+        backend.clear("ns").unwrap();
+        assert_eq!(backend.count("ns").unwrap(), 0);
+        // Can still put after clear
+        backend.put("ns", b"k3", b"v3").unwrap();
+        assert_eq!(backend.count("ns").unwrap(), 1);
+    }
+
+    #[test]
+    fn test_typed_storage_all() {
+        let backend = InMemoryBackend::new();
+        let store = TypedStorage::new(backend, "typed");
+
+        #[derive(Serialize, Deserialize, Debug, PartialEq)]
+        struct Item { value: i32 }
+
+        store.put("a", &Item { value: 1 }).unwrap();
+        store.put("b", &Item { value: 2 }).unwrap();
+        store.put("c", &Item { value: 3 }).unwrap();
+
+        let all: Vec<(String, Item)> = store.all().unwrap();
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_typed_storage_get_nonexistent() {
+        let backend = InMemoryBackend::new();
+        let store = TypedStorage::new(backend, "typed");
+
+        let result: Option<String> = store.get("missing").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_batch_put_empty() {
+        let backend = InMemoryBackend::new();
+        let entries: Vec<(&[u8], &[u8])> = vec![];
+        backend.batch_put("ns", &entries).unwrap();
+        assert_eq!(backend.count("ns").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_keys_returns_all_keys() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns", b"alpha", b"v").unwrap();
+        backend.put("ns", b"beta", b"v").unwrap();
+        backend.put("ns", b"gamma", b"v").unwrap();
+        let keys = backend.keys("ns").unwrap();
+        assert_eq!(keys.len(), 3);
+    }
+
+    #[test]
+    fn test_storage_config_sqlite() {
+        let config = StorageConfig {
+            engine: StorageEngine::Sqlite,
+            path: Some("test.db".into()),
+        };
+        assert_eq!(config.engine, StorageEngine::Sqlite);
+        assert_eq!(config.path.unwrap(), "test.db");
+    }
+
+    #[test]
+    fn test_multiple_namespaces_isolated() {
+        let backend = InMemoryBackend::new();
+        backend.put("ns1", b"key", b"val1").unwrap();
+        backend.put("ns2", b"key", b"val2").unwrap();
+        backend.put("ns3", b"key", b"val3").unwrap();
+        assert_eq!(backend.count("ns1").unwrap(), 1);
+        assert_eq!(backend.count("ns2").unwrap(), 1);
+        assert_eq!(backend.count("ns3").unwrap(), 1);
+        backend.clear("ns2").unwrap();
+        assert_eq!(backend.get("ns1", b"key").unwrap(), Some(b"val1".to_vec()));
+        assert!(backend.get("ns2", b"key").unwrap().is_none());
+        assert_eq!(backend.get("ns3", b"key").unwrap(), Some(b"val3".to_vec()));
+    }
 }

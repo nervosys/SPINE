@@ -3,7 +3,6 @@ title = "SPINE Documentation"
 authors = ["Nervosys LLC"]
 description = "Documentation for the SPINE agentic web stack"
 language = "en"
-multilingual = false
 src = "src"
 
 [build]

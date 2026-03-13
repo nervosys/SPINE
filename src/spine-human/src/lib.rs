@@ -535,4 +535,204 @@ mod tests {
         let click = engine.simulate_click_duration();
         assert!(click.as_millis() >= 50 && click.as_millis() <= 150);
     }
+
+    #[test]
+    fn test_engine_custom_params() {
+        let engine = HumanInteractionEngine::new(0.5, 120, 500);
+        assert_eq!(engine.jitter_factor, 0.5);
+        assert_eq!(engine.typing_speed_wpm, 120);
+        assert_eq!(engine.reaction_time_ms, 500);
+    }
+
+    #[test]
+    fn test_mouse_path_single_step() {
+        let engine = HumanInteractionEngine::default();
+        let path = engine.generate_mouse_path((10.0, 20.0), (50.0, 60.0), 1);
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], (10.0, 20.0));
+        assert_eq!(path[1], (50.0, 60.0));
+    }
+
+    #[test]
+    fn test_mouse_path_zero_jitter() {
+        let engine = HumanInteractionEngine::new(0.0, 60, 250);
+        let path = engine.generate_mouse_path((0.0, 0.0), (100.0, 0.0), 5);
+        // With zero jitter, intermediate points are on the line
+        for (i, &(x, y)) in path.iter().enumerate() {
+            let expected_x = i as f32 * 20.0;
+            assert!((x - expected_x).abs() < 0.01, "x={x} expected={expected_x}");
+            assert!((y - 0.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_typing_delays_empty_string() {
+        let engine = HumanInteractionEngine::default();
+        let delays = engine.generate_typing_delays("");
+        assert!(delays.is_empty());
+    }
+
+    #[test]
+    fn test_typing_delays_count_matches_chars() {
+        let engine = HumanInteractionEngine::default();
+        let text = "Hello, World! 123";
+        let delays = engine.generate_typing_delays(text);
+        assert_eq!(delays.len(), text.len());
+    }
+
+    #[test]
+    fn test_engine_serde_roundtrip() {
+        let engine = HumanInteractionEngine::new(0.2, 80, 300);
+        let json = serde_json::to_string(&engine).unwrap();
+        let restored: HumanInteractionEngine = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.jitter_factor, 0.2);
+        assert_eq!(restored.typing_speed_wpm, 80);
+        assert_eq!(restored.reaction_time_ms, 300);
+    }
+
+    #[test]
+    fn test_map_tag_headings() {
+        for tag in &["h1", "h2", "h3", "h4", "h5", "h6"] {
+            assert_eq!(HumanTranspiler::map_tag(tag), "Heading");
+        }
+    }
+
+    #[test]
+    fn test_map_tag_semantic_elements() {
+        assert_eq!(HumanTranspiler::map_tag("nav"), "Navigation");
+        assert_eq!(HumanTranspiler::map_tag("footer"), "Footer");
+        assert_eq!(HumanTranspiler::map_tag("header"), "Header");
+        assert_eq!(HumanTranspiler::map_tag("main"), "MainContent");
+        assert_eq!(HumanTranspiler::map_tag("article"), "Article");
+        assert_eq!(HumanTranspiler::map_tag("section"), "Section");
+    }
+
+    #[test]
+    fn test_map_tag_form_elements() {
+        assert_eq!(HumanTranspiler::map_tag("form"), "Form");
+        assert_eq!(HumanTranspiler::map_tag("input"), "Input");
+        assert_eq!(HumanTranspiler::map_tag("button"), "Button");
+        assert_eq!(HumanTranspiler::map_tag("label"), "Label");
+    }
+
+    #[test]
+    fn test_map_tag_unknown_capitalizes() {
+        assert_eq!(HumanTranspiler::map_tag("custom"), "Custom");
+        assert_eq!(HumanTranspiler::map_tag("div"), "Div");
+        assert_eq!(HumanTranspiler::map_tag("span"), "Span");
+    }
+
+    #[test]
+    fn test_map_tag_empty() {
+        assert_eq!(HumanTranspiler::map_tag(""), "Element");
+    }
+
+    #[test]
+    fn test_transpile_with_css_and_js() {
+        let html = "<body><h1>Test</h1></body>";
+        let css = "body { color: red; }";
+        let js = "console.log('hi');";
+        let result = HumanTranspiler::transpile(html, css, js);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_transpile_with_form() {
+        let html = r#"<body><form><input type="text" name="q"><button>Search</button></form></body>"#;
+        let result = HumanTranspiler::transpile(html, "", "");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_reasoning_engine_search_actions() {
+        let engine = ReasoningEngine::new();
+        let ur = spine_parser::parse_html(
+            r#"<body><input type="search" id="q" placeholder="Search"><button>Search</button></body>"#,
+        ).unwrap();
+        let actions = engine.suggest_actions(&ur);
+        assert!(!actions.is_empty());
+        // Should have InputSearch action
+        assert!(actions.iter().any(|a| a.action_type == "InputSearch"));
+        assert!(actions.iter().any(|a| a.action_type == "Search"));
+        // Sorted by confidence descending
+        for w in actions.windows(2) {
+            assert!(w[0].confidence >= w[1].confidence);
+        }
+    }
+
+    #[test]
+    fn test_reasoning_engine_login_actions() {
+        let engine = ReasoningEngine::new();
+        let ur = spine_parser::parse_html(
+            r#"<body><a href="/login">Sign In</a></body>"#,
+        ).unwrap();
+        let actions = engine.suggest_actions(&ur);
+        assert!(actions.iter().any(|a| a.action_type == "Authenticate"));
+    }
+
+    #[test]
+    fn test_reasoning_engine_no_actions() {
+        let engine = ReasoningEngine::new();
+        let ur = spine_parser::parse_html("<body><p>Plain text</p></body>").unwrap();
+        let actions = engine.suggest_actions(&ur);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_create_plan_search_goal() {
+        let engine = ReasoningEngine::new();
+        let ur = spine_parser::parse_html(
+            r#"<body><input type="search" id="q" placeholder="Search"><button>Search</button></body>"#,
+        ).unwrap();
+        let plan = engine.create_plan("search for cats", &ur);
+        assert_eq!(plan.goal, "search for cats");
+        assert!(!plan.steps.is_empty());
+        assert!(plan.estimated_success > 0.0);
+    }
+
+    #[test]
+    fn test_create_plan_login_goal() {
+        let engine = ReasoningEngine::new();
+        let ur = spine_parser::parse_html(
+            r#"<body><button>Login</button></body>"#,
+        ).unwrap();
+        let plan = engine.create_plan("login to site", &ur);
+        assert!(!plan.steps.is_empty());
+    }
+
+    #[test]
+    fn test_create_plan_empty_goal() {
+        let engine = ReasoningEngine::new();
+        let ur = spine_parser::parse_html("<body><p>Hello</p></body>").unwrap();
+        let plan = engine.create_plan("browse around", &ur);
+        assert_eq!(plan.estimated_success, 0.0);
+        assert!(plan.steps.is_empty());
+    }
+
+    #[test]
+    fn test_agent_action_serde() {
+        let action = AgentAction {
+            action_type: "Search".to_string(),
+            target_id: Some("btn1".to_string()),
+            payload: Some(serde_json::json!({"query": "test"})),
+            confidence: 0.85,
+            reasoning: "Found search button".to_string(),
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        let restored: AgentAction = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.action_type, "Search");
+        assert_eq!(restored.confidence, 0.85);
+    }
+
+    #[test]
+    fn test_agent_plan_serde() {
+        let plan = AgentPlan {
+            goal: "test".to_string(),
+            steps: vec![],
+            estimated_success: 0.5,
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        let restored: AgentPlan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.goal, "test");
+    }
 }

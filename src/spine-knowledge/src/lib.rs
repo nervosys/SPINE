@@ -1289,4 +1289,139 @@ mod tests {
         assert!(!r.knowledge.is_empty());
         assert!(mem.stats().collective.total_entries > 0);
     }
+
+    #[test]
+    fn test_vector_clock_same_node_ordering() {
+        let n1 = Uuid::new_v4();
+        let mut c1 = VectorClock::new();
+        c1.tick(n1);
+        let mut c2 = c1.clone();
+        c2.tick(n1);
+        assert!(c1.happens_before(&c2));
+        assert!(!c2.happens_before(&c1));
+    }
+
+    #[test]
+    fn test_vector_clock_merge_idempotent() {
+        let n1 = Uuid::new_v4();
+        let n2 = Uuid::new_v4();
+        let mut c1 = VectorClock::new();
+        c1.tick(n1);
+        let mut c2 = VectorClock::new();
+        c2.tick(n2);
+        c1.merge(&c2);
+        let c1_before = c1.clone();
+        c1.merge(&c2);
+        // Merging again should not change anything
+        assert!(!c1.happens_before(&c1_before));
+        assert!(!c1_before.happens_before(&c1));
+    }
+
+    #[test]
+    fn test_gset_add_duplicate_idempotent() {
+        let mut s = GSet::<String>::new();
+        s.add("a".to_string());
+        s.add("a".to_string());
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn test_gset_merge_commutative() {
+        let mut s1 = GSet::<String>::new();
+        s1.add("a".to_string());
+        let mut s2 = GSet::<String>::new();
+        s2.add("b".to_string());
+
+        let mut m1 = s1.clone();
+        m1.merge(&s2);
+        let mut m2 = s2.clone();
+        m2.merge(&s1);
+        assert_eq!(m1.len(), m2.len());
+    }
+
+    #[test]
+    fn test_lww_register_older_timestamp_ignored() {
+        let n1 = Uuid::new_v4();
+        let n2 = Uuid::new_v4();
+        let r1 = LwwRegister::new("first", n1);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let mut r2 = LwwRegister::new("second", n2);
+        // r2 is newer, merge r1 into r2 — r2 should keep its value
+        r2.merge(&r1);
+        assert_eq!(r2.value, "second");
+    }
+
+    #[test]
+    fn test_collective_query_by_tags() {
+        let node = Uuid::new_v4();
+        let mem = CollectiveMemory::new(node, CollectiveConfig::default());
+        mem.store("k1", KnowledgeValue::Text("v1".into()), vec!["tag_a".into()], 0.5);
+        mem.store("k2", KnowledgeValue::Text("v2".into()), vec!["tag_b".into()], 0.5);
+        mem.store("k3", KnowledgeValue::Text("v3".into()), vec!["tag_a".into(), "tag_b".into()], 0.5);
+        let results = mem.query_by_tags(&["tag_a".into()]);
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_collective_stats() {
+        let node = Uuid::new_v4();
+        let mem = CollectiveMemory::new(node, CollectiveConfig::default());
+        mem.store("k1", KnowledgeValue::Text("v1".into()), vec![], 0.9);
+        mem.store("k2", KnowledgeValue::Text("v2".into()), vec![], 0.8);
+        let stats = mem.stats();
+        assert_eq!(stats.total_entries, 2);
+    }
+
+    #[test]
+    fn test_semantic_retrieve_nonexistent() {
+        let sem = SemanticMemory::new();
+        let result = sem.retrieve("nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_semantic_multiple_relations() {
+        let sem = SemanticMemory::new();
+        let attrs = HashMap::new();
+        sem.store_concept("cat", "A feline animal", attrs);
+        sem.add_relation("cat", "is_a", "animal", 1.0);
+        sem.add_relation("cat", "has", "fur", 0.9);
+        let (_, rels) = sem.retrieve("cat").unwrap();
+        assert_eq!(rels.len(), 2);
+    }
+
+    #[test]
+    fn test_working_memory_capacity_limit() {
+        let mut wm = WorkingMemory::new(3);
+        wm.add_context("A", ContextSource::ExternalInput, 1.0);
+        wm.add_context("B", ContextSource::ExternalInput, 1.0);
+        wm.add_context("C", ContextSource::ExternalInput, 1.0);
+        wm.add_context("D", ContextSource::ExternalInput, 1.0);
+        // Capacity is 3, so oldest should be evicted
+        assert!(wm.context_items.len() <= 3);
+    }
+
+    #[test]
+    fn test_knowledge_value_variants() {
+        let text = KnowledgeValue::Text("hello".into());
+        let structured = KnowledgeValue::Structured(serde_json::json!({"key": "value"}));
+        let large = KnowledgeValue::LargeContent {
+            summary: "summary".into(),
+            content_id: Uuid::new_v4(),
+            size: 1024,
+        };
+        // Just verify construction doesn't panic
+        assert!(matches!(text, KnowledgeValue::Text(_)));
+        assert!(matches!(structured, KnowledgeValue::Structured(_)));
+        assert!(matches!(large, KnowledgeValue::LargeContent { .. }));
+    }
+
+    #[test]
+    fn test_unified_stats_structure() {
+        let node = Uuid::new_v4();
+        let mem = UnifiedMemory::new(node, UnifiedConfig::default());
+        let stats = mem.stats();
+        assert_eq!(stats.collective.total_entries, 0);
+        assert_eq!(stats.episodic.episode_count, 0);
+    }
 }

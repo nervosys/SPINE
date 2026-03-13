@@ -4,7 +4,7 @@
 
 ### Unit Tests
 
-321+ tests across all crates:
+897+ tests across all crates:
 
 ```bash
 cargo test --workspace

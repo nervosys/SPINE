@@ -6786,6 +6786,7 @@ dependencies = [
  "ego-tree",
  "log",
  "proptest",
+ "regex",
  "scraper",
  "serde",
  "serde_json",

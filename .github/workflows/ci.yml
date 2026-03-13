@@ -8,6 +8,10 @@ on:
   release:
     types: [created]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
@@ -82,11 +86,9 @@ jobs:
         run: cargo build --workspace --exclude spine-browser --target ${{ matrix.target }}
 
       - name: Run tests (lib + integration)
-        if: matrix.target != 'aarch64-apple-darwin'
         run: cargo test --workspace --exclude spine-browser --lib --tests --target ${{ matrix.target }}
 
       - name: Run doc tests
-        if: matrix.target != 'aarch64-apple-darwin'
         run: cargo test --workspace --exclude spine-browser --doc --target ${{ matrix.target }}
 
 

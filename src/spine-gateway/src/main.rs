@@ -674,4 +674,137 @@ mod tests {
             || std::path::Path::new("../../deploy/grafana/spine-dashboard.json").exists());
     }
 
+    #[test]
+    fn test_session_info_serialization() {
+        let id = Uuid::new_v4();
+        let info = SessionInfo {
+            session_id: id,
+            backend: "127.0.0.1:9000".into(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains(&id.to_string()));
+        assert!(json.contains("127.0.0.1:9000"));
+    }
+
+    #[test]
+    fn test_navigate_req_deserialization() {
+        let json = r#"{"url":"https://example.com"}"#;
+        let req: NavigateReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.url, "https://example.com");
+    }
+
+    #[test]
+    fn test_search_req_deserialization() {
+        let json = r#"{"query":"rust programming"}"#;
+        let req: SearchReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.query, "rust programming");
+    }
+
+    #[test]
+    fn test_execute_hls_req_deserialization() {
+        let json = r#"{"script":"let x = 1 + 2"}"#;
+        let req: ExecuteHlsReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.script, "let x = 1 + 2");
+    }
+
+    #[test]
+    fn test_parse_html_req_deserialization() {
+        let json = r#"{"html":"<p>Hello</p>"}"#;
+        let req: ParseHtmlReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.html, "<p>Hello</p>");
+    }
+
+    #[test]
+    fn test_compile_req_deserialization() {
+        let json = r#"{"source":"let x = 42"}"#;
+        let req: CompileReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.source, "let x = 42");
+    }
+
+    #[test]
+    fn test_ur_response_serialization() {
+        let resp = UrResponse {
+            title: "Test".into(),
+            element_count: 5,
+            metadata: std::collections::HashMap::new(),
+            raw: serde_json::json!({"elements": []}),
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"title\":\"Test\""));
+        assert!(json.contains("\"element_count\":5"));
+    }
+
+    #[test]
+    fn test_ready_response_serialization() {
+        let resp = ReadyResponse {
+            ready: true,
+            available_slots: 42,
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"ready\":true"));
+        assert!(json.contains("\"available_slots\":42"));
+    }
+
+    #[test]
+    fn test_compile_response_serialization() {
+        let resp = CompileResponse {
+            instruction_count: 10,
+            data_bytes: 256,
+            exported_functions: vec!["render".into()],
+            capabilities: vec!["network".into()],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"instruction_count\":10"));
+        assert!(json.contains("\"render\""));
+    }
+
+    #[test]
+    fn test_ping_response_serialization() {
+        let resp = PingResponse { round_trip_ms: 42 };
+        let json = serde_json::to_string(&resp).unwrap();
+        assert!(json.contains("\"round_trip_ms\":42"));
+    }
+
+    #[test]
+    fn test_get_session_not_found() {
+        let config = SpineConfig::default();
+        let state = AppState::new(&config);
+        let result = get_session(&state, Uuid::new_v4());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_session_req_default_addr() {
+        let json = r#"{}"#;
+        let req: CreateSessionReq = serde_json::from_str(json).unwrap();
+        assert!(req.backend_addr.is_none());
+    }
+
+    #[test]
+    fn test_create_session_req_custom_addr() {
+        let json = r#"{"backend_addr":"10.0.0.1:9000"}"#;
+        let req: CreateSessionReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.backend_addr.unwrap(), "10.0.0.1:9000");
+    }
+
+    #[test]
+    fn test_openapi_paths_coverage() {
+        let doc = ApiDoc::openapi();
+        let json = serde_json::to_string(&doc).unwrap();
+        // Verify all documented routes exist
+        assert!(json.contains("/api/sessions"));
+        assert!(json.contains("/health"));
+        assert!(json.contains("/ready"));
+        assert!(json.contains("/api/parse"));
+        assert!(json.contains("/api/compile"));
+    }
+
+    #[test]
+    fn test_max_sessions_from_config() {
+        let mut config = SpineConfig::default();
+        config.server.max_sessions = 100;
+        let state = AppState::new(&config);
+        assert_eq!(state.max_sessions, 100);
+    }
+
 }
