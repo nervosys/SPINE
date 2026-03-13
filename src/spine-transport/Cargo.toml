@@ -79,7 +79,7 @@ crossbeam-channel = "0.5"                            # Lock-free channels
 crossbeam-queue = "0.3"                              # Lock-free queues
 
 # WebSocket
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
 
 # Internal dependencies
 spine-protocol = { path = "../spine-protocol" }
