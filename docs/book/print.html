@@ -1,0 +1,1725 @@
+<!DOCTYPE HTML>
+<html lang="en" class="navy sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>SPINE Documentation</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Documentation for the SPINE agentic web stack">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="favicon-8114d1fc.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-2459343d.css">
+        <link rel="stylesheet" href="css/chrome-ae938929.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "navy";
+            const default_dark_theme = "coal";
+            window.path_to_searchindex_js = "searchindex-e9d9344b.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-476c3948.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('navy')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">SPINE Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/nervosys/SPINE" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="spine-documentation"><a class="header" href="#spine-documentation">SPINE Documentation</a></h1>
+<p><strong>SPINE</strong> is a headless semantic browser with adaptive encryption — an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.</p>
+<h2 id="what-is-spine"><a class="header" href="#what-is-spine">What is SPINE?</a></h2>
+<p>SPINE provides a complete agentic web stack:</p>
+<ul>
+<li><strong>Headless semantic browsing</strong> — Navigate web pages and extract structured Unified Representations instead of raw HTML</li>
+<li><strong>Adaptive encryption</strong> — X3DH key exchange, Chameleon latent-space cryptography, quantum-resistant RLWE</li>
+<li><strong>Swarm intelligence</strong> — Multi-agent coordination with capability discovery and task delegation</li>
+<li><strong>Neural protocols</strong> — Learned message encoding with Titans architecture for efficient communication</li>
+<li><strong>HLS scripting</strong> — Domain-specific language compiled to WebAssembly for server-side execution</li>
+<li><strong>Knowledge base</strong> — Distributed CRDT-based memory with episodic, semantic, working, and collective subsystems</li>
+</ul>
+<h2 id="architecture-at-a-glance"><a class="header" href="#architecture-at-a-glance">Architecture at a Glance</a></h2>
+<pre><code>┌─────────────────────────────────────────────────┐
+│                  spine-agent                     │  High-level SDK
+├─────────────┬─────────────┬─────────────────────┤
+│ spine-cli   │ spine-gateway│ spine-browser       │  Interfaces
+├─────────────┴─────────────┴─────────────────────┤
+│                 spine-agentic                    │  Swarm / Neural
+├──────────┬──────────┬───────────┬───────────────┤
+│ protocol │ parser   │ compiler  │ knowledge     │  Core
+├──────────┴──────────┴───────────┴───────────────┤
+│  transport │ stream │ crypto │ neural │ wasm    │  Infrastructure
+├─────────────────────────────────────────────────┤
+│                  spine-kernel                    │  Hardware primitives
+└─────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="quick-example"><a class="header" href="#quick-example">Quick Example</a></h2>
+<pre class="playground"><code class="language-rust">use spine_agent::AgentClient;
+
+#[tokio::main]
+async fn main() -&gt; anyhow::Result&lt;()&gt; {
+    let mut client = AgentClient::connect("127.0.0.1:8080").await?;
+
+    // Navigate and extract meaning
+    client.navigate("https://example.com").await?;
+    let ur = client.get_ur().await?;
+    println!("Title: {}", ur.title);
+
+    // Search
+    let results = client.search("rust programming").await?;
+    println!("Results: {}", results);
+
+    Ok(())
+}</code></pre>
+<h2 id="sections"><a class="header" href="#sections">Sections</a></h2>
+<ul>
+<li><strong><a href="#installation">Getting Started</a></strong> — Install, configure, and run your first agent</li>
+<li><strong><a href="#architecture-overview">Architecture</a></strong> — System design and crate organization</li>
+<li><strong><a href="#connecting">Agent SDK</a></strong> — Build agents with the Rust SDK</li>
+<li><strong><a href="#cli-commands">CLI Reference</a></strong> — Command-line interface guide</li>
+<li><strong><a href="#rest-api">Gateway API</a></strong> — REST API for non-Rust clients</li>
+<li><strong><a href="#development-setup">Contributing</a></strong> — Development setup and testing</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li><strong>Rust 1.75+</strong> (install via <a href="https://rustup.rs/">rustup</a>)</li>
+<li><strong>OpenSSL</strong> (for TLS features)</li>
+<li><strong>pkg-config</strong> (Linux/macOS)</li>
+</ul>
+<h2 id="from-source"><a class="header" href="#from-source">From Source</a></h2>
+<pre><code class="language-bash">git clone https://github.com/nervosys/SPINE.git
+cd SPINE
+cargo build --release
+</code></pre>
+<p>The following binaries are produced in <code>target/release/</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Binary</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine</code></td><td>CLI tool for managing SPINE</td></tr>
+<tr><td><code>spine-core</code></td><td>Core server</td></tr>
+<tr><td><code>spine-gateway</code></td><td>REST API gateway</td></tr>
+<tr><td><code>spine-browser</code></td><td>GUI browser (egui)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h2>
+<pre><code class="language-bash"># Run tests
+cargo test --workspace
+
+# Check the CLI
+cargo run -p spine-cli -- --help
+</code></pre>
+<h2 id="optional-features"><a class="header" href="#optional-features">Optional Features</a></h2>
+<p>Enable additional features via Cargo feature flags:</p>
+<pre><code class="language-bash"># QUIC transport support
+cargo build --release --features quic
+
+# io_uring (Linux only)
+cargo build --release --features io_uring
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h1>
+<h2 id="1-start-the-server"><a class="header" href="#1-start-the-server">1. Start the Server</a></h2>
+<pre><code class="language-bash"># Using the CLI
+cargo run -p spine-cli -- deploy
+
+# Or directly
+cargo run -p spine-core
+</code></pre>
+<p>The server listens on <code>127.0.0.1:8080</code> by default.</p>
+<h2 id="2-connect-an-agent"><a class="header" href="#2-connect-an-agent">2. Connect an Agent</a></h2>
+<p>Create a new project:</p>
+<pre><code class="language-bash">cargo run -p spine-cli -- init my-agent
+cd my-agent
+</code></pre>
+<p>Or add SPINE to an existing project:</p>
+<pre><code class="language-toml">[dependencies]
+spine-agent = { git = "https://github.com/nervosys/SPINE" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+</code></pre>
+<h2 id="3-write-your-first-agent"><a class="header" href="#3-write-your-first-agent">3. Write Your First Agent</a></h2>
+<pre class="playground"><code class="language-rust">use spine_agent::AgentClient;
+
+#[tokio::main]
+async fn main() -&gt; anyhow::Result&lt;()&gt; {
+    let mut client = AgentClient::connect("127.0.0.1:8080").await?;
+
+    // Navigate to a page
+    client.navigate("https://example.com").await?;
+
+    // Get structured content
+    let ur = client.get_ur().await?;
+    println!("Page: {}", ur.title);
+    println!("Elements: {}", ur.elements.len());
+
+    // Execute HLS script
+    let result = client.execute_hls("let x = 42 * 2; x").await?;
+    println!("Computed: {:?}", result);
+
+    // Measure latency
+    let ms = client.ping().await?;
+    println!("Latency: {}ms", ms);
+
+    Ok(())
+}</code></pre>
+<h2 id="4-run-it"><a class="header" href="#4-run-it">4. Run It</a></h2>
+<pre><code class="language-bash">cargo run
+</code></pre>
+<h2 id="next-steps"><a class="header" href="#next-steps">Next Steps</a></h2>
+<ul>
+<li><a href="#configuration">Configuration</a> — Customize server settings</li>
+<li><a href="#navigation--unified-representations">Navigation &amp; URs</a> — Deep dive into web extraction</li>
+<li><a href="#hls-scripting">HLS Scripting</a> — Server-side scripting language</li>
+<li><a href="#swarm-intelligence">Swarm Intelligence</a> — Multi-agent coordination</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
+<p>SPINE uses layered configuration: <code>spine.toml</code> → environment variables → defaults.</p>
+<h2 id="configuration-file"><a class="header" href="#configuration-file">Configuration File</a></h2>
+<p>Create <code>spine.toml</code> in your project root:</p>
+<pre><code class="language-toml">[server]
+host = "127.0.0.1"
+port = 8080
+ws_port_offset = 1          # WebSocket on port+1
+quic_port_offset = 2        # QUIC on port+2
+metrics_port = 9090
+max_sessions = 1000
+max_connections_per_ip = 50
+idle_timeout_secs = 300
+session_watchdog_secs = 600
+persistence_interval_secs = 60
+shutdown_timeout_secs = 30
+
+[tls]
+enabled = false
+cert_path = "certs/server.crt"
+key_path = "certs/server.key"
+ca_path = "certs/ca.crt"
+
+[cluster]
+port_offset = 100
+region = "us-east"
+skills = ["search", "analysis"]
+
+[logging]
+format = "pretty"   # "json" or "pretty"
+level = "info"      # trace, debug, info, warn, error
+</code></pre>
+<h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
+<p>Override any setting via environment variables prefixed with <code>SPINE_</code>:</p>
+<pre><code class="language-bash">export SPINE_SERVER_HOST=0.0.0.0
+export SPINE_SERVER_PORT=9000
+export SPINE_TLS_ENABLED=true
+export SPINE_LOGGING_LEVEL=debug
+</code></pre>
+<h2 id="loading-config-in-code"><a class="header" href="#loading-config-in-code">Loading Config in Code</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_core::SpineConfig;
+
+let config = SpineConfig::load();
+println!("Listening on {}:{}", config.server.host, config.server.port);
+<span class="boring">}</span></code></pre>
+<h2 id="default-values"><a class="header" href="#default-values">Default Values</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>Default</th></tr>
+</thead>
+<tbody>
+<tr><td><code>server.host</code></td><td><code>127.0.0.1</code></td></tr>
+<tr><td><code>server.port</code></td><td><code>8080</code></td></tr>
+<tr><td><code>server.max_sessions</code></td><td><code>1000</code></td></tr>
+<tr><td><code>server.idle_timeout_secs</code></td><td><code>300</code></td></tr>
+<tr><td><code>tls.enabled</code></td><td><code>false</code></td></tr>
+<tr><td><code>logging.format</code></td><td><code>pretty</code></td></tr>
+<tr><td><code>logging.level</code></td><td><code>info</code></td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
+<p>SPINE is a headless semantic browser with adaptive encryption. It is organized as a Rust workspace of 19 crates, each with a focused responsibility.</p>
+<h2 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h2>
+<ol>
+<li><strong>Semantic-first</strong> — All content is parsed into Unified Representations, not raw HTML</li>
+<li><strong>Agent-native</strong> — Built for programmatic access, not human browsing</li>
+<li><strong>Secure by default</strong> — Layered encryption from TLS to latent-space cryptography</li>
+<li><strong>Bioinspired</strong> — Memory, learning, and coordination modeled on biological systems</li>
+<li><strong>Zero-copy where possible</strong> — Kernel primitives and transport avoid unnecessary allocations</li>
+</ol>
+<h2 id="system-layers"><a class="header" href="#system-layers">System Layers</a></h2>
+<pre><code>┌─────────────────────────────────────────────────────────────┐
+│                      User Interfaces                         │
+│   spine-cli · spine-gateway · spine-browser                  │
+├─────────────────────────────────────────────────────────────┤
+│                      Agent SDK                               │
+│   spine-agent (connect, navigate, search, execute, swarm)    │
+├─────────────────────────────────────────────────────────────┤
+│                   Agentic Intelligence                       │
+│   spine-agentic (neural protocols, swarm, social cognition)  │
+├──────────┬──────────┬──────────┬──────────┬─────────────────┤
+│ Protocol │ Parser   │ Compiler │ Knowledge│ Core             │
+│ messages │ HTML→UR  │ HLS→WASM │ CRDT mem │ server+config    │
+├──────────┴──────────┴──────────┴──────────┴─────────────────┤
+│                    Infrastructure                            │
+│  transport · stream · crypto · neural · wasm · human         │
+├─────────────────────────────────────────────────────────────┤
+│                    spine-kernel                               │
+│  SIMD · allocators · atomics · ring buffers · RDTSC          │
+└─────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="data-flow"><a class="header" href="#data-flow">Data Flow</a></h2>
+<ol>
+<li><strong>Agent connects</strong> via TCP, TLS, or WebSocket to spine-core server</li>
+<li><strong>Requests</strong> are serialized as <code>Message</code> enum through <code>ProtocolHandler</code></li>
+<li><strong>Server</strong> fetches web content, parses to <code>UnifiedRepresentation</code></li>
+<li><strong>Response</strong> flows back through optional compression, encryption, speculation</li>
+<li><strong>Agent</strong> receives structured data for processing</li>
+</ol>
+<h2 id="security-layers"><a class="header" href="#security-layers">Security Layers</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Layer</th><th>Component</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td>Transport</td><td>TLS 1.3</td><td>Channel encryption</td></tr>
+<tr><td>Protocol</td><td>Chameleon keys</td><td>Moving-target defense</td></tr>
+<tr><td>Latent</td><td>Neural encoding</td><td>Latent-space cryptography</td></tr>
+<tr><td>Post-quantum</td><td>RLWE lattice</td><td>Future-proof key exchange</td></tr>
+<tr><td>Identity</td><td>X3DH</td><td>Initial trust establishment</td></tr>
+<tr><td>Anti-Sybil</td><td>Stake + PoW</td><td>Decentralized trust</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="crate-map"><a class="header" href="#crate-map">Crate Map</a></h1>
+<h2 id="workspace-crates-26-total"><a class="header" href="#workspace-crates-26-total">Workspace Crates (26 total)</a></h2>
+<h3 id="user-facing"><a class="header" href="#user-facing">User-Facing</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-cli</code></td><td>Binary</td><td>CLI tool (<code>spine</code> command) — init, connect, query, deploy, benchmark, status</td></tr>
+<tr><td><code>spine-gateway</code></td><td>Binary</td><td>OpenAPI REST gateway with Swagger UI</td></tr>
+<tr><td><code>spine-browser</code></td><td>Binary</td><td>Cross-platform GUI browser (egui)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="sdk"><a class="header" href="#sdk">SDK</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-agent</code></td><td>Library</td><td>High-level agent SDK with TCP/TLS/WebSocket transports</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="intelligence"><a class="header" href="#intelligence">Intelligence</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-agentic</code></td><td>Library</td><td>Swarm intelligence, neural protocols, social cognition, protocol evolution</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="core"><a class="header" href="#core">Core</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-core</code></td><td>Binary+Lib</td><td>Multi-session orchestration server with config management</td></tr>
+<tr><td><code>spine-protocol</code></td><td>Library</td><td>Message types, frame encoding, protocol handler, speculation</td></tr>
+<tr><td><code>spine-parser</code></td><td>Library</td><td>Recursive semantic HTML to Unified Representation parser</td></tr>
+<tr><td><code>spine-compiler</code></td><td>Library</td><td>HLS (SPINE Scripting) to SpineBinary compiler</td></tr>
+<tr><td><code>spine-knowledge</code></td><td>Library</td><td>Unified bioinspired memory (episodic, semantic, working, collective) with CRDTs</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="infrastructure"><a class="header" href="#infrastructure">Infrastructure</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-transport</code></td><td>Library</td><td>Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system</td></tr>
+<tr><td><code>spine-stream</code></td><td>Library</td><td>Reactive streams, multiplexing, flow control, priority queuing</td></tr>
+<tr><td><code>spine-crypto</code></td><td>Library</td><td>Titans prediction, quantum cryptography, X3DH, MIRAS memory</td></tr>
+<tr><td><code>spine-neural</code></td><td>Library</td><td>VAE encoder, Titans memory, attention, learned projections</td></tr>
+<tr><td><code>spine-cluster</code></td><td>Library</td><td>Distributed coordination, Raft consensus, Sybil resistance, marketplace</td></tr>
+<tr><td><code>spine-wasm</code></td><td>Library</td><td>WebAssembly runtime (wasmtime) for HLS execution</td></tr>
+<tr><td><code>spine-human</code></td><td>Library</td><td>Legacy web bridge — realistic mouse/keyboard simulation</td></tr>
+<tr><td><code>spine-recursive</code></td><td>Library</td><td>Recursive Language Model for infinite context (10M+ chars)</td></tr>
+<tr><td><code>spine-gpu</code></td><td>Library</td><td>GPU compute abstraction (CPU SIMD fallback, wgpu Vulkan/Metal/DX12)</td></tr>
+<tr><td><code>spine-storage</code></td><td>Library</td><td>Persistent storage (InMemory, SQLite WAL, RocksDB LSM)</td></tr>
+<tr><td><code>spine-cache</code></td><td>Library</td><td>Tiered caching (L1 LRU, L2 file-backed, L3 remote)</td></tr>
+<tr><td><code>spine-k8s</code></td><td>Library</td><td>Kubernetes operator CRD, autoscaler, manifest generators</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="primitives"><a class="header" href="#primitives">Primitives</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-kernel</code></td><td>Library</td><td>SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC</td></tr>
+<tr><td><code>spine-nostd</code></td><td>Library</td><td><code>#![no_std]</code> core primitives (Q8.8 fixed-point, FNV hashing, frame codec)</td></tr>
+<tr><td><code>spine-embedded</code></td><td>Library</td><td>Minimal agent runtime for embedded/IoT targets</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="bindings"><a class="header" href="#bindings">Bindings</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-ffi</code></td><td>Library</td><td>C FFI bindings (cdylib/staticlib) for language interop</td></tr>
+<tr><td><code>spine-python</code></td><td>Library</td><td>Python bindings via PyO3 + maturin (excluded)</td></tr>
+<tr><td><code>spine-js</code></td><td>Library</td><td>TypeScript/WASM bindings via wasm-bindgen (excluded)</td></tr>
+<tr><td><code>spine-go</code></td><td>Go pkg</td><td>Go bindings via cgo + spine-ffi (non-Rust)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="dependency-graph-simplified"><a class="header" href="#dependency-graph-simplified">Dependency Graph (simplified)</a></h2>
+<pre><code>spine-cli ------+
+spine-gateway --+
+spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
+                |                                   +-- spine-neural
+                |                                   +-- spine-crypto
+                |                                   +-- spine-knowledge -- spine-storage
+                |                                                          spine-cache
+                |
+                +-- spine-core -- spine-protocol --+-- spine-parser
+                                                    +-- spine-compiler
+                                                    +-- spine-transport -- spine-kernel
+                                                    +-- spine-stream
+                                                    +-- spine-cluster (Raft, Sybil)
+                                                    +-- spine-wasm
+                                                    +-- spine-gpu
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="protocol"><a class="header" href="#protocol">Protocol</a></h1>
+<h2 id="message-format"><a class="header" href="#message-format">Message Format</a></h2>
+<p>All communication uses the <code>Message</code> enum, serialized with serde:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub enum Message {
+    Request(Request),
+    Response(Response),
+    Event(Event),
+    BinaryProgram(SpineBinary),
+    LatentMessage(LatentVector),
+    Sync(SyncPayload),
+    Speculative(SpeculativeFrame),
+    PreComputed(PreComputedResponse),
+    MorphRequest { seed: u64 },
+    Ping { timestamp: u64 },
+    Pong { timestamp: u64 },
+}
+<span class="boring">}</span></code></pre>
+<h2 id="frame-format"><a class="header" href="#frame-format">Frame Format</a></h2>
+<p>Messages are framed with a 16-byte header:</p>
+<pre><code>┌──────────┬──────────┬───────────┬───────────┐
+│ Length(4) │ Type(1)  │ Flags(1)  │ Padding(10)│
+└──────────┴──────────┴───────────┴───────────┘
+│                 Payload                       │
+└───────────────────────────────────────────────┘
+</code></pre>
+<ul>
+<li><strong>Length</strong>: 4 bytes, big-endian, payload size</li>
+<li><strong>Type</strong>: Message discriminant</li>
+<li><strong>Flags</strong>: <code>0x01</code> = zstd compressed, <code>0x00</code> = raw</li>
+</ul>
+<h2 id="compression"><a class="header" href="#compression">Compression</a></h2>
+<p>Adaptive compression using a 1-byte flag protocol:</p>
+<ul>
+<li>Payloads &lt; 64 bytes are sent raw (compression overhead exceeds savings)</li>
+<li>Larger payloads use zstd compression</li>
+<li>Stack-allocated <code>[u8; 16]</code> headers avoid heap allocation</li>
+</ul>
+<h2 id="speculation"><a class="header" href="#speculation">Speculation</a></h2>
+<p>The protocol supports speculative message prediction:</p>
+<ul>
+<li>Bidirectional prediction with Titans architecture</li>
+<li>Pre-computed responses sent before request arrives</li>
+<li>Surprise-gated learning adjusts predictions over time</li>
+<li>Speculation hits eliminate round-trip latency entirely</li>
+</ul>
+<h2 id="transport-options"><a class="header" href="#transport-options">Transport Options</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Transport</th><th>Port</th><th>Use Case</th></tr>
+</thead>
+<tbody>
+<tr><td>TCP</td><td>8080</td><td>Default, lowest latency</td></tr>
+<tr><td>TLS</td><td>8080</td><td>Encrypted, production</td></tr>
+<tr><td>WebSocket</td><td>8081</td><td>Browser/polyglot clients</td></tr>
+<tr><td>QUIC</td><td>8082</td><td>Feature-gated, UDP-based</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="security"><a class="header" href="#security">Security</a></h1>
+<p>See <a href="https://github.com/nervosys/SPINE/blob/master/THREAT_MODEL.md">THREAT_MODEL.md</a> for the full threat model.</p>
+<h2 id="security-levels"><a class="header" href="#security-levels">Security Levels</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Level</th><th>Key Exchange</th><th>Encryption</th><th>Use Case</th></tr>
+</thead>
+<tbody>
+<tr><td>Standard</td><td>X25519</td><td>AES-256-GCM</td><td>General use</td></tr>
+<tr><td>Hardened</td><td>X25519 + RLWE</td><td>AES-256-GCM + lattice</td><td>High security</td></tr>
+<tr><td>PostQuantum</td><td>RLWE-only</td><td>Lattice-based</td><td>Quantum adversaries</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="x3dh-key-exchange"><a class="header" href="#x3dh-key-exchange">X3DH Key Exchange</a></h2>
+<p>Initial trust establishment uses the Extended Triple Diffie-Hellman protocol:</p>
+<ol>
+<li>Identity keys (long-term)</li>
+<li>Signed pre-keys (medium-term)</li>
+<li>One-time pre-keys (single-use)</li>
+</ol>
+<p>No pre-shared secrets required.</p>
+<h2 id="chameleon-protocol"><a class="header" href="#chameleon-protocol">Chameleon Protocol</a></h2>
+<p>Moving-target defense using latent-space cryptography:</p>
+<ul>
+<li>Keys evolve per-message based on VAE-encoded traffic patterns</li>
+<li>Active attackers cannot distinguish protocol from background noise</li>
+<li>Forward secrecy via key evolution</li>
+</ul>
+<h2 id="sybil-resistance"><a class="header" href="#sybil-resistance">Sybil Resistance</a></h2>
+<p>Decentralized trust without central authority:</p>
+<ul>
+<li><strong>Stake-weighted voting</strong> — Influence proportional to commitment</li>
+<li><strong>Node reputation</strong> — Earned through honest behavior</li>
+<li><strong>Proof-of-work for identity</strong> — Computational cost prevents mass identity creation</li>
+</ul>
+<h2 id="rlwe-lattice-cryptography"><a class="header" href="#rlwe-lattice-cryptography">RLWE Lattice Cryptography</a></h2>
+<p>Post-quantum key exchange using Ring Learning With Errors:</p>
+<ul>
+<li>Based on hardness of shortest vector problem</li>
+<li>Forward-secure key evolution</li>
+<li>12 comprehensive security tests</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="connecting"><a class="header" href="#connecting">Connecting</a></h1>
+<h2 id="transport-options-1"><a class="header" href="#transport-options-1">Transport Options</a></h2>
+<h3 id="tcp-plaintext"><a class="header" href="#tcp-plaintext">TCP (plaintext)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut client = AgentClient::connect("127.0.0.1:8080").await?;
+<span class="boring">}</span></code></pre>
+<h3 id="tls"><a class="header" href="#tls">TLS</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut client = AgentClient::connect_tls(
+    "127.0.0.1:8080",
+    "spine.example.com",
+    Some(Path::new("certs/ca.crt")),
+    None, // No client certificate
+).await?;
+<span class="boring">}</span></code></pre>
+<h3 id="mutual-tls"><a class="header" href="#mutual-tls">Mutual TLS</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut client = AgentClient::connect_tls(
+    "127.0.0.1:8080",
+    "spine.example.com",
+    Some(Path::new("certs/ca.crt")),
+    Some((Path::new("certs/client.crt"), Path::new("certs/client.key"))),
+).await?;
+<span class="boring">}</span></code></pre>
+<h3 id="websocket"><a class="header" href="#websocket">WebSocket</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut client = AgentClient::connect_ws("ws://127.0.0.1:8081").await?;
+<span class="boring">}</span></code></pre>
+<h3 id="auto-reconnect"><a class="header" href="#auto-reconnect">Auto-Reconnect</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use std::time::Duration;
+
+let mut client = AgentClient::connect_with_retry(
+    "127.0.0.1:8080",
+    5,                          // max retries
+    Duration::from_secs(1),     // base delay (exponential backoff)
+).await?;
+<span class="boring">}</span></code></pre>
+<h2 id="connection-lifecycle"><a class="header" href="#connection-lifecycle">Connection Lifecycle</a></h2>
+<ol>
+<li><strong>Connect</strong> — Establish TCP/TLS/WS connection</li>
+<li><strong>Use</strong> — Send commands, receive responses</li>
+<li><strong>Drop</strong> — Connection closes when <code>AgentClient</code> is dropped</li>
+</ol>
+<p>The connection is stateful — the server maintains session state (navigation history, cached URs, knowledge) per connection.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="navigation--unified-representations"><a class="header" href="#navigation--unified-representations">Navigation &amp; Unified Representations</a></h1>
+<h2 id="navigating"><a class="header" href="#navigating">Navigating</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.navigate("https://example.com").await?;
+<span class="boring">}</span></code></pre>
+<h2 id="getting-structured-content"><a class="header" href="#getting-structured-content">Getting Structured Content</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let ur = client.get_ur().await?;
+println!("Title: {}", ur.title);
+for element in &amp;ur.elements {
+    match element {
+        Element::Heading { level, text } =&gt; println!("H{}: {}", level, text),
+        Element::Link { text, url } =&gt; println!("[{}]({})", text, url),
+        Element::Text(t) =&gt; println!("{}", t),
+        _ =&gt; {}
+    }
+}
+<span class="boring">}</span></code></pre>
+<p>The <code>UnifiedRepresentation</code> contains:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>title</code></td><td><code>String</code></td><td>Page title</td></tr>
+<tr><td><code>elements</code></td><td><code>Vec&lt;Element&gt;</code></td><td>Structured content tree</td></tr>
+<tr><td><code>metadata</code></td><td><code>HashMap&lt;String, String&gt;</code></td><td>Meta tags, OpenGraph data</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="element-types"><a class="header" href="#element-types">Element Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Fields</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Text(String)</code></td><td>Text content</td><td>Paragraph text</td></tr>
+<tr><td><code>Heading { level, text }</code></td><td><code>u8</code>, <code>String</code></td><td><code>&lt;h1&gt;</code> through <code>&lt;h6&gt;</code></td></tr>
+<tr><td><code>Link { text, url }</code></td><td><code>String</code>, <code>String</code></td><td>Hyperlinks</td></tr>
+<tr><td><code>Button { text, action_id }</code></td><td><code>String</code>, <code>String</code></td><td>Interactive buttons</td></tr>
+<tr><td><code>Input { label, input_type, id }</code></td><td><code>String</code> × 3</td><td>Form inputs</td></tr>
+<tr><td><code>Image { alt, src }</code></td><td><code>String</code>, <code>String</code></td><td>Images</td></tr>
+<tr><td><code>List { items, ordered }</code></td><td><code>Vec&lt;Element&gt;</code>, <code>bool</code></td><td>Lists</td></tr>
+<tr><td><code>Container { tag, children }</code></td><td><code>String</code>, <code>Vec&lt;Element&gt;</code></td><td>Nested containers</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="raw-html"><a class="header" href="#raw-html">Raw HTML</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let html = client.get_raw_html().await?;
+<span class="boring">}</span></code></pre>
+<h2 id="interaction"><a class="header" href="#interaction">Interaction</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Click an element
+client.click("submit-button").await?;
+
+// Type into a field
+client.type_text("search-input", "hello world").await?;
+<span class="boring">}</span></code></pre>
+<h2 id="latent-vectors"><a class="header" href="#latent-vectors">Latent Vectors</a></h2>
+<p>Extract neural embeddings of page content:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let latent = client.get_latent_ur(256).await?;
+// latent: Vec&lt;f32&gt; of dimension 256
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="hls-scripting"><a class="header" href="#hls-scripting">HLS Scripting</a></h1>
+<p>HLS (SPINE Scripting) is a domain-specific language for server-side execution.</p>
+<h2 id="execute-via-agent"><a class="header" href="#execute-via-agent">Execute via Agent</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let result = client.execute_hls("let x = 42 * 2; x").await?;
+println!("Result: {:?}", result);
+<span class="boring">}</span></code></pre>
+<h2 id="language-features"><a class="header" href="#language-features">Language Features</a></h2>
+<h3 id="variables"><a class="header" href="#variables">Variables</a></h3>
+<pre><code>let x = 42;
+let name = "SPINE";
+let flag = true;
+</code></pre>
+<h3 id="expressions"><a class="header" href="#expressions">Expressions</a></h3>
+<pre><code>let sum = 1 + 2 * 3;     // 7
+let eq = 10 == 10;        // true
+let neg = -5;
+</code></pre>
+<h3 id="conditionals"><a class="header" href="#conditionals">Conditionals</a></h3>
+<pre><code>let grade = if score &gt;= 90 { "A" } else if score &gt;= 80 { "B" } else { "C" };
+</code></pre>
+<h3 id="loops"><a class="header" href="#loops">Loops</a></h3>
+<pre><code>let sum = 0;
+let i = 1;
+while i &lt;= 100 {
+    sum = sum + i;
+    i = i + 1;
+}
+</code></pre>
+<h3 id="functions"><a class="header" href="#functions">Functions</a></h3>
+<pre><code>fn factorial(n) {
+    if n &lt;= 1 { 1 } else { n * factorial(n - 1) }
+}
+let result = factorial(10);
+</code></pre>
+<h2 id="offline-compilation"><a class="header" href="#offline-compilation">Offline Compilation</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_agent::Compiler;
+
+match Compiler::compile("let x = 1 + 2; x") {
+    Ok(binary) =&gt; {
+        println!("Instructions: {}", binary.instructions.len());
+        println!("Exports: {:?}", binary.exported_functions.keys());
+    }
+    Err(e) =&gt; eprintln!("Compile error: {}", e),
+}
+<span class="boring">}</span></code></pre>
+<h2 id="spinebinary-format"><a class="header" href="#spinebinary-format">SpineBinary Format</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Type</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>instructions</code></td><td><code>Vec&lt;Instruction&gt;</code></td><td>Compiled bytecode</td></tr>
+<tr><td><code>data</code></td><td><code>Vec&lt;u8&gt;</code></td><td>Static data section</td></tr>
+<tr><td><code>render_start</code></td><td><code>usize</code></td><td>Entry point for rendering</td></tr>
+<tr><td><code>exported_functions</code></td><td><code>HashMap&lt;String, usize&gt;</code></td><td>Named function entries</td></tr>
+<tr><td><code>capabilities</code></td><td><code>Vec&lt;String&gt;</code></td><td>Required runtime capabilities</td></tr>
+</tbody>
+</table>
+</div>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="knowledge-base"><a class="header" href="#knowledge-base">Knowledge Base</a></h1>
+<p>SPINE provides a distributed CRDT-based knowledge base with four memory subsystems.</p>
+<h2 id="basic-operations"><a class="header" href="#basic-operations">Basic Operations</a></h2>
+<h3 id="store"><a class="header" href="#store">Store</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.store_knowledge(
+    "rust-homepage",
+    serde_json::json!({"url": "https://rust-lang.org", "category": "programming"}),
+    vec!["language".into(), "systems".into()],
+).await?;
+<span class="boring">}</span></code></pre>
+<h3 id="query"><a class="header" href="#query">Query</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let results = client.query_knowledge(
+    "programming languages",
+    vec!["language".into()],
+    10,  // max results
+).await?;
+<span class="boring">}</span></code></pre>
+<h3 id="delete"><a class="header" href="#delete">Delete</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.delete_knowledge("rust-homepage").await?;
+<span class="boring">}</span></code></pre>
+<h3 id="propose-distributed"><a class="header" href="#propose-distributed">Propose (Distributed)</a></h3>
+<p>In cluster mode, propose knowledge for consensus:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.propose_knowledge(
+    "shared-finding",
+    serde_json::json!({"discovery": "important pattern"}),
+    vec!["research".into()],
+).await?;
+<span class="boring">}</span></code></pre>
+<h2 id="memory-subsystems"><a class="header" href="#memory-subsystems">Memory Subsystems</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Subsystem</th><th>Inspiration</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Episodic</strong></td><td>Hippocampus</td><td>Event sequences, navigation history</td></tr>
+<tr><td><strong>Semantic</strong></td><td>Neocortex</td><td>Facts, relationships, structured knowledge</td></tr>
+<tr><td><strong>Working</strong></td><td>Prefrontal cortex</td><td>Active context, current task state</td></tr>
+<tr><td><strong>Collective</strong></td><td>Swarm intelligence</td><td>Shared knowledge across agents via CRDTs</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="crdt-consistency"><a class="header" href="#crdt-consistency">CRDT Consistency</a></h2>
+<p>Knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="swarm-intelligence"><a class="header" href="#swarm-intelligence">Swarm Intelligence</a></h1>
+<h2 id="task-delegation"><a class="header" href="#task-delegation">Task Delegation</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Delegate to any available agent
+client.delegate_task("scrape product prices", None).await?;
+
+// Delegate to a specific agent
+client.delegate_task("analyze sentiment", Some(agent_id)).await?;
+<span class="boring">}</span></code></pre>
+<h2 id="swarm-search"><a class="header" href="#swarm-search">Swarm Search</a></h2>
+<p>Distributed search across multiple agents:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.swarm_search("quantum computing papers", 3).await?;
+<span class="boring">}</span></code></pre>
+<p>The <code>depth</code> parameter controls how many hops the search propagates.</p>
+<h2 id="plan-execution"><a class="header" href="#plan-execution">Plan Execution</a></h2>
+<p>Create and execute multi-step plans:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>// Create a plan
+let plan_id = client.create_swarm_plan("Research Rust async patterns").await?;
+
+// Execute individual tasks
+client.execute_plan_task(plan_id, task_id).await?;
+<span class="boring">}</span></code></pre>
+<h2 id="session-transfer"><a class="header" href="#session-transfer">Session Transfer</a></h2>
+<p>Move a session to another cluster node:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.transfer_session(target_node_id).await?;
+<span class="boring">}</span></code></pre>
+<h2 id="social-communication"><a class="header" href="#social-communication">Social Communication</a></h2>
+<p>Send speech acts between agents:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.send_speech_act(
+    target_agent_id,
+    "inform",
+    "Found 15 relevant results",
+).await?;
+<span class="boring">}</span></code></pre>
+<p>Supported performatives: <code>inform</code>, <code>request</code>, <code>propose</code>, <code>accept</code>, <code>reject</code>, <code>query</code>.</p>
+<h2 id="autonomous-mode"><a class="header" href="#autonomous-mode">Autonomous Mode</a></h2>
+<p>Enable self-directed exploration:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.set_autonomous_mode(true).await?;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="neural-protocol"><a class="header" href="#neural-protocol">Neural Protocol</a></h1>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>The neural protocol enables learned message encoding using the Titans architecture. Messages are projected into a latent space for efficient transmission and optional cryptographic protection.</p>
+<h2 id="neural-transmission"><a class="header" href="#neural-transmission">Neural Transmission</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_agentic::ProtocolDomain;
+
+let result = client.transmit_neural(
+    b"important data payload",
+    ProtocolDomain::Text,
+).await?;
+println!("Transmitted: {:?}", result);
+<span class="boring">}</span></code></pre>
+<h2 id="protocol-domains"><a class="header" href="#protocol-domains">Protocol Domains</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Domain</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Text</code></td><td>Natural language content</td></tr>
+<tr><td><code>Code</code></td><td>Source code and structured data</td></tr>
+<tr><td><code>Binary</code></td><td>Binary data and files</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="latent-vector-subscription"><a class="header" href="#latent-vector-subscription">Latent Vector Subscription</a></h2>
+<p>Stream latent vectors as they’re generated:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let mut rx = client.subscribe_latent().await?;
+while let Some(vector) = rx.recv().await {
+    println!("Latent dim={}: norm={:.3}",
+        vector.len(),
+        vector.iter().map(|x| x * x).sum::&lt;f32&gt;().sqrt()
+    );
+}
+<span class="boring">}</span></code></pre>
+<h2 id="protocol-morphology"><a class="header" href="#protocol-morphology">Protocol Morphology</a></h2>
+<p>Trigger protocol shape-shifting:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>client.morph().await?;
+<span class="boring">}</span></code></pre>
+<p>This evolves the protocol’s frame structure using genetic algorithms for active defense.</p>
+<h2 id="speculation-stats"><a class="header" href="#speculation-stats">Speculation Stats</a></h2>
+<p>Check how well the predictor is performing:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let stats = client.get_speculation_stats();
+println!("Hits: {}, Misses: {}", stats.hits, stats.misses);
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="cli-commands"><a class="header" href="#cli-commands">CLI Commands</a></h1>
+<p>The <code>spine</code> CLI provides project management, interactive connections, and operations.</p>
+<h2 id="spine-init-name"><a class="header" href="#spine-init-name"><code>spine init &lt;name&gt;</code></a></h2>
+<p>Scaffold a new SPINE agent project:</p>
+<pre><code class="language-bash">spine init my-agent
+spine init my-agent --tls    # With TLS configuration
+</code></pre>
+<p>Creates: <code>Cargo.toml</code>, <code>spine.toml</code>, <code>src/main.rs</code>, <code>examples/</code>, <code>.gitignore</code></p>
+<h2 id="spine-connect-addr"><a class="header" href="#spine-connect-addr"><code>spine connect &lt;addr&gt;</code></a></h2>
+<p>Interactive REPL connected to a SPINE server:</p>
+<pre><code class="language-bash">spine connect 127.0.0.1:8080
+spine connect 127.0.0.1:8080 --tls --domain spine.example.com
+spine connect ws://127.0.0.1:8081 --ws
+</code></pre>
+<p>REPL commands:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>nav &lt;url&gt;</code></td><td>Navigate to URL</td></tr>
+<tr><td><code>ur</code></td><td>Get Unified Representation</td></tr>
+<tr><td><code>html</code></td><td>Get raw HTML</td></tr>
+<tr><td><code>search &lt;query&gt;</code></td><td>Search</td></tr>
+<tr><td><code>ping</code></td><td>Measure latency</td></tr>
+<tr><td><code>exec &lt;script&gt;</code></td><td>Execute HLS script</td></tr>
+<tr><td><code>stats</code></td><td>Speculation stats</td></tr>
+<tr><td><code>morph</code></td><td>Trigger protocol morphing</td></tr>
+<tr><td><code>caps</code></td><td>List server capabilities</td></tr>
+<tr><td><code>help</code></td><td>Show commands</td></tr>
+<tr><td><code>quit</code></td><td>Disconnect</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="spine-query-addr-subcommand"><a class="header" href="#spine-query-addr-subcommand"><code>spine query &lt;addr&gt; &lt;subcommand&gt;</code></a></h2>
+<p>One-shot queries:</p>
+<pre><code class="language-bash">spine query 127.0.0.1:8080 navigate --url https://example.com
+spine query 127.0.0.1:8080 search --query "rust async"
+spine query 127.0.0.1:8080 ping --count 5
+spine query 127.0.0.1:8080 html --url https://example.com --format text
+spine query 127.0.0.1:8080 exec --script "let x = 42; x"
+</code></pre>
+<h2 id="spine-deploy"><a class="header" href="#spine-deploy"><code>spine deploy</code></a></h2>
+<p>Start a SPINE server using configuration:</p>
+<pre><code class="language-bash">spine deploy
+spine deploy --config custom.toml
+</code></pre>
+<h2 id="spine-benchmark-addr"><a class="header" href="#spine-benchmark-addr"><code>spine benchmark &lt;addr&gt;</code></a></h2>
+<p>Performance benchmarks:</p>
+<pre><code class="language-bash">spine benchmark 127.0.0.1:8080 --iterations 100
+spine benchmark 127.0.0.1:8080 --concurrent 10 --iterations 50
+</code></pre>
+<h2 id="spine-status-addr"><a class="header" href="#spine-status-addr"><code>spine status &lt;addr&gt;</code></a></h2>
+<p>Check server health:</p>
+<pre><code class="language-bash">spine status 127.0.0.1:8080
+spine status 127.0.0.1:8080 --metrics-port 9090
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="rest-api"><a class="header" href="#rest-api">REST API</a></h1>
+<p>The SPINE Gateway exposes a RESTful API with auto-generated OpenAPI documentation.</p>
+<h2 id="starting-the-gateway"><a class="header" href="#starting-the-gateway">Starting the Gateway</a></h2>
+<pre><code class="language-bash">cargo run -p spine-gateway
+</code></pre>
+<p>Swagger UI available at <code>http://localhost:9091/swagger-ui/</code></p>
+<h2 id="endpoints"><a class="header" href="#endpoints">Endpoints</a></h2>
+<h3 id="sessions"><a class="header" href="#sessions">Sessions</a></h3>
+<h4 id="post-apisessions--create-session"><a class="header" href="#post-apisessions--create-session"><code>POST /api/sessions</code> — Create session</a></h4>
+<pre><code class="language-json">{ "backend_addr": "127.0.0.1:8080" }
+</code></pre>
+<p>Response (201):</p>
+<pre><code class="language-json">{ "session_id": "550e8400-e29b-41d4-a716-446655440000", "backend": "127.0.0.1:8080" }
+</code></pre>
+<h4 id="delete-apisessionsid--delete-session"><a class="header" href="#delete-apisessionsid--delete-session"><code>DELETE /api/sessions/{id}</code> — Delete session</a></h4>
+<p>Response: 204 No Content</p>
+<h3 id="browse"><a class="header" href="#browse">Browse</a></h3>
+<h4 id="post-apisessionsidnavigate--navigate"><a class="header" href="#post-apisessionsidnavigate--navigate"><code>POST /api/sessions/{id}/navigate</code> — Navigate</a></h4>
+<pre><code class="language-json">{ "url": "https://example.com" }
+</code></pre>
+<h4 id="get-apisessionsidur--get-unified-representation"><a class="header" href="#get-apisessionsidur--get-unified-representation"><code>GET /api/sessions/{id}/ur</code> — Get Unified Representation</a></h4>
+<p>Response:</p>
+<pre><code class="language-json">{
+  "title": "Example Domain",
+  "element_count": 5,
+  "metadata": { "charset": "utf-8" },
+  "raw": { "title": "...", "elements": [...] }
+}
+</code></pre>
+<h4 id="get-apisessionsidhtml--get-raw-html"><a class="header" href="#get-apisessionsidhtml--get-raw-html"><code>GET /api/sessions/{id}/html</code> — Get raw HTML</a></h4>
+<h4 id="post-apisessionsidsearch--search"><a class="header" href="#post-apisessionsidsearch--search"><code>POST /api/sessions/{id}/search</code> — Search</a></h4>
+<pre><code class="language-json">{ "query": "rust programming" }
+</code></pre>
+<h4 id="get-apisessionsidping--ping"><a class="header" href="#get-apisessionsidping--ping"><code>GET /api/sessions/{id}/ping</code> — Ping</a></h4>
+<p>Response: <code>{ "round_trip_ms": 2 }</code></p>
+<h3 id="compute"><a class="header" href="#compute">Compute</a></h3>
+<h4 id="post-apisessionsidexecute--execute-hls"><a class="header" href="#post-apisessionsidexecute--execute-hls"><code>POST /api/sessions/{id}/execute</code> — Execute HLS</a></h4>
+<pre><code class="language-json">{ "script": "let x = 42 * 2; x" }
+</code></pre>
+<p>Response: <code>{ "result": 84 }</code></p>
+<h4 id="post-apiparse--parse-html-stateless"><a class="header" href="#post-apiparse--parse-html-stateless"><code>POST /api/parse</code> — Parse HTML (stateless)</a></h4>
+<pre><code class="language-json">{ "html": "&lt;html&gt;&lt;head&gt;&lt;title&gt;Test&lt;/title&gt;&lt;/head&gt;&lt;body&gt;Hello&lt;/body&gt;&lt;/html&gt;" }
+</code></pre>
+<h4 id="post-apicompile--compile-hls-stateless"><a class="header" href="#post-apicompile--compile-hls-stateless"><code>POST /api/compile</code> — Compile HLS (stateless)</a></h4>
+<pre><code class="language-json">{ "source": "let x = 1 + 2; x" }
+</code></pre>
+<p>Response:</p>
+<pre><code class="language-json">{
+  "instruction_count": 5,
+  "data_bytes": 0,
+  "exported_functions": [],
+  "capabilities": []
+}
+</code></pre>
+<h3 id="operations"><a class="header" href="#operations">Operations</a></h3>
+<h4 id="get-health"><a class="header" href="#get-health"><code>GET /health</code></a></h4>
+<pre><code class="language-json">{ "status": "ok", "uptime_secs": 3600, "active_sessions": 12 }
+</code></pre>
+<h4 id="get-ready"><a class="header" href="#get-ready"><code>GET /ready</code></a></h4>
+<pre><code class="language-json">{ "ready": true, "available_slots": 988 }
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="kernel-primitives"><a class="header" href="#kernel-primitives">Kernel Primitives</a></h1>
+<p><code>spine-kernel</code> provides ultra-low-level hardware primitives for maximum performance.</p>
+<h2 id="simd-intrinsics"><a class="header" href="#simd-intrinsics">SIMD Intrinsics</a></h2>
+<p>AVX2 (x86_64) and NEON (aarch64) accelerated operations:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_kernel::simd::{dot_product_avx2, softmax_avx2, matvec_avx2};
+
+let a = vec![1.0f32; 256];
+let b = vec![2.0f32; 256];
+let dot = dot_product_avx2(&amp;a, &amp;b);  // 57 GiB/s
+<span class="boring">}</span></code></pre>
+<h3 id="performance"><a class="header" href="#performance">Performance</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Operation</th><th>Throughput</th></tr>
+</thead>
+<tbody>
+<tr><td>Dot Product (256)</td><td>57 GiB/s</td></tr>
+<tr><td>MatVec (256×256)</td><td>15.5 Gelem/s</td></tr>
+<tr><td>Softmax (256)</td><td>~10 GiB/s</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="custom-allocators"><a class="header" href="#custom-allocators">Custom Allocators</a></h2>
+<h3 id="bump-allocator-505-ps-per-allocation"><a class="header" href="#bump-allocator-505-ps-per-allocation">Bump Allocator (505 ps per allocation)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_kernel::alloc::BumpAllocator;
+
+let mut bump = BumpAllocator::new(4096);
+let ptr = bump.alloc(64);  // 505 picoseconds
+bump.reset();               // Free everything at once
+<span class="boring">}</span></code></pre>
+<h3 id="slab-allocator"><a class="header" href="#slab-allocator">Slab Allocator</a></h3>
+<p>Fixed-size object pools for zero-fragmentation allocation.</p>
+<h3 id="arena-allocator"><a class="header" href="#arena-allocator">Arena Allocator</a></h3>
+<p>Region-based allocation with batch deallocation.</p>
+<h2 id="lock-free-atomics"><a class="header" href="#lock-free-atomics">Lock-Free Atomics</a></h2>
+<h3 id="spsc-ring-buffer-136-ns-per-op-700m-opssec"><a class="header" href="#spsc-ring-buffer-136-ns-per-op-700m-opssec">SPSC Ring Buffer (1.36 ns per op, 700M ops/sec)</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_kernel::ring::SpscRing;
+
+let (mut tx, mut rx) = SpscRing::&lt;u64&gt;::new(1024);
+tx.push(42);
+let val = rx.pop();
+<span class="boring">}</span></code></pre>
+<h3 id="seqlock-44-ns-reads"><a class="header" href="#seqlock-44-ns-reads">SeqLock (4.4 ns reads)</a></h3>
+<p>Read-optimized lock for rarely-written data.</p>
+<h2 id="rdtsc-timing"><a class="header" href="#rdtsc-timing">RDTSC Timing</a></h2>
+<p>Sub-nanosecond measurement (2.6× faster than <code>Instant::now()</code>):</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_kernel::timing::rdtsc;
+
+let start = rdtsc();
+// ... work ...
+let cycles = rdtsc() - start;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="transport-layer"><a class="header" href="#transport-layer">Transport Layer</a></h1>
+<h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
+<p><code>spine-transport</code> provides high-performance I/O with composable plugins:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_transport::{TransportPlugin, MetricsPlugin, RateLimiterPlugin};
+<span class="boring">}</span></code></pre>
+<h2 id="plugin-system"><a class="header" href="#plugin-system">Plugin System</a></h2>
+<p>Plugins form an ordered pipeline (forward on send, reverse on receive):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Plugin</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>MetricsPlugin</code></td><td>Byte counters, message counts</td></tr>
+<tr><td><code>RateLimiterPlugin</code></td><td>Token-bucket rate limiting</td></tr>
+<tr><td><code>TaggingPlugin</code></td><td>Add metadata headers</td></tr>
+<tr><td><code>LoggingPlugin</code></td><td>Request/response logging</td></tr>
+<tr><td><code>SizeLimiterPlugin</code></td><td>Max message size enforcement</td></tr>
+</tbody>
+</table>
+</div>
+<p>Custom plugins implement the <code>TransportPlugin</code> trait:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait TransportPlugin: Send + Sync {
+    fn on_send(&amp;self, data: &amp;mut Vec&lt;u8&gt;) -&gt; Result&lt;()&gt;;
+    fn on_recv(&amp;self, data: &amp;mut Vec&lt;u8&gt;) -&gt; Result&lt;()&gt;;
+}
+<span class="boring">}</span></code></pre>
+<h2 id="bbr-congestion-control"><a class="header" href="#bbr-congestion-control">BBR Congestion Control</a></h2>
+<p>Bottleneck Bandwidth and RTT-based congestion control:</p>
+<ul>
+<li>Pacing decision: 335 ps</li>
+<li>Bandwidth estimation without packet loss</li>
+<li>RTT-based delivery rate measurement</li>
+</ul>
+<h2 id="zero-copy-io"><a class="header" href="#zero-copy-io">Zero-Copy I/O</a></h2>
+<ul>
+<li>Frame decode via <code>bytes::Bytes</code> slicing (30% faster)</li>
+<li>Buffer reuse pool for send/read/latent buffers</li>
+<li>Stack-allocated frame headers (<code>[u8; 16]</code>)</li>
+</ul>
+<h2 id="websocket-bridge"><a class="header" href="#websocket-bridge">WebSocket Bridge</a></h2>
+<p>Client and server WebSocket adapters:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_transport::WebSocketClientStream;
+
+// Used internally by AgentClient::connect_ws()
+let stream = WebSocketClientStream::connect("ws://localhost:8081").await?;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="streaming"><a class="header" href="#streaming">Streaming</a></h1>
+<p><code>spine-stream</code> provides reactive streaming with multiplexing and flow control.</p>
+<h2 id="features"><a class="header" href="#features">Features</a></h2>
+<ul>
+<li><strong>Reactive streams</strong> — Backpressure-aware data flow</li>
+<li><strong>Multiplexing</strong> — Multiple logical streams over one connection</li>
+<li><strong>Flow control</strong> — Window-based credit system</li>
+<li><strong>Priority queuing</strong> — Prioritized message delivery</li>
+<li><strong>Chunked transfer</strong> — Large payload streaming</li>
+<li><strong>Batching</strong> — <code>BatchingStream</code> with deadline-based partial emission</li>
+</ul>
+<h2 id="batch-processing"><a class="header" href="#batch-processing">Batch Processing</a></h2>
+<p>Collect items into batches with configurable size and timeout:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_stream::BatchingStream;
+
+let batched = BatchingStream::new(source, 100, Duration::from_millis(50));
+// Emits when: 100 items collected OR 50ms elapsed (whichever first)
+<span class="boring">}</span></code></pre>
+<h2 id="priority-levels"><a class="header" href="#priority-levels">Priority Levels</a></h2>
+<p>Messages can be assigned priority for ordered delivery under contention.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="memory-system"><a class="header" href="#memory-system">Memory System</a></h1>
+<p><code>spine-knowledge</code> provides a unified bioinspired memory architecture.</p>
+<h2 id="subsystems"><a class="header" href="#subsystems">Subsystems</a></h2>
+<h3 id="episodic-memory-hippocampus"><a class="header" href="#episodic-memory-hippocampus">Episodic Memory (Hippocampus)</a></h3>
+<p>Stores sequences of events with temporal ordering:</p>
+<ul>
+<li>Navigation history</li>
+<li>Interaction sequences</li>
+<li>Temporal context for retrieval</li>
+</ul>
+<h3 id="semantic-memory-neocortex"><a class="header" href="#semantic-memory-neocortex">Semantic Memory (Neocortex)</a></h3>
+<p>Structured knowledge storage:</p>
+<ul>
+<li>Facts and relationships</li>
+<li>Tagged entries for filtered retrieval</li>
+<li>CRDT-based distributed consistency</li>
+</ul>
+<h3 id="working-memory-prefrontal-cortex"><a class="header" href="#working-memory-prefrontal-cortex">Working Memory (Prefrontal Cortex)</a></h3>
+<p>Active task context:</p>
+<ul>
+<li>Current page state</li>
+<li>Recent computations</li>
+<li>Task-relevant information</li>
+</ul>
+<h3 id="collective-memory-swarm-intelligence"><a class="header" href="#collective-memory-swarm-intelligence">Collective Memory (Swarm Intelligence)</a></h3>
+<p>Shared knowledge across agents:</p>
+<ul>
+<li>CRDT merge for conflict-free replication</li>
+<li>Consensus-based proposals for important knowledge</li>
+<li>Cross-agent discovery and search</li>
+</ul>
+<h2 id="miras-variants"><a class="header" href="#miras-variants">MIRAS Variants</a></h2>
+<p>Three memory architectures from <code>spine-crypto</code>:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Full Name</th><th>Focus</th></tr>
+</thead>
+<tbody>
+<tr><td>YAAD</td><td>Yet Another Anomaly Detector</td><td>Novelty detection, anomaly scoring</td></tr>
+<tr><td>MONETA</td><td>Memory-Oriented Neural Encoding</td><td>Persistent memory traces</td></tr>
+<tr><td>MEMORA</td><td>Memory-Enhanced Model for Organized Recall</td><td>Structured recall patterns</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="distributed-consistency"><a class="header" href="#distributed-consistency">Distributed Consistency</a></h2>
+<p>All knowledge entries use CRDTs (Conflict-free Replicated Data Types):</p>
+<ul>
+<li><strong>Last-Writer-Wins Register</strong> for values</li>
+<li><strong>Grow-Only Set</strong> for tags</li>
+<li><strong>Version vectors</strong> for causal ordering</li>
+<li>No coordination protocol needed — concurrent writes merge automatically</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="gpu-compute"><a class="header" href="#gpu-compute">GPU Compute</a></h1>
+<p>The <code>spine-gpu</code> crate provides cross-platform GPU-accelerated tensor operations for SPINE’s neural encoding pipeline.</p>
+<h2 id="architecture-1"><a class="header" href="#architecture-1">Architecture</a></h2>
+<pre><code class="language-text">┌─────────────────────────────────────────┐
+│            GpuAccelerator               │
+│  ┌─────────┐  ┌──────────┐  ┌────────┐ │
+│  │ MatMul  │  │ Softmax  │  │  VAE   │ │
+│  │ Kernel  │  │ Kernel   │  │Forward │ │
+│  └────┬────┘  └────┬─────┘  └───┬────┘ │
+│       └─────────┬──┘────────────┘       │
+│            ┌────┴─────┐                 │
+│            │ Backend  │                 │
+│            └────┬─────┘                 │
+│    ┌────────────┼────────────┐          │
+│    ▼            ▼            ▼          │
+│  wgpu       CPU-SIMD      (CUDA)       │
+│ Vulkan/     Fallback     Optional       │
+│ Metal/DX12                              │
+└─────────────────────────────────────────┘
+</code></pre>
+<h2 id="backends"><a class="header" href="#backends">Backends</a></h2>
+<h3 id="cpubackend-default"><a class="header" href="#cpubackend-default">CpuBackend (default)</a></h3>
+<p>SIMD-optimized fallback using 8-wide unrolled dot products for AVX2/NEON. Includes fast inverse square root (Quake III-style) for attention scaling.</p>
+<h3 id="wgpubackend-feature-wgpu-backend"><a class="header" href="#wgpubackend-feature-wgpu-backend">WgpuBackend (feature: <code>wgpu-backend</code>)</a></h3>
+<p>Cross-platform GPU compute via WGSL shaders. Supports Vulkan, Metal, DX12, and WebGPU. Uses <code>wgpu</code> for buffer management and compute pipeline dispatch.</p>
+<h2 id="computebackend-trait"><a class="header" href="#computebackend-trait">ComputeBackend Trait</a></h2>
+<p>All backends implement:</p>
+<ul>
+<li><code>mat_vec_mul()</code> — Dense matrix-vector multiply with bias</li>
+<li><code>softmax()</code> — Numerically stable softmax</li>
+<li><code>layer_norm()</code> — Layer normalization with affine transform</li>
+<li><code>vae_encode()</code> / <code>vae_decode()</code> — Variational autoencoder forward passes</li>
+</ul>
+<h2 id="usage"><a class="header" href="#usage">Usage</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_gpu::GpuAccelerator;
+
+let accel = GpuAccelerator::new().await?;
+println!("Using: {}", accel.device_info().name);
+accel.mat_vec_mul(&amp;weights, &amp;input, &amp;bias, rows, cols, &amp;mut output)?;
+<span class="boring">}</span></code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="persistent-storage"><a class="header" href="#persistent-storage">Persistent Storage</a></h1>
+<p>The <code>spine-storage</code> crate provides trait-based persistent storage backends for SPINE’s knowledge base and cluster state.</p>
+<h2 id="storagebackend-trait"><a class="header" href="#storagebackend-trait">StorageBackend Trait</a></h2>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>pub trait StorageBackend: Send + Sync {
+    fn get(&amp;self, namespace: &amp;str, key: &amp;[u8]) -&gt; Result&lt;Option&lt;Vec&lt;u8&gt;&gt;&gt;;
+    fn put(&amp;self, namespace: &amp;str, key: &amp;[u8], value: &amp;[u8]) -&gt; Result&lt;()&gt;;
+    fn delete(&amp;self, namespace: &amp;str, key: &amp;[u8]) -&gt; Result&lt;()&gt;;
+    fn scan(&amp;self, namespace: &amp;str, prefix: Option&lt;&amp;[u8]&gt;) -&gt; Result&lt;Vec&lt;(Vec&lt;u8&gt;, Vec&lt;u8&gt;)&gt;&gt;;
+    fn keys(&amp;self, namespace: &amp;str) -&gt; Result&lt;Vec&lt;Vec&lt;u8&gt;&gt;&gt;;
+    fn batch_put(&amp;self, namespace: &amp;str, entries: &amp;[(&amp;[u8], &amp;[u8])]) -&gt; Result&lt;()&gt;;
+    fn count(&amp;self, namespace: &amp;str) -&gt; Result&lt;usize&gt;;
+    fn clear(&amp;self, namespace: &amp;str) -&gt; Result&lt;()&gt;;
+}
+<span class="boring">}</span></code></pre>
+<h2 id="backends-1"><a class="header" href="#backends-1">Backends</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Backend</th><th>Feature</th><th>Use Case</th><th>Durability</th></tr>
+</thead>
+<tbody>
+<tr><td>InMemory</td><td>(default)</td><td>Testing, ephemeral workloads</td><td>None</td></tr>
+<tr><td>SQLite</td><td><code>sqlite</code></td><td>Single-node production</td><td>WAL</td></tr>
+<tr><td>RocksDB</td><td><code>rocksdb</code></td><td>High-throughput workloads</td><td>LSM-tree</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="typedstorage"><a class="header" href="#typedstorage">TypedStorage</a></h2>
+<p>Generic wrapper providing <code>serde</code> serialization over any backend:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>let typed: TypedStorage&lt;MyConfig&gt; = TypedStorage::new(backend, "configs");
+typed.put("key1", &amp;my_config)?;
+let config: Option&lt;MyConfig&gt; = typed.get("key1")?;
+<span class="boring">}</span></code></pre>
+<h2 id="persistentknowledge"><a class="header" href="#persistentknowledge">PersistentKnowledge</a></h2>
+<p>Adapter integrating <code>StorageBackend</code> with <code>spine-knowledge</code>:</p>
+<ul>
+<li>Episodes stored in <code>"episodes"</code> namespace</li>
+<li>Concepts in <code>"concepts"</code> namespace</li>
+<li>Relations in <code>"relations"</code> namespace</li>
+<li>Knowledge entries in <code>"entries"</code> namespace</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="tiered-caching"><a class="header" href="#tiered-caching">Tiered Caching</a></h1>
+<p>The <code>spine-cache</code> crate provides a three-level caching system optimized for agentic workloads.</p>
+<h2 id="architecture-2"><a class="header" href="#architecture-2">Architecture</a></h2>
+<pre><code class="language-text">┌─────────────────────────────────────────────────┐
+│                 TieredCache                      │
+│                                                  │
+│  GET:  L1 → miss → L2 → miss → L3 → miss → None│
+│  PUT:  Write to all tiers (write-through)        │
+│                                                  │
+│  ┌──────┐    ┌──────────┐    ┌───────────┐      │
+│  │  L1  │    │    L2    │    │    L3     │      │
+│  │ LRU  │    │  mmap'd  │    │  Remote   │      │
+│  │ RAM  │    │  files   │    │ delegate  │      │
+│  └──────┘    └──────────┘    └───────────┘      │
+└─────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="cache-tiers"><a class="header" href="#cache-tiers">Cache Tiers</a></h2>
+<h3 id="l1--in-memory-lru"><a class="header" href="#l1--in-memory-lru">L1 — In-Memory LRU</a></h3>
+<ul>
+<li><strong>Latency</strong>: ~10 ns</li>
+<li><strong>Capacity</strong>: Configurable max entries and byte size</li>
+<li><strong>TTL</strong>: Per-entry time-to-live</li>
+<li><strong>Eviction</strong>: Least-recently-used</li>
+</ul>
+<h3 id="l2--file-backed"><a class="header" href="#l2--file-backed">L2 — File-Backed</a></h3>
+<ul>
+<li><strong>Latency</strong>: ~1 μs</li>
+<li><strong>Storage</strong>: Memory-mapped files in configurable directory</li>
+<li><strong>Key Hashing</strong>: SHA-256 for filesystem-safe keys</li>
+</ul>
+<h3 id="l3--remote-trait"><a class="header" href="#l3--remote-trait">L3 — Remote (Trait)</a></h3>
+<ul>
+<li><strong>Latency</strong>: ~1 ms</li>
+<li><strong>Interface</strong>: <code>RemoteCache</code> trait for pluggable backends (Redis, Memcached, etc.)</li>
+</ul>
+<h2 id="behavior"><a class="header" href="#behavior">Behavior</a></h2>
+<ul>
+<li><strong>Read</strong>: Cascading miss from L1 → L2 → L3; on hit, promote to higher tier</li>
+<li><strong>Write</strong>: Write-through to all populated tiers</li>
+<li><strong>Invalidation</strong>: Per-key or namespace-wide clear</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="kubernetes-operator"><a class="header" href="#kubernetes-operator">Kubernetes Operator</a></h1>
+<p>The <code>spine-k8s</code> crate provides a Kubernetes operator for managing SPINE cluster deployments.</p>
+<h2 id="spinecluster-crd"><a class="header" href="#spinecluster-crd">SpineCluster CRD</a></h2>
+<pre><code class="language-yaml">apiVersion: spine.nervosys.ai/v1
+kind: SpineCluster
+metadata:
+  name: my-cluster
+spec:
+  replicas: 3
+  image: ghcr.io/nervosys/spine:latest
+  imagePullPolicy: IfNotPresent
+  resources:
+    cpu_request: "500m"
+    cpu_limit: "2"
+    memory_request: "256Mi"
+    memory_limit: "1Gi"
+  scaling:
+    min_replicas: 2
+    max_replicas: 10
+    target_cpu_percent: 70
+    target_memory_percent: 80
+    max_connections_per_node: 1000
+</code></pre>
+<h2 id="auto-scaling"><a class="header" href="#auto-scaling">Auto-Scaling</a></h2>
+<p>The operator monitors:</p>
+<ul>
+<li><strong>CPU utilization</strong>: Scale when average exceeds target percentage</li>
+<li><strong>Memory utilization</strong>: Scale when average exceeds target percentage</li>
+<li><strong>Connection count</strong>: Scale when connections per node exceed threshold</li>
+</ul>
+<p>Scaling decisions follow cooldown periods to prevent thrashing.</p>
+<h2 id="generated-manifests"><a class="header" href="#generated-manifests">Generated Manifests</a></h2>
+<p>The <code>ManifestGenerator</code> produces:</p>
+<ul>
+<li><strong>StatefulSet</strong>: Ordered pod deployment with persistent identity</li>
+<li><strong>Service</strong>: ClusterIP service for inter-pod communication</li>
+<li><strong>HPA</strong>: Horizontal Pod Autoscaler with CPU/memory targets</li>
+</ul>
+<h2 id="health-monitoring"><a class="header" href="#health-monitoring">Health Monitoring</a></h2>
+<p>Periodic health checks against each pod’s <code>/health</code> endpoint with configurable:</p>
+<ul>
+<li>Check interval</li>
+<li>Failure threshold before pod restart</li>
+<li>Success threshold for recovery</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="formal-verification"><a class="header" href="#formal-verification">Formal Verification</a></h1>
+<p>SPINE uses multiple formal verification techniques to ensure correctness of critical components.</p>
+<h2 id="tla--protocol-model-checking"><a class="header" href="#tla--protocol-model-checking">TLA+ — Protocol Model Checking</a></h2>
+<p><strong>File</strong>: <code>formal/tla/ChameleonProtocol.tla</code></p>
+<p>Models the Chameleon Protocol state machine with:</p>
+<ul>
+<li>Epoch monotonicity invariant</li>
+<li>Synchronized evolution between peers</li>
+<li>Morphology abstraction for latent-space transformations</li>
+<li>Decoy message generation</li>
+</ul>
+<p>Verified with TLC model checker (<code>ChameleonProtocol_MC.tla</code> configuration).</p>
+<h2 id="tamarin-prover--key-exchange"><a class="header" href="#tamarin-prover--key-exchange">Tamarin Prover — Key Exchange</a></h2>
+<p><strong>File</strong>: <code>formal/tamarin/SpineKeyExchange.spthy</code></p>
+<p>Models the X3DH + RLWE key exchange with 10 security lemmas:</p>
+<ul>
+<li>Session key secrecy</li>
+<li>Perfect forward secrecy (PFS)</li>
+<li>Key compromise impersonation (KCI) resistance</li>
+<li>Three security levels: Standard, Hardened, PostQuantum</li>
+</ul>
+<h2 id="kani--bounded-model-checking"><a class="header" href="#kani--bounded-model-checking">Kani — Bounded Model Checking</a></h2>
+<p><strong>File</strong>: <code>src/spine-kernel/src/kani_harnesses.rs</code></p>
+<p>15 verification harnesses for unsafe Rust code:</p>
+<ul>
+<li><strong>Allocators</strong>: BumpAllocator, SlabAllocator, ArenaAllocator bounds</li>
+<li><strong>Lock-free structures</strong>: SeqLock, LockFreeStack, AtomicFlags correctness</li>
+<li><strong>Ring buffers</strong>: SPSC/MPSC wraparound, capacity limits</li>
+<li><strong>SIMD</strong>: Dot product numerical bounds</li>
+</ul>
+<h2 id="cryptographic-audit"><a class="header" href="#cryptographic-audit">Cryptographic Audit</a></h2>
+<p><strong>File</strong>: <code>formal/audit/CRYPTO_AUDIT.md</code></p>
+<p>13 findings across severity levels:</p>
+<ul>
+<li>2 Critical (RLWE KEM, XOR cipher) — <strong>remediated</strong></li>
+<li>4 High (key evolution, SeqLock, ABA, mmap) — <strong>remediated</strong></li>
+<li>4 Medium (morphology HMAC, PoW, NIST params, nonces) — <strong>remediated</strong></li>
+<li>3 Low (compression oracle, constant-time, docs) — <strong>remediated</strong></li>
+</ul>
+<h2 id="misra-compliance"><a class="header" href="#misra-compliance">MISRA Compliance</a></h2>
+<p><strong>File</strong>: <code>formal/misra/MISRA_COMPLIANCE.md</code></p>
+<p>16 MISRA C:2012 rules mapped to Rust unsafe code with 8 documented deviations and Kani verification links.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="development-setup"><a class="header" href="#development-setup">Development Setup</a></h1>
+<h2 id="prerequisites-1"><a class="header" href="#prerequisites-1">Prerequisites</a></h2>
+<pre><code class="language-bash">rustup update stable
+rustup component add llvm-tools-preview  # For coverage
+cargo install cargo-llvm-cov             # Coverage tool
+cargo install cargo-fuzz                  # Fuzz testing
+cargo install mdbook                     # Documentation
+</code></pre>
+<h2 id="building"><a class="header" href="#building">Building</a></h2>
+<pre><code class="language-bash">cargo build --workspace
+cargo build --workspace --release
+</code></pre>
+<h2 id="running-tests"><a class="header" href="#running-tests">Running Tests</a></h2>
+<pre><code class="language-bash"># All tests
+cargo test --workspace
+
+# Specific crate
+cargo test -p spine-protocol
+
+# With output
+cargo test --workspace -- --nocapture
+</code></pre>
+<h2 id="linting"><a class="header" href="#linting">Linting</a></h2>
+<pre><code class="language-bash">cargo clippy --workspace --all-targets -- -D warnings
+</code></pre>
+<h2 id="code-coverage"><a class="header" href="#code-coverage">Code Coverage</a></h2>
+<pre><code class="language-bash"># HTML report
+./scripts/coverage.sh html
+
+# JSON summary
+./scripts/coverage.sh json
+
+# LCOV format
+./scripts/coverage.sh lcov
+</code></pre>
+<h2 id="fuzz-testing"><a class="header" href="#fuzz-testing">Fuzz Testing</a></h2>
+<pre><code class="language-bash">cd fuzz
+cargo fuzz run fuzz_parse_html -- -max_total_time=60
+cargo fuzz run fuzz_frame_decode -- -max_total_time=60
+cargo fuzz run fuzz_latent_vector -- -max_total_time=60
+cargo fuzz run fuzz_message_deser -- -max_total_time=60
+cargo fuzz run fuzz_frame_header -- -max_total_time=60
+</code></pre>
+<h2 id="documentation"><a class="header" href="#documentation">Documentation</a></h2>
+<pre><code class="language-bash"># Build mdBook docs
+cd docs &amp;&amp; mdbook build
+
+# Serve locally
+cd docs &amp;&amp; mdbook serve
+
+# Rust API docs
+cargo doc --workspace --no-deps --open
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="testing"><a class="header" href="#testing">Testing</a></h1>
+<h2 id="test-categories"><a class="header" href="#test-categories">Test Categories</a></h2>
+<h3 id="unit-tests"><a class="header" href="#unit-tests">Unit Tests</a></h3>
+<p>321+ tests across all crates:</p>
+<pre><code class="language-bash">cargo test --workspace
+</code></pre>
+<h3 id="property-based-tests"><a class="header" href="#property-based-tests">Property-Based Tests</a></h3>
+<p>41 properties using <code>proptest</code> across 4 crates:</p>
+<pre><code class="language-bash">cargo test --workspace -- proptest
+</code></pre>
+<h3 id="integration-tests"><a class="header" href="#integration-tests">Integration Tests</a></h3>
+<p>11 multi-session in-process tests:</p>
+<pre><code class="language-bash">cargo test -p spine-protocol --test '*'
+</code></pre>
+<h3 id="chaos-tests"><a class="header" href="#chaos-tests">Chaos Tests</a></h3>
+<p>13 tests for fault tolerance:</p>
+<pre><code class="language-bash">cargo test -p spine-protocol -- chaos
+</code></pre>
+<h3 id="fuzz-targets"><a class="header" href="#fuzz-targets">Fuzz Targets</a></h3>
+<p>5 <code>cargo-fuzz</code> targets:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Target</th><th>Input</th><th>Tests</th></tr>
+</thead>
+<tbody>
+<tr><td><code>fuzz_parse_html</code></td><td>Arbitrary HTML</td><td>Parser crash resistance</td></tr>
+<tr><td><code>fuzz_frame_decode</code></td><td>Arbitrary bytes</td><td>Frame decoder robustness</td></tr>
+<tr><td><code>fuzz_latent_vector</code></td><td>Arbitrary floats</td><td>Latent vector handling</td></tr>
+<tr><td><code>fuzz_message_deser</code></td><td>Arbitrary JSON</td><td>Message deserialization</td></tr>
+<tr><td><code>fuzz_frame_header</code></td><td>Arbitrary bytes</td><td>Header parsing</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="deterministic-replay"><a class="header" href="#deterministic-replay">Deterministic Replay</a></h3>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_protocol::replay::{TraceLog, ReplayVerifier};
+
+let mut log = TraceLog::new();
+// ... record messages ...
+let verifier = ReplayVerifier::new(&amp;log);
+verifier.verify()?;
+<span class="boring">}</span></code></pre>
+<h2 id="test-organization"><a class="header" href="#test-organization">Test Organization</a></h2>
+<pre><code>spine-*/
+├── src/
+│   └── lib.rs          # #[cfg(test)] mod tests { ... }
+├── tests/
+│   ├── proptest_*.rs   # Property-based tests
+│   └── integration_*.rs # Integration tests
+└── benches/
+    └── *.rs            # Criterion benchmarks
+</code></pre>
+<h2 id="coverage"><a class="header" href="#coverage">Coverage</a></h2>
+<p>Generate coverage reports:</p>
+<pre><code class="language-bash">./scripts/coverage.sh html
+open target/coverage/html/index.html
+</code></pre>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-c2a407aa.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

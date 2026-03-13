@@ -1,6 +1,7 @@
 // Allow dead code for protocol features designed for future extensions
 #![allow(dead_code)]
 
+pub mod negotiation;
 pub mod replay;
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
@@ -2504,13 +2505,13 @@ pub async fn connect_auto(
                 )
                 .await
                 {
-                    log::info!("Connected via QUIC to {}", addr);
+                    tracing::info!("Connected via QUIC to {}", addr);
                     return Ok(SpineConnection::from_quic(transport));
                 }
             }
 
             // Fallback to TCP
-            log::info!("QUIC unavailable, falling back to TCP for {}", addr);
+            tracing::info!("QUIC unavailable, falling back to TCP for {}", addr);
             let stream = tcp_fallback.await?;
             Ok(SpineConnection::from_tcp(stream))
         }

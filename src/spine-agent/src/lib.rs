@@ -176,7 +176,7 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
                     if attempt + 1 >= max_retries {
                         return Err(e);
                     }
-                    log::warn!(
+                    tracing::warn!(
                         "TLS connection attempt {} failed: {}. Retrying in {:?}...",
                         attempt + 1,
                         e,

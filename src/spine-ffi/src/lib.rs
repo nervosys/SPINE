@@ -699,3 +699,227 @@ mod tests {
         assert!(ptr.is_null());
     }
 }
+
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use std::ffi::{CStr, CString};
+    use std::thread;
+
+    // ---- Roundtrip Tests ----
+
+    #[test]
+    fn test_parse_html_roundtrip_complex() {
+        let html = CString::new(r#"<html>
+            <head><title>Complex Page</title></head>
+            <body>
+                <h1>Header</h1>
+                <div class="content">
+                    <p>Paragraph 1</p>
+                    <p>Paragraph 2</p>
+                    <a href="https://example.com">Link</a>
+                </div>
+            </body></html>"#).unwrap();
+        let ptr = unsafe { spine_parse_html(html.as_ptr()) };
+        assert!(!ptr.is_null(), "parse_html returned null for valid HTML");
+        let json_str = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        let ur: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        assert_eq!(ur["title"], "Complex Page");
+        unsafe { spine_free_string(ptr) };
+    }
+
+    #[test]
+    fn test_compile_hls_roundtrip_complex() {
+        let source = CString::new(r#"
+            let x = 10
+            let y = 20
+            state counter = 0
+            fn add(a, b) { a + b }
+        "#).unwrap();
+        let ptr = unsafe { spine_compile_hls(source.as_ptr()) };
+        assert!(!ptr.is_null(), "compile_hls returned null for valid HLS");
+        let json_str = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        let binary: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        assert!(binary["instructions"].is_array());
+        assert!(binary["instructions"].as_array().unwrap().len() > 0);
+        unsafe { spine_free_string(ptr) };
+    }
+
+    // ---- Error Propagation Tests ----
+
+    #[test]
+    fn test_error_propagation_chain() {
+        // Connect to invalid address should set error
+        let addr = CString::new("invalid:99999").unwrap();
+        let handle = unsafe { spine_connect(addr.as_ptr()) };
+        assert!(handle.is_null());
+        let err = spine_last_error();
+        assert!(!err.is_null(), "expected error after failed connect");
+        let msg = unsafe { CStr::from_ptr(err) }.to_str().unwrap();
+        assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn test_compile_hls_syntax_error_message() {
+        let source = CString::new("!!!invalid syntax{{{").unwrap();
+        let ptr = unsafe { spine_compile_hls(source.as_ptr()) };
+        // May return null or an error JSON depending on how the compiler handles it
+        if ptr.is_null() {
+            let err = spine_last_error();
+            assert!(!err.is_null());
+        } else {
+            unsafe { spine_free_string(ptr) };
+        }
+    }
+
+    // ---- Memory Safety Tests ----
+
+    #[test]
+    fn test_double_free_protection() {
+        let html = CString::new("<html><body>test</body></html>").unwrap();
+        let ptr = unsafe { spine_parse_html(html.as_ptr()) };
+        assert!(!ptr.is_null());
+        unsafe { spine_free_string(ptr) };
+        // Second free of a different allocation should be safe
+        // (we can't test true double-free safely, but null-free is safe)
+        unsafe { spine_free_string(std::ptr::null_mut()) };
+    }
+
+    #[test]
+    fn test_free_string_multiple_null() {
+        for _ in 0..100 {
+            unsafe { spine_free_string(std::ptr::null_mut()) };
+        }
+    }
+
+    // ---- Concurrent Access Tests ----
+
+    #[test]
+    fn test_concurrent_parse_html() {
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                thread::spawn(move || {
+                    let html = CString::new(format!(
+                        "<html><head><title>Thread {i}</title></head><body>Content {i}</body></html>"
+                    )).unwrap();
+                    let ptr = unsafe { spine_parse_html(html.as_ptr()) };
+                    assert!(!ptr.is_null(), "thread {i} got null");
+                    let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+                    unsafe { spine_free_string(ptr) };
+                    json
+                })
+            })
+            .collect();
+
+        for (i, h) in handles.into_iter().enumerate() {
+            let json = h.join().unwrap();
+            assert!(json.contains(&format!("Thread {i}")));
+        }
+    }
+
+    #[test]
+    fn test_concurrent_compile_hls() {
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                thread::spawn(move || {
+                    let src = CString::new(format!("let x{i} = {i}")).unwrap();
+                    let ptr = unsafe { spine_compile_hls(src.as_ptr()) };
+                    assert!(!ptr.is_null(), "thread {i} got null");
+                    let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+                    unsafe { spine_free_string(ptr) };
+                    assert!(json.contains("instructions"));
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_concurrent_version() {
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                thread::spawn(|| {
+                    let ptr = spine_version();
+                    assert!(!ptr.is_null());
+                    let v = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+                    assert_eq!(v, "1.0.0");
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    // ---- UTF-8 / Encoding Tests ----
+
+    #[test]
+    fn test_parse_html_unicode() {
+        let html = CString::new("<html><head><title>日本語テスト</title></head><body>Ünîcödé</body></html>").unwrap();
+        let ptr = unsafe { spine_parse_html(html.as_ptr()) };
+        assert!(!ptr.is_null());
+        let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        assert!(json.contains("日本語テスト"));
+        unsafe { spine_free_string(ptr) };
+    }
+
+    #[test]
+    fn test_parse_html_empty() {
+        let html = CString::new("").unwrap();
+        let ptr = unsafe { spine_parse_html(html.as_ptr()) };
+        // Empty string may return a valid minimal UR or null
+        if !ptr.is_null() {
+            unsafe { spine_free_string(ptr) };
+        }
+    }
+
+    #[test]
+    fn test_parse_html_large() {
+        let mut html = String::from("<html><body>");
+        for i in 0..1000 {
+            html.push_str(&format!("<p>Paragraph {i}</p>"));
+        }
+        html.push_str("</body></html>");
+        let chtml = CString::new(html).unwrap();
+        let ptr = unsafe { spine_parse_html(chtml.as_ptr()) };
+        assert!(!ptr.is_null());
+        let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
+        assert!(json.contains("Paragraph 999"));
+        unsafe { spine_free_string(ptr) };
+    }
+
+    // ---- Version Tests ----
+
+    #[test]
+    fn test_version_is_static() {
+        let ptr1 = spine_version();
+        let ptr2 = spine_version();
+        // Same static pointer
+        assert_eq!(ptr1, ptr2);
+    }
+
+    // ---- Null Input Edge Cases ----
+
+    #[test]
+    fn test_navigate_null_url() {
+        let rc = unsafe { spine_navigate(std::ptr::null_mut(), std::ptr::null()) };
+        assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn test_search_null_query() {
+        let ptr = unsafe { spine_search(std::ptr::null_mut(), std::ptr::null()) };
+        assert!(ptr.is_null());
+    }
+
+    #[test]
+    fn test_get_raw_html_null_handle() {
+        let ptr = unsafe { spine_get_raw_html(std::ptr::null_mut()) };
+        assert!(ptr.is_null());
+    }
+}

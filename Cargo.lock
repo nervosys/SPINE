@@ -6481,6 +6481,7 @@ dependencies = [
  "spine-protocol",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]
@@ -6558,6 +6559,7 @@ dependencies = [
  "spine-protocol",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -6691,6 +6693,7 @@ dependencies = [
  "env_logger",
  "log",
  "pollster",
+ "tracing",
  "wgpu 23.0.1",
 ]
 
@@ -6823,6 +6826,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-test",
+ "tracing",
  "uuid",
  "zstd 0.12.4",
 ]

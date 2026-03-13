@@ -11,6 +11,7 @@ default = ["quic"]
 quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 
 [dependencies]
+tracing = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

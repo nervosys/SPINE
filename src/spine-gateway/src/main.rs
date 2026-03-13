@@ -596,14 +596,14 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{gateway_port}")).await?;
-    log::info!("SPINE Gateway listening on http://0.0.0.0:{gateway_port}");
-    log::info!("Swagger UI: http://0.0.0.0:{gateway_port}/swagger-ui/");
-    log::info!("Backend: {}:{}", config.server.host, config.server.port);
+    tracing::info!("SPINE Gateway listening on http://0.0.0.0:{gateway_port}");
+    tracing::info!("Swagger UI: http://0.0.0.0:{gateway_port}/swagger-ui/");
+    tracing::info!("Backend: {}:{}", config.server.host, config.server.port);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
-            log::info!("Gateway shutting down...");
+            tracing::info!("Gateway shutting down...");
         })
         .await?;
 

@@ -70,6 +70,7 @@ pub mod stigmergy;
 pub mod topology;
 pub mod tracing;
 pub mod visualizer;
+pub mod workflow;
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -2254,22 +2255,22 @@ impl AgentServer {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let listener = TcpListener::bind(self.addr).await?;
-        log::info!("Agent server listening on {}", self.addr);
+        ::tracing::info!("Agent server listening on {}", self.addr);
 
         while self.running.load(std::sync::atomic::Ordering::SeqCst) {
             match listener.accept().await {
                 Ok((stream, addr)) => {
-                    log::debug!("Agent connection from {}", addr);
+                    ::tracing::debug!("Agent connection from {}", addr);
                     let runtime = self.runtime.clone();
                     let registry = self.registry.clone();
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_connection(stream, runtime, registry).await {
-                            log::error!("Connection error: {}", e);
+                            ::tracing::error!("Connection error: {}", e);
                         }
                     });
                 }
                 Err(e) => {
-                    log::error!("Accept error: {}", e);
+                    ::tracing::error!("Accept error: {}", e);
                 }
             }
         }

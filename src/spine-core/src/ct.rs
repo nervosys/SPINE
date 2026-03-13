@@ -371,7 +371,7 @@ impl CtPolicy {
             let msg = "No SCTs found in certificate".to_string();
             return match self.enforcement {
                 CtEnforcement::BestEffort => {
-                    log::warn!("CT: {}", msg);
+                    tracing::warn!("CT: {}", msg);
                     Ok(())
                 }
                 CtEnforcement::Enforced => Err(msg),
@@ -397,7 +397,7 @@ impl CtPolicy {
             );
             return match self.enforcement {
                 CtEnforcement::BestEffort => {
-                    log::warn!("CT: {}", msg);
+                    tracing::warn!("CT: {}", msg);
                     Ok(())
                 }
                 CtEnforcement::Enforced => Err(msg),
@@ -405,7 +405,7 @@ impl CtPolicy {
             };
         }
 
-        log::info!(
+        tracing::info!(
             "CT: Certificate has {}/{} valid SCTs from: {}",
             valid_count,
             results.len(),

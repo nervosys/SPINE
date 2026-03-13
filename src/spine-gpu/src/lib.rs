@@ -916,18 +916,18 @@ impl GpuAccelerator {
         {
             match wgpu_backend::WgpuBackend::new() {
                 Ok(gpu) => {
-                    log::info!("GPU accelerator initialized: {}", gpu.device_info().name);
+                    tracing::info!("GPU accelerator initialized: {}", gpu.device_info().name);
                     return Self {
                         backend: Box::new(gpu),
                     };
                 }
                 Err(e) => {
-                    log::warn!("GPU not available, falling back to CPU: {}", e);
+                    tracing::warn!("GPU not available, falling back to CPU: {}", e);
                 }
             }
         }
 
-        log::info!("Using CPU compute backend");
+        tracing::info!("Using CPU compute backend");
         Self {
             backend: Box::new(CpuBackend::new()),
         }

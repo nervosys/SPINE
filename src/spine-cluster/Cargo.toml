@@ -7,6 +7,7 @@ authors.workspace = true
 description = "Distributed agent coordination for SPINE"
 
 [dependencies]
+tracing = { workspace = true }
 spine-protocol = { path = "../spine-protocol" }
 tokio.workspace = true
 serde.workspace = true

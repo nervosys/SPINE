@@ -7,6 +7,7 @@ description = "GPU-accelerated neural encoding for SPINE"
 license.workspace = true
 
 [dependencies]
+tracing = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 bytemuck = { version = "1", features = ["derive"] }

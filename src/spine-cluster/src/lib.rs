@@ -653,7 +653,7 @@ impl ClusterNode {
             }
         });
 
-        log::info!("Cluster node {} started on {}", self.id, self.address);
+        tracing::info!("Cluster node {} started on {}", self.id, self.address);
         Ok(())
     }
 
@@ -849,7 +849,7 @@ impl ClusterNode {
 
     /// Join an existing cluster
     pub async fn join_cluster(&self, seed_addr: SocketAddr) -> Result<()> {
-        log::info!("Joining cluster via seed node {}", seed_addr);
+        tracing::info!("Joining cluster via seed node {}", seed_addr);
 
         let stream = TcpStream::connect(seed_addr)
             .await
@@ -870,7 +870,7 @@ impl ClusterNode {
 
         // In a real implementation, we'd serialize and send the message
         // For now, just log
-        log::info!("Sent join request: {:?}", join_msg);
+        tracing::info!("Sent join request: {:?}", join_msg);
         drop(stream);
 
         Ok(())
@@ -1006,7 +1006,7 @@ impl ClusterNode {
         let current_term = *term;
         drop(term);
 
-        log::info!("Starting election for term {}", current_term);
+        tracing::info!("Starting election for term {}", current_term);
 
         // In a simplified implementation, the node with lowest ID wins
         let mut lowest_id = self.id;
@@ -1021,7 +1021,7 @@ impl ClusterNode {
         if is_leader {
             let mut leader = self.leader.write().await;
             *leader = Some(self.id);
-            log::info!(
+            tracing::info!(
                 "This node ({}) elected as leader for term {}",
                 self.id,
                 current_term
@@ -1029,7 +1029,7 @@ impl ClusterNode {
         } else {
             let mut leader = self.leader.write().await;
             *leader = Some(lowest_id);
-            log::info!(
+            tracing::info!(
                 "Node {} elected as leader for term {}",
                 lowest_id,
                 current_term
@@ -1041,7 +1041,7 @@ impl ClusterNode {
 
     /// Gracefully leave the cluster
     pub async fn leave(&self) -> Result<()> {
-        log::info!("Node {} leaving cluster", self.id);
+        tracing::info!("Node {} leaving cluster", self.id);
 
         // Update own status
         if let Some(mut node) = self.nodes.get_mut(&self.id) {

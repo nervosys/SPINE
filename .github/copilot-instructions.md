@@ -388,13 +388,22 @@
 
 ### Phase 37: Structured Data Extraction $([char]0x2714)
 
+### Phase 38: Cross-Cutting Enhancements $([char]0x2714)
+
+- [x] **Workflow orchestration** (`src/spine-agentic/src/workflow.rs`): DAG-based multi-step agent pipelines with StepKind (10 variants), WorkflowBuilder with cycle detection, WorkflowEngine with start/complete/fail/cancel/pause, event log, SHA-256 definition hashing, templates
+- [x] **Protocol version negotiation** (`src/spine-protocol/src/negotiation.rs`): VersionOffer/VersionResponse handshake, 13 ProtocolFeature variants, feature intersection, magic bytes (SPNE), length-prefixed serialization
+- [x] **Structured tracing migration**: Replaced all `log::` macros with `tracing::` across 8 files (spine-agent, spine-agentic, spine-cluster, spine-core, spine-gateway, spine-gpu, spine-protocol, spine-transport)
+- [x] **Cross-language FFI integration tests**: 16 new tests (roundtrip, error propagation, memory safety, concurrent access, UTF-8/Unicode, large payloads)
+- [x] **Benchmarks CI job**: Criterion benchmarks in CI with github-action-benchmark regression detection, 150% alert threshold
+- [x] **970 tests passing**: +55 tests, 0 failures, 0 Clippy warnings
+
 - [x] **ExtractionSchema**: Declarative schema with CSS selectors, field types, transforms
 - [x] **SchemaRegistry**: Multi-schema registration and extraction
 - [x] **FieldType system**: Text, Integer, Float, Boolean, Url, List, nested Record
 - [x] **Transform pipeline**: Trim, Lowercase, Uppercase, RegexCapture
 - [x] **Attribute extraction**: Element attributes (href, src, data-*) or text content
 - [x] **Nested records**: Recursive sub-document extraction via Record type
-- [x] **915 tests passing**: +18 extraction tests, 0 failures, 0 Clippy warnings
+- [x] **970 tests passing**: +18 extraction tests (base), +55 Phase 38, 0 failures, 0 Clippy warnings
 
 ### Performance Benchmarks
 

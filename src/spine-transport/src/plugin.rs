@@ -450,14 +450,14 @@ impl TransportPlugin for LoggingPlugin {
     fn on_send(&self, frame: &mut Frame) -> TransportResult<()> {
         match self.level {
             LogLevel::Summary => {
-                log::debug!(
+                tracing::debug!(
                     "[plugin:logging] SEND seq={} len={}",
                     frame.header.sequence,
                     frame.payload.len()
                 );
             }
             LogLevel::Headers => {
-                log::debug!(
+                tracing::debug!(
                     "[plugin:logging] SEND seq={} stream={} flags={:?} len={}",
                     frame.header.sequence,
                     frame.header.stream_id,
@@ -466,7 +466,7 @@ impl TransportPlugin for LoggingPlugin {
                 );
             }
             LogLevel::Verbose => {
-                log::info!(
+                tracing::info!(
                     "[plugin:logging] SEND seq={} stream={} flags={:?} len={} payload_hash={:x}",
                     frame.header.sequence,
                     frame.header.stream_id,
@@ -482,14 +482,14 @@ impl TransportPlugin for LoggingPlugin {
     fn on_recv(&self, frame: &mut Frame) -> TransportResult<()> {
         match self.level {
             LogLevel::Summary => {
-                log::debug!(
+                tracing::debug!(
                     "[plugin:logging] RECV seq={} len={}",
                     frame.header.sequence,
                     frame.payload.len()
                 );
             }
             LogLevel::Headers => {
-                log::debug!(
+                tracing::debug!(
                     "[plugin:logging] RECV seq={} stream={} flags={:?} len={}",
                     frame.header.sequence,
                     frame.header.stream_id,
@@ -498,7 +498,7 @@ impl TransportPlugin for LoggingPlugin {
                 );
             }
             LogLevel::Verbose => {
-                log::info!(
+                tracing::info!(
                     "[plugin:logging] RECV seq={} stream={} flags={:?} len={} payload_hash={:x}",
                     frame.header.sequence,
                     frame.header.stream_id,
@@ -512,12 +512,12 @@ impl TransportPlugin for LoggingPlugin {
     }
 
     fn on_connect(&self) -> TransportResult<()> {
-        log::info!("[plugin:logging] CONNECTION ESTABLISHED");
+        tracing::info!("[plugin:logging] CONNECTION ESTABLISHED");
         Ok(())
     }
 
     fn on_disconnect(&self) -> TransportResult<()> {
-        log::info!("[plugin:logging] CONNECTION CLOSED");
+        tracing::info!("[plugin:logging] CONNECTION CLOSED");
         Ok(())
     }
 }
