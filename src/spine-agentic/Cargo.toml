@@ -34,7 +34,7 @@ regex = "1.10"
 futures = "0.3"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 sha2 = "0.10"
 
 [[bench]]
