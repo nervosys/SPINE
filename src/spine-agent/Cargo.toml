@@ -27,3 +27,9 @@ rustls-pemfile.workspace = true
 rustls-native-certs = "0.6"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
+
+
+[dev-dependencies]
+spine-nostd = { path = "../spine-nostd" }
+spine-embedded = { path = "../spine-embedded" }
+spine-kernel = { path = "../spine-kernel" }

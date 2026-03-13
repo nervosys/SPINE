@@ -358,8 +358,24 @@
 - [x] **io_uring transport backend** (`src/spine-transport/src/uring_backend.rs`): `UringBackend` wrapping `UringRing` with per-connection state tracking, batched `submit_send`/`submit_recv`, `process_completions` with success/error callbacks, `UringBackendStats` (AtomicU64 counters), feature-gated `#[cfg(all(target_os = "linux", feature = "io-uring"))]`
 - [x] **Formal verification of mesh routing** (`formal/tla/MeshRouting.tla`): TLA+ specification modeling MeshNode routing tables, multi-hop message delivery, gossip peer discovery, TTL-based forwarding; 7 invariants (TTLMonotonicity, DeduplicationInvariant, PathBounded, NoRoutingLoops, ValidRoutes, SelfRouteZero, DeliveryCorrectness); 2 temporal properties (EventualResolution, GossipConvergence); model checking config (`MeshRouting_MC.tla`)
 - [x] **Chaos engineering framework** (`src/spine-agentic/src/chaos.rs`): 10 `FaultType` variants (MessageDrop/Delay/Corruption, AgentCrash/Hang, NetworkPartition, ResourceExhaustion, ClockSkew, MessageDuplicate, BandwidthThrottle), `ChaosScenario` with SHA-256 integrity verification, 4 predefined scenarios (rolling_crashes, network_split, gradual_degradation, combined_faults), `FaultInjector` with activation/expiry/audit log, `CampaignRunner` with anomaly detector integration and per-step verdict evaluation
-- [x] **784 tests passing**: +52 tests (30 spine-nostd + 20 chaos + 2 doc), 0 failures, 0 Clippy warnings
+- [x] **797 tests passing**: +65 tests (30 spine-nostd + 20 chaos + 13 E2E + 2 doc), 0 failures, 0 Clippy warnings
 
+
+### Phase 33: E2E Integration Testing ✅
+
+- [x] **13 end-to-end TCP tests** (`src/spine-protocol/tests/e2e_protocol.rs`): Real TCP socket tests — request/response, ping-pong, 10 concurrent sessions, encrypted roundtrip, 20-message encrypted burst, chameleon send-path, synchronized morph, nostd frame header roundtrip, embedded message compat, embedded latent vector compat, rapid reconnect (5 cycles), 100-message stress, all command types
+- [x] **797 tests passing**: +13 tests, 0 failures, 0 Clippy warnings
+
+### Phase 34: Performance Regression Suite ✅
+
+- [x] **Criterion benchmarks** (`src/spine-protocol/benches/hot_path_bench.rs`): Protocol serde, roundtrip (ping-pong, encrypted, chameleon AEAD, 10-msg burst), latent vector (8/64/256/1024 dims)
+- [x] **Benchmark scripts**: `scripts/bench.ps1` (Windows) and `scripts/bench.sh` (Linux/macOS) for automated regression tracking
+
+### Phase 35: Real-World Agent Demos ✅
+
+- [x] **Offline demo** (`src/spine-agent/examples/offline_demo.rs`): 6-capability standalone demo (HTML parsing, HLS compilation, WASM execution, embedded agent, latent vectors, knowledge graph) — no server needed
+- [x] **Research swarm** (`src/spine-agent/examples/research_swarm.rs`): Multi-agent collaborative web research with coordinator, 3 specialist researchers, and result aggregation
+- [x] **Demo script** (`scripts/demo.ps1`): Full walkthrough with build verification, offline demo, CLI init
 ### Performance Benchmarks
 
 | Component                    | Throughput       |

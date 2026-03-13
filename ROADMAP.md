@@ -375,6 +375,24 @@
 - [x] ROADMAP: Phases 28-32 marked complete, Future Ecosystem items resolved
 - [x] 784 tests passing across 28 crates, 0 failures, 0 Clippy warnings
 
+### Phase 33: End-to-End Integration Testing
+
+- [x] **13 E2E tests** (`src/spine-protocol/tests/e2e_protocol.rs`): TCP request/response, ping/pong, concurrent sessions (10x5), encrypted roundtrip, encrypted multi-message, chameleon send path, morph mid-session, nostd frame header, embedded message compat, latent vector compat, rapid reconnect, stress 100 messages, all BrowserCommand variants
+- [x] Real TCP transport (`TcpListener::bind("127.0.0.1:0")`) with random port allocation
+- [x] Cross-crate interop: spine-protocol + spine-nostd + spine-embedded
+
+### Phase 34: Performance Regression Suite
+
+- [x] **Criterion benchmarks** (`src/spine-protocol/benches/hot_path_bench.rs`): Protocol serde, ping/pong roundtrip, encrypted roundtrip, chameleon AEAD, latent vector serialization (8/64/256/1024 dimensions)
+- [x] **Benchmark scripts**: `scripts/bench.ps1` (PowerShell), `scripts/bench.sh` (Bash) with baseline save/compare modes
+
+### Phase 35: Real-World Agent Demos
+
+- [x] **Offline demo** (`src/spine-agent/examples/offline_demo.rs`): 6 capabilities (parser, compiler, protocol, chameleon, fixed-point, embedded agent) with no server required
+- [x] **Research swarm** (`src/spine-agent/examples/research_swarm.rs`): Multi-agent collaborative web research with knowledge aggregation
+- [x] **Demo script** (`scripts/demo.ps1`): Full walkthrough (build, init, server, benchmark, research swarm, cleanup)
+- [x] 797 tests passing across 28 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks

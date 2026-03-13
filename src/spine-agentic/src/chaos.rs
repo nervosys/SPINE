@@ -775,7 +775,7 @@ mod tests {
         let sid = Uuid::new_v4();
 
         injector.inject(
-            FaultType::AgentCrash { agent_id: agent.clone() },
+            FaultType::AgentCrash { agent_id: agent },
             60_000,
             sid,
             0,
@@ -795,7 +795,7 @@ mod tests {
 
         injector.inject(
             FaultType::NetworkPartition {
-                isolated: vec![a1.clone(), a2.clone()],
+                isolated: vec![a1, a2],
             },
             60_000,
             sid,

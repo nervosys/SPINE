@@ -1053,12 +1053,12 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (784 tests)
+### Test Summary (797 tests)
 
 | Crate           | Tests | Description                                              |
 | --------------- | ----- | -------------------------------------------------------- |
 | spine-agentic   | 207   | Lifecycle, sandbox, scheduler, contracts, mesh, swarm    |
-| spine-protocol  | 67    | Chameleon protocol, chaos, integration, property         |
+| spine-protocol  | 80    | Chameleon protocol, chaos, integration, property         |
 | spine-transport | 57    | Zero-copy I/O, BBR, connection pooling, property         |
 | spine-crypto    | 52    | RLWE, ML-KEM, Titans predictor, MIRAS, property         |
 | spine-cluster   | 37    | Load balancing, session management, Sybil resistance     |
@@ -1066,7 +1066,7 @@ cargo test -p spine-crypto
 | spine-kernel    | 35    | SIMD, allocators, atomics, ring buffers                  |
 | spine-stream    | 35    | Reactive streams, multiplexing, flow                     |
 | spine-nostd     | 30    | Fixed-point math, FNV hashing, frame codec               |
-| spine-wasm      | 28    | HLB compilation, execution, stack ops                    |
+| spine-wasm      | 30    | HLB compilation, execution, stack ops                    |
 | spine-embedded  | 24    | Agent runtime, ring buffers, routing, watchdog           |
 | spine-compiler  | 21    | HLS parsing, type checking, compilation                  |
 | spine-neural    | 19    | VAE, attention, memory variants                          |
