@@ -261,6 +261,30 @@ jobs:
           path: target/doc
 
 
+  # -- Helm Chart Validation -------------------------------------------------
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.0
+
+      - name: Lint chart
+        run: helm lint deploy/kubernetes/spine
+
+      - name: Template render (default values)
+        run: helm template spine-test deploy/kubernetes/spine > /dev/null
+
+      - name: Template render (custom values)
+        run: |
+          helm template spine-test deploy/kubernetes/spine \
+            --set replicaCount=3 \
+            --set image.tag=ci-test \
+            --set autoscaling.enabled=true > /dev/null
+
   # -- Benchmarks (regression detection)  ------------------------------------
   bench:
     runs-on: ubuntu-latest

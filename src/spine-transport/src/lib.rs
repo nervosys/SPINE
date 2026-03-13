@@ -44,6 +44,7 @@ pub mod congestion;
 pub mod connection;
 pub mod frame;
 pub mod metrics;
+pub mod marketplace;
 pub mod plugin;
 pub mod pool;
 pub mod websocket;

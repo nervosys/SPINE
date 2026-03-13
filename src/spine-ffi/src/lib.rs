@@ -742,7 +742,7 @@ mod integration_tests {
         let json_str = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
         let binary: serde_json::Value = serde_json::from_str(json_str).unwrap();
         assert!(binary["instructions"].is_array());
-        assert!(binary["instructions"].as_array().unwrap().len() > 0);
+        assert!(!binary["instructions"].as_array().unwrap().is_empty());
         unsafe { spine_free_string(ptr) };
     }
 

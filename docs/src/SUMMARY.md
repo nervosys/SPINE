@@ -43,6 +43,12 @@
 - [Tiered Caching](./internals/caching.md)
 - [Kubernetes Operator](./internals/kubernetes.md)
 - [Formal Verification](./internals/formal.md)
+- [Ontology & Discovery](./internals/ontology.md)
+- [Structured Extraction](./internals/extraction.md)
+- [Workflow Orchestration](./internals/workflow.md)
+- [Protocol Negotiation](./internals/negotiation.md)
+- [Mesh Networking](./internals/mesh.md)
+- [Observability & Debugging](./internals/observability.md)
 
 # Contributing
 
