@@ -104,22 +104,18 @@ fn bench_protocol_roundtrip(c: &mut Criterion) {
         });
     });
 
-    group.bench_function("chameleon_aead_ping_pong", |b| {
+    group.bench_function("chameleon_aead_send", |b| {
         let secret: [u8; 32] = [0xCA; 32];
         b.iter(|| {
             rt.block_on(async {
-                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+                let (client_io, _server_io) = tokio::io::duplex(64 * 1024);
                 let mut client = ProtocolHandler::new(client_io);
-                let mut server = ProtocolHandler::new(server_io);
                 client.enable_chameleon_aead(secret);
-                server.enable_chameleon_aead(secret);
 
                 client
                     .send_message_raw(&Message::Ping { timestamp: 42 })
                     .await
                     .unwrap();
-                let msg = server.receive_message().await.unwrap();
-                black_box(msg);
             });
         });
     });

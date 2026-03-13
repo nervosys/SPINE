@@ -391,7 +391,18 @@
 - [x] **Offline demo** (`src/spine-agent/examples/offline_demo.rs`): 6 capabilities (parser, compiler, protocol, chameleon, fixed-point, embedded agent) with no server required
 - [x] **Research swarm** (`src/spine-agent/examples/research_swarm.rs`): Multi-agent collaborative web research with knowledge aggregation
 - [x] **Demo script** (`scripts/demo.ps1`): Full walkthrough (build, init, server, benchmark, research swarm, cleanup)
-- [x] 797 tests passing across 28 crates, 0 failures, 0 Clippy warnings
+- [x] 816 tests passing across 28 crates, 0 failures, 0 Clippy warnings
+
+### Phase 36: Complete Agent Discoverability Ontology
+
+- [x] **ontology_vocab module** (`src/spine-agentic/src/ontology_vocab.rs`): 230+ hierarchical terms across 16 categories
+- [x] **Capability taxonomy**: 9 top-level domains (web, NLP, data, compute, security, communication, knowledge, swarm, specialized) with 150+ leaf terms
+- [x] **Role vocabulary**: 15 agent roles (coordinator, worker, researcher, validator, monitor, gateway, archivist, sentinel, scout, mediator, specialist, generalist, learner, teacher, auditor)
+- [x] **Pre-built ontologies**: 6 role-specific ontologies (web researcher, security sentinel, IoT edge, data pipeline, swarm coordinator, ML inference)
+- [x] **QoS/Security/Hardware terms**: 25 descriptors for quality-of-service, security properties, and runtime constraints
+- [x] **Protocol + I/O + Domain terms**: 40 terms for interaction protocols, I/O formats, and knowledge domains
+- [x] **Criterion benchmarks**: Performance baselines established for protocol hot paths
+- [x] 816 tests passing across 28 crates, 0 failures, 0 Clippy warnings
 
 ------
 

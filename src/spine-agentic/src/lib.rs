@@ -62,6 +62,7 @@ pub mod federation;
 pub mod identity;
 pub mod lifecycle;
 pub mod mesh;
+pub mod ontology_vocab;
 pub mod replay;
 pub mod sandbox;
 pub mod scheduler;
