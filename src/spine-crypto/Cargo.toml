@@ -21,4 +21,4 @@ subtle = "2.5"
 ml-kem = "0.2"
 
 [dev-dependencies]
-proptest = "1.4"
+proptest = "1.11"
