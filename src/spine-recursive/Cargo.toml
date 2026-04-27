@@ -19,7 +19,7 @@ async-trait = "0.1"
 tracing = "0.1"
 dashmap = "5.5"
 chrono = { version = "0.4", features = ["serde"] }
-regex = "1.10"
+regex = "1.12"
 
 # HTTP client for real LLM API dispatchers
 reqwest = { version = "0.12", features = [

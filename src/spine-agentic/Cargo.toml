@@ -31,7 +31,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5.5"
 petgraph = "0.6"
 url = { version = "2", features = ["serde"] }
-regex = "1.10"
+regex = "1.12"
 futures = "0.3"
 
 [dev-dependencies]
