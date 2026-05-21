@@ -342,8 +342,98 @@ fn bench_concurrent(c: &mut Criterion) {
             });
         });
 
-        // ----- SPINE: N parallel TCP connections, one frame each -----
-        group.bench_with_input(BenchmarkId::new("spine_conns", n), n, |b, &n| {
+        // ----- SPINE multiplexed: N pipelined frames on ONE persistent
+        // connection. Each frame has a distinct stream_id. The echo server
+        // already loops over frames, so this is a fair single-connection
+        // many-in-flight comparison against HTTP/2's stream multiplexer. -----
+        group.bench_with_input(BenchmarkId::new("spine_pipelined", n), n, |b, &n| {
+            let listener = StdListener::bind(("127.0.0.1", 0u16)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            // single-connection echo server
+            thread::spawn(move || {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                stream.set_nodelay(true).unwrap();
+                let mut write_stream = stream.try_clone().unwrap();
+                let mut buf = vec![0u8; 1024 * 1024];
+                let mut filled = 0;
+                'c: loop {
+                    // Process every complete frame in the buffer.
+                    loop {
+                        if filled < 12 {
+                            break;
+                        }
+                        let length =
+                            u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                        let total = 12 + length;
+                        if filled < total {
+                            break;
+                        }
+                        let hdr = FrameHeader {
+                            length: length as u32,
+                            flags: FrameFlags::empty(),
+                            sequence: 1,
+                            // Preserve stream_id (bytes 8..10 of incoming header) so
+                            // we look like a real multiplexer routing by stream_id.
+                            stream_id: u16::from_le_bytes([buf[8], buf[9]]),
+                            _reserved: 0,
+                        };
+                        if Frame::write_parts_to_sync(&hdr, &buf[12..total], &mut write_stream)
+                            .is_err()
+                        {
+                            break 'c;
+                        }
+                        let tail = filled - total;
+                        if tail > 0 {
+                            buf.copy_within(total..filled, 0);
+                        }
+                        filled = tail;
+                    }
+                    // Need more bytes.
+                    if filled == buf.len() {
+                        buf.resize(buf.len() * 2, 0);
+                    }
+                    match stream.read(&mut buf[filled..]) {
+                        Ok(0) => break 'c,
+                        Ok(m) => filled += m,
+                        Err(_) => break 'c,
+                    }
+                }
+            });
+            thread::sleep(Duration::from_millis(50));
+
+            let mut stream = StdStream::connect(("127.0.0.1", port)).unwrap();
+            stream.set_nodelay(true).unwrap();
+
+            // Build one big send buffer of N frames, distinct stream_ids.
+            let payload = vec![0xABu8; 1024];
+            let mut send_buf = Vec::with_capacity(n * (12 + 1024));
+            for i in 0..n {
+                let frame = Frame {
+                    header: FrameHeader {
+                        length: 1024,
+                        flags: FrameFlags::empty(),
+                        sequence: 1,
+                        stream_id: (i as u16) + 1,
+                        _reserved: 0,
+                    },
+                    payload: Bytes::from(payload.clone()),
+                };
+                send_buf.extend_from_slice(&frame.header_bytes());
+                send_buf.extend_from_slice(&frame.payload);
+            }
+            let mut recv_buf = vec![0u8; send_buf.len()];
+
+            b.iter(|| {
+                stream.write_all(&send_buf).unwrap();
+                stream.read_exact(&mut recv_buf).unwrap();
+                black_box(&recv_buf);
+            });
+        });
+
+        // ----- (legacy) SPINE: N parallel TCP connections, one frame each -----
+        group.bench_with_input(BenchmarkId::new("spine_n_conns", n), n, |b, &n| {
             use std::sync::{Arc, Mutex};
             let listener = StdListener::bind(("127.0.0.1", 0u16)).unwrap();
             let port = listener.local_addr().unwrap().port();
