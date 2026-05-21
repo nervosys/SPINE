@@ -123,6 +123,40 @@ flow-control accounting (window updates, `release_capacity` calls), HPACK
 header compression overhead, and the heavier per-stream state machine vs
 SPINE's 12-byte fixed binary header.
 
+### 2.6.1 The honest qualification: concurrent multiplexed streams
+
+The HTTP/2 win above is for **single-stream-at-a-time**. HTTP/2's design point
+is many concurrent streams, so the comparison was extended with N parallel
+roundtrips on a single connection (HTTP/2) vs N parallel roundtrips on N
+persistent TCP connections (SPINE, since the production client-side
+multiplexer that drives stream_id isn't easily exercised from a criterion
+bench). 1 KB payload, same loopback:
+
+| N concurrent | HTTP/2 (one conn)    | SPINE (N conns)      | Winner             |
+| ------------ | -------------------- | -------------------- | ------------------ |
+| 4            | 5.7 K req/s          | 6.7 K req/s          | SPINE 1.18×        |
+| 16           | 11.9 K req/s         | 5.1 K req/s          | **HTTP/2 2.31×**   |
+| 64           | 16.7 K req/s         | 5.5 K req/s          | **HTTP/2 3.02×**   |
+
+**Reading**: at low concurrency (≤4) the single-stream win carries over, but
+at high concurrency HTTP/2 pulls ahead by 2.3–3.0×. This is **not** evidence
+that HTTP/2's protocol is more efficient than SPINE's — the SPINE binary
+format has a `stream_id` field built for exactly this case. It is evidence
+that **HTTP/2's connection multiplexer is more efficient than a
+thread-per-connection scatter-gather** in this benchmark harness. Adding a
+proper SPINE client-side multiplexer (one TCP connection, N logical streams)
+would likely close most of the gap, but writing one from inside a bench was
+out of scope for this audit.
+
+So the honest one-paragraph claim, including this qualification:
+
+> SPINE outperforms HTTP/2 by 1.5–1.9× on latency and 2.3–2.5× on throughput
+> for single-stream workloads on a persistent connection. Under
+> highly-concurrent multiplexed workloads (16+ in-flight requests on one
+> conn), today's deployable SPINE — multiple TCP connections — loses 2.3–3.0×
+> to HTTP/2's native multiplexer. SPINE has a stream_id field designed to
+> close this gap; a client-side multiplexer to exercise it is future work.
+
 ### 2.7 Connectivity (incomplete)
 
 The original `network_realistic.rs` `concurrent_connections` bench hung in this run (spawns many TCP listeners in a tight loop; Windows TIME_WAIT exhaustion is the likely cause). The new `spine_vs_www.rs` includes a `connection_setup` group that does new-conn-per-req vs multiplexed-stream, but it was excluded from this run for the same hang-risk reason. **Connectivity is the dimension with the weakest measured story** in this audit.
@@ -142,7 +176,9 @@ The honest claim: SPINE's connectivity model is **equivalent in shape to HTTP/2*
 | ------------------------ | ------------ | -------------- | -------------------------------- |
 | Raw TCP echo (no proto)  | ~parity      | ~parity        | Protocol overhead ≈ noise floor  |
 | Real HTTP/1.1            | 1.74–1.87×   | 1.32–1.84×     | Textual headers — soft target    |
-| Real HTTP/2 (h2 crate)   | **1.47–1.93×** | **2.29–2.52×** | **Modern multiplexed binary**    |
+| Real HTTP/2, single-stream | **1.47–1.93×** | **2.29–2.52×** | Single in-flight req on one TCP  |
+| Real HTTP/2, N=16 concurrent | — | **HTTP/2 wins 2.3×** | SPINE-via-N-conns loses (multiplexer gap) |
+| Real HTTP/2, N=64 concurrent | — | **HTTP/2 wins 3.0×** | Same; needs SPINE client multiplexer |
 
 ## Part 3 — How this maps to the ROADMAP's claims
 

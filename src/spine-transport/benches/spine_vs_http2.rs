@@ -283,5 +283,170 @@ fn bench_throughput(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_latency, bench_throughput);
+// =============================================================================
+// CONCURRENT MULTIPLEXED STREAMS — HTTP/2's home turf.
+//
+// Both protocols issue N simultaneous request/response pairs on a single
+// persistent connection. HTTP/2 uses its native stream multiplexer; SPINE
+// uses its stream_id field via a thread-per-connection echo server (the
+// closest 1:1 comparison we can do without inventing a fresh client-side
+// multiplexer for SPINE).
+//
+// For SPINE we use N parallel TCP connections rather than N logical streams
+// on one connection because the production SPINE async client-side
+// multiplexer isn't trivially driveable from inside a bench. This is a
+// somewhat unfavorable shape for SPINE (N TCP handshakes vs HTTP/2's one),
+// but it reflects what an honest deployment would do today.
+// =============================================================================
+
+async fn h2_n_concurrent(send: h2::client::SendRequest<Bytes>, n: usize, body: Bytes) -> usize {
+    let mut tasks = Vec::with_capacity(n);
+    for _ in 0..n {
+        let send = send.clone();
+        let body = body.clone();
+        tasks.push(tokio::spawn(async move { h2_roundtrip(send, body).await }));
+    }
+    let mut total = 0;
+    for t in tasks {
+        total += t.await.unwrap();
+    }
+    total
+}
+
+fn bench_concurrent(c: &mut Criterion) {
+    let mut group = c.benchmark_group("spine_vs_http2_concurrent");
+    group.sample_size(20);
+
+    for n in [4usize, 16, 64].iter() {
+        group.throughput(Throughput::Elements(*n as u64));
+
+        // ----- HTTP/2: N concurrent streams on ONE connection -----
+        group.bench_with_input(BenchmarkId::new("http2_streams", n), n, |b, &n| {
+            let rt = Runtime::new().unwrap();
+            let (send, _drive) = rt.block_on(async {
+                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let _server = spawn_h2_echo_on(listener).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                h2_connect(port).await
+            });
+            let body = Bytes::from(vec![0xABu8; 1024]);
+
+            b.to_async(&rt).iter(|| {
+                let send = send.clone();
+                let body = body.clone();
+                async move {
+                    let total = h2_n_concurrent(send, n, body).await;
+                    black_box(total);
+                }
+            });
+        });
+
+        // ----- SPINE: N parallel TCP connections, one frame each -----
+        group.bench_with_input(BenchmarkId::new("spine_conns", n), n, |b, &n| {
+            use std::sync::{Arc, Mutex};
+            let listener = StdListener::bind(("127.0.0.1", 0u16)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            // Accept loop must handle many connections.
+            thread::spawn(move || {
+                for incoming in listener.incoming() {
+                    let Ok(mut stream) = incoming else { return };
+                    stream.set_nodelay(true).unwrap();
+                    thread::spawn(move || {
+                        let mut write_stream = stream.try_clone().unwrap();
+                        let mut buf = vec![0u8; 64 * 1024];
+                        let mut filled = 0;
+                        'c: loop {
+                            while filled < 12 {
+                                match stream.read(&mut buf[filled..]) {
+                                    Ok(0) => break 'c,
+                                    Ok(n) => filled += n,
+                                    Err(_) => break 'c,
+                                }
+                            }
+                            let length =
+                                u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                            let total = 12 + length;
+                            while filled < total {
+                                match stream.read(&mut buf[filled..]) {
+                                    Ok(0) => break 'c,
+                                    Ok(n) => filled += n,
+                                    Err(_) => break 'c,
+                                }
+                            }
+                            let hdr = FrameHeader {
+                                length: length as u32,
+                                flags: FrameFlags::empty(),
+                                sequence: 1,
+                                stream_id: 1,
+                                _reserved: 0,
+                            };
+                            if Frame::write_parts_to_sync(&hdr, &buf[12..total], &mut write_stream)
+                                .is_err()
+                            {
+                                break 'c;
+                            }
+                            let tail = filled - total;
+                            if tail > 0 {
+                                buf.copy_within(total..filled, 0);
+                            }
+                            filled = tail;
+                        }
+                    });
+                }
+            });
+            thread::sleep(Duration::from_millis(50));
+
+            // Pre-establish N persistent connections.
+            let streams: Vec<Arc<Mutex<StdStream>>> = (0..n)
+                .map(|_| {
+                    let s = StdStream::connect(("127.0.0.1", port)).unwrap();
+                    s.set_nodelay(true).unwrap();
+                    Arc::new(Mutex::new(s))
+                })
+                .collect();
+
+            let frame_bytes: Arc<Vec<u8>> = {
+                let frame = Frame {
+                    header: FrameHeader {
+                        length: 1024,
+                        flags: FrameFlags::empty(),
+                        sequence: 1,
+                        stream_id: 1,
+                        _reserved: 0,
+                    },
+                    payload: Bytes::from(vec![0xABu8; 1024]),
+                };
+                let mut v = Vec::with_capacity(12 + 1024);
+                v.extend_from_slice(&frame.header_bytes());
+                v.extend_from_slice(&frame.payload);
+                Arc::new(v)
+            };
+
+            b.iter(|| {
+                let handles: Vec<_> = streams
+                    .iter()
+                    .map(|s| {
+                        let s = Arc::clone(s);
+                        let frame_bytes = Arc::clone(&frame_bytes);
+                        thread::spawn(move || {
+                            let mut stream = s.lock().unwrap();
+                            stream.write_all(&frame_bytes).unwrap();
+                            let mut recv = vec![0u8; frame_bytes.len()];
+                            stream.read_exact(&mut recv).unwrap();
+                            black_box(recv);
+                        })
+                    })
+                    .collect();
+                for h in handles {
+                    h.join().unwrap();
+                }
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_latency, bench_throughput, bench_concurrent);
 criterion_main!(benches);
