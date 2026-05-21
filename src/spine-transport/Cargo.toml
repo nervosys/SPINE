@@ -85,11 +85,13 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 spine-protocol = { path = "../spine-protocol" }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = { version = "0.5", features = ["async_tokio"] }
 tokio-test = "0.4"
 rand = "0.8"
 proptest = "1.4"
 aes-gcm = "0.10"
+h2 = "0.4"
+http = "1"
 
 [[bench]]
 name = "transport_bench"
@@ -109,4 +111,8 @@ harness = false
 
 [[bench]]
 name = "spine_vs_www"
+harness = false
+
+[[bench]]
+name = "spine_vs_http2"
 harness = false

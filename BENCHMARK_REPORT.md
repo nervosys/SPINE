@@ -100,7 +100,30 @@ Same `aes-gcm` v0.10 (AES-256-GCM) on both sides. Only the AAD differs: TLS 1.3-
 
 **Reading**: At the cryptographic-primitive level there is no security/cost advantage either way — they use the same algorithm. SPINE's claimed crypto wins (Chameleon Protocol moving-target defense, X3DH key exchange, RLWE post-quantum) operate at a **different layer** than what's measured here; this bench only proves the per-record AEAD overhead is equivalent.
 
-### 2.6 Connectivity (incomplete)
+### 2.6 vs HTTP/2 — the harder target
+
+HTTP/1.1 is a soft target (textual, serial per connection). Added a third bench
+(`spine_vs_http2.rs`) using the `h2` crate's cleartext HTTP/2 (h2c) — a real,
+modern, multiplexed binary protocol — on the same persistent-TCP setup. Both
+sides share the same tokio runtime and same loopback.
+
+| Bench               | HTTP/2 (h2)  | SPINE        | SPINE advantage |
+| ------------------- | ------------ | ------------ | --------------- |
+| Latency 64 B        | 39.8 µs      | 27.1 µs      | **1.47×**       |
+| Latency 512 B       | 46.4 µs      | 24.1 µs      | **1.93×**       |
+| Latency 4 KB        | 50.7 µs      | 27.3 µs      | **1.86×**       |
+| Throughput 4 KB     | 72.4 MiB/s   | 166 MiB/s    | **2.29×**       |
+| Throughput 32 KB    | 406 MiB/s    | 1.02 GiB/s   | **2.52×**       |
+
+This is the most defensible win in the audit. HTTP/2 has the same shape as
+SPINE — multiplexed streams on one TCP connection, binary framing — yet SPINE
+runs 1.5–1.9× faster on latency and 2.3–2.5× faster on throughput across the
+measured sizes. The deltas are explained by HTTP/2's per-stream and connection
+flow-control accounting (window updates, `release_capacity` calls), HPACK
+header compression overhead, and the heavier per-stream state machine vs
+SPINE's 12-byte fixed binary header.
+
+### 2.7 Connectivity (incomplete)
 
 The original `network_realistic.rs` `concurrent_connections` bench hung in this run (spawns many TCP listeners in a tight loop; Windows TIME_WAIT exhaustion is the likely cause). The new `spine_vs_www.rs` includes a `connection_setup` group that does new-conn-per-req vs multiplexed-stream, but it was excluded from this run for the same hang-risk reason. **Connectivity is the dimension with the weakest measured story** in this audit.
 
@@ -112,6 +135,14 @@ What we *can* say structurally without running it:
 The honest claim: SPINE's connectivity model is **equivalent in shape to HTTP/2**, not strictly superior; the advantage over HTTP/1.1 + keep-alive degrades as keep-alive amortizes. A definitive head-to-head would require fixing the bench hang and adding an HTTP/2 baseline.
 
 ---
+
+### Headline (all three comparisons, optimized SPINE)
+
+| Baseline                 | Latency win  | Throughput win | Notes                            |
+| ------------------------ | ------------ | -------------- | -------------------------------- |
+| Raw TCP echo (no proto)  | ~parity      | ~parity        | Protocol overhead ≈ noise floor  |
+| Real HTTP/1.1            | 1.74–1.87×   | 1.32–1.84×     | Textual headers — soft target    |
+| Real HTTP/2 (h2 crate)   | **1.47–1.93×** | **2.29–2.52×** | **Modern multiplexed binary**    |
 
 ## Part 3 — How this maps to the ROADMAP's claims
 

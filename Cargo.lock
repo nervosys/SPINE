@@ -6911,6 +6911,8 @@ dependencies = [
  "crossbeam-queue",
  "dashmap 5.5.3",
  "futures",
+ "h2 0.4.13",
+ "http 1.4.0",
  "io-uring",
  "log",
  "lz4_flex",
