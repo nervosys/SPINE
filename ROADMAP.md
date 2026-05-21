@@ -51,7 +51,7 @@
 - [x] Single-pass cosine similarity: 2.5× faster (9 GiB/s)
 - [x] Iterator-based neural matmul for LLVM vectorization
 - [x] Mathematical proofs (OPTIMIZATIONS.md)
-- [x] TCP/IP benchmark: 514× lower latency, 610× higher throughput
+- [x] ~~TCP/IP benchmark: 514× lower latency, 610× higher throughput~~ **Retracted 2026-05.** The original bench compared real TCP loopback I/O against pure in-memory codec; it was not a like-for-like measurement. Honest numbers in `BENCHMARK_REPORT.md`: SPINE is within ±10% of raw TCP echo at every size, and **1.32–1.87× faster than real HTTP/1.1** on real-loopback latency and throughput.
 
 ### Phase 2 — SIMD & Binary Optimization ✅
 

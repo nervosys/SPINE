@@ -1,13 +1,20 @@
-//! Comprehensive benchmark comparing SPINE vs Traditional Web Stack
+//! **ILLUSTRATIVE / NOT A FAIR BENCHMARK.**
 //!
-//! This benchmark measures real-world operations that would be done with:
-//! - Express.js + Node.js (HTTP/JSON)
-//! - Puppeteer (browser automation)
-//! - Redis (caching/pubsub)
-//! - PostgreSQL (data storage)
-//! - GPT-4 API (context processing)
+//! Audited 2026-05 and found to compare hand-rolled fakes against optimized
+//! SPINE code, which makes the resulting ratios meaningless as evidence of
+//! real-world performance:
 //!
-//! vs SPINE equivalents
+//! - "JSON serialize/parse" is a 10-line string split, not `serde_json`.
+//! - "TLS / AES-GCM" is `byte ^= key[i % 32]` with a 16-byte zero "auth tag";
+//!   no real AEAD, no authentication.
+//! - "Redis pub/sub" is `Vec::clone` in a loop, no IPC.
+//! - "HTTP header parse" is a minimal allocator-heavy parser, not `httparse`.
+//! - The SPINE side runs optimized inline code with no equivalent overhead.
+//!
+//! This file is retained because deleting it would silently hide the history.
+//! **Do not cite numbers from this bench.** For honest SPINE-vs-WWW
+//! comparisons see `spine_vs_www.rs` (real HTTP/1.1 wire format, real
+//! `aes-gcm`) and `network_realistic.rs` (real TCP loopback on both sides).
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::collections::HashMap;

@@ -35,6 +35,38 @@ use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 #[cfg(feature = "quic")]
 use std::net::SocketAddr;
 
+/// Write `header` followed by `body` to an `AsyncWrite` using a single
+/// `write_vectored` call when the underlying stream supports it, falling back
+/// to sequential writes for the remainder on a partial write.
+///
+/// Replaces the common `write_all(&header); write_all(&body)` pattern that
+/// costs two `send()` syscalls (and on TCP_NODELAY sockets, often two packets
+/// on the wire).
+#[inline]
+pub async fn write_header_body<W: AsyncWrite + Unpin + ?Sized>(
+    w: &mut W,
+    header: &[u8],
+    body: &[u8],
+) -> std::io::Result<()> {
+    use std::io::IoSlice;
+    let total = header.len() + body.len();
+    let mut sent: usize = 0;
+    // First attempt: single vectored call. Most TCP impls in tokio honor this.
+    while sent < total {
+        let n = if sent < header.len() {
+            let slices = [IoSlice::new(&header[sent..]), IoSlice::new(body)];
+            w.write_vectored(&slices).await?
+        } else {
+            w.write(&body[sent - header.len()..]).await?
+        };
+        if n == 0 {
+            return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
+        }
+        sent += n;
+    }
+    Ok(())
+}
+
 // =============================================================================
 // CHAMELEON PROTOCOL
 // =============================================================================
@@ -1626,8 +1658,7 @@ where
             *b = self.morphology.checksum_variant;
         }
 
-        self.stream.write_all(&header[..header_size]).await?;
-        self.stream.write_all(data).await?;
+        write_header_body(&mut self.stream, &header[..header_size], data).await?;
         Ok(())
     }
 
@@ -2179,7 +2210,8 @@ impl SpineConnection {
             }
             #[cfg(feature = "quic")]
             TransportInner::Quic { transport } => {
-                // QUIC: length-prefixed frame
+                // QUIC: length-prefixed frame. QuicTransport has its own
+                // write_all; can't use the AsyncWrite-based vectored helper here.
                 let len = (data.len() as u32).to_le_bytes();
                 transport.write_all(&len).await?;
                 transport.write_all(&data).await?;
@@ -2380,8 +2412,7 @@ impl ProtocolHandlerState {
             header.push(self.morphology.checksum_variant);
         }
 
-        writer.write_all(&header).await?;
-        writer.write_all(data).await?;
+        write_header_body(writer, &header, data).await?;
         Ok(())
     }
 

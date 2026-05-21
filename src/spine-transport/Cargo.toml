@@ -89,6 +89,7 @@ criterion = "0.5"
 tokio-test = "0.4"
 rand = "0.8"
 proptest = "1.4"
+aes-gcm = "0.10"
 
 [[bench]]
 name = "transport_bench"
@@ -100,4 +101,12 @@ harness = false
 
 [[bench]]
 name = "traditional_comparison"
+harness = false
+
+[[bench]]
+name = "network_realistic"
+harness = false
+
+[[bench]]
+name = "spine_vs_www"
 harness = false

@@ -60,7 +60,7 @@
 - [x] **215 tests passing**: Full verification coverage including security tests
 - [x] **402 tests passing**: +3 Sybil resistance tests after v1.1 architecture fix
 - [x] **0 Clippy warnings**: All style issues resolved
-- [x] **TCP/IP Benchmark**: 514× lower latency, 610× higher throughput vs standard TCP
+- [x] **TCP/IP Benchmark**: ~~514× lower latency, 610× higher throughput vs standard TCP~~ **Retracted 2026-05** — those numbers came from a rigged bench (real TCP loopback vs in-memory codec, not a like-for-like measurement). Real numbers: SPINE is within ±10% of raw TCP echo at every payload size, and 1.32–1.87× faster than real HTTP/1.1. See `BENCHMARK_REPORT.md`.
 
 ### Phase 2 Optimization Pass ✅
 

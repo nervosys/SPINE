@@ -464,6 +464,66 @@ impl Frame {
         buf
     }
 
+    /// Zero-copy write of a frame given as `(header, &[u8])` to a synchronous
+    /// writer. Use this when the payload lives in a stack/owned buffer you
+    /// don't want to re-wrap in `Bytes` (refcount + heap header overhead).
+    pub fn write_parts_to_sync<W: std::io::Write>(
+        header: &FrameHeader,
+        payload: &[u8],
+        w: &mut W,
+    ) -> std::io::Result<usize> {
+        let mut hb = [0u8; 12];
+        hb[0..4].copy_from_slice(&header.length.to_le_bytes());
+        hb[4] = header.flags.bits();
+        hb[5..8].copy_from_slice(&header.sequence.to_le_bytes()[0..3]);
+        hb[8..10].copy_from_slice(&header.stream_id.to_le_bytes());
+        hb[10..12].copy_from_slice(&header._reserved.to_le_bytes());
+        let bufs = [std::io::IoSlice::new(&hb), std::io::IoSlice::new(payload)];
+        let total = 12 + payload.len();
+        let n = w.write_vectored(&bufs)?;
+        if n == total {
+            return Ok(total);
+        }
+        if n < 12 {
+            w.write_all(&hb[n..])?;
+            w.write_all(payload)?;
+        } else {
+            w.write_all(&payload[n - 12..])?;
+        }
+        Ok(total)
+    }
+
+    /// Zero-copy write of an entire frame to a synchronous writer.
+    ///
+    /// Uses `Write::write_vectored` so the header (stack-allocated [u8; 12])
+    /// and the payload (`Bytes`, refcounted) are sent without allocating an
+    /// intermediate concatenated buffer. Falls back to two sequential writes
+    /// on platforms whose vectored write only consumes a prefix.
+    ///
+    /// Returns total bytes written (`12 + payload.len()`).
+    pub fn write_to_sync<W: std::io::Write>(&self, w: &mut W) -> std::io::Result<usize> {
+        let header = self.header_bytes();
+        let bufs = [
+            std::io::IoSlice::new(&header),
+            std::io::IoSlice::new(&self.payload),
+        ];
+        // Try vectored write first; if writer doesn't support it fully,
+        // finish with sequential writes.
+        let n = w.write_vectored(&bufs)?;
+        let total = 12 + self.payload.len();
+        if n == total {
+            return Ok(total);
+        }
+        // Partial / unsupported: finish by writing whatever's left.
+        if n < 12 {
+            w.write_all(&header[n..])?;
+            w.write_all(&self.payload)?;
+        } else {
+            w.write_all(&self.payload[n - 12..])?;
+        }
+        Ok(total)
+    }
+
     /// Parse frame header from bytes
     pub fn parse_header(buf: &[u8; 12]) -> FrameHeader {
         let mut seq_bytes = [0u8; 4];
@@ -692,6 +752,26 @@ mod tests {
         assert!(parsed.flags.contains(FrameFlags::ENCRYPTED));
         assert_eq!(parsed.sequence, 42);
         assert_eq!(parsed.stream_id, 7);
+    }
+
+    #[test]
+    fn test_write_to_sync_matches_encode() {
+        let frame = Frame {
+            header: FrameHeader {
+                length: 5,
+                flags: FrameFlags::empty(),
+                sequence: 99,
+                stream_id: 3,
+                _reserved: 0,
+            },
+            payload: Bytes::from_static(b"hello"),
+        };
+        let mut out = Vec::new();
+        let n = frame.write_to_sync(&mut out).unwrap();
+        assert_eq!(n, 17);
+        assert_eq!(out.len(), 17);
+        assert_eq!(&out[..12], &frame.header_bytes()[..]);
+        assert_eq!(&out[12..], &b"hello"[..]);
     }
 
     #[test]

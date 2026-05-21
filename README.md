@@ -857,11 +857,24 @@ let distribution = network.distribute_task("Build ML pipeline", &required_roles)
 
 ## Performance Optimizations
 
-SPINE is engineered for maximum efficiency, delivering **100-250,000× performance improvements** over traditional web stacks.
+SPINE is engineered for efficiency. **Two sets of numbers** appear below — please read the honest set first.
 
-### SPINE vs Traditional Web Stack (Comprehensive Comparison)
+### ⚠️ Audit notice (2026-05)
 
-These benchmarks compare SPINE against the typical web stack (Express.js, Puppeteer, Redis, PostgreSQL, GPT-4 API):
+The "SPINE vs Traditional Web Stack" tables in the next subsection and the "Real-World Application Benchmark" tables below them came from `src/spine-transport/benches/traditional_comparison.rs`, which an audit found to compare hand-rolled fakes (XOR pretending to be AES-GCM, a 10-line string split pretending to be JSON parse, `Vec::clone` pretending to be Redis pub/sub) against optimized SPINE code. **The four- and five-digit speedup ratios in those tables are not supported by like-for-like measurement.** They are retained here only so the historical claims and the retraction live in the same document.
+
+For **honest** SPINE-vs-WWW numbers, measured with real HTTP/1.1 wire format and real `aes-gcm` on both sides, see **`BENCHMARK_REPORT.md`**. Headline results:
+
+- SPINE within ±10% of raw TCP echo at every payload size (latency and throughput)
+- **1.32–1.87× faster than real HTTP/1.1** on real-loopback latency and throughput
+- Crypto: parity with TLS at the AEAD primitive level (same AES-256-GCM both sides)
+- Concurrent persistent connections: 64 parallel roundtrips in 2.9 ms (~46 µs amortized)
+
+The "Component Benchmarks" table further down (frame encode, ring buffer, BBR pacing, etc.) lists absolute throughput of internal operations and was not part of the retraction.
+
+### SPINE vs Traditional Web Stack (legacy table — see audit notice above)
+
+These benchmarks compare SPINE against a hand-rolled simulation of a typical web stack (Express.js, Puppeteer, Redis, PostgreSQL, GPT-4 API). **Numbers below are illustrative only; do not cite without reading `BENCHMARK_REPORT.md` first.**
 
 #### Serialization: JSON vs SPINE Zero-Copy
 
@@ -896,7 +909,9 @@ These benchmarks compare SPINE against the typical web stack (Express.js, Puppet
 | 1,000    | 287 µs          | 140 ns            | **2,050×**  |
 | 10,000   | 2.83 ms         | 1.0 µs            | **2,830×**  |
 
-### Real-World Application Benchmark
+### Real-World Application Benchmark (legacy table — see audit notice above)
+
+> **Numbers in this table are illustrative estimates, not measured comparisons** — the "Traditional Stack" column has no corresponding implementation in this repository. Retained for historical context.
 
 Competitive Intelligence demo: 50 agents analyzing competitor websites, extracting insights, building knowledge graph.
 

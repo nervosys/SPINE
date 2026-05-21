@@ -1,7 +1,14 @@
-//! Benchmark: SPINE Transport vs Standard TCP/IP Stack
+//! **NOT A FAIR BENCHMARK — category error.**
 //!
-//! This benchmark compares SPINE's optimized transport layer against
-//! standard Rust TCP implementations to quantify performance improvements.
+//! Audited 2026-05: the `std_tcp` rows do real loopback `read`/`write` syscalls,
+//! while the `SPINE_frame` rows do **pure in-memory** `codec.encode`/`decode`
+//! with no socket touched. Apples-to-oranges; the resulting "SPINE is 500×
+//! faster" claims in the original ROADMAP came from here and have been
+//! retracted.
+//!
+//! Retained for history; do not cite. For honest measurements see
+//! `network_realistic.rs` (both sides use real TCP) and `spine_vs_www.rs`
+//! (both sides use real-protocol wire format).
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::io::{Read, Write};

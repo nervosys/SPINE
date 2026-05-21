@@ -6900,6 +6900,7 @@ dependencies = [
 name = "spine-transport"
 version = "1.0.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "bincode",
