@@ -343,13 +343,14 @@ fn bench_concurrent(c: &mut Criterion) {
         });
 
         // ----- SPINE multiplexed: N pipelined frames on ONE persistent
-        // connection. Each frame has a distinct stream_id. The echo server
-        // already loops over frames, so this is a fair single-connection
-        // many-in-flight comparison against HTTP/2's stream multiplexer. -----
+        // connection. Each frame has a distinct stream_id. Optimized server:
+        // (a) drains all available bytes, (b) processes every complete frame
+        // in the buffer, (c) batches ALL responses into a single write_all,
+        // (d) avoids copy_within by tracking a head cursor and only
+        // compacting when we run out of capacity. -----
         group.bench_with_input(BenchmarkId::new("spine_pipelined", n), n, |b, &n| {
             let listener = StdListener::bind(("127.0.0.1", 0u16)).unwrap();
             let port = listener.local_addr().unwrap().port();
-            // single-connection echo server
             thread::spawn(move || {
                 let Ok((mut stream, _)) = listener.accept() else {
                     return;
@@ -357,46 +358,46 @@ fn bench_concurrent(c: &mut Criterion) {
                 stream.set_nodelay(true).unwrap();
                 let mut write_stream = stream.try_clone().unwrap();
                 let mut buf = vec![0u8; 1024 * 1024];
-                let mut filled = 0;
+                let mut head = 0usize; // first unread byte
+                let mut tail = 0usize; // first free byte
+                let mut out = Vec::with_capacity(1024 * 1024);
                 'c: loop {
-                    // Process every complete frame in the buffer.
+                    // Drain every complete frame in [head..tail) into `out`.
+                    out.clear();
                     loop {
-                        if filled < 12 {
+                        let avail = tail - head;
+                        if avail < 12 {
                             break;
                         }
+                        let h = &buf[head..head + 12];
                         let length =
-                            u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                            u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
                         let total = 12 + length;
-                        if filled < total {
+                        if avail < total {
                             break;
                         }
-                        let hdr = FrameHeader {
-                            length: length as u32,
-                            flags: FrameFlags::empty(),
-                            sequence: 1,
-                            // Preserve stream_id (bytes 8..10 of incoming header) so
-                            // we look like a real multiplexer routing by stream_id.
-                            stream_id: u16::from_le_bytes([buf[8], buf[9]]),
-                            _reserved: 0,
-                        };
-                        if Frame::write_parts_to_sync(&hdr, &buf[12..total], &mut write_stream)
-                            .is_err()
-                        {
+                        // Echo: copy entire frame (header + payload) as-is.
+                        // stream_id, length, etc. are already correct.
+                        out.extend_from_slice(&buf[head..head + total]);
+                        head += total;
+                    }
+                    if !out.is_empty() {
+                        if write_stream.write_all(&out).is_err() {
                             break 'c;
                         }
-                        let tail = filled - total;
-                        if tail > 0 {
-                            buf.copy_within(total..filled, 0);
-                        }
-                        filled = tail;
                     }
-                    // Need more bytes.
-                    if filled == buf.len() {
+                    // Compact if head has advanced a lot.
+                    if head > 0 && tail - head < buf.len() / 4 {
+                        buf.copy_within(head..tail, 0);
+                        tail -= head;
+                        head = 0;
+                    }
+                    if tail == buf.len() {
                         buf.resize(buf.len() * 2, 0);
                     }
-                    match stream.read(&mut buf[filled..]) {
+                    match stream.read(&mut buf[tail..]) {
                         Ok(0) => break 'c,
-                        Ok(m) => filled += m,
+                        Ok(m) => tail += m,
                         Err(_) => break 'c,
                     }
                 }

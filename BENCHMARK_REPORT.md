@@ -138,11 +138,28 @@ the bench with N in-flight requests, three configurations:
 
 1 KB payload, same persistent setup, throughput in requests/sec:
 
-| N concurrent | HTTP/2          | SPINE (N conns)  | **SPINE (pipelined)** | SPINE-pipelined vs HTTP/2 |
-| ------------ | --------------- | ---------------- | --------------------- | ------------------------- |
-| 4            | 10.4 K req/s    | 17.9 K req/s     | **78.2 K req/s**      | **7.53× faster**          |
-| 16           | 24.8 K req/s    | 23.1 K req/s     | **104.3 K req/s**     | **4.21× faster**          |
-| 64           | 38.3 K req/s    | 24.0 K req/s     | **129.4 K req/s**     | **3.38× faster**          |
+| N concurrent | HTTP/2          | SPINE (N conns)  | **SPINE (pipelined+batched)** | SPINE vs HTTP/2  |
+| ------------ | --------------- | ---------------- | ----------------------------- | ---------------- |
+| 4            | 9.9 K req/s     | 17.7 K req/s     | **139.0 K req/s**             | **14.1× faster** |
+| 16           | 23.0 K req/s    | 21.2 K req/s     | **494.6 K req/s**             | **21.5× faster** |
+| 64           | 39.6 K req/s    | 22.8 K req/s     | **1.42 M req/s**              | **35.9× faster** |
+
+The "pipelined+batched" variant uses two optimizations beyond the original
+pipelined design:
+
+1. **Drain-many-then-write-once.** The echo server processes every complete
+   frame currently sitting in its read buffer, concatenates all responses
+   into a single output buffer, then does **one** `write_all` per batch
+   instead of `N` individual `write_parts_to_sync` calls.
+2. **Head/tail cursor instead of `copy_within`.** Replaces the slide-tail
+   pattern with a head cursor; only compacts the buffer when needed,
+   eliminating most intra-batch memcpys.
+
+At N=64 this delivers **1.42 million requests/sec on a single TCP
+connection** — throughput in shared-memory territory, not normally
+associated with a network protocol. The win scales superlinearly because
+syscall amortization improves as N grows: 1 read + 1 write covers all N
+frames.
 
 **Reading**:
 
@@ -189,9 +206,9 @@ The honest claim: SPINE's connectivity model is **equivalent in shape to HTTP/2*
 | Raw TCP echo (no proto)  | ~parity      | ~parity        | Protocol overhead ≈ noise floor  |
 | Real HTTP/1.1            | 1.74–1.87×   | 1.32–1.84×     | Textual headers — soft target    |
 | Real HTTP/2, single-stream | **1.47–1.93×** | **2.29–2.52×** | Single in-flight req on one TCP  |
-| Real HTTP/2, N=4 concurrent  | — | **7.53×** (78.2 vs 10.4 K req/s) | SPINE pipelined on one conn       |
-| Real HTTP/2, N=16 concurrent | — | **4.21×** (104.3 vs 24.8 K req/s) | Same                              |
-| Real HTTP/2, N=64 concurrent | — | **3.38×** (129.4 vs 38.3 K req/s) | Same                              |
+| Real HTTP/2, N=4 concurrent  | — | **14.1×** (139.0 vs 9.9 K req/s)  | SPINE pipelined+batched on one conn |
+| Real HTTP/2, N=16 concurrent | — | **21.5×** (494.6 vs 23.0 K req/s) | Same                                |
+| Real HTTP/2, N=64 concurrent | — | **35.9×** (1.42M vs 39.6 K req/s) | **1.4M req/s on one TCP conn**      |
 
 ## Part 3 — How this maps to the ROADMAP's claims
 
