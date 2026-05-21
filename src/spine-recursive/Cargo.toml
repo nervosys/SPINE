@@ -32,7 +32,7 @@ spine-neural = { path = "../spine-neural" }
 spine-crypto = { path = "../spine-crypto" }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 tokio-test = "0.4"
 
 [[bench]]

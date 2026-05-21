@@ -85,7 +85,7 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 spine-protocol = { path = "../spine-protocol" }
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 tokio-test = "0.4"
 rand = "0.8"
 proptest = "1.4"
