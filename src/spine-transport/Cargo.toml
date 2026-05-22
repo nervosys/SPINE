@@ -120,3 +120,7 @@ harness = false
 [[bench]]
 name = "agentic_ai_workload"
 harness = false
+
+[[bench]]
+name = "llm_tok_per_sec"
+harness = false

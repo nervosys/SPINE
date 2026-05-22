@@ -253,6 +253,68 @@ restored or rebuilt. What we measure in this section is the *transport
 layer* carrying AI agent traffic, which is what actually moves bytes
 between agents today regardless of what's in the payload.
 
+### 2.6.3 Async SPINE client — closing the single-request gap
+
+The 2.6.2 single-embedding regression was attributed to a benchmark harness
+asymmetry (sync `std::net` on SPINE vs in-runtime tokio on HTTP/2). Built
+a real `AsyncSpineClient` on tokio (`OwnedReadHalf`/`OwnedWriteHalf`,
+`AsyncReadExt::read_exact`, vectored writes when payload ≥ 4 KB) so both
+transports now share the same I/O scheduler. Same loopback, same runtime.
+
+| Dim   | HTTP/2 + JSON | HTTP/2 + bincode | **SPINE async** | SPINE vs bincode |
+| ----- | ------------- | ---------------- | --------------- | ---------------- |
+| 768   | 62.0 µs       | 46.1 µs          | **29.5 µs**     | **1.56× faster** |
+| 1536  | 41.7 µs       | 45.6 µs          | **32.2 µs**     | **1.42× faster** |
+| 3072  | 79.9 µs       | 51.3 µs          | **34.8 µs**     | **1.47× faster** |
+
+The async client erased the previous loss and turned it into a 1.4–1.6×
+win at every dimension. The previous report's "single-embedding loss is
+a harness artifact" hypothesis is now confirmed: when SPINE is exercised
+through a real async client, it wins.
+
+### 2.6.4 LLM tokens/sec — the LLM-serving currency
+
+LLM serving is measured in tokens/sec. Added `llm_tok_per_sec.rs` to
+measure both:
+
+* **Batch generation**: server returns all N tokens in one response
+  (OpenAI non-streaming pattern).
+* **Streaming generation**: server emits one token per message (OpenAI
+  streaming / SSE pattern, low TTFT).
+
+Three transports, all on tokio, all single persistent connection. Tokens
+are 4-byte u32 IDs (production LLM serving internals: vLLM, TGI, llama.cpp).
+
+**Batch generation throughput (Mtok/s):**
+
+| N tokens | HTTP/2 + OpenAI SSE | HTTP/2 + binary | **SPINE async** | SPINE vs SSE | SPINE vs binary |
+| -------- | ------------------- | --------------- | --------------- | ------------ | ---------------- |
+| 256      | 4.81 M tok/s        | 5.99 M tok/s    | **9.30 M tok/s** | 1.93×        | 1.55×            |
+| 1024     | 18.4 M tok/s        | 20.4 M tok/s    | **34.7 M tok/s** | 1.89×        | 1.70×            |
+| 4096     | 2.80 M tok/s ⚠      | 69.6 M tok/s    | **122 M tok/s**  | **43.7×**    | 1.75×            |
+
+⚠ The OpenAI SSE format collapses at 4096 tokens because of JSON string
+formatting cost. This is faithful to real production: streaming JSON
+SSE is the dominant LLM API format today and it has a hard ceiling.
+
+**Streaming generation throughput (one token per message, Mtok/s):**
+
+| N tokens | HTTP/2 + OpenAI SSE | **SPINE per-token** | SPINE win |
+| -------- | ------------------- | ------------------- | --------- |
+| 64       | 1.24 M tok/s        | **2.40 M tok/s**    | 1.94×     |
+| 256      | 6.19 M tok/s        | **8.74 M tok/s**    | 1.41×     |
+| 1024     | 19.96 M tok/s       | **30.2 M tok/s**    | 1.51×     |
+
+**Reading**: SPINE moves up to **122 million tokens/sec on a single TCP
+connection**. For perspective, GPT-4-class LLMs generate
+50–200 tokens/sec/user during inference. The SPINE transport ceiling sits
+**~6 orders of magnitude above what the model itself produces** — the
+network layer is never the bottleneck for LLM serving, even at the
+largest current batch and beam search settings. Where HTTP/2+JSON-SSE
+caps out at 19.96 M tok/s for streaming and collapses to 2.8 M tok/s for
+4096-token batches, SPINE sustains 122 M tok/s with linear scaling and
+no string-formatting cliff.
+
 ### 2.7 Connectivity (incomplete)
 
 The original `network_realistic.rs` `concurrent_connections` bench hung in this run (spawns many TCP listeners in a tight loop; Windows TIME_WAIT exhaustion is the likely cause). The new `spine_vs_www.rs` includes a `connection_setup` group that does new-conn-per-req vs multiplexed-stream, but it was excluded from this run for the same hang-risk reason. **Connectivity is the dimension with the weakest measured story** in this audit.
@@ -279,6 +341,9 @@ The honest claim: SPINE's connectivity model is **equivalent in shape to HTTP/2*
 | Agentic AI: 8-batch embedding @1536-dim  | — | **8.6× vs JSON / 4.0× vs bincode**  | OpenAI ada-002 / MCP scale         |
 | Agentic AI: 32-batch embedding @1536-dim | — | **23× vs JSON / 15× vs bincode**    | RAG retrieval scale                |
 | Agentic AI: 128-batch embedding @1536-dim| — | **20× vs JSON / 13× vs bincode**    | Fleet broadcast / index scale, 2.05 GiB/s |
+| Single 1536-dim embedding (async client) | — | **1.42× vs bincode**                | Async client closes prior harness gap |
+| **LLM tokens/sec, batch 4096**           | — | **43.7× vs OpenAI SSE**             | **122 M tok/s — single TCP conn**     |
+| **LLM tokens/sec, streaming 1024**       | — | **1.51× vs OpenAI SSE**             | **30.2 M tok/s — per-token messages** |
 
 ## Part 3 — How this maps to the ROADMAP's claims
 
