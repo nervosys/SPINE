@@ -26,7 +26,7 @@ log.workspace = true
 toml = "0.8"
 colored = "2"
 indicatif = "0.17"
-tabled = "0.16"
+tabled = "0.20"
 uuid = { version = "1", features = ["v4"] }
 reqwest = { workspace = true }
 rustls-pemfile = "2"
