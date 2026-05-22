@@ -116,3 +116,7 @@ harness = false
 [[bench]]
 name = "spine_vs_http2"
 harness = false
+
+[[bench]]
+name = "agentic_ai_workload"
+harness = false
