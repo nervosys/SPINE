@@ -360,6 +360,64 @@ ceiling on this hardware — protocol overhead is now well below the
 TCP+kernel ceiling. To go higher we'd need DPDK / Windows RIO / shared
 memory IPC.
 
+### 2.6.6 Past the TCP ceiling — shared-memory IPC
+
+TCP loopback caps SPINE at ~728 M tok/s on this host (kernel network stack
+bandwidth limit, ~2.91 GB/s). For same-host agent communication TCP is
+unnecessary: agents can share a ring buffer in memory and pass SPINE frames
+with zero syscalls. Added `llm_shm_ipc.rs` implementing the canonical
+high-frequency IPC pattern (Aeron / Chronicle / LMAX): two SPSC rings with
+cacheline-aligned head/tail atomics, spin+yield hybrid backoff, single-write
+echo server.
+
+| N tokens | TCP best     | **SHM (SPINE-framed)** | SHM vs TCP   |
+| -------- | ------------ | ---------------------- | ------------ |
+| 1024     | 32.6 M tok/s | 194 M tok/s            | 5.97×        |
+| 4096     | 131 M tok/s  | 392 M tok/s            | 2.99×        |
+| 16384    | 381 M tok/s  | 808 M tok/s            | 2.12×        |
+| 65536    | 728 M tok/s  | **1.33 Gelem/s**       | **1.83×**    |
+| 262144   | —            | 1.24 Gelem/s           | (new ceiling) |
+
+**Pipelined K in-flight (4096 tokens/req):**
+
+| K   | TCP best     | **SHM**         | SHM vs TCP |
+| --- | ------------ | --------------- | ---------- |
+| 4   | 388.5 M tok/s | 568 M tok/s    | 1.46×      |
+| 16  | 561 M tok/s  | 896 M tok/s     | 1.60×      |
+| 64  | 545 M tok/s  | **1.05 Gelem/s** | 1.92×     |
+
+**New headline: 1.33 billion tokens/sec on a single shared-memory ring.**
+vs HTTP/2 binary at 65 K tokens (40.5 M tok/s) — **SHM is 32.8× faster**.
+vs HTTP/2 + OpenAI SSE (11.9 M tok/s) — **SHM is 111× faster**.
+
+### Two real lessons from this round (kept in the report rather than buried)
+
+1. **The first naïve SHM was *worse* than TCP at large sizes** (e.g., 33 M
+   tok/s at 65 K vs TCP's 728 M tok/s). Two bugs were doing it:
+   *(a)* the server did 4 ring ops per request (read header, read payload,
+   write header, write payload) instead of reading the whole frame and
+   writing it back in one go, and *(b)* a pure `spin_loop()` busy-wait
+   livelocked the scheduler on Windows without core-pinning, producing 13×
+   variance in measured times. Combining writes + hybrid spin/yield backoff
+   recovered the expected throughput.
+2. **The hybrid backoff has a small-message regression**: at 1 K tokens it's
+   *slower* than pure spin (194 M tok/s vs 317 M tok/s) because the
+   `yield_now()` overhead dominates when the producer is already fast. A
+   real production wrapper would pick the strategy per workload (pure spin
+   for low latency at small frames; backoff for high throughput at large
+   frames). Left as known tradeoff.
+
+### Why SHM still has variance
+
+Even with the fixes, the bench shows ~30–60% spread between min and max
+samples (e.g., 65 K: 37–62 µs). That residual jitter is OS scheduler-induced:
+the two threads aren't pinned to dedicated cores, so the scheduler can
+move them or preempt them, and a several-millisecond OS time slice will
+appear as one slow sample. Production high-frequency users would pin both
+threads to isolated cores (`SetThreadAffinityMask` on Windows,
+`sched_setaffinity` on Linux), which would eliminate this. Out of scope for
+a bench harness that has to share cores with the bench runner itself.
+
 ### 2.7 Connectivity (incomplete)
 
 The original `network_realistic.rs` `concurrent_connections` bench hung in this run (spawns many TCP listeners in a tight loop; Windows TIME_WAIT exhaustion is the likely cause). The new `spine_vs_www.rs` includes a `connection_setup` group that does new-conn-per-req vs multiplexed-stream, but it was excluded from this run for the same hang-risk reason. **Connectivity is the dimension with the weakest measured story** in this audit.
@@ -390,6 +448,8 @@ The honest claim: SPINE's connectivity model is **equivalent in shape to HTTP/2*
 | **LLM tokens/sec, batch 4096**           | — | **43.7× vs OpenAI SSE**             | **131 M tok/s — single TCP conn**     |
 | **LLM tokens/sec, batch 65 K**           | — | **18.0× vs HTTP/2 binary**          | **728 M tok/s — single batch ceiling** |
 | **LLM tokens/sec, pipelined K=16**       | — | **9.5× vs HTTP/2 concurrent**       | **561 M tok/s — sustained**           |
+| **LLM tokens/sec, SHM batch 65 K**       | — | **32.8× vs HTTP/2 binary**          | **1.33 Gelem/s — past TCP ceiling**   |
+| **LLM tokens/sec, SHM pipelined K=64**   | — | **vs TCP 1.92× / vs HTTP/2 ~13.5×** | **1.05 Gelem/s — sustained**          |
 | **LLM tokens/sec, streaming 1024**       | — | **1.51× vs OpenAI SSE**             | **30.2 M tok/s — per-token messages** |
 
 ## Part 3 — How this maps to the ROADMAP's claims
