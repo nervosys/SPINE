@@ -43,10 +43,21 @@ pub struct AsyncSpineClient {
     read: tokio::net::tcp::OwnedReadHalf,
 }
 
+/// Crank socket buffers to 4 MiB to keep the wire saturated under
+/// high-throughput pipelining (Windows default is ~64 KiB, which causes
+/// stalls at >2 GiB/s loopback).
+fn tune_socket(stream: &TcpStream) {
+    use socket2::SockRef;
+    let sock = SockRef::from(stream);
+    let _ = sock.set_send_buffer_size(4 * 1024 * 1024);
+    let _ = sock.set_recv_buffer_size(4 * 1024 * 1024);
+}
+
 impl AsyncSpineClient {
     pub async fn connect(addr: &str) -> std::io::Result<Self> {
         let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
+        tune_socket(&stream);
         let (read, write) = stream.into_split();
         Ok(Self { write, read })
     }
@@ -115,6 +126,7 @@ async fn spawn_spine_async_echo(listener: TcpListener) {
             return;
         };
         stream.set_nodelay(true).unwrap();
+        tune_socket(&stream);
         let mut buf = vec![0u8; 4 * 1024 * 1024];
         let mut head = 0usize;
         let mut tail = 0usize;
@@ -286,7 +298,7 @@ fn bench_batch_tokens(c: &mut Criterion) {
     group.sample_size(20);
     group.measurement_time(Duration::from_secs(4));
 
-    for &n_tokens in [256usize, 1024, 4096].iter() {
+    for &n_tokens in [256usize, 1024, 4096, 16384, 65536].iter() {
         group.throughput(Throughput::Elements(n_tokens as u64));
 
         let token_ids = make_token_ids(n_tokens);
@@ -574,10 +586,113 @@ fn bench_single_embedding_async(c: &mut Criterion) {
     group.finish();
 }
 
+// =============================================================================
+// SCENARIO 4: Pipelined in-flight requests — saturate loopback bandwidth.
+//
+// Each iter issues K independent batch-token requests on one TCP connection
+// without waiting between writes, then drains all K responses. This is the
+// pattern of an LLM-serving gateway multiplexing many user streams: don't
+// serialize on roundtrip latency, keep the wire full.
+// =============================================================================
+
+fn bench_pipelined_tokens(c: &mut Criterion) {
+    let mut group = c.benchmark_group("llm_pipelined_tok_per_sec");
+    group.sample_size(20);
+    group.measurement_time(Duration::from_secs(4));
+
+    const TOKENS_PER_REQ: usize = 4096;
+
+    for &k in [4usize, 16, 64].iter() {
+        let total_tokens = (k * TOKENS_PER_REQ) as u64;
+        group.throughput(Throughput::Elements(total_tokens));
+
+        let token_ids = make_token_ids(TOKENS_PER_REQ);
+
+        // Build one big send buffer: K concatenated SPINE frames, each
+        // carrying TOKENS_PER_REQ × 4 bytes.
+        let mut send_buf = Vec::with_capacity(k * (12 + TOKENS_PER_REQ * 4));
+        for i in 0..k {
+            let frame = Frame {
+                header: FrameHeader {
+                    length: (TOKENS_PER_REQ * 4) as u32,
+                    flags: FrameFlags::empty(),
+                    sequence: 1,
+                    stream_id: (i as u16) + 1,
+                    _reserved: 0,
+                },
+                payload: Bytes::from(tokens_to_binary(&token_ids)),
+            };
+            send_buf.extend_from_slice(&frame.header_bytes());
+            send_buf.extend_from_slice(&frame.payload);
+        }
+
+        // ----- SPINE pipelined (K frames in one write, K responses in one read) -----
+        group.bench_with_input(BenchmarkId::new("spine_pipelined", k), &k, |b, _| {
+            let rt = Runtime::new().unwrap();
+            let client = rt.block_on(async {
+                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                let port = listener.local_addr().unwrap().port();
+                spawn_spine_async_echo(listener).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Arc::new(AsyncMutex::new(
+                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port)).await.unwrap(),
+                ))
+            });
+            let req = Arc::new(send_buf.clone());
+            let expected_recv = req.len();
+            b.to_async(&rt).iter(|| {
+                let client = Arc::clone(&client);
+                let req = Arc::clone(&req);
+                async move {
+                    let mut c = client.lock().await;
+                    c.send_bytes(&req).await.unwrap();
+                    let resp = c.recv_bytes(expected_recv).await.unwrap();
+                    black_box(resp);
+                }
+            });
+        });
+
+        // ----- HTTP/2 pipelined: K concurrent requests on one HTTP/2 conn -----
+        group.bench_with_input(BenchmarkId::new("http2_pipelined", k), &k, |b, _| {
+            let rt = Runtime::new().unwrap();
+            let send = rt.block_on(async {
+                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                let port = listener.local_addr().unwrap().port();
+                spawn_h2_echo(listener).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                h2_connect(port).await
+            });
+            let body = Bytes::from(tokens_to_binary(&token_ids));
+            b.to_async(&rt).iter(|| {
+                let send = send.clone();
+                let body = body.clone();
+                async move {
+                    let mut tasks = Vec::with_capacity(k);
+                    for _ in 0..k {
+                        let send = send.clone();
+                        let body = body.clone();
+                        tasks.push(tokio::spawn(async move {
+                            h2_roundtrip(send, body).await
+                        }));
+                    }
+                    let mut total = 0;
+                    for t in tasks {
+                        total += t.await.unwrap();
+                    }
+                    black_box(total);
+                }
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_embedding_async,
     bench_batch_tokens,
     bench_streaming_tokens,
+    bench_pipelined_tokens,
 );
 criterion_main!(benches);

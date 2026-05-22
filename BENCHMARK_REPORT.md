@@ -315,6 +315,51 @@ caps out at 19.96 M tok/s for streaming and collapses to 2.8 M tok/s for
 4096-token batches, SPINE sustains 122 M tok/s with linear scaling and
 no string-formatting cliff.
 
+### 2.6.5 Pushing the tok/s ceiling
+
+Two optimizations were applied to the SPINE async client+server: **4 MiB
+socket send/recv buffers** (Windows default is ~64 KiB which stalls past
+~2 GiB/s loopback), and **larger batch sizes** (16 K and 64 K tokens) to
+amortize the per-request roundtrip further. Also added a **pipelined
+in-flight** bench that issues K requests back-to-back without waiting
+between writes, then drains all K responses — the pattern an LLM-serving
+gateway uses to keep the wire full when fanning out many user streams.
+
+**Batch generation extended (Mtok/s):**
+
+| N tokens | HTTP/2+SSE   | HTTP/2+binary | **SPINE async**   | SPINE vs binary  |
+| -------- | ------------ | ------------- | ----------------- | ---------------- |
+| 1024     | 12.8 M tok/s | 17.9 M tok/s  | **32.6 M tok/s**  | 1.82×            |
+| 4096     | 3.7 M tok/s  | 65.3 M tok/s  | **131 M tok/s**   | 2.00×            |
+| 16384    | 8.1 M tok/s  | 46.6 M tok/s  | **381 M tok/s**   | **8.18×**        |
+| 65536    | 11.9 M tok/s | 40.5 M tok/s  | **728 M tok/s**   | **17.96×**       |
+
+**Pipelined K in-flight requests (4096 tokens each, total tok/s):**
+
+| K   | HTTP/2 concurrent | **SPINE pipelined** | SPINE win  |
+| --- | ----------------- | ------------------- | ---------- |
+| 4   | 37.8 M tok/s      | **388.5 M tok/s**   | **10.27×** |
+| 16  | 58.9 M tok/s      | **561.0 M tok/s**   | **9.53×**  |
+| 64  | 77.6 M tok/s      | **545.0 M tok/s**   | **7.02×**  |
+
+**The new headline**: **728 million tokens/sec on a single TCP
+connection** (65 K-token batch, single roundtrip). At K=16 in-flight
+the bench sustains **561 M tok/s** under continuous pipelining. HTTP/2
+binary tops out at 65–78 M tok/s and JSON-SSE at 12 M tok/s — both 1–2
+orders of magnitude behind.
+
+Why HTTP/2+binary regresses at 65 K tokens (from 65 M down to 40 M):
+the larger payload exceeds HTTP/2's default per-stream flow-control
+window, forcing window updates and stalling. SPINE has no window
+accounting, so it doesn't hit this cliff.
+
+Why SPINE saturates around 500–700 M tok/s on this machine: at 65 K
+tokens × 4 bytes = 262 KB per request, with 90 µs roundtrip = ~2.91
+GB/s on the wire. That's right at the kernel's loopback bandwidth
+ceiling on this hardware — protocol overhead is now well below the
+TCP+kernel ceiling. To go higher we'd need DPDK / Windows RIO / shared
+memory IPC.
+
 ### 2.7 Connectivity (incomplete)
 
 The original `network_realistic.rs` `concurrent_connections` bench hung in this run (spawns many TCP listeners in a tight loop; Windows TIME_WAIT exhaustion is the likely cause). The new `spine_vs_www.rs` includes a `connection_setup` group that does new-conn-per-req vs multiplexed-stream, but it was excluded from this run for the same hang-risk reason. **Connectivity is the dimension with the weakest measured story** in this audit.
@@ -342,7 +387,9 @@ The honest claim: SPINE's connectivity model is **equivalent in shape to HTTP/2*
 | Agentic AI: 32-batch embedding @1536-dim | — | **23× vs JSON / 15× vs bincode**    | RAG retrieval scale                |
 | Agentic AI: 128-batch embedding @1536-dim| — | **20× vs JSON / 13× vs bincode**    | Fleet broadcast / index scale, 2.05 GiB/s |
 | Single 1536-dim embedding (async client) | — | **1.42× vs bincode**                | Async client closes prior harness gap |
-| **LLM tokens/sec, batch 4096**           | — | **43.7× vs OpenAI SSE**             | **122 M tok/s — single TCP conn**     |
+| **LLM tokens/sec, batch 4096**           | — | **43.7× vs OpenAI SSE**             | **131 M tok/s — single TCP conn**     |
+| **LLM tokens/sec, batch 65 K**           | — | **18.0× vs HTTP/2 binary**          | **728 M tok/s — single batch ceiling** |
+| **LLM tokens/sec, pipelined K=16**       | — | **9.5× vs HTTP/2 concurrent**       | **561 M tok/s — sustained**           |
 | **LLM tokens/sec, streaming 1024**       | — | **1.51× vs OpenAI SSE**             | **30.2 M tok/s — per-token messages** |
 
 ## Part 3 — How this maps to the ROADMAP's claims
