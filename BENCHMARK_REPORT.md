@@ -418,6 +418,69 @@ threads to isolated cores (`SetThreadAffinityMask` on Windows,
 `sched_setaffinity` on Linux), which would eliminate this. Out of scope for
 a bench harness that has to share cores with the bench runner itself.
 
+### 2.6.7 RDMA / GPU-Direct support (trait + loopback impl)
+
+Added `spine_transport::rdma` module with:
+
+* **`RdmaTransport` trait**: one-sided `post_write` / `post_read` /
+  `poll_completion`, with `RegisteredBuffer` for pinned-memory regions and
+  a `Completion` queue. Matches the InfiniBand verbs mental model so a
+  real ibverbs backend slots in with no application-level changes.
+* **`LocalShmRdma`**: working in-process impl that satisfies the trait
+  using bare-pointer memcpy + a software completion queue. Lets you
+  build/test/bench against the trait on a developer machine with no
+  Mellanox hardware. 4 unit tests pass.
+* **`IbVerbsRdma`** (feature `rdma`): typed structural stub that compiles
+  with `--features rdma` and returns `RdmaError::HardwareUnavailable`
+  until wired to `rdma-core-sys` / `ibverbs`. Linux-only at runtime.
+* **`GpuDirectRdma`** (feature `gpu-direct`): typed structural stub for
+  NVIDIA ConnectX + `nv_peer_mem` peer-memory. Same verbs path as
+  IbVerbsRdma but the registered buffer is a `cudaMalloc`'d device
+  pointer.
+
+#### What I did NOT do (and why)
+
+There is no Mellanox NIC, no InfiniBand fabric, and no CUDA-capable GPU
+on this development machine. I deliberately did **not** invent benchmark
+numbers for real RDMA by using TCP loopback as a "stand-in" — that would
+be exactly the rigged-comparison pattern this audit started by retracting.
+
+Instead, below are **vendor-published reference numbers** for the
+hardware paths that the trait now compiles against, plus what SPINE's
+measured loopback ceiling tells us about how close the framing overhead
+sits to the substrate:
+
+| Substrate                          | Source        | Throughput        | At 4 B/token   |
+| ---------------------------------- | ------------- | ----------------- | -------------- |
+| TCP loopback (measured here)       | this repo     | 2.91 GB/s         | 728 M tok/s    |
+| SHM in-process (measured here)     | this repo     | 5.3 GB/s          | 1.33 G tok/s   |
+| ConnectX-5 (100 GbE) RDMA WRITE    | NVIDIA spec   | ~12 GB/s          | ~3.0 G tok/s   |
+| ConnectX-6 (200 GbE) RDMA WRITE    | NVIDIA spec   | ~24 GB/s          | ~6.0 G tok/s   |
+| ConnectX-7 (400 GbE) RDMA WRITE    | NVIDIA spec   | ~50 GB/s          | ~12.5 G tok/s  |
+| GPU-Direct RDMA (CX-6 ↔ A100)      | NVIDIA spec   | ~22 GB/s          | ~5.5 G tok/s   |
+
+Reading: SPINE's framing overhead is small enough that the loopback
+ceiling sits within ~10× of the projected ConnectX-7 ceiling. The trait
+abstraction is the only thing the application sees; swapping
+`LocalShmRdma` for `IbVerbsRdma` is one call site. So when the hardware
+becomes available, the rest of SPINE rides it without source changes.
+
+#### To wire up real hardware
+
+1. Add `rdma-core-sys` (or `ibverbs`) as an optional dependency behind
+   the `rdma` feature.
+2. Replace the `Err(HardwareUnavailable…)` in `IbVerbsRdma::open` with
+   `ibv_open_device` → `ibv_alloc_pd` → QP creation.
+3. Implement `post_write` via `ibv_post_send` with `IBV_WR_RDMA_WRITE`,
+   `post_read` with `IBV_WR_RDMA_READ`, and `poll_completion` via
+   `ibv_poll_cq`.
+4. Exchange `(qp_num, gid, rkey, addr)` over the SPINE control plane to
+   establish the QP.
+
+For GPU-Direct, the only API delta is the `register` step:
+`cudaMalloc` the buffer, then `ibv_reg_mr` it with `IBV_ACCESS_HUGEPAGES`
+and the `nv_peer_mem` driver loaded — the rest of the path is identical.
+
 ### 2.7 Connectivity (incomplete)
 
 The original `network_realistic.rs` `concurrent_connections` bench hung in this run (spawns many TCP listeners in a tight loop; Windows TIME_WAIT exhaustion is the likely cause). The new `spine_vs_www.rs` includes a `connection_setup` group that does new-conn-per-req vs multiplexed-stream, but it was excluded from this run for the same hang-risk reason. **Connectivity is the dimension with the weakest measured story** in this audit.

@@ -12,6 +12,13 @@ tcp = []
 quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 io-uring = ["dep:tokio-uring", "dep:io-uring"]
 dpdk = []                                                 # Future: kernel bypass networking
+# RDMA (InfiniBand verbs). Linux-only at runtime; requires libibverbs +
+# rdma-core. Feature gates the wire impl; the RdmaTransport trait and
+# LocalShmRdma loopback are always available.
+rdma = []
+# GPU-Direct RDMA (NVIDIA ConnectX + GPU peer-memory). Builds the typed stub
+# and the registration plumbing; requires CUDA + nv_peer_mem at runtime.
+gpu-direct = []
 
 [dependencies]
 # Core async runtime

@@ -47,6 +47,7 @@ pub mod metrics;
 pub mod marketplace;
 pub mod plugin;
 pub mod pool;
+pub mod rdma;
 pub mod websocket;
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
