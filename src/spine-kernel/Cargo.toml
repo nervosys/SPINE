@@ -34,7 +34,7 @@ memmap2 = "0.9"
 wide = "0.7"
 
 # io_uring for Linux kernel bypass
-io-uring = { version = "0.6", optional = true }
+io-uring = { version = "0.7", optional = true }
 
 # Alignment and layout
 bytemuck = { version = "1.14", features = ["derive"] }
