@@ -15,7 +15,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
-dashmap = "5.5"
+dashmap = "6.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand.workspace = true
 sha2 = "0.10"
