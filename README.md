@@ -855,22 +855,89 @@ let distribution = network.distribute_task("Build ML pipeline", &required_roles)
 | **Modular**      | Dense clusters, sparse inter-cluster | Cross-functional teams  |
 | **Dynamic**      | Evolves based on interactions        | Adaptive organizations  |
 
-## Performance Optimizations
+## Performance
 
-SPINE is engineered for efficiency. **Two sets of numbers** appear below — please read the honest set first.
+### Measured performance (2026-05 audit)
 
-### ⚠️ Audit notice (2026-05)
+Numbers below come from `src/spine-transport/benches/{spine_vs_www,spine_vs_http2,agentic_ai_workload,llm_tok_per_sec,llm_shm_ipc}.rs`, all of which compare against **real** protocol implementations (the `h2` crate for HTTP/2, the `aes-gcm` crate for AES-256-GCM, real `serde_json` for JSON) on real TCP loopback or in-process shared memory. Full methodology, every caveat, and reproduction commands are in [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 
-The "SPINE vs Traditional Web Stack" tables in the next subsection and the "Real-World Application Benchmark" tables below them came from `src/spine-transport/benches/traditional_comparison.rs`, which an audit found to compare hand-rolled fakes (XOR pretending to be AES-GCM, a 10-line string split pretending to be JSON parse, `Vec::clone` pretending to be Redis pub/sub) against optimized SPINE code. **The four- and five-digit speedup ratios in those tables are not supported by like-for-like measurement.** They are retained here only so the historical claims and the retraction live in the same document.
+#### Transport-layer comparisons (single TCP connection, persistent, optimized SPINE)
 
-For **honest** SPINE-vs-WWW numbers, measured with real HTTP/1.1 wire format and real `aes-gcm` on both sides, see **`BENCHMARK_REPORT.md`**. Headline results:
+| Baseline                       | SPINE latency win | SPINE throughput win |
+| ------------------------------ | ----------------- | -------------------- |
+| Raw TCP echo (no protocol)     | within ±10%       | within ±10%          |
+| Real HTTP/1.1 (textual headers)| 1.74–1.87×        | 1.32–1.84×           |
+| Real HTTP/2, single stream     | 1.47–1.93×        | 2.29–2.52×           |
+| Real HTTP/2, N=4 concurrent    | —                 | **14.1×**            |
+| Real HTTP/2, N=16 concurrent   | —                 | **21.5×**            |
+| Real HTTP/2, N=64 concurrent   | —                 | **35.9×** (1.42M req/s)|
 
-- SPINE within ±10% of raw TCP echo at every payload size (latency and throughput)
-- **1.32–1.87× faster than real HTTP/1.1** on real-loopback latency and throughput
-- Crypto: parity with TLS at the AEAD primitive level (same AES-256-GCM both sides)
-- Concurrent persistent connections: 64 parallel roundtrips in 2.9 ms (~46 µs amortized)
+#### Agentic AI: embedding transmission (1536-dim, OpenAI ada-002 size)
 
-The "Component Benchmarks" table further down (frame encode, ring buffer, BBR pacing, etc.) lists absolute throughput of internal operations and was not part of the retraction.
+| Workload                                   | HTTP/2+JSON  | HTTP/2+bincode | **SPINE**       |
+| ------------------------------------------ | ------------ | -------------- | --------------- |
+| Single embedding (async client)            | 41.7 µs      | 45.6 µs        | **32.2 µs**     |
+| 8 embeddings batch (RAG retrieval)         | 592 µs       | 273 µs         | **68.8 µs** (8.6×)  |
+| 32 embeddings batch                        | 2.35 ms      | 1.56 ms        | **102 µs** (23×)    |
+| 128 embeddings batch (fleet broadcast)     | 7.13 ms      | 4.79 ms        | **357 µs** (20×)    |
+
+#### LLM tokens/sec — single TCP connection
+
+| Pattern                       | HTTP/2+OpenAI SSE | HTTP/2+binary | **SPINE async**       |
+| ----------------------------- | ----------------- | ------------- | --------------------- |
+| Batch 1,024 tokens            | 12.8 M tok/s      | 17.9 M tok/s  | **32.6 M tok/s**      |
+| Batch 4,096 tokens            | 3.7 M tok/s ⚠     | 65.3 M tok/s  | **131 M tok/s**       |
+| Batch 16,384 tokens           | 8.1 M tok/s       | 46.6 M tok/s  | **381 M tok/s** (8.2×)|
+| Batch 65,536 tokens           | 11.9 M tok/s      | 40.5 M tok/s ⚠| **728 M tok/s** (18×) |
+| Streaming, 1,024 tokens       | 19.96 M tok/s     | —             | **30.2 M tok/s**      |
+| Pipelined K=16 (4096 tok/req) | —                 | 58.9 M tok/s  | **561 M tok/s** (9.5×)|
+
+⚠ HTTP/2 binary regresses past 65 K tokens because the payload exceeds the default per-stream flow-control window. OpenAI SSE format collapses at 4 K tokens because of JSON string-formatting cost.
+
+#### Same-host agent IPC — shared-memory ring (`llm_shm_ipc.rs`)
+
+For agents on the same host, SPINE frames can be carried over a shared-memory SPSC ring — no kernel transit:
+
+| Workload                       | TCP best   | **SHM**         |
+| ------------------------------ | ---------- | --------------- |
+| Batch 65,536 tokens            | 728 M tok/s| **1.33 Gtok/s** |
+| Pipelined K=64 (4096 tok/req)  | 545 M tok/s| **1.05 Gtok/s** |
+
+**1.33 billion tokens/sec on a single shared-memory ring.** For perspective: GPT-4-class LLMs generate ~50–200 tok/s/user. SPINE's transport ceiling sits ~6–7 orders of magnitude above what the model itself produces — transport is never the bottleneck.
+
+#### RDMA / GPU-Direct (trait + loopback impl shipped; hardware backends are typed stubs)
+
+The repo now contains an `RdmaTransport` trait (`src/spine-transport/src/rdma.rs`) with a working `LocalShmRdma` impl for development/CI, and typed stubs for `IbVerbsRdma` (Linux + Mellanox) and `GpuDirectRdma` (CUDA + nv_peer_mem). **No real RDMA hardware was available for this audit, so the numbers below are vendor-published, not measured here**:
+
+| Substrate                       | Source       | Throughput   | At 4 B/token   |
+| ------------------------------- | ------------ | ------------ | -------------- |
+| TCP loopback (measured)         | this repo    | 2.91 GB/s    | 728 M tok/s    |
+| SHM in-process (measured)       | this repo    | 5.3 GB/s     | 1.33 G tok/s   |
+| ConnectX-5 RDMA WRITE           | vendor spec  | ~12 GB/s     | ~3.0 G tok/s   |
+| ConnectX-6 RDMA WRITE           | vendor spec  | ~24 GB/s     | ~6.0 G tok/s   |
+| ConnectX-7 RDMA WRITE           | vendor spec  | ~50 GB/s     | ~12.5 G tok/s  |
+| GPU-Direct (CX-6 ↔ A100)        | vendor spec  | ~22 GB/s     | ~5.5 G tok/s   |
+
+### Crypto
+
+Per-record AEAD overhead is **identical** to TLS when both use the same primitive — SPINE encrypts with the same `aes-gcm` crate (AES-256-GCM) as `rustls`. SPINE's *crypto layer* wins (Chameleon Protocol's moving-target defense, X3DH key exchange, RLWE post-quantum) operate *above* the AEAD primitive and are measured separately in their respective crates.
+
+### Reproduction
+
+```bash
+cargo bench --package spine-transport --bench spine_vs_www
+cargo bench --package spine-transport --bench spine_vs_http2
+cargo bench --package spine-transport --bench agentic_ai_workload
+cargo bench --package spine-transport --bench llm_tok_per_sec
+cargo bench --package spine-transport --bench llm_shm_ipc
+cargo test  --package spine-transport rdma  # 4 trait tests
+```
+
+### Legacy "illustrative only" tables (retracted, kept for history)
+
+The "SPINE vs Traditional Web Stack" tables in the next subsections came from `src/spine-transport/benches/traditional_comparison.rs`, which the 2026-05 audit found to compare hand-rolled fakes (XOR pretending to be AES-GCM, a 10-line string split pretending to be JSON parse, `Vec::clone` pretending to be Redis pub/sub) against optimized SPINE code. **The four- and five-digit speedup ratios below are not supported by like-for-like measurement.** They are retained so the historical claims and the retraction live in the same document.
+
+The "Component Benchmarks" table further down (frame encode, ring buffer, BBR pacing, etc.) lists absolute throughput of internal operations and was *not* part of the retraction.
 
 ### SPINE vs Traditional Web Stack (legacy table — see audit notice above)
 
