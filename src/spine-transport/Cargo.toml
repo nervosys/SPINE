@@ -47,9 +47,9 @@ log.workspace = true
 tracing = "0.1"
 
 # Zero-copy buffers
-bytes = "1.5"
+bytes = "1.11"
 memmap2 = "0.9"  # Memory-mapped files
-bitflags = "2.4"
+bitflags = "2.11"
 
 # Compression (SIMD-accelerated)
 zstd = "0.12"
@@ -95,7 +95,7 @@ spine-protocol = { path = "../spine-protocol" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 tokio-test = "0.4"
 rand = "0.8"
-proptest = "1.4"
+proptest = "1.11"
 aes-gcm = "0.10"
 h2 = "0.4"
 http = "1"
