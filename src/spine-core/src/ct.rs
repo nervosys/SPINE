@@ -18,9 +18,22 @@
 //! - `BestEffort`: Log warnings for missing/invalid SCTs but allow connections
 //! - `Enforced`: Reject connections without valid SCTs from trusted logs
 
+use base64::Engine;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Canonical Google CT log list (RFC 6962 v3 JSON format).
+///
+/// Production callers should fetch this list periodically, verify its
+/// signature against Google's public key, cache the result, and pass the
+/// raw JSON bytes to [`CtPolicy::add_logs_from_json_v3`].
+pub const OFFICIAL_LOG_LIST_URL: &str =
+    "https://www.gstatic.com/ct/log_list/v3/log_list.json";
+
+/// Apple-published mirror of the same list (CT v3 schema).
+pub const APPLE_LOG_LIST_URL: &str =
+    "https://valid.apple.com/ct/log_list/current_log_list.json";
 
 /// CT enforcement policy
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -49,14 +62,19 @@ pub struct CtPolicy {
 
 impl Default for CtPolicy {
     fn default() -> Self {
-        let mut policy = Self {
+        // Default policy is Disabled and has NO trusted logs preloaded.
+        // Callers should fetch the official log list (see
+        // [`OFFICIAL_LOG_LIST_URL`]) and pass it to
+        // [`Self::add_logs_from_json_v3`]. The previous implementation
+        // shipped placeholder SPKIs to satisfy a smoke test; loading them
+        // by default would silently accept SCTs that nobody could verify,
+        // so they have been removed.
+        Self {
             enforcement: CtEnforcement::Disabled,
             min_scts: 2,
             max_sct_age: Duration::from_secs(90 * 24 * 60 * 60), // 90 days
             trusted_logs: HashMap::new(),
-        };
-        policy.add_well_known_logs();
-        policy
+        }
     }
 }
 
@@ -125,14 +143,15 @@ pub struct SctVerificationResult {
 }
 
 impl CtPolicy {
-    /// Create a new CT policy with enforcement level
+    /// Create a new CT policy with the given enforcement level and no
+    /// preloaded logs. Call [`Self::add_logs_from_json_v3`] (or
+    /// [`Self::add_log`]) before relying on `Enforced` checks — otherwise
+    /// every SCT will be rejected as coming from an unknown log.
     pub fn new(enforcement: CtEnforcement) -> Self {
-        let mut policy = Self {
+        Self {
             enforcement,
             ..Default::default()
-        };
-        policy.add_well_known_logs();
-        policy
+        }
     }
 
     /// Add a custom CT log
@@ -140,45 +159,73 @@ impl CtPolicy {
         self.trusted_logs.insert(log.log_id, log);
     }
 
-    /// Add well-known Google and Cloudflare CT logs
-    /// Note: In production, these would be loaded from a CT log list file
-    /// (e.g., https://www.gstatic.com/ct/log_list/v3/log_list.json)
-    fn add_well_known_logs(&mut self) {
-        // Google Argon2025 (example placeholder - real key would be loaded from config)
-        let google_argon = CtLog::new(
-            "Google Argon2025",
-            "Google",
-            // Placeholder SPKI — in production, load from CT log list JSON
-            &[0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
-              0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
-              0x07, 0x03, 0x42, 0x00, 0x04],
-            "https://ct.googleapis.com/logs/us1/argon2025/",
-        );
-        self.trusted_logs.insert(google_argon.log_id, google_argon);
+    /// Parse and ingest a CT log list in Google's v3 JSON schema.
+    ///
+    /// The official list lives at [`OFFICIAL_LOG_LIST_URL`]. Only logs
+    /// whose `state` is `usable`, `qualified`, or `pending` are loaded;
+    /// `retired`, `rejected`, and `readonly` entries are skipped because
+    /// they are not trusted to issue new SCTs.
+    ///
+    /// Returns the number of logs successfully added.
+    pub fn add_logs_from_json_v3(&mut self, json: &str) -> Result<usize, String> {
+        let parsed: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| format!("invalid JSON: {e}"))?;
+        let operators = parsed
+            .get("operators")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "missing `operators` array".to_string())?;
 
-        // Cloudflare Nimbus2025 (example placeholder)
-        let cloudflare_nimbus = CtLog::new(
-            "Cloudflare Nimbus2025",
-            "Cloudflare",
-            &[0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
-              0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
-              0x07, 0x03, 0x42, 0x00, 0x05],
-            "https://ct.cloudflare.com/logs/nimbus2025/",
-        );
-        self.trusted_logs
-            .insert(cloudflare_nimbus.log_id, cloudflare_nimbus);
-
-        // Let's Encrypt Oak2025 (example placeholder)
-        let letsencrypt_oak = CtLog::new(
-            "Let's Encrypt Oak2025",
-            "Let's Encrypt",
-            &[0x30, 0x59, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d,
-              0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01,
-              0x07, 0x03, 0x42, 0x00, 0x06],
-            "https://oak.ct.letsencrypt.org/2025/",
-        );
-        self.trusted_logs
-            .insert(letsencrypt_oak.log_id, letsencrypt_oak);
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut added = 0usize;
+        for op in operators {
+            let operator = op
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let logs = match op.get("logs").and_then(|v| v.as_array()) {
+                Some(l) => l,
+                None => continue,
+            };
+            for log in logs {
+                // Honor the state filter — only usable/qualified/pending
+                // logs may issue SCTs that should be trusted today.
+                let state_ok = log
+                    .get("state")
+                    .and_then(|s| s.as_object())
+                    .map(|s| {
+                        s.contains_key("usable")
+                            || s.contains_key("qualified")
+                            || s.contains_key("pending")
+                    })
+                    .unwrap_or(false);
+                if !state_ok {
+                    continue;
+                }
+                let key_b64 = match log.get("key").and_then(|v| v.as_str()) {
+                    Some(k) => k,
+                    None => continue,
+                };
+                let url = log
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let description = log
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(unnamed)")
+                    .to_string();
+                let key_der = match b64.decode(key_b64) {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let entry = CtLog::new(&description, &operator, &key_der, &url);
+                self.trusted_logs.insert(entry.log_id, entry);
+                added += 1;
+            }
+        }
+        Ok(added)
     }
 
     /// Parse SCTs from a TLS certificate extension (OID 1.3.6.1.4.1.11129.2.4.2)
@@ -432,19 +479,68 @@ impl CtPolicy {
 mod tests {
     use super::*;
 
+    /// Synthetic CT log list in Google v3 schema. The keys are random
+    /// bytes — structurally valid base64, but cryptographically meaningless.
+    /// Used only to exercise the JSON loader.
+    const TEST_LOG_LIST: &str = r#"{
+      "operators": [
+        {
+          "name": "TestOp",
+          "logs": [
+            {
+              "description": "Test Log A",
+              "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nw==",
+              "url": "https://test-a.example/",
+              "state": { "usable": {} }
+            },
+            {
+              "description": "Test Log B (retired)",
+              "key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/Aw==",
+              "url": "https://test-b.example/",
+              "state": { "retired": { "timestamp": "2024-01-01T00:00:00Z" } }
+            }
+          ]
+        }
+      ]
+    }"#;
+
     #[test]
     fn test_ct_enforcement_default() {
         let policy = CtPolicy::default();
         assert_eq!(policy.enforcement, CtEnforcement::Disabled);
         assert_eq!(policy.min_scts, 2);
-        assert!(!policy.trusted_logs.is_empty());
+        // The default policy ships with NO trusted logs — production must
+        // ingest the official list explicitly.
+        assert!(policy.trusted_logs.is_empty());
     }
 
     #[test]
     fn test_ct_policy_new() {
         let policy = CtPolicy::new(CtEnforcement::Enforced);
         assert_eq!(policy.enforcement, CtEnforcement::Enforced);
-        assert!(policy.trusted_logs.len() >= 3);
+        assert!(policy.trusted_logs.is_empty());
+    }
+
+    #[test]
+    fn test_load_logs_from_json_v3() {
+        let mut policy = CtPolicy::default();
+        let added = policy.add_logs_from_json_v3(TEST_LOG_LIST).unwrap();
+        // Only the usable log is loaded; the retired one is skipped.
+        assert_eq!(added, 1);
+        assert_eq!(policy.trusted_logs.len(), 1);
+        let log = policy.trusted_logs.values().next().unwrap();
+        assert_eq!(log.name, "Test Log A");
+        assert_eq!(log.operator, "TestOp");
+        assert_eq!(log.url, "https://test-a.example/");
+    }
+
+    #[test]
+    fn test_load_logs_from_json_v3_invalid() {
+        let mut policy = CtPolicy::default();
+        assert!(policy.add_logs_from_json_v3("not json").is_err());
+        assert!(policy
+            .add_logs_from_json_v3(r#"{"missing_operators": true}"#)
+            .is_err());
     }
 
     #[test]
@@ -577,8 +673,8 @@ mod tests {
 
     #[test]
     fn test_verify_scts_future_timestamp() {
-        let policy = CtPolicy::default();
-        // Get a known log_id from the policy
+        let mut policy = CtPolicy::default();
+        policy.add_logs_from_json_v3(TEST_LOG_LIST).unwrap();
         let log_id = *policy.trusted_logs.keys().next().unwrap();
 
         let scts = vec![SignedCertificateTimestamp {
@@ -598,7 +694,8 @@ mod tests {
 
     #[test]
     fn test_verify_scts_valid_trusted_log() {
-        let policy = CtPolicy::default();
+        let mut policy = CtPolicy::default();
+        policy.add_logs_from_json_v3(TEST_LOG_LIST).unwrap();
         let log_id = *policy.trusted_logs.keys().next().unwrap();
 
         let now_ms = SystemTime::now()
