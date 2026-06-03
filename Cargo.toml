@@ -34,7 +34,7 @@ resolver = "2"
 version = "1.0.0"
 edition = "2021"
 authors = ["Nervosys LLC"]
-description = "A bioinspired agentic AI web stack"
+description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, and W3C tracing for LLM swarms"
 license = "Apache-2.0"
 repository = "https://github.com/nervosys/SPINE"
 

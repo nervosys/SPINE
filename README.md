@@ -4,11 +4,11 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-784%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1039%20passing-brightgreen.svg)](#testing)
 
-**SPINE** (Synaptic Path INterconnecting Entities) is a **headless semantic browser with adaptive encryption** — not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Built from the ground up for **collaborative and adversarial AI systems**, SPINE provides a complete communication and execution framework for autonomous agents—mimicking the adaptive, distributed nature of biological neural networks.
+**SPINE** (Synaptic Path INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
-> *"SPINE is a headless semantic browser — a digital nervous system that lets AI agents efficiently extract meaning from the web and coordinate securely."*
+> *"A digital nervous system for AI agents — semantic-first parsing, agentic-first framing, swarm-first coordination, all with the option to fall back to plain HTTP whenever a human or legacy client needs to talk to it."*
 
 ## Why "SPINE"?
 
@@ -35,13 +35,36 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 
 ## Core Principles
 
+- **Agentic-First Framing**: Tool calls, token streams, capability handshakes, and W3C trace context are first-class [`Message`](src/spine-protocol/src/agentic.rs) variants — not JSON glued on top of HTTP after the fact. See *Agentic-First Primitives* below.
 - **Semantic Extraction**: Directly parses web content into structured representations without rendering pipelines.
 - **Binary Execution**: Treats websites as executable programs with instruction-based semantics.
 - **Adaptive Protocols**: Chameleon Protocol with Titans neural memory for moving-target defense.
 - **Latent Streaming**: Native support for streaming high-dimensional vectors (embeddings, latent representations) to agents.
-- **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats for seamless human-AI interaction.
+- **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats, and exposes an OpenAI-compatible `/v1/chat/completions` SSE endpoint so any existing LLM client can drive a SPINE stack without learning a new SDK.
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
 - **Long-Term Memory**: Persistent knowledge base with tagging, querying, and cross-cluster synchronization.
+
+## Agentic-First Primitives
+
+The protocol layer (`spine-protocol::agentic`) defines four families that an LLM-agent stack needs at the wire level. Every type is `serde`-round-trippable, lands on the same encrypted Chameleon path as the rest of SPINE, and is also reachable over plain HTTPS through the gateway.
+
+| Primitive | Frames | Maps to |
+|-----------|--------|---------|
+| **Tool calling (MCP-shaped)** | `ToolCall { id, name, args }` → `ToolResult { id, outcome }` | Anthropic MCP; OpenAI function calling |
+| **Token streaming** | `StreamStart` → `StreamToken { seq, data }`* → `StreamEnd { reason, usage }` | OpenAI SSE `chat.completion.chunk`; Anthropic streaming |
+| **Capability handshake** | `CapabilityQuery { selector }` → `CapabilityAdvertisement { capabilities }` | OpenAI tool list; MCP server `tools/list` |
+| **Distributed tracing** | `TraceContext { trace_id, span_id, flags, state }` attached inline | W3C `traceparent`; OpenTelemetry |
+
+\* `StreamToken::data` is `Text` | `Bytes` | `ToolCall` — so function calling mid-stream falls out without a second framing layer.
+
+The gateway crate ships an OpenAI-compatible bridge (`src/spine-gateway/src/agentic_sse.rs`):
+
+```
+POST /v1/chat/completions              → SSE stream of OpenAI chat.completion.chunk
+GET  /v1/agentic/capabilities          → CapabilityAdvertisement as JSON
+```
+
+`StreamEndReason` is the exact OpenAI/Anthropic finish-reason taxonomy (`stop`, `length`, `tool_calls`, `content_filter`, `cancelled`, `error`), so an existing SDK switches over a SPINE stream with no translator.
 
 ## Core Components
 
@@ -60,7 +83,7 @@ SPINE is composed of 28 specialized crates organized into a cohesive bioinspired
 
 ### Transport Layer
 
-- **`spine-protocol`**: Low-latency TCP-based protocol with encryption, compression, and binary program execution support.
+- **`spine-protocol`**: Low-latency TCP-based protocol with encryption, compression, binary program execution, and the agentic-first frame family (`ToolCall`, `StreamToken`, `CapabilityQuery`, `TraceContext`). See [`agentic.rs`](src/spine-protocol/src/agentic.rs).
 - **`spine-transport`**: High-performance zero-copy transport layer with BBR congestion control and connection pooling.
 - **`spine-stream`**: Reactive streaming layer with multiplexing, flow control, chunked transfer, and priority queuing.
 
@@ -89,7 +112,7 @@ SPINE is composed of 28 specialized crates organized into a cohesive bioinspired
 
 - **`spine-browser`**: Cross-platform GUI browser application for human users, built with `egui`.
 - **`spine-cli`**: Command-line tool with init, connect (REPL), query, deploy, benchmark, and status commands.
-- **`spine-gateway`**: REST API gateway with OpenAPI/Swagger UI (axum + utoipa).
+- **`spine-gateway`**: REST API gateway with OpenAPI/Swagger UI (axum + utoipa) plus an OpenAI-compatible `/v1/chat/completions` SSE bridge that translates SPINE `StreamToken` frames into `chat.completion.chunk` events.
 
 ### Bindings & Interop
 
@@ -1135,7 +1158,14 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (915 tests)
+### Test Summary (1,039 tests, 0 failures)
+
+Latest workspace run: `cargo test --workspace --no-fail-fast` →
+**1,039 passed / 0 failed / 5 ignored** across all 28 crates. The five
+ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
+hidden failures. Per-crate breakdown below remains an approximation —
+exact counts shift with each addition.
+
 
 | Crate           | Tests | Description                                              |
 | --------------- | ----- | -------------------------------------------------------- |
