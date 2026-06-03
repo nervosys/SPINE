@@ -490,6 +490,64 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+    /// WGSL compute shader for tiled f32 matrix-matrix multiplication.
+    /// `c[m,n] = a[m,k] * b[k,n]`, row-major, 16×16 workgroup-local tile.
+    const MATMUL_SHADER: &str = r#"
+@group(0) @binding(0) var<storage, read> mat_a: array<f32>;
+@group(0) @binding(1) var<storage, read> mat_b: array<f32>;
+@group(0) @binding(2) var<storage, read_write> mat_c: array<f32>;
+
+struct Params {
+    m: u32,
+    k: u32,
+    n: u32,
+}
+@group(0) @binding(3) var<uniform> params: Params;
+
+const TILE: u32 = 16u;
+
+var<workgroup> tile_a: array<f32, 256>;
+var<workgroup> tile_b: array<f32, 256>;
+
+@compute @workgroup_size(16, 16, 1)
+fn main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id) lid: vec3<u32>,
+) {
+    let row = gid.y;
+    let col = gid.x;
+    let lr = lid.y;
+    let lc = lid.x;
+    var sum: f32 = 0.0;
+
+    let num_tiles = (params.k + TILE - 1u) / TILE;
+    for (var t: u32 = 0u; t < num_tiles; t = t + 1u) {
+        let a_col = t * TILE + lc;
+        if (row < params.m && a_col < params.k) {
+            tile_a[lr * TILE + lc] = mat_a[row * params.k + a_col];
+        } else {
+            tile_a[lr * TILE + lc] = 0.0;
+        }
+        let b_row = t * TILE + lr;
+        if (b_row < params.k && col < params.n) {
+            tile_b[lr * TILE + lc] = mat_b[b_row * params.n + col];
+        } else {
+            tile_b[lr * TILE + lc] = 0.0;
+        }
+        workgroupBarrier();
+
+        for (var i: u32 = 0u; i < TILE; i = i + 1u) {
+            sum += tile_a[lr * TILE + i] * tile_b[i * TILE + lc];
+        }
+        workgroupBarrier();
+    }
+
+    if (row < params.m && col < params.n) {
+        mat_c[row * params.n + col] = sum;
+    }
+}
+"#;
+
     /// WGSL compute shader for softmax.
     const SOFTMAX_SHADER: &str = r#"
 @group(0) @binding(0) var<storage, read_write> data: array<f32>;
@@ -570,12 +628,14 @@ fn main(
         // Pre-compiled pipelines
         matvec_pipeline: wgpu::ComputePipeline,
         matvec_bind_group_layout: wgpu::BindGroupLayout,
+        matmul_pipeline: wgpu::ComputePipeline,
+        matmul_bind_group_layout: wgpu::BindGroupLayout,
     }
 
     impl WgpuBackend {
         /// Create a new wgpu backend, requesting the best available GPU.
         pub fn new() -> Result<Self> {
-            let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::all(),
                 ..Default::default()
             });
@@ -645,6 +705,46 @@ fn main(
                     cache: None,
                 });
 
+            // Pre-compile matmul pipeline (tiled f32 GEMM).
+            let matmul_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("matmul"),
+                source: wgpu::ShaderSource::Wgsl(MATMUL_SHADER.into()),
+            });
+            let matmul_bind_group_layout =
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("matmul_bgl"),
+                    entries: &[
+                        bgl_entry(0, true),  // a
+                        bgl_entry(1, true),  // b
+                        bgl_entry(2, false), // c
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+            let matmul_pipeline_layout =
+                device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("matmul_pl"),
+                    bind_group_layouts: &[&matmul_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
+            let matmul_pipeline =
+                device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("matmul_pipeline"),
+                    layout: Some(&matmul_pipeline_layout),
+                    module: &matmul_module,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+
             let info = DeviceInfo {
                 name: format!("{} ({:?})", adapter_info.name, adapter_info.backend),
                 device_type: DeviceType::Gpu,
@@ -659,7 +759,110 @@ fn main(
                 queue,
                 matvec_pipeline,
                 matvec_bind_group_layout,
+                matmul_pipeline,
+                matmul_bind_group_layout,
             })
+        }
+
+        /// Execute GPU tiled GEMM: `c[m,n] = a[m,k] * b[k,n]`.
+        fn dispatch_matmul(
+            &self,
+            a: &[f32],
+            b: &[f32],
+            m: usize,
+            k: usize,
+            n: usize,
+            c: &mut [f32],
+        ) -> Result<()> {
+            let a_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("mat_a"),
+                    contents: bytemuck::cast_slice(a),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+            let b_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("mat_b"),
+                    contents: bytemuck::cast_slice(b),
+                    usage: wgpu::BufferUsages::STORAGE,
+                });
+            let c_size_bytes = (m * n * 4) as u64;
+            let c_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("mat_c"),
+                size: c_size_bytes,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            let params: [u32; 3] = [m as u32, k as u32, n as u32];
+            let params_buf = self
+                .device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("matmul_params"),
+                    contents: bytemuck::cast_slice(&params),
+                    usage: wgpu::BufferUsages::UNIFORM,
+                });
+
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("matmul_bg"),
+                layout: &self.matmul_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: a_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: b_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: c_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: params_buf.as_entire_binding(),
+                    },
+                ],
+            });
+
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&self.matmul_pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                // 16×16 workgroups cover the (n, m) output grid.
+                let groups_x = ((n + 15) / 16) as u32;
+                let groups_y = ((m + 15) / 16) as u32;
+                pass.dispatch_workgroups(groups_x, groups_y, 1);
+            }
+
+            let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("matmul_staging"),
+                size: c_size_bytes,
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            encoder.copy_buffer_to_buffer(&c_buf, 0, &staging, 0, c_size_bytes);
+
+            self.queue.submit(std::iter::once(encoder.finish()));
+
+            let slice = staging.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                tx.send(result).ok();
+            });
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.recv()??;
+
+            let data = slice.get_mapped_range();
+            let result: &[f32] = bytemuck::cast_slice(&data);
+            c[..m * n].copy_from_slice(&result[..m * n]);
+            drop(data);
+            staging.unmap();
+
+            Ok(())
         }
 
         /// Execute a GPU compute pass: upload → dispatch → readback.
@@ -814,9 +1017,7 @@ fn main(
             n: usize,
             c: &mut [f32],
         ) -> Result<()> {
-            // For now, delegate to CPU — full GPU matmul shader is a TODO
-            let cpu = CpuBackend::new();
-            cpu.mat_mul(a, b, m, k, n, c)
+            self.dispatch_matmul(a, b, m, k, n, c)
         }
 
         fn softmax(&self, data: &mut [f32]) -> Result<()> {
@@ -1173,6 +1374,36 @@ mod tests {
         // Should work regardless of GPU availability
         let dot = acc.backend().dot_product(&[1.0, 2.0], &[3.0, 4.0]).unwrap();
         assert!((dot - 11.0).abs() < 1e-5);
+    }
+
+    /// Cross-check the GPU GEMM shader against the CPU reference. Skips
+    /// silently when no wgpu adapter is available (CI runners without a
+    /// GPU stack).
+    #[cfg(feature = "wgpu-backend")]
+    #[test]
+    fn test_gpu_mat_mul_matches_cpu() {
+        let gpu = match wgpu_backend::WgpuBackend::new() {
+            Ok(g) => g,
+            Err(_) => return, // No adapter — not an environment failure.
+        };
+
+        // 4×3 * 3×5 = 4×5 with non-trivial values.
+        let a: Vec<f32> = (0..12).map(|i| (i as f32) * 0.5 - 1.0).collect();
+        let b: Vec<f32> = (0..15).map(|i| (i as f32) * 0.25 + 0.5).collect();
+        let mut c_gpu = vec![0.0f32; 20];
+        let mut c_cpu = vec![0.0f32; 20];
+
+        gpu.mat_mul(&a, &b, 4, 3, 5, &mut c_gpu).unwrap();
+        CpuBackend::new()
+            .mat_mul(&a, &b, 4, 3, 5, &mut c_cpu)
+            .unwrap();
+
+        for (g, h) in c_gpu.iter().zip(c_cpu.iter()) {
+            assert!(
+                (g - h).abs() < 1e-3,
+                "GPU/CPU GEMM mismatch: {g} vs {h}"
+            );
+        }
     }
 
     #[test]
