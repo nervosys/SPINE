@@ -3,6 +3,13 @@
 //! OpenAPI REST gateway exposing SPINE agentic web APIs to non-Rust clients.
 //! Provides session management, navigation, search, HLS execution, and health
 //! endpoints with auto-generated Swagger UI.
+//!
+//! Also bridges SPINE's native agentic frame types
+//! ([`spine_protocol::StreamStart`] / [`StreamToken`] / [`StreamEnd`] and
+//! the [`CapabilityAdvertisement`] handshake) to the HTTP/SSE wire format
+//! every OpenAI-compatible client speaks. See the [`agentic_sse`] module.
+
+mod agentic_sse;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -587,6 +594,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sessions/{id}/execute", post(execute_hls))
         .route("/api/parse", post(parse_html_endpoint))
         .route("/api/compile", post(compile_hls))
+        // Agentic surface — OpenAI-compatible chat/completions + capability
+        // discovery. Bridges SPINE StreamToken frames to SSE.
+        .route(
+            "/v1/chat/completions",
+            post(agentic_sse::chat_completions_stream),
+        )
+        .route("/v1/agentic/capabilities", get(agentic_sse::capabilities))
         // Ops
         .route("/health", get(health))
         .route("/ready", get(ready))
