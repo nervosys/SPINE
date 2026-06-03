@@ -172,8 +172,8 @@ impl HlbToWatCompiler {
 
         for instruction in &binary.instructions {
             match instruction {
-                Instruction::DefineElement { tag, .. } => {
-                    if !string_offsets.contains_key(tag) {
+                Instruction::DefineElement { tag, .. }
+                    if !string_offsets.contains_key(tag) => {
                         let len = tag.len() as u32;
                         string_offsets.insert(tag.clone(), (data_offset, len));
                         data_section.push_str(&format!(
@@ -183,7 +183,6 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1; // +1 for null terminator space
                     }
-                }
                 Instruction::SetAttribute { key, value, .. } => {
                     for s in [key, value] {
                         if !string_offsets.contains_key(s) {
@@ -262,8 +261,8 @@ impl HlbToWatCompiler {
                         data_offset += len + 1;
                     }
                 }
-                Instruction::Load(name) | Instruction::Store(name) => {
-                    if !string_offsets.contains_key(name) {
+                Instruction::Load(name) | Instruction::Store(name)
+                    if !string_offsets.contains_key(name) => {
                         let len = name.len() as u32;
                         string_offsets.insert(name.clone(), (data_offset, len));
                         data_section.push_str(&format!(
@@ -273,9 +272,8 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                }
-                Instruction::Call { name, .. } => {
-                    if !string_offsets.contains_key(name) {
+                Instruction::Call { name, .. }
+                    if !string_offsets.contains_key(name) => {
                         let len = name.len() as u32;
                         string_offsets.insert(name.clone(), (data_offset, len));
                         data_section.push_str(&format!(
@@ -285,9 +283,8 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                }
-                Instruction::SetAttributeFromStack { key, .. } => {
-                    if !string_offsets.contains_key(key) {
+                Instruction::SetAttributeFromStack { key, .. }
+                    if !string_offsets.contains_key(key) => {
                         let len = key.len() as u32;
                         string_offsets.insert(key.clone(), (data_offset, len));
                         data_section.push_str(&format!(
@@ -297,9 +294,8 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                }
-                Instruction::EmitEventFromStack { name } => {
-                    if !string_offsets.contains_key(name) {
+                Instruction::EmitEventFromStack { name }
+                    if !string_offsets.contains_key(name) => {
                         let len = name.len() as u32;
                         string_offsets.insert(name.clone(), (data_offset, len));
                         data_section.push_str(&format!(
@@ -309,10 +305,9 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                }
                 Instruction::DeclareStateFromStack { name }
-                | Instruction::UpdateStateFromStack { name } => {
-                    if !string_offsets.contains_key(name) {
+                | Instruction::UpdateStateFromStack { name }
+                    if !string_offsets.contains_key(name) => {
                         let len = name.len() as u32;
                         string_offsets.insert(name.clone(), (data_offset, len));
                         data_section.push_str(&format!(
@@ -322,7 +317,6 @@ impl HlbToWatCompiler {
                         ));
                         data_offset += len + 1;
                     }
-                }
                 _ => {}
             }
         }
@@ -1281,13 +1275,10 @@ impl WasmRuntime {
                         let n = match arg {
                             serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
                             serde_json::Value::String(s) => s.parse().unwrap_or(0.0),
-                            serde_json::Value::Bool(b) => {
-                                if b {
+                            serde_json::Value::Bool(b)
+                                if b => {
                                     1.0
-                                } else {
-                                    0.0
                                 }
-                            }
                             _ => 0.0,
                         };
                         serde_json::json!(n)

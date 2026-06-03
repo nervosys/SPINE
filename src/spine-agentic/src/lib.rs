@@ -3865,22 +3865,20 @@ impl TemporalReasoner {
             }
 
             match constraint.constraint_type {
-                ConstraintType::Before => {
-                    if involved[0].1 >= involved[1].1 {
+                ConstraintType::Before
+                    if involved[0].1 >= involved[1].1 => {
                         violations.push(format!(
                             "Event {} must happen before {}",
                             involved[0].0, involved[1].0
                         ));
                     }
-                }
-                ConstraintType::After => {
-                    if involved[0].1 <= involved[1].1 {
+                ConstraintType::After
+                    if involved[0].1 <= involved[1].1 => {
                         violations.push(format!(
                             "Event {} must happen after {}",
                             involved[0].0, involved[1].0
                         ));
                     }
-                }
                 _ => {} // Other constraints would be checked similarly
             }
         }

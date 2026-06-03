@@ -340,16 +340,14 @@ fn bench_connection_setup(c: &mut Criterion) {
         let port = get_port();
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
         listener.set_nonblocking(false).unwrap();
-        thread::spawn(move || loop {
-            if let Ok((mut s, _)) = listener.accept() {
+        thread::spawn(move || {
+            while let Ok((mut s, _)) = listener.accept() {
                 s.set_nodelay(true).unwrap();
                 let mut buf = [0u8; 1024];
                 let _ = s.read(&mut buf);
                 let _ = s.write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK",
                 );
-            } else {
-                break;
             }
         });
         thread::sleep(Duration::from_millis(50));

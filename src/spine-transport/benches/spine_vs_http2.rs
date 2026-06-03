@@ -381,11 +381,10 @@ fn bench_concurrent(c: &mut Criterion) {
                         out.extend_from_slice(&buf[head..head + total]);
                         head += total;
                     }
-                    if !out.is_empty() {
-                        if write_stream.write_all(&out).is_err() {
+                    if !out.is_empty()
+                        && write_stream.write_all(&out).is_err() {
                             break 'c;
                         }
-                    }
                     // Compact if head has advanced a lot.
                     if head > 0 && tail - head < buf.len() / 4 {
                         buf.copy_within(head..tail, 0);

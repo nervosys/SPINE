@@ -409,13 +409,10 @@ impl HlbRuntime {
                         let n = match arg {
                             serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
                             serde_json::Value::String(s) => s.parse().unwrap_or(0.0),
-                            serde_json::Value::Bool(b) => {
-                                if b {
+                            serde_json::Value::Bool(b)
+                                if b => {
                                     1.0
-                                } else {
-                                    0.0
                                 }
-                            }
                             _ => 0.0,
                         };
                         self.stack.push(serde_json::json!(n));

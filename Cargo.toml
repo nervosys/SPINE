@@ -68,7 +68,7 @@ thiserror = "1.0"
 log = "0.4"
 env_logger = "0.10"
 reqwest = { version = "0.12", features = ["json"] }
-wasmtime = "27"
+wasmtime = "36"
 wat = "1"
 rand = "0.8"
 sha2 = "0.10"
@@ -79,7 +79,7 @@ tracing-opentelemetry = "0.22"
 opentelemetry = "0.21"
 opentelemetry-otlp = "0.14"
 opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
-prometheus = "0.13"
+prometheus = "0.14"
 lazy_static = "1.4"
 rustls = { version = "0.23", default-features = false, features = [
     "ring",
