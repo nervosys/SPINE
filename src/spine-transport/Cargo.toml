@@ -18,7 +18,9 @@ dpdk = []                                                 # Future: kernel bypas
 rdma = []
 # GPU-Direct RDMA (NVIDIA ConnectX + GPU peer-memory). Builds the typed stub
 # and the registration plumbing; requires CUDA + nv_peer_mem at runtime.
-gpu-direct = []
+# Implies `rdma` because GPU-Direct reuses the verbs QP path — only the
+# memory-registration step swaps `cudaMalloc` for the host allocator.
+gpu-direct = ["rdma"]
 
 [dependencies]
 # Core async runtime
