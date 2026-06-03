@@ -1,8 +1,15 @@
 // Allow dead code for protocol features designed for future extensions
 #![allow(dead_code)]
 
+pub mod agentic;
 pub mod negotiation;
 pub mod replay;
+
+pub use agentic::{
+    Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamData,
+    StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken, StreamUsage,
+    ToolCall, ToolOutcome, ToolResult, TraceContext,
+};
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use hmac::{Hmac, Mac};
@@ -708,6 +715,22 @@ pub enum Message {
     Pong {
         timestamp: u64,
     },
+
+    // ----- Agentic-first primitives (see crate::agentic) -----
+    /// MCP-style tool invocation request.
+    ToolCall(ToolCall),
+    /// MCP-style tool invocation result.
+    ToolResult(ToolResult),
+    /// LLM token stream opens.
+    StreamStart(StreamStart),
+    /// One chunk of an LLM token stream.
+    StreamToken(StreamToken),
+    /// LLM token stream closes.
+    StreamEnd(StreamEnd),
+    /// Capability handshake query.
+    CapabilityQuery(CapabilityQuery),
+    /// Capability handshake response.
+    CapabilityAd(CapabilityAdvertisement),
 }
 
 /// Pre-computed response that was speculatively prepared
@@ -1232,6 +1255,15 @@ where
             Message::MorphRequest { .. } => MessageType::Sync,
             Message::Ping { .. } => MessageType::Sync,
             Message::Pong { .. } => MessageType::Sync,
+            // Agentic primitives slot into the existing request/response/event
+            // taxonomy for purposes of speculative prediction.
+            Message::ToolCall(_) => MessageType::Request,
+            Message::ToolResult(_) => MessageType::Response,
+            Message::StreamStart(_) => MessageType::Event,
+            Message::StreamToken(_) => MessageType::Event,
+            Message::StreamEnd(_) => MessageType::Event,
+            Message::CapabilityQuery(_) => MessageType::Request,
+            Message::CapabilityAd(_) => MessageType::Response,
         }
     }
 
