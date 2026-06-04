@@ -10,12 +10,13 @@
 //! every OpenAI-compatible client speaks. See the [`agentic_sse`] module.
 
 mod agentic_sse;
+mod auth;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::response::{Json, Response};
 use axum::routing::{delete, get, post};
@@ -610,7 +611,33 @@ async fn main() -> anyhow::Result<()> {
         .route("/metrics", get(metrics))
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
+        // Bound every POST body so an unbounded request cannot exhaust
+        // gateway RAM before any handler validates it. 8 MiB is enough
+        // for embedding batches of a few hundred sentences or for
+        // moderately-sized HLS programs; deployments that need larger
+        // bodies should override per-route.
+        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .with_state(state);
+
+    // Optional bearer-token enforcement — opt-in via the
+    // SPINE_GATEWAY_BEARER_TOKEN env var. The OpenAPI schema has
+    // declared a `bearer` scheme since v1.0.0; this is the actual
+    // middleware. Adds no overhead when the env var is unset.
+    let app = if let Some(cfg) = auth::BearerConfig::from_env() {
+        tracing::info!("Bearer-token auth ENABLED (SPINE_GATEWAY_BEARER_TOKEN set)");
+        let cfg = cfg.clone();
+        app.layer(axum::middleware::from_fn(move |req, next| {
+            let cfg = cfg.clone();
+            async move { auth::require_bearer(cfg, req, next).await }
+        }))
+    } else {
+        tracing::warn!(
+            "Bearer-token auth DISABLED (SPINE_GATEWAY_BEARER_TOKEN unset). \
+             Public exposure without auth is appropriate ONLY for local dev or \
+             when an upstream proxy authenticates."
+        );
+        app
+    };
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{gateway_port}")).await?;
     tracing::info!("SPINE Gateway listening on http://0.0.0.0:{gateway_port}");
