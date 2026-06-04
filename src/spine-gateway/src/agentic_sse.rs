@@ -188,6 +188,11 @@ fn unix_now_secs() -> u64 {
 ///
 /// Real deployments replace the echo body with their LLM provider — the
 /// SPINE→SSE converter (above) is what carries the load.
+///
+/// **Privacy note**: `skip_all` keeps user message content out of
+/// tracing spans. The handler intentionally emits no log lines that
+/// include request bodies.
+#[tracing::instrument(skip_all, fields(model = %req.model, stream = req.stream))]
 pub async fn chat_completions_stream(
     Json(req): Json<ChatCompletionRequest>,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
@@ -293,6 +298,7 @@ fn sse_stream_from_tokens(
 /// Returns the gateway's [`CapabilityAdvertisement`] — what the SPINE
 /// gateway can be asked to do. HTTP clients use this for discovery
 /// without needing to learn SPINE binary frames.
+#[tracing::instrument]
 pub async fn capabilities() -> Json<serde_json::Value> {
     use spine_protocol::{Capability, CapabilityAdvertisement};
 
@@ -398,6 +404,10 @@ fn default_embed_model() -> String {
 /// 3. Encode every input element to an [`EncodedFrame`].
 /// 4. Project the f32 latent back into the OpenAI response shape so the
 ///    existing client SDK reads `data[i].embedding` as a `[f32]`.
+///
+/// **Privacy note**: `skip_all` keeps embedding input out of tracing
+/// spans. The handler logs no input content.
+#[tracing::instrument(skip_all, fields(model = %req.model))]
 pub async fn embeddings(
     Json(req): Json<EmbeddingsHttpReq>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
@@ -504,6 +514,7 @@ pub async fn embeddings(
 /// [`CodecAdvertisement`] (every registered [`NeuralCodec`]). Lets HTTP
 /// clients discover what encoder/decoder pairs are available without
 /// learning SPINE binary frames.
+#[tracing::instrument]
 pub async fn codecs() -> Json<serde_json::Value> {
     let ad = registry().advertise("spine-gateway", "static-gateway");
     Json(serde_json::to_value(&ad).expect("CodecAdvertisement is serializable"))
