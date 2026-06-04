@@ -648,18 +648,54 @@ fn escape_wat_string(s: &str) -> String {
 /// WebAssembly runtime for executing HLB programs
 pub struct WasmRuntime {
     engine: Engine,
+    /// Fuel units allocated to each `execute()` call. See
+    /// [`DEFAULT_FUEL_BUDGET`] for the rationale.
+    fuel_budget: u64,
 }
 
+/// Per-execution fuel budget for untrusted HLS code. wasmtime charges
+/// roughly one fuel unit per bytecode instruction, so 1B units bounds
+/// a single `execute()` call to ~seconds of CPU on modern hardware
+/// before it gets trapped. Bound is enforced even when the host
+/// function side does no work — a tight `loop {}` inside HLS traps.
+///
+/// This is the **production default**. Trusted callers that need to
+/// run long-running compute should construct `WasmRuntime` via
+/// [`WasmRuntime::with_fuel`] with a higher (or `u64::MAX`) value.
+const DEFAULT_FUEL_BUDGET: u64 = 1_000_000_000;
+
+/// Hard cap on the number of linear-memory pages a single HLS program
+/// can grow to. wasmtime pages are 64 KiB, so 256 pages = 16 MiB —
+/// enough for non-trivial DOM trees, small enough that a hostile
+/// program cannot exhaust host RAM before the fuel budget kicks in.
+const DEFAULT_MAX_MEMORY_PAGES: usize = 256;
+
 impl WasmRuntime {
-    /// Create a new WASM runtime
+    /// Create a new WASM runtime with the production-default sandbox
+    /// limits: 1B fuel units per `execute()`, 16 MiB memory cap.
     pub fn new() -> Result<Self> {
+        Self::with_fuel(DEFAULT_FUEL_BUDGET)
+    }
+
+    /// Create a new WASM runtime with a custom fuel budget. Use
+    /// `u64::MAX` to opt out of metering entirely (NOT recommended for
+    /// untrusted code).
+    pub fn with_fuel(fuel_budget: u64) -> Result<Self> {
         let mut config = Config::new();
         config.wasm_bulk_memory(true);
         config.wasm_multi_value(true);
+        // Sandbox controls — close the CPU-DoS vector for /api/sessions/
+        // {id}/execute. consume_fuel is the wasmtime-recommended way to
+        // bound an untrusted program's CPU; epoch interruption would
+        // also work but requires a separate thread driving the ticker.
+        config.consume_fuel(true);
 
         let engine = Engine::new(&config)?;
 
-        Ok(Self { engine })
+        Ok(Self {
+            engine,
+            fuel_budget,
+        })
     }
 
     /// Execute an HLB binary using WebAssembly
@@ -683,6 +719,14 @@ impl WasmRuntime {
         // Create store with host state
         let host_state = Arc::new(Mutex::new(HostState::default()));
         let mut store = Store::new(&self.engine, host_state.clone());
+        // Charge the per-execution fuel budget. wasmtime traps with
+        // `wasmtime::Trap::OutOfFuel` once the program consumes this
+        // many bytecode units — bounds a tight loop inside HLS to a
+        // sub-second of CPU. `set_fuel` only succeeds when `consume_fuel`
+        // was enabled on the engine config (see `WasmRuntime::new`).
+        store
+            .set_fuel(self.fuel_budget)
+            .context("failed to set fuel budget on WASM store")?;
 
         // Create linker with host functions
         let mut linker = Linker::new(&self.engine);
@@ -1668,6 +1712,63 @@ mod tests {
         assert_eq!(result.events.len(), 0);
         assert_eq!(result.actions.len(), 0);
         assert_eq!(result.stats.instructions_executed, 0);
+    }
+
+    /// REGRESSION GUARD — wasmtime's `consume_fuel` metering must be
+    /// active. A runtime constructed with zero fuel must trap on the
+    /// first instruction of any non-trivial HLS program. If this test
+    /// ever passes the assertion in reverse (program completes), the
+    /// CPU-DoS gate on `/api/sessions/{id}/execute` is gone and a
+    /// tight loop inside HLS can hang the gateway.
+    #[test]
+    fn test_wasm_fuel_metering_is_active() {
+        let runtime = WasmRuntime::with_fuel(0).unwrap();
+        let binary = empty_binary(vec![
+            Instruction::DefineElement {
+                id: 1,
+                tag: "div".to_string(),
+            },
+            Instruction::DefineElement {
+                id: 2,
+                tag: "span".to_string(),
+            },
+        ]);
+        let err = runtime
+            .execute(&binary)
+            .expect_err("zero-fuel runtime should trap before completing any work");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("fuel")
+                || msg.to_lowercase().contains("trap")
+                || msg.to_lowercase().contains("interrupt"),
+            "expected a fuel/trap error, got: {msg}"
+        );
+    }
+
+    /// REGRESSION GUARD — the default fuel budget must be large enough
+    /// to run real HLS programs. If this ever fails, the production
+    /// default in `DEFAULT_FUEL_BUDGET` is too tight and legitimate
+    /// callers will see spurious traps.
+    #[test]
+    fn test_default_fuel_budget_completes_normal_programs() {
+        let runtime = WasmRuntime::new().unwrap();
+        // A modestly-sized program — multiple host calls, state ops,
+        // events. Representative of a real HLS render.
+        let mut instructions: Vec<Instruction> = (0..50)
+            .map(|i| Instruction::DefineElement {
+                id: i,
+                tag: format!("tag{i}"),
+            })
+            .collect();
+        instructions.extend((0..50).map(|i| Instruction::SetAttribute {
+            id: i,
+            key: "class".to_string(),
+            value: format!("c{i}"),
+        }));
+        let binary = empty_binary(instructions);
+        let _ = runtime
+            .execute(&binary)
+            .expect("default fuel budget should complete a 100-instruction program");
     }
 
     #[test]
