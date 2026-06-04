@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod agentic;
+pub mod agentic_codec;
 pub mod negotiation;
 pub mod replay;
 
@@ -9,6 +10,11 @@ pub use agentic::{
     Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamData,
     StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken, StreamUsage,
     ToolCall, ToolOutcome, ToolResult, TraceContext,
+};
+pub use agentic_codec::{
+    CodecAdvertisement, CodecDescriptor, CodecDirection, CodecError, CodecNegotiation,
+    CodecRegistry, DType, DecodeHints, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
+    EncodedFrame, EncodedMetadata, Modality, NeuralCodec, TitansLatentCodec,
 };
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
@@ -731,6 +737,18 @@ pub enum Message {
     CapabilityQuery(CapabilityQuery),
     /// Capability handshake response.
     CapabilityAd(CapabilityAdvertisement),
+
+    // ----- Neural encoder-decoder protocols (see crate::agentic_codec) -----
+    /// Self-describing latent payload (codec + shape + dtype inline).
+    Encoded(EncodedFrame),
+    /// What encoders/decoders the sender speaks.
+    CodecAd(CodecAdvertisement),
+    /// Offer/accept handshake for codec selection.
+    CodecNegotiation(CodecNegotiation),
+    /// "Embed this for me." Request.
+    EmbeddingRequest(EmbeddingRequest),
+    /// Embedding response (one [`EncodedFrame`] per input element).
+    EmbeddingResponse(EmbeddingResponse),
 }
 
 /// Pre-computed response that was speculatively prepared
@@ -1264,6 +1282,12 @@ where
             Message::StreamEnd(_) => MessageType::Event,
             Message::CapabilityQuery(_) => MessageType::Request,
             Message::CapabilityAd(_) => MessageType::Response,
+            // Neural codec frames slot into the same taxonomy.
+            Message::Encoded(_) => MessageType::Binary,
+            Message::CodecAd(_) => MessageType::Response,
+            Message::CodecNegotiation(_) => MessageType::Sync,
+            Message::EmbeddingRequest(_) => MessageType::Request,
+            Message::EmbeddingResponse(_) => MessageType::Response,
         }
     }
 
