@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-1039%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1060%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Path INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
@@ -55,16 +55,43 @@ The protocol layer (`spine-protocol::agentic`) defines four families that an LLM
 | **Capability handshake** | `CapabilityQuery { selector }` → `CapabilityAdvertisement { capabilities }` | OpenAI tool list; MCP server `tools/list` |
 | **Distributed tracing** | `TraceContext { trace_id, span_id, flags, state }` attached inline | W3C `traceparent`; OpenTelemetry |
 
-\* `StreamToken::data` is `Text` | `Bytes` | `ToolCall` — so function calling mid-stream falls out without a second framing layer.
+\* `StreamToken::data` is `Text` | `Bytes` | `ToolCall` | `Encoded` — so function calling and **raw latent streaming** both fall out of the same frame without a second framing layer.
 
 The gateway crate ships an OpenAI-compatible bridge (`src/spine-gateway/src/agentic_sse.rs`):
 
 ```
 POST /v1/chat/completions              → SSE stream of OpenAI chat.completion.chunk
 GET  /v1/agentic/capabilities          → CapabilityAdvertisement as JSON
+POST /v1/embeddings                    → OpenAI-shaped embedding response, computed via the registered NeuralCodec
+GET  /v1/agentic/codecs                → CodecAdvertisement of registered encoder/decoder pairs
 ```
 
 `StreamEndReason` is the exact OpenAI/Anthropic finish-reason taxonomy (`stop`, `length`, `tool_calls`, `content_filter`, `cancelled`, `error`), so an existing SDK switches over a SPINE stream with no translator.
+
+## Neural Encoder-Decoder Protocols
+
+Text on the wire throws away both bandwidth and signal. SPINE makes the **latent form** a first-class payload — every encoded chunk carries its codec id, modality, shape, and dtype inline so the receiver can validate, decode, or forward without an out-of-band schema. The contract is defined in [`spine-protocol::agentic_codec`](src/spine-protocol/src/agentic_codec.rs).
+
+| Family | Types | Purpose |
+|--------|-------|---------|
+| **Self-describing payload** | `EncodedFrame { codec, variant, data, metadata }` + `EncodedMetadata { modality, shape, dtype, original_len, source_hash }` | Every latent is its own schema. `declared_size_consistent()` is a one-line sanity check. |
+| **Codec discovery** | `CodecDescriptor { id, direction, modality, embedding_dim, vocab_size, dtype, semantic_embedding }` + `CodecAdvertisement` | Peers advertise what encoders/decoders they speak — match by id, by modality, or by semantic embedding. |
+| **Codec negotiation** | `CodecNegotiation { offered, accepted, reason }` | Either side offers a ranked list; the other picks one or falls back to plain text. |
+| **Decoder hints** | `DecodeHints { temperature, top_p, top_k, max_tokens, stop_sequences, repetition_penalty, presence_penalty, frequency_penalty, seed }` | Sampling parameters travel inline on `StreamStart`; field names match OpenAI/Anthropic so SDK knobs map 1:1. |
+| **Embedding endpoint** | `EmbeddingRequest { input: Text \| Texts \| Encoded, codec }` → `EmbeddingResponse { codec, embeddings: Vec<EncodedFrame> }` | OpenAI-compatible embed API at the wire level; `Encoded` input enables cross-codec transcoding. |
+
+`Modality` covers `Text`, `Image`, `Audio`, `Video`, `Embedding`, `HiddenState`, `Multimodal`, `Other(String)`; `DType` covers `F32`, `F16`, `BF16`, `I8`, `U8`, `I16`, `I32`, `Q4`, `Q8`. Codec ids are stable URIs (e.g. `spine:codec/titans/v1@dim=256,dtype=f32`) so a peer's advertisement is decodable without prior knowledge.
+
+A symmetric runtime contract — `trait NeuralCodec { encode, decode, describe }` + `CodecRegistry` — sits alongside the types. The crate ships a working `TitansLatentCodec` that wraps `spine-neural::NeuralLatentEncoder` so every layer of the protocol (advertise → negotiate → encode → decode) round-trips against a real Titans projector, not a stub. Streaming latents over the same wire that streams text:
+
+```rust
+StreamData::Encoded(EncodedFrame {
+    codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
+    metadata: EncodedMetadata { modality: Modality::HiddenState, shape: vec![256], dtype: DType::F32, .. },
+    data: latent_bytes,
+    ..
+})
+```
 
 ## Core Components
 
@@ -1158,10 +1185,10 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (1,039 tests, 0 failures)
+### Test Summary (1,060 tests, 0 failures)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,039 passed / 0 failed / 5 ignored** across all 28 crates. The five
+**1,060 passed / 0 failed / 5 ignored** across all 28 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
 hidden failures. Per-crate breakdown below remains an approximation —
 exact counts shift with each addition.

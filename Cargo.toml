@@ -34,7 +34,7 @@ resolver = "2"
 version = "1.0.0"
 edition = "2021"
 authors = ["Nervosys LLC"]
-description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, and W3C tracing for LLM swarms"
+description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, W3C tracing, and neural encoder-decoder protocols for LLM swarms"
 license = "Apache-2.0"
 repository = "https://github.com/nervosys/SPINE"
 

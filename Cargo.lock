@@ -6952,6 +6952,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "log",
+ "parking_lot",
  "proptest",
  "quinn",
  "rand 0.8.6",
