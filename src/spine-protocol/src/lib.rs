@@ -623,6 +623,16 @@ pub struct ProtocolMorphology {
     evolution_counter: u64,
 }
 
+/// Scrub the HMAC key on drop so the secret cannot leak via a core
+/// dump or swap-to-disk event (NIST SP 800-171 § 3.13.10). The other
+/// fields are plaintext metadata and don't need clearing.
+impl Drop for ProtocolMorphology {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.hmac_key.zeroize();
+    }
+}
+
 fn default_morphology_key() -> [u8; 32] {
     [0u8; 32]
 }

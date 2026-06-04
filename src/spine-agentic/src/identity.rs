@@ -35,10 +35,28 @@ const ED25519_SIG_LEN: usize = 64;
 ///
 /// The private key is a 32-byte seed; the public key is derived via
 /// the Ed25519 curve (not a hash). Signatures use RFC 8032 pure Ed25519.
+///
+/// ## Memory safety
+///
+/// `ed25519_dalek::SigningKey` derives `ZeroizeOnDrop` since v2.0, so
+/// the secret seed is zeroed when the inner key is dropped. The
+/// explicit `Drop` impl below also scrubs the cached public-key bytes
+/// — they are not a secret, but clearing them keeps the post-drop
+/// memory image of the wrapper uniform and removes a noisy attacker
+/// signal in a memory-disclosure scenario.
 #[derive(Clone)]
 pub struct Ed25519Keypair {
     signing_key: SigningKey,
     cached_pub: [u8; ED25519_PUB_LEN],
+}
+
+impl Drop for Ed25519Keypair {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.cached_pub.zeroize();
+        // `signing_key` zeroes itself via ed25519-dalek's own
+        // `ZeroizeOnDrop` derive — nothing more to do here.
+    }
 }
 
 
