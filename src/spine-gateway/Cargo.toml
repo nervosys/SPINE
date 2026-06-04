@@ -23,6 +23,7 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 log = { workspace = true }
 env_logger = { workspace = true }
 tracing = { workspace = true }
@@ -37,3 +38,26 @@ dashmap = "5"
 futures = "0.3"
 base64 = "0.22"
 subtle = "2.5"
+rustls = { workspace = true }
+
+[features]
+default = []
+
+# Compile spine-gateway against the FIPS-shaped rustls provider stack.
+#
+# Federal deployments (CMMC / FedRAMP / IRAP) require a FIPS 140-3
+# validated cryptographic module rather than `ring`. Enabling this
+# feature:
+#
+# 1. Adds the `aws_lc_rs` feature to rustls so the AWS-LC backend
+#    compiles in alongside the default `ring` paths.
+# 2. Switches the gateway's startup logic to install `aws_lc_rs` as
+#    the rustls default CryptoProvider — every TLS handshake the
+#    binary performs uses AWS-LC's validated primitives.
+#
+# To reach an end-to-end FIPS-validated build the deployer must ALSO
+# rebuild `aws-lc-rs` itself in FIPS mode (set `AWS_LC_FIPS=1` and
+# follow the AWS-LC-FIPS toolchain instructions). The cargo feature
+# alone wires SPINE's integration point; the validated module is a
+# deployer-toolchain decision documented in SECURITY_AUDIT.md § 2.
+fips = ["rustls/aws_lc_rs"]

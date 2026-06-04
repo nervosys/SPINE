@@ -1,21 +1,28 @@
-//! Optional bearer-token authentication middleware.
+//! Bearer-token authentication middleware (secure by default).
 //!
 //! The gateway's OpenAPI schema declares a `bearer` security scheme;
-//! this module is the actual enforcement. It's opt-in via an
-//! environment variable so existing deployments keep working unchanged
-//! while new deployments can require auth without changing the binary.
+//! this module is the actual enforcement.
 //!
-//! ## Activation
+//! ## Startup contract
 //!
-//! Set `SPINE_GATEWAY_BEARER_TOKEN` to a non-empty secret before
-//! launching the gateway. With the variable set, every request to
-//! every route (except `/health`, `/ready`, and the Swagger UI) must
-//! carry `Authorization: Bearer <secret>`. Comparison is
-//! constant-time via [`subtle::ConstantTimeEq`].
+//! As of v1.3.0 the gateway **refuses to start** without an explicit
+//! choice about authentication. The deployer must set exactly one of:
 //!
-//! With the variable unset, the middleware is a no-op and the gateway
-//! behaves exactly as it did before this module existed — startup logs
-//! a `WARN` line so the deployer notices.
+//! * `SPINE_GATEWAY_BEARER_TOKEN=<non-empty secret>` — turns auth on.
+//!   Every request to every route (except `/health`, `/ready`, the
+//!   Swagger UI, and `/api-docs`) must carry `Authorization: Bearer
+//!   <secret>`. Comparison is constant-time via
+//!   [`subtle::ConstantTimeEq`].
+//!
+//! * `SPINE_GATEWAY_ALLOW_UNAUTH=1` — explicitly opts OUT of
+//!   authentication. The gateway logs a `WARN` and runs open. Use
+//!   only for local development or when an upstream proxy
+//!   authenticates.
+//!
+//! Setting neither is a misconfiguration and the gateway will exit
+//! with a non-zero code at startup rather than silently expose
+//! itself. This closes the v1.2.1 residual where bearer auth was
+//! opt-in by default (CMMC AC.L1-3.1.1, MITRE T1190).
 //!
 //! ## Why an env var rather than a config field
 //!
@@ -38,9 +45,82 @@ pub struct BearerConfig {
     expected: Arc<Vec<u8>>,
 }
 
+// Manual Debug — never print the secret bytes. Format prints the
+// length only, which is enough for "is the token populated?" but
+// leaks nothing useful to a screen-recording / log scrape.
+impl std::fmt::Debug for BearerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BearerConfig")
+            .field("token_len", &self.expected.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Result of resolving the gateway's authentication mode at startup.
+///
+/// Exactly one variant is correct per deployment; the gateway binary
+/// exits with a non-zero code if the env vars don't pick one.
+#[derive(Debug)]
+pub enum AuthMode {
+    /// Bearer auth on — wrap the router with [`require_bearer`].
+    Bearer(BearerConfig),
+    /// Deployer explicitly opted out via `SPINE_GATEWAY_ALLOW_UNAUTH=1`.
+    /// Gateway should run open; startup logs a `WARN`.
+    Unauthenticated,
+}
+
+/// Error type for [`AuthMode::resolve`]. Carries the deployer-facing
+/// message that the gateway prints before exiting.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "spine-gateway requires an explicit authentication choice. Set either\n  \
+     SPINE_GATEWAY_BEARER_TOKEN=<your-secret>  (turn auth on; recommended)\n  \
+     SPINE_GATEWAY_ALLOW_UNAUTH=1               (explicit dev-mode opt-out)\n\
+     before launching. Setting both is also rejected — pick one."
+)]
+pub struct AuthConfigError;
+
+impl AuthMode {
+    /// Read the env vars and pick a mode. Returns an error (which the
+    /// caller logs and exits on) when:
+    ///
+    /// * neither var is set;
+    /// * `SPINE_GATEWAY_BEARER_TOKEN` is set to an empty / whitespace
+    ///   string;
+    /// * both vars are set at the same time (ambiguous intent).
+    pub fn resolve() -> Result<Self, AuthConfigError> {
+        let token_raw = std::env::var("SPINE_GATEWAY_BEARER_TOKEN").ok();
+        let allow_unauth = matches!(
+            std::env::var("SPINE_GATEWAY_ALLOW_UNAUTH").ok().as_deref(),
+            Some("1")
+        );
+
+        let token_present = token_raw
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+
+        match (token_present, allow_unauth) {
+            (false, false) => Err(AuthConfigError),
+            (true, true) => Err(AuthConfigError),
+            (true, false) => {
+                let trimmed = token_raw.expect("checked above").trim().to_string();
+                Ok(AuthMode::Bearer(BearerConfig {
+                    expected: Arc::new(trimmed.into_bytes()),
+                }))
+            }
+            (false, true) => Ok(AuthMode::Unauthenticated),
+        }
+    }
+}
+
 impl BearerConfig {
     /// Read `SPINE_GATEWAY_BEARER_TOKEN` from the environment. Returns
     /// `None` (auth disabled) when the variable is unset or empty.
+    ///
+    /// Prefer [`AuthMode::resolve`] in new code — it enforces the
+    /// secure-by-default startup contract.
+    #[allow(dead_code)] // kept for backwards-compat with v1.2.x consumers
     pub fn from_env() -> Option<Self> {
         let raw = std::env::var("SPINE_GATEWAY_BEARER_TOKEN").ok()?;
         let trimmed = raw.trim();
@@ -187,6 +267,90 @@ mod tests {
         let cfg = BearerConfig::from_env().expect("env var was just set");
         assert!(cfg.matches(b"abc"));
         std::env::remove_var("SPINE_GATEWAY_BEARER_TOKEN");
+    }
+
+    // -----------------------------------------------------------------
+    // v1.3.0 — AuthMode::resolve secure-by-default startup contract.
+    // -----------------------------------------------------------------
+
+    /// Clear both env vars; called at the start of every AuthMode test
+    /// so prior parallel tests can't bleed in.
+    fn reset_env() {
+        std::env::remove_var("SPINE_GATEWAY_BEARER_TOKEN");
+        std::env::remove_var("SPINE_GATEWAY_ALLOW_UNAUTH");
+    }
+
+    #[test]
+    fn resolve_rejects_neither_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        reset_env();
+        let err = AuthMode::resolve().unwrap_err();
+        // The Display impl is what the user sees on stderr; it must
+        // mention both env var names so the deployer knows the fix.
+        let msg = err.to_string();
+        assert!(msg.contains("SPINE_GATEWAY_BEARER_TOKEN"));
+        assert!(msg.contains("SPINE_GATEWAY_ALLOW_UNAUTH"));
+    }
+
+    #[test]
+    fn resolve_rejects_both_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        reset_env();
+        std::env::set_var("SPINE_GATEWAY_BEARER_TOKEN", "abc");
+        std::env::set_var("SPINE_GATEWAY_ALLOW_UNAUTH", "1");
+        assert!(AuthMode::resolve().is_err());
+        reset_env();
+    }
+
+    #[test]
+    fn resolve_rejects_empty_token() {
+        let _g = ENV_LOCK.lock().unwrap();
+        reset_env();
+        std::env::set_var("SPINE_GATEWAY_BEARER_TOKEN", "   ");
+        assert!(AuthMode::resolve().is_err());
+        reset_env();
+    }
+
+    #[test]
+    fn resolve_accepts_bearer_token() {
+        let _g = ENV_LOCK.lock().unwrap();
+        reset_env();
+        std::env::set_var("SPINE_GATEWAY_BEARER_TOKEN", "hunter2");
+        match AuthMode::resolve().expect("token set") {
+            AuthMode::Bearer(cfg) => assert!(cfg.matches(b"hunter2")),
+            other => panic!("expected Bearer, got {other:?}"),
+        }
+        reset_env();
+    }
+
+    #[test]
+    fn resolve_accepts_explicit_unauth_optout() {
+        let _g = ENV_LOCK.lock().unwrap();
+        reset_env();
+        std::env::set_var("SPINE_GATEWAY_ALLOW_UNAUTH", "1");
+        match AuthMode::resolve().expect("opt-out set") {
+            AuthMode::Unauthenticated => {}
+            other => panic!("expected Unauthenticated, got {other:?}"),
+        }
+        reset_env();
+    }
+
+    #[test]
+    fn resolve_rejects_unauth_other_than_1() {
+        // Only the literal value "1" counts. Common typos / unset-style
+        // values must be treated as "not set" and therefore fail the
+        // neither-set check.
+        for val in &["0", "true", "yes", "y", "TRUE"] {
+            let _g = ENV_LOCK.lock().unwrap();
+            reset_env();
+            std::env::set_var("SPINE_GATEWAY_ALLOW_UNAUTH", val);
+            let r = AuthMode::resolve();
+            assert!(
+                r.is_err(),
+                "SPINE_GATEWAY_ALLOW_UNAUTH={val:?} should NOT enable unauth mode"
+            );
+            reset_env();
+        }
     }
 
     #[test]

@@ -572,9 +572,45 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 // Main
 // ---------------------------------------------------------------------------
 
+/// Install the FIPS-shaped rustls `CryptoProvider` when the `fips`
+/// feature is enabled at compile time. With `fips` off this is a
+/// no-op and rustls keeps using the default `ring` backend.
+///
+/// The actual FIPS-validated module is provided by AWS-LC compiled
+/// with `AWS_LC_FIPS=1`; this function only wires the integration
+/// point. See `SECURITY_AUDIT.md § 2` for the deployer toolchain.
+#[cfg(feature = "fips")]
+fn install_fips_provider() -> anyhow::Result<()> {
+    use anyhow::anyhow;
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .map_err(|_| {
+            anyhow!(
+                "could not install aws-lc-rs as the rustls default CryptoProvider \
+                 — another provider is already installed in this process"
+            )
+        })?;
+    tracing::info!(
+        "FIPS mode: aws-lc-rs CryptoProvider installed as rustls default. \
+         For an end-to-end FIPS-validated build, also rebuild aws-lc-rs with \
+         AWS_LC_FIPS=1."
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "fips"))]
+fn install_fips_provider() -> anyhow::Result<()> {
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::init();
+
+    // Install the FIPS provider before anything else touches rustls —
+    // CryptoProvider can only be installed once per process and must
+    // happen before the first TLS handshake.
+    install_fips_provider()?;
 
     let config = SpineConfig::load();
     let gateway_port = config.server.metrics_port + 1; // 9091
@@ -619,24 +655,37 @@ async fn main() -> anyhow::Result<()> {
         .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
         .with_state(state);
 
-    // Optional bearer-token enforcement — opt-in via the
-    // SPINE_GATEWAY_BEARER_TOKEN env var. The OpenAPI schema has
-    // declared a `bearer` scheme since v1.0.0; this is the actual
-    // middleware. Adds no overhead when the env var is unset.
-    let app = if let Some(cfg) = auth::BearerConfig::from_env() {
-        tracing::info!("Bearer-token auth ENABLED (SPINE_GATEWAY_BEARER_TOKEN set)");
-        let cfg = cfg.clone();
-        app.layer(axum::middleware::from_fn(move |req, next| {
+    // v1.3.0 secure-by-default auth contract: the gateway refuses to
+    // start unless the deployer has made an explicit choice via
+    // SPINE_GATEWAY_BEARER_TOKEN (recommended) or
+    // SPINE_GATEWAY_ALLOW_UNAUTH=1 (explicit dev-mode opt-out). See
+    // src/auth.rs for the full contract.
+    let mode = match auth::AuthMode::resolve() {
+        Ok(m) => m,
+        Err(e) => {
+            // Don't go through tracing — the deployer needs to see this
+            // even if their subscriber isn't wired up yet.
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    let app = match mode {
+        auth::AuthMode::Bearer(cfg) => {
+            tracing::info!("Bearer-token auth ENABLED (SPINE_GATEWAY_BEARER_TOKEN set)");
             let cfg = cfg.clone();
-            async move { auth::require_bearer(cfg, req, next).await }
-        }))
-    } else {
-        tracing::warn!(
-            "Bearer-token auth DISABLED (SPINE_GATEWAY_BEARER_TOKEN unset). \
-             Public exposure without auth is appropriate ONLY for local dev or \
-             when an upstream proxy authenticates."
-        );
-        app
+            app.layer(axum::middleware::from_fn(move |req, next| {
+                let cfg = cfg.clone();
+                async move { auth::require_bearer(cfg, req, next).await }
+            }))
+        }
+        auth::AuthMode::Unauthenticated => {
+            tracing::warn!(
+                "Bearer-token auth DISABLED via SPINE_GATEWAY_ALLOW_UNAUTH=1. \
+                 Public exposure without auth is appropriate ONLY for local \
+                 dev or when an upstream proxy authenticates."
+            );
+            app
+        }
     };
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{gateway_port}")).await?;
