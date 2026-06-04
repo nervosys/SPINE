@@ -419,26 +419,63 @@ impl CodecRegistry {
 /// real: text is encoded via the neural projector, embedded into a
 /// fixed-width latent, and the byte payload is the raw f32 buffer.
 ///
-/// This is the smallest "real" codec that exercises every part of the
-/// protocol (advertise → negotiate → encode → decode) and is what the
-/// spine-gateway `/v1/embeddings` endpoint uses by default.
+/// ## Statelessness (safe by default)
+///
+/// The underlying `NeuralLatentEncoder` is stateful — it accumulates a
+/// `message_history` buffer that influences subsequent encodings via
+/// the moving-target morph and threads its PRNG through every call. In
+/// a shared / multi-tenant deployment (e.g. the gateway's
+/// `/v1/embeddings`) that would let request A's content influence
+/// request B's embedding — a cross-tenant data leak.
+///
+/// To make that **impossible by default**, every [`Self::encode`] call
+/// resets the encoder's state via
+/// [`spine_neural::NeuralLatentEncoder::reset_state`] using the codec's
+/// stored seed. The codec is therefore safe to register in a process-
+/// wide [`CodecRegistry`] and call from any number of concurrent
+/// requests; same input → same output regardless of history.
+///
+/// Callers who specifically want context-aware encoding (e.g. a single
+/// long agent session) should construct an isolated codec via
+/// [`Self::stateful`] and use it from one thread.
 pub struct TitansLatentCodec {
     id: String,
     encoder: parking_lot::Mutex<spine_neural::NeuralLatentEncoder>,
     embed_dim: u32,
+    seed: u64,
+    /// When true, every encode resets the wrapped encoder's history +
+    /// PRNG. Default for any codec built via [`Self::new`] or
+    /// [`Self::with_dims`].
+    stateless: bool,
 }
 
 impl TitansLatentCodec {
     /// Build the default Titans codec with the given output dimension.
     /// `input_dim` is the projector's input width — text bytes are
-    /// normalised + padded/truncated to fit before encoding.
+    /// normalised + padded/truncated to fit before encoding. The
+    /// returned codec is **stateless**: safe to register in a shared
+    /// registry and call from concurrent requests.
     pub fn new(embed_dim: usize) -> Self {
         Self::with_dims(embed_dim, embed_dim, 4, 0xC0DEC)
     }
 
-    /// Full constructor: control the projector size, attention head
-    /// count, and PRNG seed.
+    /// Full stateless constructor: control the projector size,
+    /// attention head count, and PRNG seed.
     pub fn with_dims(input_dim: usize, embed_dim: usize, heads: usize, seed: u64) -> Self {
+        Self::build(input_dim, embed_dim, heads, seed, true)
+    }
+
+    /// **Context-aware** Titans codec — keeps `message_history` and
+    /// PRNG state across calls. Only use this for a single agent
+    /// session you control end-to-end. Do **not** register in a shared
+    /// [`CodecRegistry`] that might serve more than one tenant; that
+    /// would leak one user's content into another's embeddings via
+    /// the moving-target morph.
+    pub fn stateful(input_dim: usize, embed_dim: usize, heads: usize, seed: u64) -> Self {
+        Self::build(input_dim, embed_dim, heads, seed, false)
+    }
+
+    fn build(input_dim: usize, embed_dim: usize, heads: usize, seed: u64, stateless: bool) -> Self {
         let encoder = spine_neural::NeuralLatentEncoder::new(
             input_dim,
             embed_dim,
@@ -450,6 +487,8 @@ impl TitansLatentCodec {
             id: format!("spine:codec/titans/v1@dim={embed_dim},dtype=f32"),
             encoder: parking_lot::Mutex::new(encoder),
             embed_dim: embed_dim as u32,
+            seed,
+            stateless,
         }
     }
 }
@@ -476,7 +515,16 @@ impl NeuralCodec for TitansLatentCodec {
     fn encode(&self, input: &[u8]) -> Result<EncodedFrame, CodecError> {
         // Real Titans encoder mutates internal history per call; lock
         // for thread-safety. Output is a Vec<f32> of length embed_dim.
-        let latent: Vec<f32> = self.encoder.lock().encode(input);
+        let latent: Vec<f32> = {
+            let mut guard = self.encoder.lock();
+            if self.stateless {
+                // Reset history + re-seed PRNG so the prior call's
+                // content cannot influence this one. Cheap relative to
+                // the encode itself (just `Vec::clear` + StdRng init).
+                guard.reset_state(self.seed);
+            }
+            guard.encode(input)
+        };
         // Pack f32s into bytes (little-endian).
         let mut bytes = Vec::with_capacity(latent.len() * 4);
         for v in &latent {
@@ -789,6 +837,53 @@ mod tests {
         assert_eq!(ad.codecs.len(), 1);
         assert_eq!(ad.codecs[0].id, "spine:codec/echo/v1");
         json_round_trip(&ad);
+    }
+
+    /// REGRESSION GUARD — the stateless TitansLatentCodec must be
+    /// idempotent: encoding the same input twice through the *same*
+    /// codec (the shared-registry case) must yield byte-identical
+    /// output. If this ever flips, request A's content is leaking into
+    /// request B's embedding via the moving-target morph.
+    #[test]
+    fn titans_stateless_codec_does_not_leak_across_calls() {
+        let codec = TitansLatentCodec::new(32);
+        let a1 = codec.encode(b"secret-query-A").expect("encode");
+        let b1 = codec.encode(b"innocent-query-B").expect("encode");
+        let a2 = codec.encode(b"secret-query-A").expect("encode");
+        let b2 = codec.encode(b"innocent-query-B").expect("encode");
+
+        assert_eq!(
+            a1.data, a2.data,
+            "encoding `secret-query-A` was influenced by `innocent-query-B` running between calls — \
+             state is leaking across requests"
+        );
+        assert_eq!(
+            b1.data, b2.data,
+            "encoding `innocent-query-B` differed between calls — moving-target morph is carrying \
+             prior content into subsequent encodings"
+        );
+        assert_ne!(
+            a1.data, b1.data,
+            "different inputs should still produce different latents"
+        );
+    }
+
+    /// Opt-in stateful codec: history MUST influence subsequent encodes
+    /// (otherwise the "context-aware" mode does nothing).
+    #[test]
+    fn titans_stateful_codec_is_context_aware() {
+        let codec = TitansLatentCodec::stateful(32, 32, 4, 0xABCD);
+        let a1 = codec.encode(b"q").expect("encode");
+        let _b = codec.encode(b"other").expect("encode");
+        let a2 = codec.encode(b"q").expect("encode");
+        // Same input, but `b` ran between — context shifted, embedding
+        // must differ. (If this flips, the stateful constructor is
+        // silently behaving like stateless.)
+        assert_ne!(
+            a1.data, a2.data,
+            "stateful codec produced identical embeddings for the same input — \
+             context-aware mode is not threading history through the morph"
+        );
     }
 
     #[test]

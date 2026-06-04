@@ -1383,6 +1383,16 @@ impl NeuralLatentEncoder {
         }
     }
 
+    /// Reset the per-message Titans state — clears the history buffer
+    /// and re-seeds the PRNG. After calling this the encoder produces
+    /// the same latent for the same input regardless of prior calls,
+    /// which is the correct property for any shared / multi-tenant
+    /// embedding service (request A must not influence request B).
+    pub fn reset_state(&mut self, seed: u64) {
+        self.message_history.clear();
+        self.rng = StdRng::seed_from_u64(seed);
+    }
+
     /// Encode a message into latent space with Titans long-term memory
     pub fn encode(&mut self, message_bytes: &[u8]) -> Vec<f32> {
         // Convert bytes to float vector
