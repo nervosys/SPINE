@@ -16,3 +16,46 @@ Thumbs.db
 *.pdb
 exit_code.txt
 test_results.txt
+test_output.txt
+
+# ---------------------------------------------------------------------------
+# Secret-bearing file shapes — never commit these even by accident.
+# If you legitimately need one of these (e.g. an example .env), check it
+# in with a `.example` suffix that this file does NOT exclude.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.template
+secrets.yml
+secrets.yaml
+*.secret
+credentials*.json
+service-account*.json
+
+# Private keys / certificates
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+id_rsa
+id_ed25519
+id_ecdsa
+
+# Local databases (may contain user data)
+*.db
+*.sqlite
+*.sqlite*
+*.sqlite3
+
+# Backups, dumps
+*.bak
+*.dump
+backup.*
+dump.*
+
+# Cargo + Rust transient state
+**/Cargo.lock.bak
+**/*.rs.bk
+
