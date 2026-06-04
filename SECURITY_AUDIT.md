@@ -2,11 +2,14 @@
 
 | Field          | Value                                          |
 |----------------|------------------------------------------------|
-| Audit date     | 2026-06-04                                     |
-| Target version | v1.2.1                                         |
+| Audit date     | 2026-06-04 (refreshed at v1.3.0)               |
+| Target version | v1.3.0                                         |
 | Frameworks     | CVE / RustSec, NIST FIPS 140-3 + SP 800-171, MITRE ATT&CK, CMMC 2.0 |
 | Auditor        | Internal review, pre-public-release sweep      |
 | Scope          | Entire `master` branch, all 28 workspace crates |
+
+v1.3.0 closes every BLOCKER and HIGH/MEDIUM residual from the v1.2.1
+audit. See `§ 6` for the closed-vs-open table.
 
 This document captures the audit that gated the v1.2.1 release.
 Findings are graded **BLOCKER / HIGH / MEDIUM / LOW / INFO**. Every
@@ -194,15 +197,15 @@ The audit identified four BLOCKERS; all were closed in this release:
    match, length-mismatch rejection, env-var on/off, and path
    allowlist.
 
-## 6. Known residuals tracked for a future release
+## 6. Known residuals — status after v1.3.0
 
-| Item                                   | Severity | Tracking                  |
-|----------------------------------------|----------|---------------------------|
-| Bearer auth opt-in by default          | HIGH     | `SECURITY.md` deployment note; flip to opt-out in a future major version. |
-| Private-key memory not zeroized        | MEDIUM   | Add `zeroize` crate to `spine-crypto` + Drop impls on `DecapsulationKey`, HKDF outputs, Ed25519 secret keys. Targeted for v1.3.0. |
-| `bincode 1.x` deprecation              | LOW      | Migrate to `bincode 2.x` when ecosystem catches up. |
-| `rustls-pemfile` unmaintained          | LOW      | Move to `rustls-pki-types::CertificateDer` parsing. |
-| FIPS-validated crypto module           | DEPLOYER | Swap `ring` for `aws-lc-rs` FIPS build in federal deployments. |
+| Item                                   | Severity | Status                                                                 |
+|----------------------------------------|----------|------------------------------------------------------------------------|
+| Bearer auth opt-in by default          | HIGH     | **CLOSED in v1.3.0** — `AuthMode::resolve` makes the gateway refuse to start without an explicit choice; the previous silent-open mode is no longer reachable. |
+| Private-key memory not zeroized        | MEDIUM   | **CLOSED in v1.3.0** — `zeroize` derives or manual `Drop` on `RingElement`, `QuantumKeyPair`, `MlKemKeyPair`, `QuantumKeyEvolution`, `ProtocolMorphology`, `Ed25519Keypair`. Compile-time + runtime regression guards. |
+| FIPS-validated crypto module           | DEPLOYER | **WIRED in v1.3.0** — `cargo build -p spine-gateway --features fips` swaps rustls's CryptoProvider to `aws-lc-rs`. End-to-end FIPS 140-3 validation still requires the deployer to rebuild `aws-lc-rs` with `AWS_LC_FIPS=1`. |
+| `bincode 1.x` deprecation              | LOW      | Tracked. Migrate to `bincode 2.x` when ecosystem catches up. |
+| `rustls-pemfile` unmaintained          | LOW      | Tracked. Move to `rustls-pki-types::CertificateDer` parsing. |
 
 ## 7. Verification
 

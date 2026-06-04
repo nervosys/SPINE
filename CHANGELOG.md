@@ -6,6 +6,93 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-06-04 — Close all v1.2.1 residuals
+
+Addresses every remaining item from the v1.2.1 multi-framework audit.
+No new feature surface; pure security hardening.
+
+### Fixed (HIGH residuals from v1.2.1)
+
+- **Gateway bearer auth is now secure by default** (CMMC AC.L1-3.1.1,
+  MITRE T1190). The binary refuses to start unless the deployer makes
+  an explicit choice via env var:
+  - `SPINE_GATEWAY_BEARER_TOKEN=<secret>` — auth on (recommended).
+  - `SPINE_GATEWAY_ALLOW_UNAUTH=1` — explicit opt-out for local dev
+    or behind an authenticating proxy.
+  Setting neither, setting both, or setting the token to an
+  empty/whitespace string causes the gateway to print the deployer
+  message to stderr and exit with code 2. Previous v1.2.1 behavior
+  (silently running open) is no longer reachable. New type
+  `AuthMode::resolve` carries the contract; legacy `BearerConfig::
+  from_env` kept for backwards-compat with `#[allow(dead_code)]`.
+
+### Fixed (MEDIUM residuals from v1.2.1)
+
+- **Private-key memory is now zeroized on Drop** (NIST SP 800-171
+  § 3.13.10). Added `zeroize = "1.8"` to `spine-crypto`,
+  `spine-protocol`, and `spine-agentic`. The following structs derive
+  or manually impl `Zeroize` / `ZeroizeOnDrop`:
+  - `spine_crypto::RingElement` — RLWE coefficient vector.
+  - `spine_crypto::QuantumKeyPair` — RLWE secret/public ring
+    elements; `params` skipped (plaintext metadata).
+  - `spine_crypto::MlKemKeyPair` — FIPS 203 decapsulation key bytes;
+    `algorithm` skipped (enum tag, not secret).
+  - `spine_crypto::QuantumKeyEvolution` — manual `Drop` that scrubs
+    the rolling key-hash history; wrapped key structs zero themselves.
+  - `spine_protocol::ProtocolMorphology` — manual `Drop` zeroing the
+    32-byte session HMAC key.
+  - `spine_agentic::Ed25519Keypair` — manual `Drop` scrubbing the
+    cached public-key bytes; the inner `ed25519-dalek::SigningKey`
+    already derives `ZeroizeOnDrop` upstream.
+
+  Regression guards: 3 compile-time `assert_zeroize_on_drop` checks
+  + 3 runtime "fill with secret, zeroize, observe zeros" tests in
+  `spine-crypto`.
+
+### Added (DEPLOYER residual from v1.2.1)
+
+- **`fips` cargo feature on `spine-gateway`**. Enabling it
+  (`cargo build -p spine-gateway --features fips`) pulls in
+  `aws-lc-rs` as the rustls `CryptoProvider` and installs it as the
+  process-wide rustls default at startup. The gateway emits an
+  `INFO` line noting that FIPS mode is active.
+
+  An end-to-end FIPS 140-3 *validated* module requires the deployer
+  to also rebuild `aws-lc-rs` itself with `AWS_LC_FIPS=1` — the
+  cargo feature wires SPINE's integration point; the validated
+  binary is a deployer toolchain decision documented in
+  `SECURITY_AUDIT.md § 2` and `SECURITY.md § FIPS 140-3 build`.
+
+### Changed
+
+- `spine-gateway` deps: added `rustls` (direct), `thiserror`, and the
+  `fips` feature pass-through to `rustls/aws_lc_rs`.
+- `spine-crypto` / `spine-protocol` / `spine-agentic` deps: added
+  `zeroize = { version = "1.8", features = ["derive"] }`.
+- `BearerConfig` now has a manual `Debug` impl that prints only the
+  token length — never the secret bytes — so debug-log paths can't
+  leak the configured bearer.
+- `SECURITY.md` gains two new sections: "Gateway authentication
+  (secure by default as of v1.3.0)" and "FIPS 140-3 build" and
+  "Cryptographic key memory hygiene".
+
+### Verification
+
+- `cargo test --workspace --no-fail-fast` → **1,084 passed / 0
+  failed / 5 ignored** (+12 since v1.2.1: 6 auth-resolve tests + 6
+  zeroize regression guards).
+- `cargo check -p spine-gateway --features fips` → clean compile;
+  `aws-lc-rs 1.17.0` cross-builds on Windows.
+
+### Breaking changes
+
+- **`spine-gateway` startup behavior**. Existing deployments that
+  relied on the v1.2.x "run open when env var unset" behavior will
+  now exit with code 2 on launch. Migration: set
+  `SPINE_GATEWAY_ALLOW_UNAUTH=1` to keep the previous open-public
+  behavior (and immediately move to setting the bearer token for
+  production).
+
 ## [1.2.1] — 2026-06-04 — Release hygiene + multi-framework audit
 
 This release is gated by a formal security audit against CVE / RustSec,
