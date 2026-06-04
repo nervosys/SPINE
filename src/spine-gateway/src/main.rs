@@ -601,6 +601,9 @@ async fn main() -> anyhow::Result<()> {
             post(agentic_sse::chat_completions_stream),
         )
         .route("/v1/agentic/capabilities", get(agentic_sse::capabilities))
+        // Neural encoder-decoder protocols — embeddings + codec catalog.
+        .route("/v1/embeddings", post(agentic_sse::embeddings))
+        .route("/v1/agentic/codecs", get(agentic_sse::codecs))
         // Ops
         .route("/health", get(health))
         .route("/ready", get(ready))
