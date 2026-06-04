@@ -6,38 +6,92 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [1.2.1] — 2026-06-04 — Release hygiene
+## [1.2.1] — 2026-06-04 — Release hygiene + multi-framework audit
 
-### Fixed
-- **Cross-request state leak in `/v1/embeddings`** (
-  `spine-gateway` + `spine-protocol`). The default
+This release is gated by a formal security audit against CVE / RustSec,
+NIST FIPS 140-3, MITRE ATT&CK v15, and CMMC 2.0. Full report in
+`SECURITY_AUDIT.md`. Every BLOCKER is closed; HIGH and below are
+documented and tracked.
+
+### Fixed (BLOCKER)
+
+- **T1565.002 Data Manipulation — Cross-request state leak in
+  `/v1/embeddings`** (`spine-gateway` + `spine-protocol`). The default
   `TitansLatentCodec` is now **stateless**: every `encode()` call
   resets the wrapped `NeuralLatentEncoder`'s `message_history` buffer
-  and re-seeds the PRNG before encoding, so request A's content can
-  no longer influence request B's embedding via the moving-target
-  morph. Added `NeuralLatentEncoder::reset_state(seed)` upstream in
+  and re-seeds the PRNG before encoding, so request A's content can no
+  longer influence request B's embedding via the moving-target morph.
+  Added `NeuralLatentEncoder::reset_state(seed)` upstream in
   `spine-neural` to make this cheap. Opt-in stateful behavior is
-  available via `TitansLatentCodec::stateful(...)`.
+  available via `TitansLatentCodec::stateful(...)`. Regression guards:
+  `titans_stateless_codec_does_not_leak_across_calls`,
+  `titans_stateful_codec_is_context_aware`.
 
-  Regression guard: `titans_stateless_codec_does_not_leak_across_calls`
-  encodes two distinct queries through the same codec twice and
-  asserts the per-query outputs are byte-identical.
+- **T1499.002 Endpoint DoS — Service Exhaustion Flood**: gateway POST
+  bodies were unbounded. A 10 GB POST to `/v1/embeddings` or `/api/parse`
+  would deserialize and allocate without limit. Added
+  `axum::extract::DefaultBodyLimit::max(8 MiB)` on the router. Per-route
+  override remains available for trusted deployments.
+
+- **T1499.004 Endpoint DoS / T1496 Resource Hijacking — CPU bound on
+  HLS execution**: the WASM runtime had no fuel/timeout enforcement,
+  so a `loop {}` inside an HLS program would hang the executor
+  indefinitely. Added `wasmtime::Config::consume_fuel(true)` +
+  per-execution fuel budget (default 1 B units ≈ seconds of CPU).
+  Regression guards: `test_wasm_fuel_metering_is_active`,
+  `test_default_fuel_budget_completes_normal_programs`.
+
+- **T1190 Exploit Public-Facing App — bearer auth contract mismatch**:
+  the OpenAPI schema declared a `bearer` security scheme since v1.0.0
+  but no middleware enforced it. Added `auth::require_bearer` (in
+  `src/spine-gateway/src/auth.rs`) with constant-time secret comparison
+  via the `subtle` crate. Activated by setting
+  `SPINE_GATEWAY_BEARER_TOKEN`; emits a `WARN` at startup when unset.
+  Path allowlist for `/health`, `/ready`, `/swagger-ui`, `/api-docs`.
 
 ### Added
-- `SECURITY.md` with supported-versions table, private reporting
-  channels, threat model, cryptographic choices, and known hardening
-  boundaries.
+
+- `SECURITY.md` — supported-versions table, private reporting channels,
+  threat model, cryptographic choices, known hardening boundaries.
+- `SECURITY_AUDIT.md` — full v1.2.1 audit report across CVE / FIPS /
+  ATT&CK / CMMC with per-finding severity and applied fixes.
 - This `CHANGELOG.md`.
-- `.gitignore` entries for common secret-bearing file shapes (`.env*`,
-  `*.pem`, `*.key`, `credentials*.json`, `secrets.{yml,yaml}`,
-  `*.sqlite*`) so future commits can't accidentally ship them.
+- `.gitignore` patterns for common secret-bearing file shapes
+  (`.env*`, `*.pem`, `*.key`, `credentials*.json`,
+  `secrets.{yml,yaml}`, `*.sqlite*`, backups).
+- `spine-gateway` deps: `subtle = "2.5"` (constant-time comparison).
 
 ### Changed
+
 - All four agentic gateway handlers (`chat_completions_stream`,
   `embeddings`, `capabilities`, `codecs`) now carry
   `#[tracing::instrument(skip_all, …)]` so request bodies never reach
-  tracing spans. Span fields are restricted to `model` and `stream`
-  flags.
+  tracing spans. Span fields restricted to `model` and `stream` flags.
+- `WasmRuntime::new()` now constructs a runtime with the default
+  fuel budget; legacy callers see no API change. Trusted callers that
+  need a larger budget can use `WasmRuntime::with_fuel(N)`.
+- Gateway startup now logs whether bearer auth is enabled or disabled
+  so deployers cannot accidentally run a production gateway with
+  authentication off.
+
+### Verification
+
+- `cargo test --workspace --no-fail-fast` → **1,072 passed / 0 failed
+  / 5 ignored** (+10 since v1.2.0: 2 WASM fuel guards + 8 auth tests).
+- `cargo audit` → 0 vulnerabilities, 10 unmaintained warnings (all
+  accepted with rationale in `SECURITY_AUDIT.md § 1`).
+
+### Known residuals tracked for future release
+
+- Bearer auth is opt-in by default. `SECURITY.md` documents the
+  deployer obligation; will flip to opt-out in a future major version.
+- Private-key memory not zeroized on drop. Targeted for v1.3.0
+  (`zeroize` crate on `DecapsulationKey`, HKDF outputs, Ed25519
+  secrets).
+- FIPS 140-3 validated cryptographic module: algorithms are
+  FIPS-approved by spec, but the Rust crates we use are not
+  FIPS-validated. Federal deployments must swap `ring` for
+  `aws-lc-rs` FIPS build; documented in `SECURITY_AUDIT.md § 2`.
 
 ## [1.2.0] — 2026-06-03 — Neural encoder-decoder protocols
 
