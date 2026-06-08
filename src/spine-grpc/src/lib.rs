@@ -44,16 +44,24 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use tonic::{Request, Response, Status};
 
 use spine_protocol::{
     Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult,
 };
 
+pub mod model;
+pub use model::{ChatDelta, ChatModel, ChatRequest, EchoModel, OpenAiChatModel};
+
 /// Generated protobuf types + tonic stubs for `spine.agentic.v1`.
 pub mod pb {
     tonic::include_proto!("spine.agentic.v1");
 }
+
+/// Encoded protobuf file-descriptor set, for gRPC server reflection.
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    tonic::include_file_descriptor_set!("spine_agentic_descriptor");
 
 pub use pb::agent_service_server::{self, AgentService, AgentServiceServer};
 pub use pb::agent_service_client::AgentServiceClient;
@@ -165,15 +173,18 @@ pub fn tool_result_to_proto(result: &ToolResult) -> CallToolResponse {
 /// Shared across concurrent RPCs, so it must be `Send + Sync`.
 pub type ToolExecutor = Arc<dyn Fn(ToolCall) -> ToolResult + Send + Sync>;
 
-/// A tonic [`AgentService`] backed by a SPINE [`CapabilityAdvertisement`] and a
-/// tool executor.
+/// A tonic [`AgentService`] backed by a SPINE [`CapabilityAdvertisement`], a
+/// tool executor, and a [`ChatModel`] for `StreamChat`.
 pub struct SpineAgent {
     advertisement: CapabilityAdvertisement,
     executor: ToolExecutor,
+    model: Arc<dyn ChatModel>,
 }
 
 impl SpineAgent {
     /// Build a service from an advertisement and a tool executor closure.
+    /// `StreamChat` defaults to the hermetic [`EchoModel`]; call
+    /// [`SpineAgent::with_model`] to back it with a real model.
     pub fn new<F>(advertisement: CapabilityAdvertisement, executor: F) -> Self
     where
         F: Fn(ToolCall) -> ToolResult + Send + Sync + 'static,
@@ -181,6 +192,7 @@ impl SpineAgent {
         Self {
             advertisement,
             executor: Arc::new(executor),
+            model: Arc::new(EchoModel),
         }
     }
 
@@ -189,7 +201,15 @@ impl SpineAgent {
         Self {
             advertisement,
             executor,
+            model: Arc::new(EchoModel),
         }
+    }
+
+    /// Set the [`ChatModel`] backing `StreamChat` (e.g. an
+    /// [`OpenAiChatModel`] pointed at a real `/v1/chat/completions` endpoint).
+    pub fn with_model(mut self, model: Arc<dyn ChatModel>) -> Self {
+        self.model = model;
+        self
     }
 }
 
@@ -226,33 +246,37 @@ impl AgentService for SpineAgent {
         request: Request<StreamChatRequest>,
     ) -> Result<Response<Self::StreamChatStream>, Status> {
         let req = request.into_inner();
-        // Demo generator mirroring the gateway's agentic SSE path: stream the
-        // prompt back word by word, then a terminal `done` chunk. A production
-        // deployment swaps this for a model-backed StreamStart/Token/End source.
         let id = format!("grpc-{}", req.prompt.len());
-        let mut chunks: Vec<Result<StreamChunk, Status>> = req
-            .prompt
-            .split_whitespace()
-            .enumerate()
-            .map(|(i, w)| {
-                Ok(StreamChunk {
-                    id: id.clone(),
-                    seq: i as u64,
-                    text: if i == 0 { w.to_string() } else { format!(" {w}") },
-                    done: false,
-                    finish_reason: String::new(),
-                })
-            })
-            .collect();
-        chunks.push(Ok(StreamChunk {
-            id,
-            seq: chunks.len() as u64,
-            text: String::new(),
-            done: true,
-            finish_reason: "stop".into(),
-        }));
-        let stream = tokio_stream::iter(chunks);
-        Ok(Response::new(Box::pin(stream)))
+        // Delegate to the pluggable model and map ChatDelta -> StreamChunk
+        // LAZILY: the response stream pulls from the model only as the gRPC
+        // client pulls, so cancelling the gRPC stream stops generation.
+        let model_stream = self.model.stream(ChatRequest {
+            model: req.model,
+            prompt: req.prompt,
+        });
+        let mapped = async_stream::stream! {
+            let mut seq = 0u64;
+            futures_util::pin_mut!(model_stream);
+            while let Some(item) = model_stream.next().await {
+                match item {
+                    Ok(delta) => {
+                        yield Ok(StreamChunk {
+                            id: id.clone(),
+                            seq,
+                            text: delta.text,
+                            done: delta.done,
+                            finish_reason: delta.finish_reason.unwrap_or_default(),
+                        });
+                        seq += 1;
+                    }
+                    Err(e) => {
+                        yield Err(Status::internal(e.to_string()));
+                        return;
+                    }
+                }
+            }
+        };
+        Ok(Response::new(Box::pin(mapped)))
     }
 }
 
@@ -403,5 +427,59 @@ mod tests {
         assert!(!chunks[0].done);
         assert!(chunks[3].done);
         assert_eq!(chunks[3].finish_reason, "stop");
+    }
+
+    #[tokio::test]
+    async fn stream_chat_is_lazy_so_cancellation_stops_generation() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A model that records how many deltas it has actually produced.
+        struct CountingModel {
+            produced: Arc<AtomicUsize>,
+        }
+        impl ChatModel for CountingModel {
+            fn stream(&self, _req: ChatRequest) -> crate::model::ChatStream {
+                let produced = self.produced.clone();
+                Box::pin(async_stream::stream! {
+                    for i in 0..1000usize {
+                        produced.fetch_add(1, Ordering::SeqCst);
+                        yield Ok(ChatDelta::text(format!("{i} ")));
+                    }
+                    yield Ok(ChatDelta::done("stop"));
+                })
+            }
+        }
+
+        let produced = Arc::new(AtomicUsize::new(0));
+        let agent = SpineAgent::new(sample_ad(), |c: ToolCall| ToolResult {
+            id: c.id,
+            outcome: ToolOutcome::Ok {
+                content: serde_json::Value::Null,
+            },
+            trace: None,
+        })
+        .with_model(Arc::new(CountingModel {
+            produced: produced.clone(),
+        }));
+
+        let mut stream = agent
+            .stream_chat(Request::new(StreamChatRequest {
+                model: "m".into(),
+                prompt: "p".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // Pull only 3 chunks, then drop the stream — the gRPC-cancellation case.
+        for _ in 0..3 {
+            stream.next().await;
+        }
+        drop(stream);
+
+        // A lazy stream produced only what was pulled, NOT all 1000 — so a
+        // cancelling client really does stop upstream generation.
+        let n = produced.load(Ordering::SeqCst);
+        assert!(n <= 5, "expected lazy generation (~3), but produced {n}/1000");
     }
 }

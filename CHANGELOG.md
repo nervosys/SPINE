@@ -6,6 +6,34 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-06-08 — Model-backed gRPC streaming + reflection
+
+Matures the v1.8.0 gRPC bridge from a demo into a production server.
+
+### Added
+
+- **Pluggable `ChatModel` backend for `StreamChat` (`spine_grpc::model`).**
+  `StreamChat` no longer hard-codes a word-splitter; it delegates to a
+  `ChatModel`, mapped **lazily** so the response stream pulls from the model
+  only as the gRPC client pulls — cancelling the gRPC stream stops generation
+  (proven by `stream_chat_is_lazy_so_cancellation_stops_generation`). Two
+  implementations ship:
+  - `OpenAiChatModel` — backs `StreamChat` with **any OpenAI-compatible
+    `/v1/chat/completions` endpoint** (OpenAI, Together, Groq, vLLM, or SPINE's
+    own gateway), streaming `chat.completion.chunk` SSE deltas. The decode path
+    (`SseDecoder`, `deltas_from_byte_stream`) is a pure state machine unit-
+    tested with canned, mid-token-split bytes — no network in tests.
+  - `EchoModel` — hermetic reference/default (streams the prompt back).
+  `SpineAgent::with_model(...)` selects the backend.
+- **gRPC server reflection.** `build.rs` emits a file-descriptor set and
+  `spine_grpc::FILE_DESCRIPTOR_SET` exposes it, so a server can register
+  `tonic-reflection` and let `grpcurl` (and other tooling) introspect and call
+  the service with no `.proto`.
+- **`examples/serve.rs`** — a runnable, reflection-enabled `AgentService` on
+  `0.0.0.0:50051`. `EchoModel` by default; set `SPINE_GRPC_MODEL_URL` (+
+  `SPINE_GRPC_MODEL_KEY`) to stream from a real model. Includes the `grpcurl`
+  invocations.
+
 ## [1.8.0] — 2026-06-08 — gRPC / protobuf bridge
 
 SPINE's third ecosystem bridge, after the MCP server and the OpenAI-compatible
