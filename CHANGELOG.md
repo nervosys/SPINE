@@ -6,6 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-06-08 — gRPC / protobuf bridge
+
+SPINE's third ecosystem bridge, after the MCP server and the OpenAI-compatible
+gateway — each reaches a different installed base. This one opens the entire
+protobuf/gRPC world.
+
+### Added
+
+- **`spine-grpc` crate — a tonic `AgentService` exposing SPINE's agentic
+  surface over gRPC.** A `proto/spine_agentic.proto` defines `Capability`,
+  `ListCapabilities`, `CallTool`, and a server-streaming `StreamChat`; the crate
+  bridges them to the native `spine_protocol` types
+  (`CapabilityAdvertisement` ↔ `ListCapabilities`, `ToolCall`/`ToolResult` ↔
+  `CallTool`, `StreamStart/Token/End` ↔ `StreamChunk`). JSON-shaped fields
+  (args, schemas, results) travel as serialized JSON strings — lossless and
+  simple. `SpineAgent::new(advertisement, executor)` is a drop-in
+  `AgentServiceServer`, so every gRPC client (tonic, grpc-go, grpc-java),
+  `grpc-web`, and reflection tooling (`grpcurl`) can call a SPINE agent.
+- **End-to-end test over real TCP/HTTP-2** (`tests/grpc_e2e.rs`): boots the
+  service on a localhost socket and drives `ListCapabilities`, `CallTool`
+  (`2 + 40 → 42`), and the `StreamChat` server stream with the generated
+  client — verifying the actual wire path, not just the service methods.
+- Pure, tested type mappings (`capability_to_proto`, `advertisement_to_proto`,
+  `request_to_tool_call`, `tool_result_to_proto`) for callers that want the
+  bridge without the transport.
+
+### Notes
+
+- Requires `protoc` at build time (codegen via `tonic-build`). Added
+  `src/spine-grpc` to the workspace.
+
 ## [1.7.0] — 2026-06-08 — Wire codec: fast by default (no hot-path zstd)
 
 A benchmark (`benches/hot_path_bench.rs::wire_codec`, added here) exposed a

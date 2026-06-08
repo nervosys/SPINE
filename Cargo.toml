@@ -3,6 +3,7 @@ members = [
     "src/spine-core",
     "src/spine-parser",
     "src/spine-protocol",
+    "src/spine-grpc",
     "src/spine-agent",
     "src/spine-compiler",
     "src/spine-wasm",

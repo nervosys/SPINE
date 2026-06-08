@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+// SPINE's agentic surface, expressed as a gRPC service so the entire
+// protobuf/gRPC ecosystem (every language's tonic/grpc-go/grpc-java/grpc-web
+// client, plus reflection-driven tooling like grpcurl) can call a SPINE agent.
+// JSON-shaped fields (tool args, JSON Schemas, tool results) travel as their
+// serialized JSON string — pragmatic and lossless for a bridge, and it keeps
+// the schema small versus modelling arbitrary JSON in protobuf.
+package spine.agentic.v1;
+
+// One capability the agent offers — mirrors spine_protocol::Capability.
+message Capability {
+  string uri = 1;
+  string description = 2;
+  // JSON Schema for the call arguments (serialized JSON).
+  string input_schema_json = 3;
+  // JSON Schema for the success result (serialized JSON).
+  string output_schema_json = 4;
+}
+
+message ListCapabilitiesRequest {
+  // "all" (default), "exact:<uri>", or "prefix:<uri>".
+  string selector = 1;
+}
+
+message ListCapabilitiesResponse {
+  // Cryptographic identity of the advertising agent.
+  string agent_id = 1;
+  repeated Capability capabilities = 2;
+}
+
+message CallToolRequest {
+  // Caller-chosen correlation id; echoed in the response.
+  string id = 1;
+  // Tool identifier (a Capability uri).
+  string name = 2;
+  // Structured arguments (serialized JSON object).
+  string args_json = 3;
+}
+
+message CallToolResponse {
+  string id = 1;
+  bool ok = 2;
+  // On success: the result value (serialized JSON).
+  string content_json = 3;
+  // On error: a stable code (e.g. "timeout", "invalid_args").
+  string error_code = 4;
+  string error_message = 5;
+}
+
+message StreamChatRequest {
+  string model = 1;
+  string prompt = 2;
+}
+
+// One chunk of a server-streamed completion — mirrors StreamStart/Token/End.
+message StreamChunk {
+  string id = 1;
+  uint64 seq = 2;
+  // Text delta for this chunk (empty on the terminal chunk).
+  string text = 3;
+  // True only on the final chunk.
+  bool done = 4;
+  // Finish reason on the terminal chunk: "stop" | "length" | "tool_use" |
+  // "content_filter" | "cancelled" | "error".
+  string finish_reason = 5;
+}
+
+// The SPINE agent control plane over gRPC.
+service AgentService {
+  // Discover what the agent can do (bridges CapabilityAdvertisement).
+  rpc ListCapabilities(ListCapabilitiesRequest) returns (ListCapabilitiesResponse);
+  // Invoke one tool (bridges ToolCall/ToolResult).
+  rpc CallTool(CallToolRequest) returns (CallToolResponse);
+  // Stream an LLM completion (bridges StreamStart/StreamToken/StreamEnd).
+  rpc StreamChat(StreamChatRequest) returns (stream StreamChunk);
+}

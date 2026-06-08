@@ -1,0 +1,23 @@
+[package]
+name = "spine-grpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "gRPC/protobuf bridge for SPINE's agentic surface — exposes ToolCall/ToolResult/capabilities/streaming over a tonic AgentService"
+
+[dependencies]
+tonic = "0.12"
+prost = "0.13"
+tokio = { workspace = true }
+tokio-stream = { version = "0.1", features = ["net"] }
+futures-core = "0.3"
+serde_json.workspace = true
+thiserror.workspace = true
+spine-protocol = { path = "../spine-protocol" }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true }
