@@ -26,6 +26,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::io::{BufRead, Write};
 
 /// JSON-RPC 2.0 protocol version literal.
 pub const JSONRPC_VERSION: &str = "2.0";
@@ -380,6 +381,40 @@ where
     }
 }
 
+/// Serve MCP over a newline-delimited JSON-RPC byte stream — the MCP **stdio
+/// transport**. Reads one JSON-RPC message per line from `reader`, dispatches
+/// it through `server`, and writes each response as a single line to `writer`,
+/// returning when `reader` reaches EOF.
+///
+/// Blank lines are skipped; notifications (requests without an `id`, e.g.
+/// `notifications/initialized`) produce no output line, per JSON-RPC. This is
+/// the exact loop a host like Claude Desktop drives when it spawns the server
+/// process — wire it to `stdin().lock()` / `stdout()` in `main` and the binary
+/// is a drop-in MCP server (see `examples/mcp_stdio_server.rs`).
+pub fn serve_stdio<F, R, W>(
+    server: &mut McpServer<F>,
+    reader: R,
+    writer: &mut W,
+) -> std::io::Result<()>
+where
+    F: FnMut(ToolCall) -> ToolResult,
+    R: BufRead,
+    W: Write,
+{
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(resp) = server.handle_json(line.as_bytes()) {
+            writer.write_all(&resp)?;
+            writer.write_all(b"\n")?;
+            writer.flush()?;
+        }
+    }
+    Ok(())
+}
+
 /// Derive a stable-ish call id from params without a clock/RNG (those are
 /// unavailable here); the tool name plus arg fingerprint is enough to correlate.
 fn gen_call_id(params: &CallToolParams) -> String {
@@ -538,6 +573,53 @@ mod tests {
         };
         let resp = server.handle(&req).unwrap();
         assert_eq!(resp.error.unwrap().code, METHOD_NOT_FOUND);
+    }
+
+    #[test]
+    fn stdio_loop_drives_a_full_session() {
+        let mut server = McpServer::new(sample_ad(), |call: ToolCall| ToolResult {
+            id: call.id,
+            outcome: ToolOutcome::Ok {
+                content: json!({"echoed": call.args}),
+            },
+            trace: None,
+        });
+
+        // A realistic host session: initialize, the initialized notification
+        // (no response expected), a blank line, tools/list, then tools/call.
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            "\n",
+            "\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+            "\n",
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"agent.web/fetch_url","arguments":{"url":"u"}}}"#,
+            "\n",
+        );
+        let mut out = Vec::new();
+        serve_stdio(&mut server, input.as_bytes(), &mut out).unwrap();
+
+        let lines: Vec<&str> = std::str::from_utf8(&out)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .collect();
+        // initialize + tools/list + tools/call = 3 responses; the notification
+        // and the blank line produce nothing.
+        assert_eq!(lines.len(), 3, "got: {lines:?}");
+
+        let init: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(init["id"], json!(1));
+        assert_eq!(init["result"]["protocolVersion"], MCP_PROTOCOL_VERSION);
+
+        let list: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(list["result"]["tools"][0]["name"], "agent.web/fetch_url");
+
+        let call: Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(call["id"], json!(3));
+        assert_eq!(call["result"]["structuredContent"], json!({"echoed": {"url": "u"}}));
     }
 
     #[test]

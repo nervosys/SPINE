@@ -6,6 +6,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-06-08 — Runnable MCP stdio server
+
+Turns the v1.5.0 MCP bridge from a library into a deployable server.
+
+### Added
+
+- **`mcp::serve_stdio` + `examples/mcp_stdio_server.rs` — a runnable MCP server
+  over the stdio transport.** `serve_stdio` reads newline-delimited JSON-RPC
+  from any `BufRead`, dispatches through `McpServer`, and writes responses to a
+  `Write` — the exact loop an MCP host (Claude Desktop, Claude Code, an
+  MCP-capable IDE) drives when it spawns the server process. The example wires
+  it to stdin/stdout with a two-tool demo agent, so
+
+  ```jsonc
+  { "mcpServers": { "spine": { "command": "cargo",
+    "args": ["run","-p","spine-protocol","--example","mcp_stdio_server"] } } }
+  ```
+
+  is a working host config. This closes the gap between *having* the MCP
+  mapping (v1.5.0) and *being* a server a host can use with no SPINE-specific
+  code. Covered by an end-to-end test driving initialize → notification →
+  tools/list → tools/call over byte buffers.
+
 ## [1.5.0] — 2026-06-08 — Interop + completeness across all five agentic axes
 
 A push to improve every axis the `agentic-eval` web benchmark scores —

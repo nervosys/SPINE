@@ -63,3 +63,7 @@ harness = false
 [[example]]
 name = "wire_sizes"
 path = "examples/wire_sizes.rs"
+
+[[example]]
+name = "mcp_stdio_server"
+path = "examples/mcp_stdio_server.rs"
