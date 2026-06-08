@@ -10,6 +10,33 @@
 
 > *"A digital nervous system for AI agents — semantic-first parsing, agentic-first framing, swarm-first coordination, all with the option to fall back to plain HTTP whenever a human or legacy client needs to talk to it."*
 
+## Results at a Glance
+
+Two independent yardsticks: a **transport benchmark** (SPINE vs the real `h2` HTTP/2 crate over TCP loopback) and an **agentic-fitness benchmark** ([`agentic-eval`](https://github.com/nervosys/AetherShell), which ranks seven web stacks on five agent-native axes).
+
+**Transport — SPINE vs real HTTP/2** (`spine_vs_http2.rs`, `agentic_ai_workload.rs`, `llm_tok_per_sec.rs`; ranges are representative loopback medians, re-measured 2026-06-08):
+
+| Workload                                    | SPINE advantage vs HTTP/2 |
+| ------------------------------------------- | ------------------------- |
+| Single stream, latency                      | **1.6–2.4× faster**       |
+| Single stream, throughput                   | **1.8–2.3× higher**       |
+| N=64 concurrent streams (pipelined)         | **~32× higher** (≈1.3M req/s on one conn) |
+| Embedding batches, 1536-dim, vs HTTP/2+JSON | **~6–25× faster** (RAG / fleet broadcast) |
+| LLM tokens/sec, ≥16K-token batches          | **9–15× over HTTP/2 binary**; SPINE sustains **300–550M tok/s** |
+| LLM tokens/sec, vs OpenAI JSON-SSE          | JSON-SSE caps near **~10M tok/s** and collapses on large batches |
+
+These are *comparative* results on TCP loopback: the direction and order of magnitude reproduce run-to-run, but absolute peaks are bandwidth- and scheduler-bound and vary by machine (e.g. token throughput peaked at 548M tok/s on the 2026-06-08 re-run vs 728M in the original audit). Full per-size tables, methodology, and the retracted legacy claims are in [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md) and the [Performance](#performance) section below.
+
+**Agentic fitness — `agentic-eval` web-stacks ranking** (composite = unweighted mean of five axes):
+
+| Stack                  | Fitness | Streaming | Tools | Encoding | Interop | Security |
+| ---------------------- | ------- | --------- | ----- | -------- | ------- | -------- |
+| **SPINE**              | **0.90** (1st of 7) | 0.98 | 0.95 | 0.95 | 0.67 | 0.95 |
+| gRPC                   | 0.83    | —         | —     | —        | —       | —        |
+| OpenAI API (baseline)  | 0.69    | —         | —     | —        | —       | —        |
+
+SPINE leads the composite, edging gRPC by +0.07 and the OpenAI API by **+0.21**. It is strongest on the agent-native axes it was designed for (token streaming, capability handshakes, inline W3C trace context) and at protobuf-parity on encoding (CBOR + byte-string tensor payloads — a 1536-dim embedding frame is **68% smaller than JSON** by default, 89% with opt-in compression; `wire_sizes.rs`). **Interop (0.67) is its weakest axis** — three deployable bridges (MCP stdio server, OpenAI-compatible gateway, reflection-enabled gRPC `AgentService`) map the agentic *surface*, not SPINE's native binary frames, and SPINE has ~zero native install base. Full methodology and every caveat: [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md) and the [Performance](#performance) section below.
+
 ## Why "SPINE"?
 
 The name SPINE reflects the bioinspired principles at its core:
@@ -911,6 +938,8 @@ let distribution = network.distribute_task("Build ML pipeline", &required_roles)
 
 Numbers below come from `src/spine-transport/benches/{spine_vs_www,spine_vs_http2,agentic_ai_workload,llm_tok_per_sec,llm_shm_ipc}.rs`, all of which compare against **real** protocol implementations (the `h2` crate for HTTP/2, the `aes-gcm` crate for AES-256-GCM, real `serde_json` for JSON) on real TCP loopback or in-process shared memory. Full methodology, every caveat, and reproduction commands are in [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 
+> **Re-verification (2026-06-08).** The `spine_vs_http2`, `agentic_ai_workload`, and `llm_tok_per_sec` benches were re-run. All *comparative* findings reproduced directionally and to the same order of magnitude (single-stream HTTP/2 latency win 1.6–2.4×, throughput win 1.8–2.3×; embedding batches ~6–25× over HTTP/2+JSON; large-batch token throughput 9–15× over HTTP/2 binary while JSON-SSE stays near ~10M tok/s). The **absolute peaks vary by machine and load** — the 2026-06-08 token-throughput peak was 548M tok/s vs the 728M recorded below, and embedding multipliers were noisy (8.1× rather than 23× at batch-32). Treat the absolutes in the tables below as representative single-run medians from the original audit, not run-invariant constants.
+
 #### Transport-layer comparisons (single TCP connection, persistent, optimized SPINE)
 
 | Baseline                       | SPINE latency win | SPINE throughput win |
@@ -983,140 +1012,46 @@ cargo bench --package spine-transport --bench llm_shm_ipc
 cargo test  --package spine-transport rdma  # 4 trait tests
 ```
 
-### Legacy "illustrative only" tables (retracted, kept for history)
+### Micro-benchmarks (re-measured 2026-06-08)
 
-The "SPINE vs Traditional Web Stack" tables in the next subsections came from `src/spine-transport/benches/traditional_comparison.rs`, which the 2026-05 audit found to compare hand-rolled fakes (XOR pretending to be AES-GCM, a 10-line string split pretending to be JSON parse, `Vec::clone` pretending to be Redis pub/sub) against optimized SPINE code. **The four- and five-digit speedup ratios below are not supported by like-for-like measurement.** They are retained so the historical claims and the retraction live in the same document.
+Absolute internal-operation timings, re-run on current hardware. These are the only
+component/kernel numbers retained in the README because they are the ones reproduced this
+session (`cargo bench -p spine-kernel --bench kernel_bench`, `-p spine-transport --bench
+transport_bench`). Absolute figures are hardware-specific medians, not constants.
 
-The "Component Benchmarks" table further down (frame encode, ring buffer, BBR pacing, etc.) lists absolute throughput of internal operations and was *not* part of the retraction.
+| Operation                     | Bench                         | Time     | Throughput     |
+| ----------------------------- | ----------------------------- | -------- | -------------- |
+| SIMD dot product (256)        | `kernel_bench/simd_dot_product` | 30.8 ns  | 62.0 GiB/s     |
+| SIMD matmul (256×256)         | `kernel_bench/simd_matmul`    | 8.24 µs  | 15.9 Gelem/s   |
+| SPSC ring push+pop            | `kernel_bench/spsc_ring`      | 1.21 ns  | 829 Melem/s    |
+| Bump allocator (64 B)         | `kernel_bench/bump_allocator` | 349 ps   | 2.87 Galloc/s  |
+| RDTSC timing                  | `kernel_bench/timing`         | 7.14 ns  | 3.3× vs `Instant::now` |
+| Atomic test+set               | `kernel_bench/atomic_flags`   | 3.84 ns  | -              |
+| Frame encode (8 KB)           | `transport_bench/frame_codec` | 149 ns   | 51 GiB/s       |
+| Frame decode (8 KB)           | `transport_bench/frame_codec` | 123 ns   | 62 GiB/s       |
+| Ring buffer (16 KB)           | `transport_bench/ring_buffer` | 391 ns   | 39 GiB/s       |
+| BBR pacing decision           | `transport_bench/bbr`         | 302 ps   | -              |
+| BBR on-ack update             | `transport_bench/bbr`         | 130 ns   | -              |
+| Batch encode (64 frames)      | `transport_bench/batch_encode`| 3.31 µs  | 19.3 Melem/s   |
 
-### SPINE vs Traditional Web Stack (legacy table — see audit notice above)
+### Retracted / un-validated legacy tables → [`LEGACY.md`](LEGACY.md)
 
-These benchmarks compare SPINE against a hand-rolled simulation of a typical web stack (Express.js, Puppeteer, Redis, PostgreSQL, GPT-4 API). **Numbers below are illustrative only; do not cite without reading `BENCHMARK_REPORT.md` first.**
+Earlier drafts of this README carried large speedup tables ("SPINE vs Traditional Web
+Stack", "Real-World Application Benchmark", "SPINE vs Standard TCP/IP Stack", "Why SPINE
+Dominates", and the original "Component Benchmarks" / "Kernel Primitives" figures). They
+have been **moved to [`LEGACY.md`](LEGACY.md)** because their numbers could not be
+validated on 2026-06-08 re-measurement:
 
-#### Serialization: JSON vs SPINE Zero-Copy
+- The comparison-ratio tables use hand-rolled fake baselines (`traditional_comparison.rs`),
+  a category-error setup (`tcp_comparison.rs` — real sockets on one side, in-memory on the
+  other), or a "Traditional Stack" column with no implementation in this repo. The 2026-05
+  audit (`BENCHMARK_REPORT.md`) already established these are not like-for-like.
+- The absolute "Component Benchmarks" figures did not reproduce — frame-codec throughput
+  re-measured at ~51-62 GiB/s versus the 110-141 GiB/s claimed (~2× overstated), and
+  several rows had no trustworthy backing bench.
 
-| Data Size   | JSON Roundtrip      | SPINE Zero-Copy     | **Speedup** |
-| ----------- | ------------------- | ------------------- | ----------- |
-| 10 fields   | 1.77 µs (195 MiB/s) | 4.3 ns (77 GiB/s)   | **411×**    |
-| 100 fields  | 18.1 µs (199 MiB/s) | 20.4 ns (172 GiB/s) | **886×**    |
-| 1000 fields | 203 µs (187 MiB/s)  | 320 ns (115 GiB/s)  | **634×**    |
-
-#### Header Parsing: HTTP vs SPINE Binary
-
-| Protocol            | Time    | Throughput  | **Speedup** |
-| ------------------- | ------- | ----------- | ----------- |
-| HTTP Header Parse   | 1.41 µs | 708K elem/s | -           |
-| SPINE Binary Header | 3.3 ns  | 299M elem/s | **427×**    |
-
-#### Context Processing: 128K Chunks vs SPINE RLM
-
-| Context Size | Traditional (128K chunks) | SPINE RLM | **Speedup**  |
-| ------------ | ------------------------- | --------- | ------------ |
-| 100K chars   | 731 ns                    | 280 ps    | **2,610×**   |
-| 1M chars     | 7.48 µs                   | 443 ps    | **16,883×**  |
-| 10M chars    | 77.9 µs                   | 316 ps    | **246,500×** |
-
-> SPINE processes **10 million characters 250,000× faster** with O(1) random access.
-
-#### Connection Handling: HTTP Keep-Alive vs SPINE Multiplexing
-
-| Requests | HTTP Keep-Alive | SPINE Multiplexed | **Speedup** |
-| -------- | --------------- | ----------------- | ----------- |
-| 100      | 26.2 µs         | 11.2 ns           | **2,339×**  |
-| 1,000    | 287 µs          | 140 ns            | **2,050×**  |
-| 10,000   | 2.83 ms         | 1.0 µs            | **2,830×**  |
-
-### Real-World Application Benchmark (legacy table — see audit notice above)
-
-> **Numbers in this table are illustrative estimates, not measured comparisons** — the "Traditional Stack" column has no corresponding implementation in this repository. Retained for historical context.
-
-Competitive Intelligence demo: 50 agents analyzing competitor websites, extracting insights, building knowledge graph.
-
-| Metric                | Traditional Stack | SPINE         | **Advantage**       |
-| --------------------- | ----------------- | ------------- | ------------------- |
-| Cold Start            | ~5,000 ms         | 32 ms         | **156×**            |
-| 50 Agent Swarm        | ~10,000 ms        | 40 ms         | **256×**            |
-| Memory (50 agents)    | ~25 GB            | ~50 MB        | **500×**            |
-| Max Context           | 128K tokens       | **UNLIMITED** | ∞                   |
-| 10.7M char load       | FAILS             | 52 ms         | ✅                   |
-| 10.7M char search     | FAILS             | 81 µs         | ✅                   |
-| Knowledge Graph Build | External DB       | 407 µs        | **~1000×**          |
-| Encryption            | Static TLS        | Moving-target | ✅ Quantum-resistant |
-| **Total Processing**  | **~15 seconds**   | **127 ms**    | **118×**            |
-
-### Component Benchmarks
-
-| Component                    | Metric     | Throughput     |
-| ---------------------------- | ---------- | -------------- |
-| Latent Serialize (128-dim)   | 80 ns      | 6.0 GiB/s      |
-| Latent Serialize (512-dim)   | 108 ns     | 17.6 GiB/s     |
-| Latent Serialize (1024-dim)  | 143 ns     | **26.8 GiB/s** |
-| Cosine Similarity (128-dim)  | 47 ns      | 10.1 GiB/s     |
-| Cosine Similarity (1024-dim) | 373 ns     | **10.2 GiB/s** |
-| Frame Encode (8KB)           | 68 ns      | **110 GiB/s**  |
-| Frame Decode (8KB)           | 54 ns      | **141 GiB/s**  |
-| Zero-Copy Buffer (8KB)       | 131 ns     | 58 GiB/s       |
-| BBR Pacing Decision          | **275 ps** | -              |
-| Batch Encode (64 frames)     | 2.5 µs     | 25.8 Melem/s   |
-| Backpressure Stream (10K)    | 2.1 ms     | 4.9 Melem/s    |
-| Priority Queue (10K)         | 1.9 ms     | 5.4 Melem/s    |
-| Ring Buffer (16KB)           | 300 ns     | **50.4 GiB/s** |
-| Context Chunking (10M)       | 2.4 ms     | **3.9 GiB/s**  |
-
-*Benchmarks run on release builds with LTO enabled. Results validated January 2026.*
-
-### SPINE vs Standard TCP/IP Stack
-
-SPINE's transport layer significantly outperforms standard TCP operations:
-
-| Benchmark                | Standard TCP | SPINE    | Speedup   |
-| ------------------------ | ------------ | -------- | --------- |
-| **Latency (64 bytes)**   | 41.0 µs      | 60 ns    | **682×**  |
-| **Latency (256 bytes)**  | 27.2 µs      | 82 ns    | **331×**  |
-| **Latency (1024 bytes)** | 31.2 µs      | 99 ns    | **315×**  |
-| **Latency (4096 bytes)** | 27.0 µs      | 102 ns   | **265×**  |
-| **Throughput (1KB)**     | 34 MiB/s     | 21 GiB/s | **632×**  |
-| **Throughput (8KB)**     | 359 MiB/s    | 58 GiB/s | **166×**  |
-| **Frame Encode (8KB)**   | -            | 68 ns    | 110 GiB/s |
-| **Frame Decode (8KB)**   | -            | 54 ns    | 141 GiB/s |
-| **Ring Buffer (16KB)**   | -            | 300 ns   | 50 GiB/s  |
-| **BBR Congestion Ctrl**  | N/A          | 109 ns   | -         |
-
-### Kernel Primitives (spine-kernel)
-
-Ultra-low-level hardware primitives powering the agentic web:
-
-| Operation            | Size     | Time    | Throughput                    |
-| -------------------- | -------- | ------- | ----------------------------- |
-| **SIMD Dot Product** | 256      | 33 ns   | **57 GiB/s**                  |
-| **SIMD MatVec**      | 256×256  | 8.5 µs  | **15.5 Gelem/s**              |
-| **SPSC Ring**        | push+pop | 1.36 ns | **736 Melem/s**               |
-| **Bump Allocator**   | 64 bytes | 505 ps  | **1.98 Galloc/s**             |
-| **RDTSC Timing**     | -        | 9.3 ns  | 2.6× faster than Instant::now |
-| **Atomic Flags**     | test+set | 4.4 ns  | -                             |
-
-**Key Insights:**
-
-- **265-682× lower latency** for messages (frame codec vs TCP roundtrip)
-- **166-632× higher throughput** using zero-copy ring buffers
-- Frame codec achieves **110-141 GiB/s** encode/decode throughput
-- BBR congestion control adds only **109 ns** overhead per decision
-- Pacing decisions take only **275 picoseconds**
-
-### Summary: Why SPINE Dominates
-
-| Category           | Traditional         | SPINE                   | Factor       |
-| ------------------ | ------------------- | ----------------------- | ------------ |
-| **Serialization**  | 187 MiB/s           | 115 GiB/s               | **630×**     |
-| **Header Parsing** | 708K/s              | 299M/s                  | **422×**     |
-| **Context Access** | O(n) chunking       | O(1) random             | **250,000×** |
-| **Connections**    | Per-request parsing | Multiplexed streams     | **2,500×**   |
-| **Latency (TCP)**  | 27-41 µs            | 60-102 ns               | **300-680×** |
-| **Memory**         | 500 MB/browser      | 1 MB/agent              | **500×**     |
-| **Context Limit**  | 128K tokens         | **UNLIMITED**           | ∞            |
-| **Security**       | Static TLS          | Moving-target + Quantum | ✅            |
-
-> **The traditional web stack cannot compete. This isn't optimization—it's architectural superiority.**
+Nothing in `LEGACY.md` should be cited. The current, reproduced numbers are the transport
+and agentic tables above and in `BENCHMARK_REPORT.md`.
 
 ### Build Optimizations
 
