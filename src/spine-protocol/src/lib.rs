@@ -5,6 +5,7 @@ pub mod agentic;
 pub mod agentic_codec;
 pub mod negotiation;
 pub mod replay;
+pub mod wire;
 
 pub use agentic::{
     Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamData,
@@ -1307,9 +1308,8 @@ where
     /// adaptive compression (skipped for small payloads < threshold).
     #[inline]
     pub async fn send_message(&mut self, msg: &Message) -> anyhow::Result<()> {
-        // Serialize message once into reusable buffer
-        self.send_buf.clear();
-        serde_json::to_writer(&mut self.send_buf, msg)?;
+        // Serialize message once via the binary wire codec (CBOR / CBOR+zstd).
+        self.send_buf = wire::encode(msg)?;
         let msg_hash = Self::hash_message(&self.send_buf);
         let msg_type = Self::classify_message(msg);
 
@@ -1446,7 +1446,7 @@ where
 
     /// Send message without speculation (for bootstrapping)
     pub async fn send_message_raw(&mut self, msg: &Message) -> anyhow::Result<()> {
-        let mut data = serde_json::to_vec(msg)?;
+        let mut data = wire::encode(msg)?;
         let msg_hash = Self::hash_message(&data);
 
         data = self.apply_padding(data);
@@ -1630,7 +1630,7 @@ where
             };
 
             // Parse the actual message
-            let msg: Message = serde_json::from_slice(&msg_data)?;
+            let msg: Message = wire::decode(&msg_data)?;
 
             // Handle proactive morphing requests from server
             if let Message::MorphRequest { seed } = &msg {
@@ -1653,7 +1653,7 @@ where
             Ok(msg)
         } else {
             // Legacy message (no speculative frame)
-            let msg: Message = serde_json::from_slice(&data)?;
+            let msg: Message = wire::decode(&data)?;
 
             // Handle proactive morphing requests from server
             if let Message::MorphRequest { seed } = &msg {
@@ -2353,7 +2353,7 @@ impl ProtocolHandlerState {
     }
 
     fn encode_message(&mut self, msg: &Message) -> anyhow::Result<Vec<u8>> {
-        let mut data = serde_json::to_vec(msg)?;
+        let mut data = wire::encode(msg)?;
 
         // Apply padding
         data = self.apply_padding(data);
@@ -2454,7 +2454,7 @@ impl ProtocolHandlerState {
         // Remove padding
         data = self.remove_padding(data);
 
-        let msg: Message = serde_json::from_slice(&data)?;
+        let msg: Message = wire::decode(&data)?;
         Ok(msg)
     }
 

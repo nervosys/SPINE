@@ -6,6 +6,64 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-06-08 — Binary wire format (CBOR) — win on encoding
+
+SPINE's message body was UTF-8 JSON behind a binary header. v1.4.0 replaces
+it with a compact, self-describing binary wire codec so SPINE is competitive
+on raw encoding efficiency — the axis it previously lost to gRPC/protobuf in
+the `agentic-eval` web benchmark — without giving up `serde_json::Value`
+ergonomics in tool args and schemas.
+
+### Added
+
+- **`spine_protocol::wire` — binary wire codec.** Every message body is now
+  framed with an 8-byte `SpineWireHeader` (`"SP"` magic, version, format byte,
+  `u32` big-endian payload length) followed by a **CBOR** ([RFC 8949](https://www.rfc-editor.org/rfc/rfc8949))
+  payload. CBOR is the only serde-compatible binary format that round-trips
+  `serde_json::Value` natively (it is self-describing, so `deserialize_any`
+  works — unlike bincode 1.x / postcard, which reject it). The `format` byte
+  auto-selects the codec on decode: `0x01` JSON (legacy/debug), `0x02` CBOR,
+  `0x03` CBOR+zstd. Payloads ≥ 128 B are additionally zstd-compressed when that
+  actually shrinks them (the encoder falls back to plain CBOR otherwise).
+- `ciborium = "0.2"` dependency on `spine-protocol`.
+- `examples/wire_sizes.rs` — prints JSON vs SPINE-wire sizes, codec, and
+  savings per representative frame. Run with
+  `cargo run -p spine-protocol --example wire_sizes`.
+- `tests/wire_encoding.rs` — per-frame round-trip proofs (value-level equality)
+  plus measured size assertions.
+
+### Changed
+
+- `ProtocolHandler` encode/decode paths (`send_message`, `send_message_raw`,
+  `encode_message` / `decode_message`, and the speculative-frame payload) now
+  serialize the message body through `wire::encode` / `wire::decode` instead of
+  `serde_json`. The existing padding, adaptive-compression, Chameleon, and AEAD
+  layers are unchanged and compose on top.
+
+### Measured (via `examples/wire_sizes.rs`, header included)
+
+| frame                | JSON   | SPINE  | codec     | saved |
+|----------------------|-------:|-------:|-----------|------:|
+| EncodedFrame (1 KiB embedding) | 3975 B | 546 B  | cbor+zstd | 86%  |
+| CapabilityAd (2 caps + schema) | 806 B  | 322 B  | cbor+zstd | 60%  |
+| ToolCall (URL + headers args)  | 323 B  | 255 B  | cbor+zstd | 21%  |
+| StreamToken (text)             | 132 B  | 123 B  | cbor      | 7%   |
+| Ping (control)                 | 33 B   | 30 B   | cbor      | 9%   |
+
+The win is largest exactly where agent *data* traffic lives — embeddings,
+latents, hidden states, and structured capability/schema frames — where CBOR's
+native byte/number widths replace JSON's decimal-string-per-byte blowup.
+High-entropy text (URLs, UUIDs, prose) can't be compressed below its own
+content, so those frames shrink modestly; they still always beat JSON.
+
+### Compatibility
+
+- **Decode is backward-compatible.** `wire::decode` detects a missing `"SP"`
+  magic and falls back to parsing the buffer as legacy v1.3.x raw-JSON, so a
+  v1.4.0 node reads v1.3.x bodies. The reverse (a v1.3.x node reading v1.4.0
+  CBOR) is **not** supported — broader cross-version interop is deliberately a
+  later concern.
+
 ## [1.3.0] — 2026-06-04 — Close all v1.2.1 residuals
 
 Addresses every remaining item from the v1.2.1 multi-framework audit.

@@ -22,6 +22,9 @@ tokio.workspace = true
 # For now, let's stick to basic networking
 bytes = "1.5"
 zstd = "0.12"
+# Compact, self-describing binary wire codec (RFC 8949 CBOR). Handles
+# serde_json::Value natively (unlike bincode/postcard, which need deserialize_any).
+ciborium = "0.2"
 aes-gcm = "0.10"
 hmac = "0.12"
 sha2 = "0.10"
@@ -53,3 +56,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "hot_path_bench"
 harness = false
+
+[[example]]
+name = "wire_sizes"
+path = "examples/wire_sizes.rs"

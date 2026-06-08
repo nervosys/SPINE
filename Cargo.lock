@@ -6953,6 +6953,7 @@ dependencies = [
  "bincode",
  "bytemuck",
  "bytes",
+ "ciborium",
  "criterion",
  "hkdf",
  "hmac",
