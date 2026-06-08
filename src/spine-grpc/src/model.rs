@@ -225,13 +225,27 @@ where
 
 /// Backs `StreamChat` with any OpenAI-compatible `/v1/chat/completions`
 /// streaming endpoint.
-#[derive(Debug, Clone)]
+///
+/// The bearer token is private and never printed: `Debug` reports only whether
+/// a key is set, so an accidental `{:?}` or a tracing span can't leak the
+/// secret (same contract as `spine_gateway`'s `BearerConfig`).
+#[derive(Clone)]
 pub struct OpenAiChatModel {
     client: reqwest::Client,
     /// Base URL, e.g. `https://api.openai.com` or `http://localhost:9091`.
     pub base_url: String,
-    /// Optional bearer token.
-    pub api_key: Option<String>,
+    /// Optional bearer token — private; set via [`OpenAiChatModel::with_api_key`].
+    api_key: Option<String>,
+}
+
+impl std::fmt::Debug for OpenAiChatModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiChatModel")
+            .field("base_url", &self.base_url)
+            // Presence only — never the token bytes.
+            .field("api_key", &self.api_key.as_ref().map(|_| "<set>"))
+            .finish()
+    }
 }
 
 impl OpenAiChatModel {
@@ -244,10 +258,15 @@ impl OpenAiChatModel {
         }
     }
 
-    /// Set the bearer token.
+    /// Set the bearer token. The token is stored privately and never logged.
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.api_key = Some(key.into());
         self
+    }
+
+    /// Whether a bearer token is configured (without exposing it).
+    pub fn has_api_key(&self) -> bool {
+        self.api_key.is_some()
     }
 }
 
@@ -273,7 +292,9 @@ impl ChatModel for OpenAiChatModel {
             };
             if !resp.status().is_success() {
                 let status = resp.status().as_u16();
-                let body = resp.text().await.unwrap_or_default();
+                // Cap the echoed upstream body so a large or sensitive error
+                // response can't flow through unbounded.
+                let body: String = resp.text().await.unwrap_or_default().chars().take(256).collect();
                 yield Err(ChatError::Status { status, body });
                 return;
             }
@@ -292,6 +313,19 @@ impl ChatModel for OpenAiChatModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_never_prints_the_api_key() {
+        let m = OpenAiChatModel::new("https://api.example.com").with_api_key("sk-SECRET-token-123");
+        let dbg = format!("{m:?}");
+        assert!(!dbg.contains("sk-SECRET-token-123"), "api key leaked in Debug: {dbg}");
+        assert!(dbg.contains("<set>"), "Debug should note a key is present");
+        assert!(m.has_api_key());
+        // No key configured -> Debug shows None, still no secret.
+        let none = OpenAiChatModel::new("https://api.example.com");
+        assert!(!none.has_api_key());
+        assert!(format!("{none:?}").contains("None"));
+    }
 
     #[tokio::test]
     async fn echo_model_streams_words_then_done() {

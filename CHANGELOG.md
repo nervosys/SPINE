@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-06-08 — Harden the gRPC model backend against secret leaks
+
+Release hardening for the v1.9.0 `OpenAiChatModel`, ensuring the bearer token
+it holds can never escape via logs.
+
+### Security
+
+- **`OpenAiChatModel`'s API key is now private and redacted in `Debug`.** The
+  field was `pub` with a derived `Debug`, so an accidental `{:?}` or a tracing
+  span would have printed the bearer token. It is now a private field with a
+  hand-written `Debug` that reports only presence (`api_key: Some("<set>")`),
+  matching `spine_gateway`'s `BearerConfig` contract; added `has_api_key()` for
+  a safe presence check and a regression test asserting the secret never
+  appears in `Debug` output.
+- **Upstream error bodies are capped at 256 chars** before being surfaced in
+  `ChatError::Status`, so a large or sensitive upstream error response can't
+  flow through unbounded.
+
+### Notes
+
+- No accidental data egress by default: with no `SPINE_GRPC_MODEL_URL`
+  configured, `StreamChat` uses the in-process `EchoModel` and makes no network
+  calls. The example never logs the key or the model URL.
+
 ## [1.9.0] — 2026-06-08 — Model-backed gRPC streaming + reflection
 
 Matures the v1.8.0 gRPC bridge from a demo into a production server.
