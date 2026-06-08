@@ -72,7 +72,7 @@
   #align(center)[#text(weight: "bold")[Abstract]]
   #v(0.3em)
   #text(size: 9pt)[
-    We present SPINE (Synaptic Pathways INterconnecting Entities), a *headless semantic browser with adaptive encryption* designed for autonomous AI agents. SPINE is not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based anomaly detection* for pattern adaptation (not learning new concepts); (5) *Recursive Language Models* for extended context retrieval (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with Sybil-resistant stake-weighted consensus; (7) *optional quantum-resistant cryptography* using Ring-LWE lattices (security conjectured); and (8) *ultra-low-level kernel primitives* providing SIMD-accelerated operations, sub-nanosecond allocators, and lock-free data structures. Benchmarks demonstrate 533× lower latency and 620× higher throughput compared to standard TCP operations, with end-to-end pipelines achieving 125× speedup. Ultra-low-level kernel primitives achieve 56 GiB/s dot products, 420 ps allocations, and 920M ring buffer ops/sec. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 25 Rust crates totaling ~68,000 lines of code with 415 passing tests.
+    We present SPINE (Synaptic Pathways INterconnecting Entities), a *headless semantic browser with adaptive encryption* designed for autonomous AI agents. SPINE is not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms. Traditional web architectures (HTTP/HTML/CSS/JavaScript) optimize for rendering visual documents, creating fundamental misalignment with how AI systems process information. SPINE introduces: (1) the *Unified Representation (UR)*, a semantic extraction format optimized for LLM context windows; (2) *SPINE Source Language (HLS)*, treating websites as executable programs; (3) the *Chameleon Protocol*, a moving-target defense inspired by biological camouflage using latent-space cryptography with co-evolutionary arms race between attack and defense models; (4) *Titans-based anomaly detection* for pattern adaptation (not learning new concepts); (5) *Recursive Language Models* for extended context retrieval (10M+ characters) via REPL-based environment externalization; (6) *distributed swarm coordination* with Sybil-resistant stake-weighted consensus; (7) *optional quantum-resistant cryptography* using Ring-LWE lattices (security conjectured); and (8) *ultra-low-level kernel primitives* providing SIMD-accelerated operations, sub-nanosecond allocators, and lock-free data structures. Like-for-like benchmarks against real protocol implementations show SPINE beating HTTP/2 (the `h2` crate) by 1.6--2.4× on single-stream latency and 1.8--2.3× on throughput, by roughly 32× on multiplexed throughput (≈1.3M requests/sec on one connection), and by ~6--25× on agentic embedding batches over HTTP/2+JSON; for LLM token streaming SPINE sustains hundreds of millions of tokens/sec on one connection where JSON-SSE caps near 10M. Kernel primitives reach 62 GiB/s dot products, sub-nanosecond bump allocation (~349 ps), and ~830M ring-buffer ops/sec. We provide mathematical proofs of time, space, and communication complexity optimality. The complete implementation comprises 25 Rust crates totaling ~68,000 lines of code with 415 passing tests.
   ]
 ]
 
@@ -126,7 +126,7 @@ This paper makes the following contributions:
 
 6. *Swarm Intelligence*: Distributed coordination with skill-based routing, DAG dependencies, consensus voting, and social network topologies
 
-7. *Performance Validation*: Comprehensive benchmarks demonstrating 125-620× improvements over standard TCP/IP
+7. *Performance Validation*: Comprehensive like-for-like benchmarks against real HTTP/2 and HTTP/2+JSON — 1.6--2.4× lower single-stream latency, ~32× higher multiplexed throughput, and ~6--25× on agentic embedding workloads
 
 = System Architecture
 
@@ -380,7 +380,7 @@ The transport layer provides ultra-low-latency, high-throughput data movement th
 
 *Zero-Copy Buffers*: Data is never copied between layers. Ring buffers provide direct memory access, eliminating allocation overhead.
 
-*BBR Congestion Control*: Unlike TCP's loss-based approach (probe until packet loss, then back off), BBR estimates available bandwidth and paces transmission to fill the pipe without causing congestion. This achieves 533× lower latency.
+*BBR Congestion Control*: Unlike TCP's loss-based approach (probe until packet loss, then back off), BBR estimates available bandwidth and paces transmission to fill the pipe without causing congestion. The pacing decision costs ~302 ps and avoids the window-update stalls that bound HTTP/2 at large payloads.
 
 *Frame Codec*: Efficient binary framing with 28-byte headers (proven minimal in Section 9):
 
@@ -421,7 +421,7 @@ Enables processing of unlimited context through REPL-based environment externali
 
 Ultra-low-level hardware primitives providing the foundation for all SPINE performance:
 
-*SIMD Intrinsics*: AVX2/NEON-accelerated vector operations achieving 56 GiB/s throughput:
+*SIMD Intrinsics*: AVX2/NEON-accelerated vector operations achieving 62 GiB/s throughput (dot product and matvec re-measured 2026-06-08):
 
 #figure(
   table(
@@ -429,8 +429,8 @@ Ultra-low-level hardware primitives providing the foundation for all SPINE perfo
     inset: 5pt,
     stroke: 0.5pt,
     [*Operation*], [*Implementation*], [*Throughput*],
-    [Dot Product (256)], [AVX2 8-wide FMA], [56 GiB/s],
-    [MatVec (256×256)], [Cache-optimal tiling], [15.5 Gelem/s],
+    [Dot Product (256)], [AVX2 8-wide FMA], [62 GiB/s],
+    [MatVec (256×256)], [Cache-optimal tiling], [15.9 Gelem/s],
     [Softmax (256)], [SIMD exp + reduce], [12.3 GiB/s],
     [cosine similarity], [fused norm + dot], [9.0 GiB/s],
   ),
@@ -439,7 +439,7 @@ Ultra-low-level hardware primitives providing the foundation for all SPINE perfo
 
 *Custom Allocators*: Sub-nanosecond memory management:
 
-- *BumpAllocator*: 420 ps allocation via pointer increment
+- *BumpAllocator*: 349 ps allocation via pointer increment
 - *SlabAllocator*: Fixed-size pools with O(1) free-list
 - *ArenaAllocator*: Batch deallocation for request-scoped memory
 
@@ -452,11 +452,11 @@ Ultra-low-level hardware primitives providing the foundation for all SPINE perfo
 
 *Ring Buffers*: Ultra-fast inter-thread communication:
 
-- *SPSC*: Single-producer single-consumer (1.09 ns, 920M ops/sec)
+- *SPSC*: Single-producer single-consumer (1.21 ns, 829M ops/sec)
 - *MPSC*: Multi-producer with CAS-based head management
 - Both are wait-free and cache-optimized
 
-*RDTSC Timing*: Sub-nanosecond measurement (2.6× faster than `Instant::now`):
+*RDTSC Timing*: Low-overhead measurement, ~7.1 ns (about 3× faster than `Instant::now`):
 - Direct CPU timestamp counter access
 - Calibrated to nanoseconds via frequency detection
 - Critical for BBR congestion control pacing
@@ -1128,9 +1128,19 @@ Realistic human-like interaction patterns:
 
 = Performance Evaluation
 
-All benchmarks use Criterion with 100 samples per measurement.
+Benchmarks use Criterion (median of 20--100 samples) on TCP loopback, and
+compare against *real* protocol implementations — the `h2` crate for HTTP/2,
+`serde_json` for JSON — not hand-rolled baselines. All figures below were
+re-measured on 2026-06-08; they are loopback medians whose direction and
+order of magnitude reproduce across runs, but whose absolute peaks are
+bandwidth- and scheduler-bound and therefore machine-dependent. An earlier
+draft of this paper compared SPINE's in-memory frame codec against real TCP
+socket I/O and reported four- and five-digit speedups; that is a category
+error — it measures the kernel syscall path on one side against an in-process
+function call on the other — and those numbers are withdrawn in favor of the
+like-for-like HTTP/2 comparison below.
 
-== Latency Comparison
+== Single-Stream Latency vs HTTP/2
 
 #figure(
   table(
@@ -1138,16 +1148,15 @@ All benchmarks use Criterion with 100 samples per measurement.
     inset: 5pt,
     align: (left, right, right, right),
     stroke: 0.5pt,
-    [*Benchmark*], [*TCP*], [*SPINE*], [*Speedup*],
-    [End-to-end (100)], [3.3 ms], [26 µs], [*125×*],
-    [64 bytes], [36 µs], [70 ns], [*533×*],
-    [1 KB], [34 µs], [85 ns], [*400×*],
-    [4 KB], [36 µs], [133 ns], [*270×*],
+    [*Payload*], [*HTTP/2 (h2)*], [*SPINE*], [*Speedup*],
+    [64 B], [71.4 µs], [45.4 µs], [*1.6×*],
+    [512 B], [69.2 µs], [37.3 µs], [*1.9×*],
+    [4 KB], [84.8 µs], [35.7 µs], [*2.4×*],
   ),
-  caption: [Latency comparison vs standard TCP],
+  caption: [Single-stream request latency vs real HTTP/2 on one persistent TCP connection],
 )
 
-== Throughput Comparison
+== Throughput vs HTTP/2
 
 #figure(
   table(
@@ -1155,16 +1164,38 @@ All benchmarks use Criterion with 100 samples per measurement.
     inset: 5pt,
     align: (left, right, right, right),
     stroke: 0.5pt,
-    [*Benchmark*], [*TCP*], [*SPINE*], [*Speedup*],
-    [1 KB], [30 MiB/s], [17.9 GiB/s], [*620×*],
-    [8 KB], [30 MiB/s], [11.1 GiB/s], [*378×*],
-    [Frame encode], [—], [82 GiB/s], [—],
-    [Frame decode], [—], [86 GiB/s], [—],
+    [*Workload*], [*HTTP/2*], [*SPINE*], [*Speedup*],
+    [4 KB single-stream], [62.4 MiB/s], [109.9 MiB/s], [*1.8×*],
+    [32 KB single-stream], [356 MiB/s], [833 MiB/s], [*2.3×*],
+    [N=64 multiplexed], [42.4 K req/s], [1.34 M req/s], [*~32×*],
   ),
-  caption: [Throughput comparison vs standard TCP],
+  caption: [Throughput vs real HTTP/2; the multiplexed row pipelines 64 in-flight frames on one connection],
+)
+
+== Agentic Workloads
+
+The dominant traffic an agent generates is embedding batches and LLM token
+streams. Against an HTTP/2+JSON peer (JSON-SSE for streaming tokens):
+
+#figure(
+  table(
+    columns: (auto, auto, auto, auto),
+    inset: 5pt,
+    align: (left, right, right, right),
+    stroke: 0.5pt,
+    [*Workload*], [*HTTP/2+JSON*], [*SPINE*], [*Speedup*],
+    [8 × 1536-dim embeddings], [486 µs], [74 µs], [*~6.5×*],
+    [128 × 1536-dim embeddings], [18.5 ms], [745 µs], [*~25×*],
+    [LLM tokens, 16 K batch], [8.1 M tok/s], [294 M tok/s], [*~9×*],
+    [LLM tokens, 64 K batch], [12.4 M tok/s], [548 M tok/s], [*~15×*],
+  ),
+  caption: [Agentic workloads vs HTTP/2+JSON; SPINE ships raw f32 tensor bytes and binary token frames with no JSON envelope],
 )
 
 == Component Performance
+
+Re-measured kernel and transport micro-benchmarks (`kernel_bench`,
+`transport_bench`, 2026-06-08):
 
 #figure(
   table(
@@ -1173,28 +1204,32 @@ All benchmarks use Criterion with 100 samples per measurement.
     align: (left, right, right),
     stroke: 0.5pt,
     [*Component*], [*Latency*], [*Throughput*],
-    [Latent serialize (1024-dim)], [171 ns], [22.3 GiB/s],
-    [Cosine similarity (1024-dim)], [426 ns], [9.0 GiB/s],
+    [SIMD dot product (256)], [30.8 ns], [62.0 GiB/s],
+    [SIMD matmul (256×256)], [8.24 µs], [15.9 Gelem/s],
+    [SPSC ring push+pop], [1.21 ns], [829 Melem/s],
+    [Bump allocator (64 B)], [349 ps], [2.87 Galloc/s],
+    [Frame encode (8 KB)], [149 ns], [51 GiB/s],
+    [Frame decode (8 KB)], [123 ns], [62 GiB/s],
     [Ring buffer (16 KB)], [391 ns], [39 GiB/s],
-    [BBR pacing], [322 ps], [—],
-    [Rate limiter], [36 ns], [—],
-    [Priority queue], [—], [7.1M elem/s],
-    [Backpressure stream], [—], [2.2M elem/s],
+    [BBR pacing decision], [302 ps], [—],
+    [RDTSC timing], [7.14 ns], [—],
+    [Atomic test-and-set], [3.84 ns], [—],
   ),
-  caption: [Individual component benchmarks],
+  caption: [Individual component benchmarks (re-measured 2026-06-08)],
 )
 
 == Analysis
 
-The 533× latency improvement derives from:
-- Eliminating TCP's three-way handshake
-- Operating at frame codec level
-- Zero-copy buffer operations
-
-The 620× throughput improvement results from:
-- Zero-copy ring buffers
-- Avoiding kernel-userspace transitions
-- BBR congestion control (139 ns overhead)
+SPINE's single-stream advantage over HTTP/2 (1.6--2.4× latency,
+1.8--2.3× throughput) comes from what HTTP/2 carries that SPINE does not:
+HPACK header compression, per-stream and connection flow-control accounting,
+and a heavier per-stream state machine, versus SPINE's fixed binary frame
+header. The multiplexing advantage (~32× at 64 in-flight frames, ≈1.3 M
+req/s on a single connection) is syscall amortization — one `read`/`write`
+pair covers all 64 frames. On agentic workloads the gap widens because SPINE
+ships f32 tensors and token ids as raw bytes, while HTTP/2+JSON pays
+serialization and, for SSE, per-token string formatting that caps near
+10 M tok/s.
 
 == Hot-Path Optimization
 
@@ -1216,10 +1251,10 @@ Four optimization phases systematically eliminated overhead from SPINE's critica
 
 The `spine-kernel` crate provides hardware-level primitives:
 
-- AVX2/NEON SIMD intrinsics (57 GiB/s dot products)
-- BumpAllocator at 505 ps, SlabAllocator, ArenaAllocator
-- Lock-free SPSC/MPSC ring buffers (1.36 ns, 700M ops/sec)
-- RDTSC sub-nanosecond timing (2.6× faster than `Instant::now`)
+- AVX2/NEON SIMD intrinsics (62 GiB/s dot products)
+- BumpAllocator at 349 ps, SlabAllocator, ArenaAllocator
+- Lock-free SPSC/MPSC ring buffers (1.21 ns, 829M ops/sec)
+- RDTSC low-overhead timing (~7.1 ns, about 3× faster than `Instant::now`)
 - Direct syscalls for `mmap`, CPU affinity, NUMA topology
 
 === Phase 4: Allocation Elimination
@@ -1260,7 +1295,7 @@ The final pass targeted per-message heap allocations and redundant computation:
     stroke: 0.5pt,
     [*Optimization*], [*Before*], [*After*],
     [Latent serialize], [1.8 GiB/s (JSON)], [22.3 GiB/s (binary)],
-    [Frame decode], [~60 GiB/s], [86 GiB/s (zero-copy)],
+    [Frame decode], [~50 GiB/s], [62 GiB/s (zero-copy)],
     [Neural forward pass], [Baseline], [25--40% faster (scratch bufs)],
     [Per-message allocs], [8 heap allocs], [0 (buffer reuse)],
     [Cosine similarity], [Two-pass], [Single-pass (3× less traffic)],
@@ -1672,7 +1707,7 @@ _AVX2 8-wide SIMD achieves $8 times$ theoretical speedup for aligned vector oper
 Speedup ratio:
 $ S = (2d - 1) / (d\/8 + 3) approx (2d) / (d\/8) = 16 "for large" d $
 
-*Practical bound*: Memory bandwidth limits actual speedup to $approx 8 times$ due to load/store overhead. Measured: 56 GiB/s on 256-dim vectors. $square$
+*Practical bound*: Memory bandwidth limits actual speedup to $approx 8 times$ due to load/store overhead. Measured: 62 GiB/s on 256-dim vectors. $square$
 
 === Proposition 6 (Lock-Free Ring Buffer Correctness)
 
@@ -1687,7 +1722,7 @@ _SPSC ring buffer guarantees wait-free progress and linearizability._
 
 *Linearizability*: The linearization point for push is the store to tail; for pop, the load from head.
 
-Measured throughput: 920M ops/sec single-threaded. $square$
+Measured throughput: 829M ops/sec single-threaded. $square$
 
 === Proposition 7 (Bump Allocator Amortized Cost)
 
@@ -1702,7 +1737,7 @@ $ "ptr" arrow.l "ptr" + "align"("size", 8) $
 - Memory overhead: 0 (contiguous)
 - Deallocation: batch reset only
 
-Measured: 420 ps per allocation (vs ~50 ns for standard malloc). $square$
+Measured: 349 ps per allocation (vs ~50 ns for standard malloc). $square$
 
 = Implementation
 
@@ -1799,10 +1834,10 @@ We provide a rigorous examination of each SPINE component, validating both theor
 
 The transport layer demonstrates strong empirical validation:
 
-- *Benchmark methodology*: Criterion with 100 samples, statistical significance
-- *Comparison baseline*: Standard TCP via `std::net::TcpStream`
-- *Measured results*: 533× latency reduction, 620× throughput improvement
-- Real TCP I/O benchmarks with end-to-end latency measurements
+- *Benchmark methodology*: Criterion (20--100 samples) on TCP loopback, statistical significance
+- *Comparison baseline*: real HTTP/2 via the `h2` crate (and `serde_json` for JSON), on one persistent TCP connection
+- *Measured results*: 1.6--2.4× lower single-stream latency and 1.8--2.3× higher throughput than HTTP/2; ~32× on multiplexed throughput; ~6--25× on agentic embedding batches over HTTP/2+JSON
+- Like-for-like loopback benchmarks against real protocol implementations, not hand-rolled baselines
 
 === Neural Components
 
@@ -1933,7 +1968,7 @@ SPINE demonstrates that purpose-built AI web infrastructure achieves orders-of-m
 
 *At the protocol level*, Chameleon's moving-target defense makes traffic analysis impossible. The transformation matrix serves as the encryption key, with basis rotation, dimensionality changes, and header morphing occurring every message.
 
-*At the transport level*, zero-copy buffers and BBR congestion control achieve 533× lower latency and 620× higher throughput compared to standard TCP.
+*At the transport level*, zero-copy buffers and BBR congestion control beat real HTTP/2 by 1.6--2.4× on single-stream latency and 1.8--2.3× on throughput, and by ~32× on multiplexed throughput (≈1.3M req/s on one connection).
 
 *At the coordination level*, swarm intelligence enables multi-agent collaboration through skill-based routing, DAG dependencies, and game-theoretic reasoning with proven convergence guarantees.
 
@@ -1947,18 +1982,19 @@ SPINE demonstrates that purpose-built AI web infrastructure achieves orders-of-m
     inset: 5pt,
     align: (left, right, right, right),
     stroke: 0.5pt,
-    [*Capability*], [*Traditional*], [*SPINE*], [*Improvement*],
-    [End-to-end latency], [3.3 ms], [26 µs], [*125×*],
-    [Message latency], [36 µs], [70 ns], [*533×*],
-    [Data throughput], [30 MiB/s], [17.9 GiB/s], [*620×*],
+    [*Capability*], [*Baseline*], [*SPINE*], [*Improvement*],
+    [Single-stream latency (4 KB)], [84.8 µs (HTTP/2)], [35.7 µs], [*2.4×*],
+    [Single-stream throughput (32 KB)], [356 MiB/s (HTTP/2)], [833 MiB/s], [*2.3×*],
+    [Multiplexed throughput (N=64)], [42.4 K req/s (HTTP/2)], [1.34 M req/s], [*~32×*],
+    [Embedding batch (128×1536-d)], [18.5 ms (HTTP/2+JSON)], [745 µs], [*~25×*],
+    [LLM tokens (64 K batch)], [12.4 M tok/s (JSON-SSE)], [548 M tok/s], [*~15×*],
     [Context window], [128K tokens], [10M+ chars], [*100×*],
-    [Frame encode], [—], [82 GiB/s], [—],
-    [Frame decode], [—], [86 GiB/s], [—],
-    [Kernel dot product], [—], [56 GiB/s], [—],
-    [Bump allocation], [~50 ns], [420 ps], [*100×*],
-    [Ring buffer ops], [~100 ns], [1.09 ns], [*92×*],
+    [Frame decode (8 KB)], [—], [62 GiB/s], [—],
+    [Kernel dot product (256)], [—], [62 GiB/s], [—],
+    [Bump allocation (64 B)], [—], [349 ps], [—],
+    [SPSC ring op], [—], [1.21 ns], [—],
   ),
-  caption: [Overall performance comparison],
+  caption: [Overall performance comparison (re-measured 2026-06-08, vs real HTTP/2 / HTTP/2+JSON)],
 )
 
 == Unified Vision
