@@ -179,11 +179,81 @@ fn bench_latent_vector(c: &mut Criterion) {
     group.finish();
 }
 
+// ======================== Wire codec: CBOR vs JSON ========================
+
+/// Head-to-head throughput for the v1.4.0+ binary wire codec (`wire::encode` /
+/// `wire::decode`, CBOR / CBOR+zstd) against the old `serde_json` body, on the
+/// frames where it matters most: a 1 KiB embedding (the binary path that wins
+/// big) and a structured tool call. Pairs the *size* numbers from
+/// `examples/wire_sizes.rs` with *speed* numbers.
+fn bench_wire_codec(c: &mut Criterion) {
+    use spine_protocol::wire;
+    use spine_protocol::{
+        DType, EncodedFrame, EncodedMetadata, Message, Modality, ToolCall,
+    };
+
+    let embedding: Vec<u8> = (0..1024u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+    let frame = Message::Encoded(EncodedFrame {
+        codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
+        variant: Some("layer=11".into()),
+        data: embedding,
+        metadata: EncodedMetadata {
+            modality: Modality::Embedding,
+            shape: vec![256],
+            dtype: DType::F32,
+            original_len: Some(4096),
+            source_hash: Some([0xAB; 32]),
+        },
+        trace: None,
+    });
+    let tool_call = Message::ToolCall(ToolCall {
+        id: "b3c1f2a4-0d8e-4c9a-9f1b-2e7d6c5a4b30".into(),
+        name: "agent.web/fetch_url".into(),
+        args: serde_json::json!({
+            "url": "https://example.com/api/v2/resource?id=12345&fields=title,body,author",
+            "method": "GET",
+            "headers": {"accept": "application/json"},
+            "timeout_ms": 30000
+        }),
+        trace: None,
+    });
+
+    let mut group = c.benchmark_group("wire_codec");
+    for (name, msg) in [("embedding_1kib", &frame), ("tool_call", &tool_call)] {
+        let json_bytes = serde_json::to_vec(msg).unwrap();
+        let wire_bytes = wire::encode(msg).unwrap();
+        group.throughput(Throughput::Bytes(json_bytes.len() as u64));
+
+        group.bench_with_input(BenchmarkId::new("encode_json", name), msg, |b, msg| {
+            b.iter(|| serde_json::to_vec(black_box(msg)).unwrap());
+        });
+        group.bench_with_input(BenchmarkId::new("encode_wire", name), msg, |b, msg| {
+            b.iter(|| wire::encode(black_box(msg)).unwrap());
+        });
+        group.bench_with_input(
+            BenchmarkId::new("decode_json", name),
+            &json_bytes,
+            |b, bytes| {
+                b.iter(|| serde_json::from_slice::<Message>(black_box(bytes)).unwrap());
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("decode_wire", name),
+            &wire_bytes,
+            |b, bytes| {
+                b.iter(|| wire::decode(black_box(bytes)).unwrap());
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     protocol,
     bench_protocol_message_serde,
     bench_protocol_roundtrip,
     bench_latent_vector,
+    bench_wire_codec,
 );
 
 criterion_main!(protocol);

@@ -32,10 +32,11 @@
 //! | `0x02` | CBOR                                               |
 //! | `0x03` | CBOR + zstd (payload `>= ZSTD_THRESHOLD` bytes)    |
 //!
-//! [`encode`] picks CBOR for small bodies and CBOR+zstd once the CBOR payload
-//! crosses [`ZSTD_THRESHOLD`], so large token streams and JSON-shaped tool
-//! arguments compress without the caller choosing. [`decode`] dispatches on the
-//! header's `format` byte.
+//! [`encode`] is the hot-path default and always emits plain CBOR — fast, and
+//! already dense. [`encode_compressed`] opts into zstd for bandwidth-bound
+//! paths (zstd's fixed per-call cost makes it a poor default). [`decode`]
+//! dispatches on the header's `format` byte and reads any of the three
+//! transparently.
 //!
 //! # Backward compatibility
 //!
@@ -63,10 +64,11 @@ pub const FORMAT_CBOR: u8 = 0x02;
 /// Payload codec: CBOR compressed with zstd.
 pub const FORMAT_CBOR_ZSTD: u8 = 0x03;
 
-/// CBOR payloads at least this large are zstd-compressed by [`encode`]. Below
-/// this, zstd's ~13-byte frame overhead tends to outweigh the gain (and
-/// [`encode`] keeps the compressed form only when it is actually smaller, so a
-/// payload that doesn't compress falls back to plain CBOR regardless).
+/// Minimum CBOR payload size for [`encode_compressed`] to attempt zstd. Below
+/// this, zstd's frame overhead tends to outweigh the gain (and
+/// [`encode_compressed`] keeps the compressed form only when it is actually
+/// smaller, falling back to plain CBOR otherwise). Note [`encode`] never
+/// compresses regardless of size.
 pub const ZSTD_THRESHOLD: usize = 128;
 
 /// zstd compression level used for [`FORMAT_CBOR_ZSTD`] bodies. Level 3 is the
@@ -160,27 +162,40 @@ impl SpineWireHeader {
 }
 
 /// Serialize a [`Message`] into a SPINE wire frame: an 8-byte
-/// [`SpineWireHeader`] followed by the CBOR (or CBOR+zstd) payload.
+/// [`SpineWireHeader`] followed by a plain **CBOR** payload (`FORMAT_CBOR`).
 ///
-/// The codec is chosen automatically: CBOR for small bodies, CBOR+zstd once the
-/// CBOR payload reaches [`ZSTD_THRESHOLD`].
+/// This is the hot-path default: CBOR already delivers protobuf-class density
+/// (native integer/float widths, byte-string tensor payloads) at
+/// serialization speed. It deliberately does **not** zstd-compress — zstd has a
+/// high fixed per-call cost (~hundreds of µs), so compressing every frame would
+/// wreck throughput for a few percent of bytes. For bandwidth-bound or archival
+/// paths, call [`encode_compressed`]; the transport envelope also applies its
+/// own adaptive whole-frame compression a layer up.
 pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
     let mut cbor = Vec::new();
     ciborium::into_writer(msg, &mut cbor).map_err(|e| WireError::CborEncode(e.to_string()))?;
+    Ok(frame(FORMAT_CBOR, &cbor))
+}
 
-    let (format, payload) = if cbor.len() >= ZSTD_THRESHOLD {
+/// Like [`encode`], but zstd-compresses the CBOR payload when that actually
+/// shrinks it and the payload is at least [`ZSTD_THRESHOLD`] bytes
+/// (`FORMAT_CBOR_ZSTD`); otherwise emits plain CBOR.
+///
+/// Trades CPU for bytes — zstd's fixed per-call cost makes this **the wrong
+/// choice for latency-sensitive traffic**. Reach for it on large, cold, or
+/// bandwidth-constrained payloads (bulk tensor transfer, archival, slow links),
+/// not the request/response hot path. [`decode`] reads either format
+/// transparently, so a peer needs no configuration to receive these frames.
+pub fn encode_compressed(msg: &Message) -> Result<Vec<u8>, WireError> {
+    let mut cbor = Vec::new();
+    ciborium::into_writer(msg, &mut cbor).map_err(|e| WireError::CborEncode(e.to_string()))?;
+    if cbor.len() >= ZSTD_THRESHOLD {
         let compressed = zstd::stream::encode_all(&cbor[..], ZSTD_LEVEL)?;
-        // Only keep the compressed form if it actually shrank the payload.
         if compressed.len() < cbor.len() {
-            (FORMAT_CBOR_ZSTD, compressed)
-        } else {
-            (FORMAT_CBOR, cbor)
+            return Ok(frame(FORMAT_CBOR_ZSTD, &compressed));
         }
-    } else {
-        (FORMAT_CBOR, cbor)
-    };
-
-    Ok(frame(format, &payload))
+    }
+    Ok(frame(FORMAT_CBOR, &cbor))
 }
 
 /// Serialize a [`Message`] as a JSON wire frame (`FORMAT_JSON`).
@@ -266,6 +281,29 @@ mod tests {
             Message::Ping { timestamp } => assert_eq!(timestamp, 42),
             other => panic!("expected Ping, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn encode_never_compresses_but_encode_compressed_can() {
+        // A large, compressible payload: plain `encode` stays CBOR (fast path);
+        // `encode_compressed` selects CBOR+zstd and `decode` reads both.
+        let big = Message::Sync(crate::SyncPayload {
+            epoch: 1,
+            morphology_hash: 2,
+            challenge: vec![0.5; 2048],
+            predictor_state: None,
+        });
+        let plain = encode(&big).unwrap();
+        assert_eq!(plain[3], FORMAT_CBOR, "encode must never auto-compress");
+
+        let compressed = encode_compressed(&big).unwrap();
+        assert_eq!(compressed[3], FORMAT_CBOR_ZSTD, "repetitive payload should compress");
+        assert!(compressed.len() < plain.len());
+
+        // Both decode to an equal value.
+        let a = serde_json::to_value(decode(&plain).unwrap()).unwrap();
+        let b = serde_json::to_value(decode(&compressed).unwrap()).unwrap();
+        assert_eq!(a, b);
     }
 
     #[test]

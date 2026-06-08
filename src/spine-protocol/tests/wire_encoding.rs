@@ -3,13 +3,13 @@
 //! These tests are the evidence behind SPINE's encoding-efficiency claim: every
 //! representative agent frame must (a) survive a CBOR round-trip byte-for-byte
 //! at the value level and (b) be materially smaller on the wire than the
-//! equivalent UTF-8 JSON body. The structurally rich frames (tool calls,
-//! encoded latents, capability ads) are held to a strict `< 60%` of JSON; the
-//! text-dominated stream token — where the payload *is* the bytes and there's
-//! little structure to squeeze — only has to come in under JSON.
+//! equivalent UTF-8 JSON body. The default `wire::encode` is plain CBOR (the
+//! fast hot path); `wire::encode_compressed` is the bandwidth-bound opt-in.
+//! Tensor-heavy frames shrink dramatically on plain CBOR alone; text/structured
+//! frames shrink modestly without compression and a lot with it.
 
 use serde_json::json;
-use spine_protocol::wire::{self, FORMAT_CBOR, FORMAT_CBOR_ZSTD};
+use spine_protocol::wire;
 use spine_protocol::{
     Capability, CapabilityAdvertisement, DType, EncodedFrame, EncodedMetadata, Message, Modality,
     StreamCancel, StreamData, StreamToken, StreamUsage, ToolCall,
@@ -151,57 +151,58 @@ fn every_frame_beats_json() {
 }
 
 #[test]
-fn binary_frame_crushes_json() {
-    // Numeric/binary payloads are where CBOR's native byte/number widths win
-    // big: a 1 KiB embedding lands well under a quarter of its JSON body.
+fn tensor_frames_shrink_dramatically_on_plain_cbor() {
+    // The fast default (plain CBOR, no compression) already crushes a 1 KiB
+    // embedding to roughly a third of its JSON body — native byte/number widths
+    // plus a byte-string tensor payload, at serialization speed.
     let (wire, json, ratio) = size_ratio(&sample_encoded_frame());
     assert!(
-        ratio < 0.25,
-        "EncodedFrame: wire {wire}B vs json {json}B = {ratio:.2} (want < 0.25)"
+        ratio < 0.35,
+        "EncodedFrame (plain CBOR): wire {wire}B vs json {json}B = {ratio:.2} (want < 0.35)"
     );
 }
 
 #[test]
-fn structured_frame_under_60pct() {
-    // A capability advertisement (repeated JSON-Schema structure) compresses to
-    // under 60% of its JSON body via CBOR + zstd.
-    let (wire, json, ratio) = size_ratio(&sample_capability_ad());
+fn compression_is_available_for_bandwidth_paths() {
+    // encode_compressed trades CPU for bytes; it must push the tensor frame far
+    // below plain CBOR and shrink the structured capability ad too — and decode
+    // must read the compressed form back to an equal value.
+    let frame = sample_encoded_frame();
+    let json = serde_json::to_vec(&frame).unwrap();
+    let zstd = wire::encode_compressed(&frame).unwrap();
+    let ratio = zstd.len() as f64 / json.len() as f64;
     assert!(
-        ratio < 0.60,
-        "CapabilityAd: wire {wire}B vs json {json}B = {ratio:.2} (want < 0.60)"
+        ratio < 0.15,
+        "EncodedFrame (cbor+zstd): {} vs {} = {ratio:.2} (want < 0.15)",
+        zstd.len(),
+        json.len()
+    );
+    assert_eq!(
+        serde_json::to_value(&frame).unwrap(),
+        serde_json::to_value(wire::decode(&zstd).unwrap()).unwrap(),
+    );
+
+    let ad = sample_capability_ad();
+    let ad_json = serde_json::to_vec(&ad).unwrap();
+    let ad_zstd = wire::encode_compressed(&ad).unwrap();
+    let ad_ratio = ad_zstd.len() as f64 / ad_json.len() as f64;
+    assert!(
+        ad_ratio < 0.60,
+        "CapabilityAd (cbor+zstd): {} vs {} = {ad_ratio:.2} (want < 0.60)",
+        ad_zstd.len(),
+        ad_json.len()
     );
 }
 
 #[test]
-fn text_frames_still_shrink() {
-    // High-entropy text (URLs, UUIDs, prose) can't be squeezed below its own
-    // content, but stripping JSON's quotes/punctuation still shaves real bytes.
+fn text_and_structured_frames_shrink_modestly_on_plain_cbor() {
+    // High-entropy text (URLs, UUIDs, prose) and schema-shaped structures can't
+    // be squeezed below their own content without compression, but dropping
+    // JSON's quotes/punctuation still shaves real bytes on the fast path.
     let (cw, cj, cr) = size_ratio(&sample_tool_call());
-    assert!(cr < 0.85, "ToolCall: {cw}B vs {cj}B = {cr:.2} (want < 0.85)");
+    assert!(cr < 0.90, "ToolCall: {cw}B vs {cj}B = {cr:.2} (want < 0.90)");
     let (sw, sj, sr) = size_ratio(&sample_stream_token());
     assert!(sr < 0.97, "StreamToken: {sw}B vs {sj}B = {sr:.2} (want < 0.97)");
-}
-
-#[test]
-fn large_frames_select_zstd() {
-    // A large, compressible payload (> ZSTD_THRESHOLD) must select CBOR+zstd;
-    // a tiny control frame stays plain CBOR.
-    let repetitive = Message::Encoded(EncodedFrame {
-        codec: "spine:codec/raw/v1".into(),
-        variant: None,
-        data: vec![0xCDu8; 4096],
-        metadata: EncodedMetadata {
-            modality: Modality::HiddenState,
-            shape: vec![1024],
-            dtype: DType::F32,
-            original_len: None,
-            source_hash: None,
-        },
-        trace: None,
-    });
-    let big = wire::encode(&repetitive).unwrap();
-    assert_eq!(big[3], FORMAT_CBOR_ZSTD, "large frame should be CBOR+zstd");
-
-    let small = wire::encode(&Message::Ping { timestamp: 1 }).unwrap();
-    assert_eq!(small[3], FORMAT_CBOR, "tiny frame should stay plain CBOR");
+    let (aw, aj, ar) = size_ratio(&sample_capability_ad());
+    assert!(ar < 0.90, "CapabilityAd: {aw}B vs {aj}B = {ar:.2} (want < 0.90)");
 }

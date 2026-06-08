@@ -6,6 +6,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-06-08 — Wire codec: fast by default (no hot-path zstd)
+
+A benchmark (`benches/hot_path_bench.rs::wire_codec`, added here) exposed a
+serious performance bug in the v1.4.0–v1.6.0 wire codec: `wire::encode`
+zstd-compressed every frame past 128 bytes, and zstd's ~hundreds-of-µs fixed
+per-call cost dominated. Measured on this machine: encoding a 1 KiB embedding
+took **252 µs** and a 247-byte tool call **334 µs** — 56× and ~1300× slower
+than the JSON it replaced. The transport envelope *also* compresses, so the
+live path was double-zstd-ing.
+
+### Fixed
+
+- **`wire::encode` is now plain CBOR — fast, and still dense.** It no longer
+  compresses. Re-measured: encoding the 1 KiB embedding dropped **252 µs →
+  588 ns** (~430× faster) — now ~10× *faster* than JSON encode, because writing
+  a CBOR byte string beats formatting a JSON number array. Plain CBOR remains
+  far smaller than JSON: the embedding frame is 3975 → **1263 B (68% smaller)**
+  at full speed.
+
+### Added
+
+- **`wire::encode_compressed`** — explicit opt-in CBOR+zstd for bandwidth-bound
+  or cold paths (bulk tensor transfer, archival, slow links), where zstd's CPU
+  cost is worth the bytes (embedding frame → 446 B, 89% smaller). `decode` reads
+  plain or compressed frames transparently, so peers need no configuration.
+- **`benches/hot_path_bench.rs::wire_codec`** — head-to-head CBOR-vs-JSON
+  encode/decode throughput for an embedding and a tool call. This is what
+  caught the regression; it now guards against its return.
+
+### Measured (via `examples/wire_sizes.rs`, header included)
+
+| frame                          | JSON   | CBOR (default) | CBOR+zstd (opt-in) |
+|--------------------------------|-------:|---------------:|-------------------:|
+| EncodedFrame (1 KiB embedding) | 3975 B | 1263 B (68%)   | 446 B (89%)        |
+| CapabilityAd (2 caps + schema) | 806 B  | 649 B (19%)    | 322 B (60%)        |
+| ToolCall (URL + headers args)  | 323 B  | 284 B (12%)    | 255 B (21%)        |
+| StreamToken (text)             | 132 B  | 123 B (7%)     | 123 B (7%)         |
+| Ping (control)                 | 33 B   | 30 B (9%)      | 30 B (9%)          |
+
+### Compatibility
+
+- Wire-compatible: `decode` still reads `FORMAT_CBOR_ZSTD` frames, so frames
+  written by v1.4.0–v1.6.0 (or by `encode_compressed`) decode unchanged. Only
+  the *default* `encode` output changed (now always `FORMAT_CBOR`).
+
 ## [1.6.0] — 2026-06-08 — Runnable MCP stdio server
 
 Turns the v1.5.0 MCP bridge from a library into a deployable server.

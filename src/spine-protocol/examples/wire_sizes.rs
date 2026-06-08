@@ -8,41 +8,35 @@
 //! Run: `cargo run -p spine-protocol --example wire_sizes`
 
 use serde_json::json;
-use spine_protocol::wire::{self, FORMAT_CBOR, FORMAT_CBOR_ZSTD, FORMAT_JSON};
+use spine_protocol::wire;
 use spine_protocol::{
     Capability, CapabilityAdvertisement, DType, EncodedFrame, EncodedMetadata, Message, Modality,
     StreamData, StreamToken, ToolCall,
 };
 
-fn codec_name(format: u8) -> &'static str {
-    match format {
-        FORMAT_JSON => "json",
-        FORMAT_CBOR => "cbor",
-        FORMAT_CBOR_ZSTD => "cbor+zstd",
-        _ => "?",
-    }
-}
-
 fn row(label: &str, msg: &Message) {
     let json = serde_json::to_vec(msg).unwrap();
-    let frame = wire::encode(msg).unwrap();
-    let ratio = frame.len() as f64 / json.len() as f64;
-    let saved = 100.0 * (1.0 - ratio);
+    // Default hot-path codec: plain CBOR, no compression.
+    let cbor = wire::encode(msg).unwrap();
+    // Opt-in: CBOR + zstd (bandwidth-bound paths only — high per-call CPU).
+    let zstd = wire::encode_compressed(msg).unwrap();
+    let cbor_saved = 100.0 * (1.0 - cbor.len() as f64 / json.len() as f64);
+    let zstd_saved = 100.0 * (1.0 - zstd.len() as f64 / json.len() as f64);
     println!(
-        "{label:<18} {:>7} {:>9} {:>11} {:>7.2} {:>8.0}%",
+        "{label:<18} {:>7} {:>7} {:>7.0}% {:>10} {:>7.0}%",
         json.len(),
-        frame.len(),
-        codec_name(frame[3]),
-        ratio,
-        saved,
+        cbor.len(),
+        cbor_saved,
+        zstd.len(),
+        zstd_saved,
     );
 }
 
 fn main() {
     println!("SPINE wire format vs JSON — bytes on the wire (lower is better)\n");
     println!(
-        "{:<18} {:>7} {:>9} {:>11} {:>7} {:>9}",
-        "frame", "json", "spine", "codec", "ratio", "saved"
+        "{:<18} {:>7} {:>7} {:>8} {:>10} {:>8}",
+        "frame", "json", "cbor", "saved", "cbor+zstd", "saved"
     );
 
     row(
@@ -122,9 +116,11 @@ fn main() {
     row("Ping", &Message::Ping { timestamp: 1_700_000_000 });
 
     println!(
-        "\nNote: 'spine' includes the 8-byte SpineWireHeader. CBOR drops JSON's\n\
-         quotes, key punctuation, and decimal-string number blowup; payloads past\n\
-         {} bytes are additionally zstd-compressed.",
-        wire::ZSTD_THRESHOLD
+        "\nNote: sizes include the 8-byte SpineWireHeader. 'cbor' is the hot-path\n\
+         default (wire::encode) — fast, and already dense: CBOR drops JSON's\n\
+         quotes, key punctuation, and decimal-string number blowup, and ships\n\
+         tensor bytes as a CBOR byte string. 'cbor+zstd' (wire::encode_compressed)\n\
+         trades a high fixed per-call CPU cost for more bytes — for bandwidth-\n\
+         bound paths only, not the latency-sensitive hot path."
     );
 }
