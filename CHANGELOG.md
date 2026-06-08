@@ -6,6 +6,67 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-06-08 — Interop + completeness across all five agentic axes
+
+A push to improve every axis the `agentic-eval` web benchmark scores —
+streaming, tool-discoverability, encoding, interop, and security — with real,
+tested capabilities rather than score tweaks. Interop gets the centerpiece (an
+MCP bridge); the already-strong axes get genuine completeness work.
+
+### Added
+
+- **MCP bridge (`spine_protocol::mcp`) — interop.** Maps SPINE's native agentic
+  primitives onto the Model Context Protocol JSON-RPC 2.0 surface so any MCP
+  host (Claude Desktop, Claude Code, MCP-capable IDEs) can drive a SPINE agent
+  with no SPINE-specific code: `CapabilityAdvertisement` → `tools/list`,
+  `tools/call` ↔ `ToolCall`/`ToolResult`. `McpServer` is a transport-agnostic
+  JSON-RPC dispatcher (`initialize` / `tools/list` / `tools/call`); the reverse
+  direction lets a SPINE agent act as an MCP *client*. This is a concrete bridge
+  to the existing ecosystem alongside the gateway's OpenAI-compatible routes.
+- **Per-message signed frames (`spine_agentic::signed_frame`) — security.** An
+  optional Ed25519 detached signature over the exact `wire::encode` bytes,
+  wrapped in a 100-byte `"SPS1"` envelope (magic + 32-byte pubkey + 64-byte
+  sig). Gives inline, offline-verifiable **integrity, authenticity, and
+  non-repudiation** at the *message* level — a property channel auth (TLS/mTLS)
+  does not provide once a message leaves the socket. Verifies the signature
+  before handing any bytes to the decoder (fail-closed).
+- **`Message::StreamCancel { id, reason }` — streaming.** Cooperatively cancels
+  one in-flight stream by id. SPINE multiplexes many streams over one
+  connection, so closing the transport (the SSE/HTTP cancel mechanism) is too
+  blunt; this targets a single stream and asks the producer to emit a final
+  `StreamEnd { reason: Cancelled }`.
+- **`StreamToken.usage` — streaming.** Optional cumulative usage as of each
+  chunk, the multiplexed analogue of OpenAI's `stream_options.include_usage`,
+  so a consumer can enforce a token budget mid-stream.
+
+### Changed
+
+- **Tensor/byte payloads serialize as CBOR byte strings — encoding.**
+  `EncodedFrame.data` and `StreamData::Bytes` now use `serde_bytes`, so on the
+  wire they are a single CBOR byte string (1-byte overhead) rather than an
+  integer-per-byte array. Measured: the 1 KiB embedding frame drops 546 → 446 B
+  (86% → 89% smaller than JSON); the win is larger still for
+  incompressible (real, random) embeddings where zstd cannot help. JSON output
+  is unchanged (JSON has no byte type), so the legacy path and round-trips are
+  preserved.
+
+### Measured (via `examples/wire_sizes.rs`, header included)
+
+| frame                          | JSON   | SPINE  | codec     | saved |
+|--------------------------------|-------:|-------:|-----------|------:|
+| EncodedFrame (1 KiB embedding) | 3975 B | 446 B  | cbor+zstd | 89%  |
+| CapabilityAd (2 caps + schema) | 806 B  | 322 B  | cbor+zstd | 60%  |
+| ToolCall (URL + headers args)  | 323 B  | 255 B  | cbor+zstd | 21%  |
+| StreamToken (text)             | 132 B  | 123 B  | cbor      | 7%   |
+| Ping (control)                 | 33 B   | 30 B   | cbor      | 9%   |
+
+### Compatibility
+
+- `StreamToken` gained an optional `usage` field and `Message` gained a
+  `StreamCancel` variant. Both are additive; CBOR/JSON decoding of older frames
+  is unaffected (the field is `skip_serializing_if = None`). The v1.4.0
+  backward-compatible decode (legacy raw-JSON fallback) is unchanged.
+
 ## [1.4.0] — 2026-06-08 — Binary wire format (CBOR) — win on encoding
 
 SPINE's message body was UTF-8 JSON behind a binary header. v1.4.0 replaces

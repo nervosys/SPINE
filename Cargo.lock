@@ -6966,6 +6966,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sha2",
  "spine-crypto",

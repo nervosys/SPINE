@@ -3,13 +3,14 @@
 
 pub mod agentic;
 pub mod agentic_codec;
+pub mod mcp;
 pub mod negotiation;
 pub mod replay;
 pub mod wire;
 
 pub use agentic::{
-    Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamData,
-    StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken, StreamUsage,
+    Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamCancel,
+    StreamData, StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken, StreamUsage,
     ToolCall, ToolOutcome, ToolResult, TraceContext,
 };
 pub use agentic_codec::{
@@ -744,6 +745,8 @@ pub enum Message {
     StreamToken(StreamToken),
     /// LLM token stream closes.
     StreamEnd(StreamEnd),
+    /// Cooperatively cancel one in-flight stream by id (multiplex-aware).
+    StreamCancel(StreamCancel),
     /// Capability handshake query.
     CapabilityQuery(CapabilityQuery),
     /// Capability handshake response.
@@ -1291,6 +1294,7 @@ where
             Message::StreamStart(_) => MessageType::Event,
             Message::StreamToken(_) => MessageType::Event,
             Message::StreamEnd(_) => MessageType::Event,
+            Message::StreamCancel(_) => MessageType::Event,
             Message::CapabilityQuery(_) => MessageType::Request,
             Message::CapabilityAd(_) => MessageType::Response,
             // Neural codec frames slot into the same taxonomy.

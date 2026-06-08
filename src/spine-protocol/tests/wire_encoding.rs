@@ -12,7 +12,7 @@ use serde_json::json;
 use spine_protocol::wire::{self, FORMAT_CBOR, FORMAT_CBOR_ZSTD};
 use spine_protocol::{
     Capability, CapabilityAdvertisement, DType, EncodedFrame, EncodedMetadata, Message, Modality,
-    StreamData, StreamToken, ToolCall,
+    StreamCancel, StreamData, StreamToken, StreamUsage, ToolCall,
 };
 
 /// Decode-encode must preserve the message at the value level.
@@ -58,6 +58,7 @@ fn sample_stream_token() -> Message {
         data: StreamData::Text(
             " The quick brown fox jumps over the lazy dog, and then keeps going.".into(),
         ),
+        usage: None,
     })
 }
 
@@ -114,6 +115,20 @@ fn representative_frames_roundtrip() {
     assert_roundtrips(&sample_capability_ad());
     assert_roundtrips(&Message::Ping { timestamp: 1_700_000_000 });
     assert_roundtrips(&Message::Pong { timestamp: 1_700_000_001 });
+    assert_roundtrips(&Message::StreamCancel(StreamCancel {
+        id: "stream-7f3a".into(),
+        reason: Some("user aborted".into()),
+    }));
+    // StreamToken carrying mid-stream cumulative usage.
+    assert_roundtrips(&Message::StreamToken(StreamToken {
+        id: "stream-7f3a".into(),
+        seq: 12,
+        data: StreamData::Text("tok".into()),
+        usage: Some(StreamUsage {
+            input_tokens: 40,
+            output_tokens: 12,
+        }),
+    }));
 }
 
 #[test]

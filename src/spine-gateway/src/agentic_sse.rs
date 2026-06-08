@@ -280,6 +280,7 @@ fn sse_stream_from_tokens(
             id: stream_id.clone(),
             seq: seq as u64,
             data: StreamData::Text(word),
+            usage: None,
         };
         let chunk = stream_token_to_openai_chunk(&stream_id, &model, &tok);
         events.push(Ok(Event::default().data(chunk.to_string())));
@@ -535,6 +536,7 @@ mod tests {
             id: "s1".into(),
             seq: 3,
             data: StreamData::Text("hello".into()),
+            usage: None,
         };
         let chunk = stream_token_to_openai_chunk("s1", "claude-opus-4-7", &tok);
         assert_eq!(chunk["id"], "chatcmpl-s1");
@@ -681,6 +683,7 @@ mod tests {
             id: "s1".into(),
             seq: 0,
             data: StreamData::ToolCall(tc),
+            usage: None,
         };
         let chunk = stream_token_to_openai_chunk("s1", "m", &tok);
         let tool_calls = &chunk["choices"][0]["delta"]["tool_calls"];

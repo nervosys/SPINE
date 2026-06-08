@@ -14,6 +14,9 @@ quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 tracing = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+# Serialize Vec<u8> tensor/byte payloads as compact CBOR byte strings
+# (1-byte overhead) instead of integer arrays.
+serde_bytes = "0.11"
 anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true

@@ -140,6 +140,27 @@ pub struct StreamToken {
     pub id: String,
     pub seq: u64,
     pub data: StreamData,
+    /// Optional cumulative usage *as of this chunk*. Lets a consumer enforce a
+    /// token budget mid-stream instead of waiting for [`StreamEnd::usage`] —
+    /// the multiplexed analogue of OpenAI's `stream_options.include_usage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<StreamUsage>,
+}
+
+/// Cooperatively cancel an in-flight stream by `id`.
+///
+/// SSE/HTTP clients cancel a completion by closing the socket. SPINE
+/// multiplexes many streams over one connection, so closing the transport is
+/// too blunt — this frame cancels exactly one `id`. The producer should stop
+/// emitting and send a final [`StreamEnd`] with
+/// [`StreamEndReason::Cancelled`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StreamCancel {
+    /// Stream to cancel — the `id` shared by its Start/Token/End frames.
+    pub id: String,
+    /// Optional human-readable reason (e.g. `"user aborted"`), for logs/traces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// What's in a token chunk. Most LLM streams are `Text`; multimodal
@@ -150,8 +171,9 @@ pub struct StreamToken {
 pub enum StreamData {
     /// UTF-8 text fragment.
     Text(String),
-    /// Opaque bytes (e.g. audio frame, partial image).
-    Bytes(Vec<u8>),
+    /// Opaque bytes (e.g. audio frame, partial image). Encoded as a CBOR
+    /// byte string on the wire (1-byte overhead), not an integer array.
+    Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     /// Tool invocation embedded mid-stream (function calling).
     ToolCall(ToolCall),
     /// Self-describing latent chunk. The receiver can decode it locally
@@ -395,6 +417,7 @@ mod tests {
             id: "s1".into(),
             seq: 7,
             data: StreamData::Text("hello ".into()),
+            usage: None,
         };
         round_trip(&tok);
 
@@ -433,6 +456,7 @@ mod tests {
             id: "s1".into(),
             seq: 3,
             data: StreamData::Encoded(frame.clone()),
+            usage: None,
         };
         round_trip(&tok);
 
@@ -465,6 +489,7 @@ mod tests {
                 args: json!({"q": "rust async"}),
                 trace: None,
             }),
+            usage: None,
         };
         round_trip(&tok);
     }
@@ -579,6 +604,7 @@ mod tests {
                 id: "s1".into(),
                 seq: 0,
                 data: StreamData::Text("hi".into()),
+                usage: None,
             }),
             Message::StreamEnd(StreamEnd {
                 id: "s1".into(),

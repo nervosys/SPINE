@@ -67,6 +67,7 @@ pub mod policy;
 pub mod replay;
 pub mod sandbox;
 pub mod scheduler;
+pub mod signed_frame;
 pub mod stigmergy;
 pub mod topology;
 pub mod tracing;

@@ -70,6 +70,7 @@ fn main() {
             data: StreamData::Text(
                 " The quick brown fox jumps over the lazy dog, and then keeps going.".into(),
             ),
+            usage: None,
         }),
     );
 

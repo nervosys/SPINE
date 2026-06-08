@@ -121,7 +121,9 @@ pub struct EncodedFrame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
     /// Raw byte payload. Interpretation defined by `metadata.dtype` and
-    /// `metadata.shape`.
+    /// `metadata.shape`. Encoded as a CBOR byte string on the wire (1-byte
+    /// overhead) rather than an integer-per-byte array.
+    #[serde(with = "serde_bytes")]
     pub data: Vec<u8>,
     /// Inline self-description.
     pub metadata: EncodedMetadata,
