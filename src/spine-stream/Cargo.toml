@@ -3,8 +3,8 @@ name = "spine-stream"
 version = "1.0.0"
 edition = "2021"
 description = "High-performance streaming layer for SPINE bioinspired agentic web stack"
-authors = ["Nervosys"]
-license = "Apache-2.0"
+authors = ["Nervosys LLC <opensource@nervosys.ai>"]
+license = "AGPL-3.0-or-later"
 
 [dependencies]
 # Async runtime

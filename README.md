@@ -1,12 +1,12 @@
 # SPINE 🧠🦴
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
 [![Tests](https://img.shields.io/badge/tests-1060%20passing-brightgreen.svg)](#testing)
 
-**SPINE** (Synaptic Path INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
+**SPINE** (Synaptic Pathways INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
 > *"A digital nervous system for AI agents — semantic-first parsing, agentic-first framing, swarm-first coordination, all with the option to fall back to plain HTTP whenever a human or legacy client needs to talk to it."*
 
@@ -1186,6 +1186,16 @@ SPINE is an experimental research project. Contributions are welcome, especially
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+SPINE is **dual-licensed**:
 
-Copyright 2026 Nervosys LLC
+- **Open source:** [GNU Affero General Public License v3.0 or later](LICENSE)
+  (AGPL-3.0-or-later). You may use, modify, and distribute SPINE under the AGPL,
+  including its Section 13 requirement to make modified source available to users
+  who interact with the software over a network.
+- **Commercial:** organizations that cannot meet the AGPL's copyleft / network
+  source-disclosure terms (e.g. closed-source SaaS, on-premise, or embedded
+  products) can obtain a separate commercial license. Contact
+  **opensource@nervosys.ai** — see the *Commercial Dual-License Option* section
+  of [LICENSE](LICENSE).
+
+Copyright © 2026 Nervosys LLC

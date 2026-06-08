@@ -18,7 +18,7 @@ the following channels:
 
 1. **GitHub Security Advisories** (preferred):
    <https://github.com/nervosys/SPINE/security/advisories/new>
-2. **Email**: `adam.michael.erickson@gmail.com` with the subject prefix
+2. **Email**: `opensource@nervosys.ai` with the subject prefix
    `[SPINE-SECURITY]`.
 
 When reporting, include:
