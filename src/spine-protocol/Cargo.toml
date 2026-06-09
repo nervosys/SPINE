@@ -60,6 +60,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "hot_path_bench"
 harness = false
 
+[[bench]]
+name = "neural_codec_bench"
+harness = false
+
 [[example]]
 name = "wire_sizes"
 path = "examples/wire_sizes.rs"

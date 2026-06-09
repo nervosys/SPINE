@@ -120,6 +120,8 @@ StreamData::Encoded(EncodedFrame {
 })
 ```
 
+**Benchmarked for agentic use** (`src/spine-protocol/benches/neural_codec_bench.rs`, re-measured 2026-06-08). The codec is a real Titans forward pass — a *semantic* projection of text into a fixed-width latent, not a memcpy — so encode cost scales with the projector and is the honest price of getting a latent: ~94 µs at dim 128, ~847 µs at dim 256, ~3.1 ms at dim 512, ~26 ms at dim 1024. The payoff is on the wire: the resulting self-describing `EncodedFrame` is **66–71 % smaller than its JSON form** (e.g. dim 256: 1241 B binary vs 3942 B JSON; dim 1024: 4314 B vs 14803 B), because the latent rides as a CBOR byte string instead of a JSON float array. The full agentic path (`codec.encode` → `wire::encode`) adds only the framing on top of the encode (e.g. 416 µs at dim 256).
+
 ## Core Components
 
 SPINE is composed of 28 specialized crates organized into a cohesive bioinspired architecture:
@@ -1009,6 +1011,7 @@ cargo bench --package spine-transport --bench spine_vs_http2
 cargo bench --package spine-transport --bench agentic_ai_workload
 cargo bench --package spine-transport --bench llm_tok_per_sec
 cargo bench --package spine-transport --bench llm_shm_ipc
+cargo bench --package spine-protocol  --bench neural_codec_bench  # Titans neural codec, agentic path
 cargo test  --package spine-transport rdma  # 4 trait tests
 ```
 
