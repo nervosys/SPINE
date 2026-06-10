@@ -6679,6 +6679,7 @@ dependencies = [
  "spine-knowledge",
  "spine-neural",
  "spine-protocol",
+ "spine-wasm",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -6990,6 +6991,16 @@ dependencies = [
  "spine-storage",
  "tokio",
  "tokio-test",
+ "uuid",
+]
+
+[[package]]
+name = "spine-mechgen"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "spine-agentic",
  "uuid",
 ]
 

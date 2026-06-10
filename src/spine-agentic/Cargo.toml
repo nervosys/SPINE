@@ -25,6 +25,11 @@ spine-crypto = { path = "../spine-crypto" }
 spine-protocol = { path = "../spine-protocol" }
 spine-compiler = { path = "../spine-compiler" }
 spine-knowledge = { path = "../spine-knowledge" }
+# Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
+# Default-on so the runtime executes out of the box; disable default-features to
+# drop the wasmtime dependency (Action::Execute then returns an honest error,
+# never a fake success).
+spine-wasm = { path = "../spine-wasm", optional = true }
 
 # Agent-specific
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -34,6 +39,11 @@ petgraph = "0.6"
 url = { version = "2", features = ["serde"] }
 regex = "1.10"
 futures = "0.3"
+
+[features]
+default = ["wasm-exec"]
+# Run Action::Execute as real, fuel-metered, sandboxed WASM (via spine-wasm).
+wasm-exec = ["dep:spine-wasm"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

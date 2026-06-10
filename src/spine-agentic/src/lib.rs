@@ -54,6 +54,11 @@
 
 use chrono::{DateTime, Utc};
 
+/// Collaborative-SWE primitives over the agentic substrate: content-addressed
+/// versioned artifacts ([`swe::SweArtifact`]) and a dependency-aware work graph
+/// ([`swe::WorkGraph`]).
+pub mod swe;
+
 pub mod anomaly;
 pub mod chaos;
 pub mod consensus;
@@ -1243,6 +1248,38 @@ pub enum SideEffect {
     ResourceAccessed { locator: ResourceLocator },
     /// Agent trust was updated
     TrustUpdated { agent: AgentId, level: TrustLevel },
+    /// Code was executed in the sandbox (Action::Execute).
+    CodeExecuted { command: String },
+}
+
+/// Run an `Action::Execute` command as **real, fuel-metered, sandboxed WASM**:
+/// compile the HLS `command` via `spine-compiler` and run it under the
+/// `spine-wasm` sandbox. No raw host commands are ever run. Returns a real
+/// error on compile/exec failure — never a fake success.
+#[cfg(feature = "wasm-exec")]
+fn execute_sandboxed(command: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let bin = spine_compiler::Compiler::compile(command).map_err(|e| format!("compile failed: {e}"))?;
+    let res = spine_wasm::WasmRuntime::default()
+        .execute(&bin)
+        .map_err(|e| format!("sandboxed execution failed: {e}"))?;
+    Ok(serde_json::json!({
+        "command": command,
+        "args": args,
+        "status": "executed",
+        "sandbox": "wasm",
+        "elements": res.elements.len(),
+        "events": res.events.len(),
+        "actions": res.actions.len(),
+    }))
+}
+
+/// Without the `wasm-exec` feature there is no sandboxed executor wired in — be
+/// honest about it (a real error) rather than claiming a fake success.
+#[cfg(not(feature = "wasm-exec"))]
+fn execute_sandboxed(command: &str, _args: serde_json::Value) -> Result<serde_json::Value, String> {
+    Err(format!(
+        "no sandboxed executor: rebuild spine-agentic with feature `wasm-exec` to run `{command}`"
+    ))
 }
 
 /// Plan execution engine
@@ -1347,11 +1384,12 @@ impl ExecutionEngine {
                     "confidence": 0.85
                 }))
             }
-            Action::Execute { command, args } => Ok(serde_json::json!({
-                "command": command,
-                "args": args,
-                "status": "executed"
-            })),
+            Action::Execute { command, args } => {
+                side_effects.push(SideEffect::CodeExecuted {
+                    command: command.clone(),
+                });
+                execute_sandboxed(&command, args)
+            }
             Action::Store { key, value } => {
                 side_effects.push(SideEffect::KnowledgeAdded { key: key.clone() });
                 self.runtime
