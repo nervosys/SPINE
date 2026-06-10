@@ -12,3 +12,11 @@ serde_json.workspace = true
 uuid = { version = "1", features = ["v4", "serde"] }
 # Types only — no need for the wasm-exec sandbox here.
 spine-agentic = { path = "../spine-agentic", default-features = false }
+
+[dev-dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+ed25519-dalek = { workspace = true }
+
+[[example]]
+name = "collab_swe"
+path = "examples/collab_swe.rs"
