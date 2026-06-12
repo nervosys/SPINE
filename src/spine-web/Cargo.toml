@@ -1,0 +1,81 @@
+[package]
+name = "spine-web"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SPINE — agentic-first web stack. Umbrella facade that re-exports the spine-* component crates behind feature flags."
+readme = "README.md"
+
+# This crate is a thin facade: it contains no logic of its own, only re-exports
+# of the component crates, each gated behind a feature of the same name. Pick the
+# pieces you need; nothing is pulled unless its feature is on.
+
+[dependencies]
+spine-protocol  = { path = "../spine-protocol",  version = "1.0.0", optional = true }
+spine-transport = { path = "../spine-transport", version = "1.0.0", optional = true }
+spine-parser    = { path = "../spine-parser",    version = "1.0.0", optional = true }
+spine-compiler  = { path = "../spine-compiler",  version = "1.0.0", optional = true }
+spine-wasm      = { path = "../spine-wasm",      version = "1.0.0", optional = true }
+spine-neural    = { path = "../spine-neural",    version = "1.0.0", optional = true }
+spine-crypto    = { path = "../spine-crypto",    version = "1.0.0", optional = true }
+spine-agent     = { path = "../spine-agent",     version = "1.0.0", optional = true }
+spine-agentic   = { path = "../spine-agentic",   version = "1.0.0", optional = true }
+spine-cluster   = { path = "../spine-cluster",   version = "1.0.0", optional = true }
+spine-human     = { path = "../spine-human",     version = "1.0.0", optional = true }
+spine-stream    = { path = "../spine-stream",    version = "1.0.0", optional = true }
+spine-recursive = { path = "../spine-recursive", version = "1.0.0", optional = true }
+spine-knowledge = { path = "../spine-knowledge", version = "1.0.0", optional = true }
+spine-storage   = { path = "../spine-storage",   version = "1.0.0", optional = true }
+spine-kernel    = { path = "../spine-kernel",    version = "1.0.0", optional = true }
+spine-gpu       = { path = "../spine-gpu",       version = "1.0.0", optional = true }
+spine-grpc      = { path = "../spine-grpc",      version = "1.0.0", optional = true }
+spine-mechgen   = { path = "../spine-mechgen",   version = "1.0.0", optional = true }
+spine-core      = { path = "../spine-core",      version = "1.0.0", optional = true }
+spine-cache     = { path = "../spine-cache",     version = "1.0.0", optional = true }
+spine-k8s       = { path = "../spine-k8s",       version = "1.0.0", optional = true }
+
+[features]
+# A practical agentic-web starter: the wire protocol, transport, and the agent
+# runtime (which transitively brings parser/compiler/wasm/cluster/human).
+default = ["protocol", "transport", "agent", "agentic"]
+
+# Everything that is a reusable library. Heavy optional backends (GPU, SQLite,
+# Kubernetes) come in only via their own features below, not via `full`.
+full = [
+    "protocol", "transport", "parser", "compiler", "wasm", "neural", "crypto",
+    "agent", "agentic", "cluster", "human", "stream", "recursive", "knowledge",
+    "storage", "kernel", "grpc", "mechgen", "core", "cache",
+]
+
+# One feature per component crate.
+protocol  = ["dep:spine-protocol"]
+transport = ["dep:spine-transport"]
+parser    = ["dep:spine-parser"]
+compiler  = ["dep:spine-compiler"]
+wasm      = ["dep:spine-wasm"]
+neural    = ["dep:spine-neural"]
+crypto    = ["dep:spine-crypto"]
+agent     = ["dep:spine-agent"]
+agentic   = ["dep:spine-agentic"]
+cluster   = ["dep:spine-cluster"]
+human     = ["dep:spine-human"]
+stream    = ["dep:spine-stream"]
+recursive = ["dep:spine-recursive"]
+knowledge = ["dep:spine-knowledge"]
+storage   = ["dep:spine-storage"]
+kernel    = ["dep:spine-kernel"]
+gpu       = ["dep:spine-gpu"]
+grpc      = ["dep:spine-grpc"]
+mechgen   = ["dep:spine-mechgen"]
+core      = ["dep:spine-core"]
+cache     = ["dep:spine-cache"]
+k8s       = ["dep:spine-k8s"]
+
+[package.metadata.docs.rs]
+features = ["full"]
+rustdoc-args = ["--cfg", "docsrs"]

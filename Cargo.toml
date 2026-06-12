@@ -28,6 +28,7 @@ members = [
     "src/spine-nostd",
     "src/spine-embedded",
     "src/spine-mechgen",
+    "src/spine-web",
 ]
 exclude = ["src/spine-python", "src/spine-js"]
 resolver = "2"

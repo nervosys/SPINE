@@ -20,7 +20,9 @@ SPDX `license` field, so the crate page will show AGPL-3.0-or-later only.
 
 ## What is published
 
-- **26 library crates** are publishable.
+- **27 library crates** are publishable, including the umbrella facade
+  **`spine-web`** (re-exports the component crates behind feature flags; it is
+  the recommended front door for new users).
 - **`spine-ffi`** is marked `publish = false` (C `cdylib`/`staticlib`, consumed
   via the C ABI, not via crates.io).
 - `spine-python` and `spine-js` are **excluded** from the workspace (PyO3 / wasm
@@ -57,10 +59,15 @@ Then, strictly in this order (each line's deps are all already published):
 14. spine-mechgen
 15. spine-agent
 16. spine-core
-17. spine-browser     # optional (egui app)
-18. spine-gateway     # optional (binary)
-19. spine-cli         # optional (binary)
+17. spine-web         # umbrella facade — must come after every crate it re-exports
+18. spine-browser     # optional (egui app)
+19. spine-gateway     # optional (binary)
+20. spine-cli         # optional (binary)
 ```
+
+`spine-web` references its components through *optional* dependencies, but
+`cargo publish` still checks that every referenced version exists on the
+registry, so it must be published last among the libraries.
 
 ## One-shot publish
 
@@ -73,7 +80,7 @@ for c in spine-nostd spine-kernel spine-gpu spine-cache spine-k8s \
          spine-crypto spine-embedded spine-knowledge spine-recursive \
          spine-protocol spine-transport spine-compiler spine-grpc \
          spine-cluster spine-wasm spine-stream spine-human spine-agentic \
-         spine-mechgen spine-agent spine-core \
+         spine-mechgen spine-agent spine-core spine-web \
          spine-browser spine-gateway spine-cli; do
   cargo publish -p "$c" || { echo "FAILED at $c"; break; }
   sleep 20   # allow the index to update before the next crate resolves
