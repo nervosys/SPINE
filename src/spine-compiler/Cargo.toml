@@ -1,5 +1,9 @@
 [package]
 name = "spine-compiler"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,7 +11,7 @@ authors.workspace = true
 description = "Compiler for SPINE Source (HLS) to SPINE Binary (HLB)"
 
 [dependencies]
-spine-protocol = { path = "../spine-protocol" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

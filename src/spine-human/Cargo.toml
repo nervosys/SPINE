@@ -1,5 +1,9 @@
 [package]
 name = "spine-human"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,9 +11,9 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
-spine-compiler = { path = "../spine-compiler" }
-spine-parser = { path = "../spine-parser" }
-spine-protocol = { path = "../spine-protocol" }
+spine-compiler = { path = "../spine-compiler", version = "1.0.0" }
+spine-parser = { path = "../spine-parser", version = "1.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
 scraper = "0.18"
 ego-tree = "0.6"
 cssparser = "0.31"

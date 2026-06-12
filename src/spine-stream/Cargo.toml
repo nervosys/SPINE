@@ -1,5 +1,9 @@
 [package]
 name = "spine-stream"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version = "1.0.0"
 edition = "2021"
 description = "High-performance streaming layer for SPINE bioinspired agentic web stack"
@@ -37,8 +41,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 quanta = "0.12"
 
 # Internal dependencies
-spine-transport = { path = "../spine-transport" }
-spine-protocol = { path = "../spine-protocol" }
+spine-transport = { path = "../spine-transport", version = "1.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
 
 [dev-dependencies]
 tokio-test = "0.4"

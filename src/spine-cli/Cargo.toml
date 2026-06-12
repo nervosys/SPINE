@@ -1,5 +1,9 @@
 [package]
 name = "spine-cli"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,11 +15,11 @@ name = "spine"
 path = "src/main.rs"
 
 [dependencies]
-spine-agent = { path = "../spine-agent" }
-spine-protocol = { path = "../spine-protocol" }
-spine-parser = { path = "../spine-parser" }
-spine-core = { path = "../spine-core" }
-spine-transport = { path = "../spine-transport" }
+spine-agent = { path = "../spine-agent", version = "1.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
+spine-parser = { path = "../spine-parser", version = "1.0.0" }
+spine-core = { path = "../spine-core", version = "1.0.0" }
+spine-transport = { path = "../spine-transport", version = "1.0.0" }
 clap = { version = "4", features = ["derive"] }
 tokio.workspace = true
 serde.workspace = true

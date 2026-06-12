@@ -1,5 +1,9 @@
 [package]
 name = "spine-ffi"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version = "1.0.0"
 edition = "2021"
 license.workspace = true
@@ -10,9 +14,9 @@ publish = false
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-spine-agent = { path = "../spine-agent" }
-spine-parser = { path = "../spine-parser" }
-spine-compiler = { path = "../spine-compiler" }
+spine-agent = { path = "../spine-agent", version = "1.0.0" }
+spine-parser = { path = "../spine-parser", version = "1.0.0" }
+spine-compiler = { path = "../spine-compiler", version = "1.0.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 libc = "0.2"

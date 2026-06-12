@@ -1,5 +1,9 @@
 [package]
 name = "spine-knowledge"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -13,8 +17,8 @@ serde = { workspace = true }
 serde_json.workspace = true
 
 # Internal dependencies - unified memory architecture
-spine-neural = { path = "../spine-neural" }
-spine-storage = { path = "../spine-storage" }
+spine-neural = { path = "../spine-neural", version = "1.0.0" }
+spine-storage = { path = "../spine-storage", version = "1.0.0" }
 anyhow.workspace = true
 
 # CRDTs for distributed consistency

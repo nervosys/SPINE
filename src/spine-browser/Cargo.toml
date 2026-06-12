@@ -1,5 +1,9 @@
 [package]
 name = "spine-browser"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,12 +11,12 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
-spine-agent = { path = "../spine-agent" }
-spine-human = { path = "../spine-human" }
-spine-wasm = { path = "../spine-wasm" }
-spine-protocol = { path = "../spine-protocol" }
-spine-cluster = { path = "../spine-cluster" }
-spine-agentic = { path = "../spine-agentic" }
+spine-agent = { path = "../spine-agent", version = "1.0.0" }
+spine-human = { path = "../spine-human", version = "1.0.0" }
+spine-wasm = { path = "../spine-wasm", version = "1.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
+spine-cluster = { path = "../spine-cluster", version = "1.0.0" }
+spine-agentic = { path = "../spine-agentic", version = "1.0.0" }
 eframe = "0.28"
 egui = "0.28"
 tokio = { workspace = true }

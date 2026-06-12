@@ -6998,6 +6998,8 @@ dependencies = [
 name = "spine-mechgen"
 version = "1.0.0"
 dependencies = [
+ "chrono",
+ "ed25519-dalek",
  "serde",
  "serde_json",
  "spine-agentic",

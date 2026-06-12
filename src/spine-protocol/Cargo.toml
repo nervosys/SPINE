@@ -1,5 +1,9 @@
 [package]
 name = "spine-protocol"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -34,8 +38,8 @@ sha2 = "0.10"
 hkdf = "0.12"
 rand = "0.8"
 uuid = { version = "1", features = ["v4", "serde"] }
-spine-neural = { path = "../spine-neural" }
-spine-crypto = { path = "../spine-crypto" }
+spine-neural = { path = "../spine-neural", version = "1.0.0" }
+spine-crypto = { path = "../spine-crypto", version = "1.0.0" }
 rustls.workspace = true
 tokio-rustls.workspace = true
 # High-performance binary serialization (5-10x faster than JSON)

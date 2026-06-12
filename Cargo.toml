@@ -39,6 +39,10 @@ authors = ["Nervosys LLC <opensource@nervosys.ai>"]
 description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, W3C tracing, and neural encoder-decoder protocols for LLM swarms"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/nervosys/SPINE"
+homepage = "https://github.com/nervosys/SPINE"
+readme = "README.md"
+keywords = ["agentic", "llm", "agents", "protocol", "web"]
+categories = ["network-programming", "web-programming", "asynchronous"]
 
 # =============================================================================
 # MAXIMUM OPTIMIZATION PROFILE

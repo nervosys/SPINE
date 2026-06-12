@@ -1,5 +1,9 @@
 [package]
 name = "spine-agentic"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,16 +24,16 @@ ed25519-dalek.workspace = true
 zeroize = { version = "1.8", features = ["derive"] }
 
 # Internal dependencies
-spine-neural = { path = "../spine-neural" }
-spine-crypto = { path = "../spine-crypto" }
-spine-protocol = { path = "../spine-protocol" }
-spine-compiler = { path = "../spine-compiler" }
-spine-knowledge = { path = "../spine-knowledge" }
+spine-neural = { path = "../spine-neural", version = "1.0.0" }
+spine-crypto = { path = "../spine-crypto", version = "1.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
+spine-compiler = { path = "../spine-compiler", version = "1.0.0" }
+spine-knowledge = { path = "../spine-knowledge", version = "1.0.0" }
 # Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
 # Default-on so the runtime executes out of the box; disable default-features to
 # drop the wasmtime dependency (Action::Execute then returns an honest error,
 # never a fake success).
-spine-wasm = { path = "../spine-wasm", optional = true }
+spine-wasm = { path = "../spine-wasm", version = "1.0.0", optional = true }
 
 # Agent-specific
 uuid = { version = "1", features = ["v4", "serde"] }

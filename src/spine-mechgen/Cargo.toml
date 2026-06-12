@@ -1,5 +1,9 @@
 [package]
 name = "spine-mechgen"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +15,7 @@ serde.workspace = true
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4", "serde"] }
 # Types only — no need for the wasm-exec sandbox here.
-spine-agentic = { path = "../spine-agentic", default-features = false }
+spine-agentic = { path = "../spine-agentic", version = "1.0.0", default-features = false }
 
 [dev-dependencies]
 chrono = { version = "0.4", features = ["serde"] }

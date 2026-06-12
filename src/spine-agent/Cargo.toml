@@ -1,5 +1,9 @@
 [package]
 name = "spine-agent"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,14 +11,14 @@ authors.workspace = true
 description = "Agent interface for SPINE"
 
 [dependencies]
-spine-protocol = { path = "../spine-protocol" }
-spine-parser = { path = "../spine-parser" }
-spine-compiler = { path = "../spine-compiler" }
-spine-wasm = { path = "../spine-wasm" }
-spine-cluster = { path = "../spine-cluster" }
-spine-human = { path = "../spine-human" }
-spine-agentic = { path = "../spine-agentic" }
-spine-transport = { path = "../spine-transport" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
+spine-parser = { path = "../spine-parser", version = "1.0.0" }
+spine-compiler = { path = "../spine-compiler", version = "1.0.0" }
+spine-wasm = { path = "../spine-wasm", version = "1.0.0" }
+spine-cluster = { path = "../spine-cluster", version = "1.0.0" }
+spine-human = { path = "../spine-human", version = "1.0.0" }
+spine-agentic = { path = "../spine-agentic", version = "1.0.0" }
+spine-transport = { path = "../spine-transport", version = "1.0.0" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

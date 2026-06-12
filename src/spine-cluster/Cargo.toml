@@ -1,5 +1,9 @@
 [package]
 name = "spine-cluster"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +12,7 @@ description = "Distributed agent coordination for SPINE"
 
 [dependencies]
 tracing = { workspace = true }
-spine-protocol = { path = "../spine-protocol" }
+spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
