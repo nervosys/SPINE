@@ -213,6 +213,15 @@ pub enum MeshPayload {
         accepted: bool,
         reason: Option<String>,
     },
+    /// Announce a signed name record to the mesh, so peers can cache it and
+    /// store it if they are near its key. Boxed because a record with links and
+    /// metadata is far larger than any other payload, and an un-boxed variant
+    /// would inflate every `MeshEnvelope` in memory.
+    NameAnnounce(Box<crate::naming::AnnouncedRecord>),
+    /// Ask a peer to resolve a name or capability.
+    NameResolveRequest(crate::naming::ResolveRequest),
+    /// Answer a resolution request: the record, providers, or closer nodes.
+    NameResolveResponse(Box<crate::naming::ResolveResponse>),
 }
 
 /// Compact agent message for mesh transport (avoids Box<MessageContent> serialization issues).
@@ -589,6 +598,57 @@ impl MeshNode {
     pub async fn routes(&self) -> Vec<(AgentId, RouteEntry)> {
         let table = self.routing.read().await;
         table.iter().map(|(k, v)| (*k, v.clone())).collect()
+    }
+
+    /// This node's position in the name keyspace.
+    ///
+    /// It is the node's Ed25519 public key, so a node identifier is
+    /// self-certifying in exactly the way a `did:` name is — the same key both
+    /// places the node in the DHT and signs everything it says.
+    pub fn name_key(&self) -> spine_name::NameKey {
+        spine_name::NameKey::from_bytes(*self.identity.public_key())
+    }
+
+    /// Describe this node as a keyspace peer, for announcing to others.
+    pub fn as_name_node(&self, endpoints: Vec<String>, now: u64) -> spine_name::NodeInfo {
+        spine_name::NodeInfo::new(self.name_key(), endpoints, now)
+    }
+
+    /// Build an envelope announcing a signed name record to the mesh.
+    pub fn announce_name(
+        &self,
+        record: spine_name::NameRecord,
+    ) -> Result<MeshEnvelope, spine_name::NameError> {
+        record.verify()?;
+        Ok(self.create_envelope(
+            MeshTarget::Broadcast,
+            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(record))),
+        ))
+    }
+
+    /// Build an envelope asking a specific peer to resolve a query.
+    pub fn name_resolve_request(
+        &self,
+        peer: AgentId,
+        request_id: u64,
+        query: crate::naming::ResolveQuery,
+    ) -> MeshEnvelope {
+        self.create_envelope(
+            MeshTarget::Agent(peer),
+            MeshPayload::NameResolveRequest(crate::naming::ResolveRequest { request_id, query }),
+        )
+    }
+
+    /// Build an envelope carrying a resolution answer back to `peer`.
+    pub fn name_resolve_response(
+        &self,
+        peer: AgentId,
+        response: crate::naming::ResolveResponse,
+    ) -> MeshEnvelope {
+        self.create_envelope(
+            MeshTarget::Agent(peer),
+            MeshPayload::NameResolveResponse(Box::new(response)),
+        )
     }
 
     /// Create a signed mesh envelope for a message.

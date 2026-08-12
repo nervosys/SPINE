@@ -29,6 +29,8 @@ spine-crypto = { path = "../spine-crypto", version = "1.0.0" }
 spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
 spine-compiler = { path = "../spine-compiler", version = "1.0.0" }
 spine-knowledge = { path = "../spine-knowledge", version = "1.0.0" }
+spine-name = { path = "../spine-name", version = "1.0.0" }
+spine-transport = { path = "../spine-transport", version = "1.0.0" }
 # Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
 # Default-on so the runtime executes out of the box; disable default-features to
 # drop the wasmtime dependency (Action::Execute then returns an honest error,
@@ -43,6 +45,9 @@ petgraph = "0.6"
 url = { version = "2", features = ["serde"] }
 regex = "1.10"
 futures = "0.3"
+quinn = "0.11"
+rustls.workspace = true
+async-trait = "0.1"
 
 [features]
 default = ["wasm-exec"]
