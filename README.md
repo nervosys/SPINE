@@ -122,6 +122,39 @@ the mesh already authenticates. Links are
 orders and budgets a traversal from the data alone — dependencies before
 documentation — instead of inferring intent from prose.
 
+### Getting the first contact
+
+A Kademlia node converges on the right neighbours from any single honest
+contact, but it cannot acquire the first one by routing — routing is what having
+a contact enables. That first contact comes from configuration:
+
+```toml
+[namespace]
+enabled = true
+seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
+advertise = ["203.0.113.4:9440"]   # omit behind NAT: resolve without being dialable
+```
+
+The node dials each seed by address and sends a hello carrying its own public
+key; the answer's signature verifies against the key *it* carries, which is also
+the responder's keyspace position — so a seed cannot claim a place in the
+keyspace it is unable to sign for. The ack brings back the seed's own neighbours,
+and one self-lookup fills the buckets nearest the newcomer. Seeds are dialed
+concurrently, and one that is down costs a failed dial rather than a refusal to
+start.
+
+The node's key is written to `spine-node.key` on first run and reused after,
+because that key is not merely a credential: it is the node's position in the
+keyspace and the authority behind every name it publishes. A node that
+regenerated it would relocate in the DHT and orphan its own names on every
+restart.
+
+`spine://host:…` is the escape hatch that makes this expressible as a name at
+all. It resolves with no network and no publisher — the address is *in* the name
+— and is reported with a distinct `Address` provenance precisely because nothing
+attested it. Use it to reach a seed; trust what the seed then proves about
+itself.
+
 ```bash
 cargo run -p spine-name --example agent_web   # publish, discover, resolve, crawl
 ```

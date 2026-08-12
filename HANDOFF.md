@@ -214,10 +214,10 @@ explicitly via `QuicNameTransport::authenticated`. `QuicNameTransport::new()`
 gives you an *unauthenticated* peer — fine, because envelopes are signed, but know
 which one you are constructing.
 
-**Bootstrap is still manual.** `register_peer` + `set_address` must be called with
-known peers. There is no seed-node discovery, no DNS bootstrap, no rendezvous. The
-DHT converges fine once it has *any* entry point; getting the first one is not
-solved.
+**~~Bootstrap is still manual.~~** *Solved in Phase 39 — see below.* Seeds are
+configured in `spine.toml`, dialed by address, and prove their own identity. What
+is still missing is *automatic* discovery: no DNS bootstrap, no rendezvous, no
+peer exchange beyond what a seed hands back at greeting time.
 
 **No record replication or republication.** `needing_republish` reports what is
 about to lapse, and `is_responsible_for` says whether this node is among the K
@@ -231,12 +231,46 @@ one-call "give me the bytes at this name".
 
 ---
 
+## Phase 39 — bootstrap (done, on branch `phase-38-namespace`)
+
+Step 1 below turned out to be larger than "a seed list", because the DHT had a
+second defect hiding behind the first: **referrals carried no mesh identity**, so
+a peer learned mid-lookup could be placed in the shortlist and never addressed.
+Multi-hop lookups therefore did not work over *any* real transport — the
+in-process test harness pre-registered every node, which is why the unit tests
+passed. A lookup could only reach peers introduced by hand.
+
+Both are fixed together, since both come from the same split between "knowing a
+peer" and "being able to reach one":
+
+- `KeyspacePeer` pairs a keyspace position with the `AgentId` needed to address it
+- `NameTransport::learn` teaches the transport's address book what the resolver
+  discovers, at every point a peer is learned
+- `NameHello`/`NameHelloAck` establish identity from an address, verified against
+  the key the message carries
+- `NameTransport::send_to` dials by address on TCP, WebSocket, and QUIC
+- `[namespace]` in `spine.toml`, a persisted node key, and `spine-core` joining
+  the mesh on startup with fall-through resolution
+
+New tests worth knowing about: `a_lookup_reaches_a_peer_it_was_never_introduced_to`
+(the defect above, over real sockets), `a_node_bootstraps_into_the_mesh_from_an_address_alone`,
+and `a_hello_whose_signature_does_not_match_its_key_is_refused`.
+
+One bug the tests caught during development: a seed included *the newcomer
+itself* in the contacts it referred back, because the newcomer had just been
+added to its routing table and is by definition the closest entry to its own key.
+Fixed in `peers_for_newcomer`.
+
+---
+
 ## Suggested next steps, in order
 
-1. **Bootstrap discovery.** The DHT is useless without an entry point. A seed-node
-   list in `spine.toml` plus a `host:` authority resolver is probably enough.
+1. ~~**Bootstrap discovery.**~~ Done — see above.
 2. **Replication.** Store each record at the K closest nodes and republish before
-   TTL expiry. The predicates already exist; they need a background task.
+   TTL expiry. The predicates already exist; they need a background task. This is
+   now the largest gap: bootstrap made the DHT reachable, but a record still
+   lives only where it was published, so a node going down still takes its names
+   with it.
 3. **Get the handshake reviewed** if the transport will ever carry anything whose
    safety does not rest on the signed envelopes inside it.
 4. **Wire the namespace into the gateway** so `spine://` names are resolvable over

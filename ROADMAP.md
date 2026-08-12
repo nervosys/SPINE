@@ -489,6 +489,47 @@ linked to, referred to, or found without already knowing where it lived.
 - [x] Runnable example: `cargo run -p spine-name --example agent_web`
 - [x] 1,355 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
+### Phase 39: Bootstrap — Acquiring the First Contact
+
+Phase 38 left the DHT able to converge from any contact and unable to get one.
+Peer registration required a `PublicIdentity`, which a node reading a config
+file does not have; and referrals carried only a keyspace position, with no way
+to address the peer they named — so a lookup could reach only the peers an
+operator had introduced by hand, and a "walk" was one hop deep on every real
+transport.
+
+- [x] **Addressable referrals** (`KeyspacePeer`): a referral now carries the
+      mesh identity alongside the keyspace position. Without it a referred peer
+      entered the shortlist, failed to dispatch, and was marked unreachable —
+      progress that produced none.
+- [x] **Transport address learning** (`NameTransport::learn`): the resolver
+      discovers endpoints, but each transport keeps its own address book, so
+      knowing a peer and being able to dial it were separate facts. Now the same
+      one.
+- [x] **Bootstrap handshake** (`NameHello`/`NameHelloAck`): dial an address, and
+      let whoever answers prove which identity is listening. The envelope
+      signature verifies against the key the message carries — which is also the
+      sender's keyspace position, so a node cannot claim a place in the keyspace
+      it is unable to sign for.
+- [x] **Address-based dialing** (`NameTransport::send_to`) across TCP, WebSocket,
+      and QUIC — the one send that cannot be addressed to an `AgentId`, because
+      establishing the `AgentId` is its purpose
+- [x] **Seeded startup**: `[namespace]` in `spine.toml` (or `SPINE_SEEDS`), a
+      self-lookup to fill the nearest buckets, and concurrent seed dials where
+      one dead seed costs a failed dial rather than a refusal to start
+- [x] **Persistent node identity**: the key is the node's keyspace position and
+      the authority behind every name it publishes, so it is kept on disk — a
+      node that regenerated it would relocate in the DHT and orphan its names
+      on every restart
+- [x] **`host:` authority resolution**: `spine://host:h:p/` resolves with no
+      network and no publisher, reported with a distinct `Address` provenance
+      because nothing attested it — the one binding in the namespace that is
+      nobody's word
+- [x] **`spine-core` joins the mesh**: resolution and capability lookup fall
+      through to the DHT and cache what they find; a node with no reachable seed
+      degrades to serving local names rather than failing to start
+- [x] 1,378 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks
