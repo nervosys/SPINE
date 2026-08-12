@@ -20,6 +20,7 @@ use tracing::{debug, error, info, instrument, span, warn, Level};
 use uuid::Uuid;
 
 mod config;
+mod namespace;
 #[allow(dead_code)]
 mod ct;
 mod telemetry;
@@ -123,6 +124,12 @@ struct BrowserState {
     /// learned. This is what makes the node an *origin* in the agent web rather
     /// than only a proxy onto the human one.
     names: spine_name::LocalResolver,
+    /// The mesh this node resolves *through*, when it has joined one.
+    ///
+    /// `None` means the node is an origin but not a participant: it serves what
+    /// it holds and cannot look anything up. That is a supported configuration,
+    /// not a failure — a node with no seeds has nothing to route through.
+    mesh_names: Option<Arc<spine_agentic::naming_mesh::MeshNameResolver>>,
 }
 
 impl BrowserState {
@@ -224,6 +231,7 @@ fn wire_provenance(p: spine_name::Provenance) -> spine_protocol::NameProvenance 
         spine_name::Provenance::StaleCache => spine_protocol::NameProvenance::StaleCache,
         spine_name::Provenance::Local => spine_protocol::NameProvenance::Local,
         spine_name::Provenance::Network => spine_protocol::NameProvenance::Network,
+        spine_name::Provenance::Address => spine_protocol::NameProvenance::Address,
     }
 }
 
@@ -268,15 +276,51 @@ async fn resolve_one(
                 },
             }
         }
-        Err(spine_name::NameError::NotFound(_)) => {
-            spine_protocol::NameResolution::NotFound {
-                name: raw.to_string(),
+        // Not held locally: this is where the node stops being a directory and
+        // starts being a participant. Cache what the walk returns, so the next
+        // ask for the same name is answered without another round trip.
+        Err(spine_name::NameError::NotFound(_)) => match resolve_over_mesh(state, &uri).await {
+            Some(record) => {
+                let _ = state.names.cache_record(record.clone());
+                match serde_json::to_value(&record) {
+                    Ok(value) => spine_protocol::NameResolution::Resolved {
+                        record: value,
+                        provenance: spine_protocol::NameProvenance::Network,
+                    },
+                    Err(e) => spine_protocol::NameResolution::Invalid {
+                        name: raw.to_string(),
+                        reason: e.to_string(),
+                    },
+                }
             }
-        }
+            None => {
+                // Remember the miss: an agent retrying a name nobody has should
+                // not re-walk the keyspace every time.
+                state.names.cache_negative(&uri);
+                spine_protocol::NameResolution::NotFound {
+                    name: raw.to_string(),
+                }
+            }
+        },
         Err(e) => spine_protocol::NameResolution::Invalid {
             name: raw.to_string(),
             reason: e.to_string(),
         },
+    }
+}
+
+/// Walk the mesh for a name, if this node has joined one.
+async fn resolve_over_mesh(
+    state: &Arc<BrowserState>,
+    uri: &spine_name::SpineUri,
+) -> Option<spine_name::NameRecord> {
+    let mesh = state.mesh_names.as_ref()?;
+    match mesh.resolve(uri).await {
+        Ok(record) => Some(record),
+        Err(e) => {
+            debug!("mesh resolution of {uri} failed: {e}");
+            None
+        }
     }
 }
 
@@ -330,6 +374,16 @@ async fn handle_command(
             use spine_name::Resolver;
             match state.names.find_providers(&capability).await {
                 Ok(mut providers) => {
+                    // An empty local index is not an answer — "who can do X" is
+                    // exactly the question the mesh exists to route.
+                    if providers.is_empty() {
+                        if let Some(mesh) = state.mesh_names.as_ref() {
+                            providers = mesh.find_providers(&capability).await.unwrap_or_default();
+                            for record in &providers {
+                                let _ = state.names.cache_record(record.clone());
+                            }
+                        }
+                    }
                     if let Some(n) = limit {
                         providers.truncate(n);
                     }
@@ -1283,6 +1337,21 @@ async fn main() -> Result<()> {
         .with_trust(spine_agentic::TrustLevel::Core);
     let agentic_runtime = Arc::new(spine_agentic::AgenticWebRuntime::new(profile));
 
+    // Join the namespace before serving, so the first client request already has
+    // a mesh to route through. A node that cannot reach a seed still starts: it
+    // serves the names it holds and says plainly that it is not routing.
+    let mesh_names = if config.namespace.enabled {
+        match namespace::join(&config.namespace, &config.server.host).await {
+            Ok(resolver) => Some(resolver),
+            Err(e) => {
+                error!("failed to join the spine:// namespace: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(BrowserState {
         sessions: DashMap::new(),
         knowledge_base: DashMap::new(),
@@ -1301,6 +1370,7 @@ async fn main() -> Result<()> {
         shutting_down: std::sync::atomic::AtomicBool::new(false),
         config: config.clone(),
         names: spine_name::LocalResolver::new(unix_now),
+        mesh_names,
     });
 
     // Load persisted sessions

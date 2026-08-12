@@ -35,6 +35,11 @@
 //! [logging]
 //! format = "json"
 //! level = "info"
+//!
+//! [namespace]
+//! enabled = true
+//! seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
+//! advertise = ["203.0.113.4:9440"]
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -48,6 +53,44 @@ pub struct SpineConfig {
     pub tls: TlsConfig,
     pub cluster: ClusterConfig,
     pub logging: LoggingConfig,
+    pub namespace: NamespaceConfig,
+}
+
+/// How this node enters the `spine://` namespace.
+///
+/// A Kademlia node converges on the right neighbours from any single honest
+/// contact, but it cannot acquire the first one by routing — routing is what
+/// having a contact enables. That first contact has to come from outside the
+/// system, and this is where it comes from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NamespaceConfig {
+    /// Seed nodes to dial on startup.
+    ///
+    /// Accepts either a bare `host:port` or a `spine://host:h:p/` name — the
+    /// latter because a seed list is a natural thing to paste from a name, and
+    /// silently rejecting the namespace's own spelling for its own bootstrap
+    /// addresses would be a poor joke.
+    pub seeds: Vec<String>,
+    /// Addresses this node advertises to peers it meets.
+    ///
+    /// Empty means "do not advertise": the node resolves names but is never
+    /// offered to anyone else as a contact. That is the right default behind
+    /// NAT, where an advertised address would simply fail to dial, and the
+    /// wrong one for a node meant to serve as a seed itself.
+    pub advertise: Vec<String>,
+    /// Whether to join the namespace at all. Off by default: a node with no
+    /// seeds configured has nothing to join.
+    pub enabled: bool,
+    /// Port the mesh listener binds, on the same host as the main server.
+    pub port: u16,
+    /// Where this node's mesh identity is kept.
+    ///
+    /// The key is the node's keyspace position, so losing it does not merely
+    /// change a credential — it moves the node to a different point in the DHT
+    /// and orphans every record published under the old name. It is persisted
+    /// for that reason, not for convenience.
+    pub key_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,6 +224,54 @@ impl Default for LoggingConfig {
     }
 }
 
+impl Default for NamespaceConfig {
+    fn default() -> Self {
+        Self {
+            seeds: Vec::new(),
+            advertise: Vec::new(),
+            enabled: false,
+            port: 9440,
+            key_path: "spine-node.key".into(),
+        }
+    }
+}
+
+impl NamespaceConfig {
+    /// The seed list as dialable `host:port` strings.
+    ///
+    /// Entries spelled as `spine://host:…` names are unwrapped to the address
+    /// they contain; anything else is passed through untouched, so a plain
+    /// `host:port` works and an unparseable entry fails at dial time with the
+    /// text the operator actually wrote rather than being dropped silently here.
+    pub fn seed_addresses(&self) -> Vec<String> {
+        self.seeds
+            .iter()
+            .map(|s| host_address(s).unwrap_or_else(|| s.clone()))
+            .collect()
+    }
+}
+
+/// Split a comma- or whitespace-separated env var into non-empty entries.
+fn split_list(raw: &str) -> Vec<String> {
+    raw.split([',', ' ', '\t', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Extract the `host:port` from a `spine://host:…` name, if that is what it is.
+fn host_address(raw: &str) -> Option<String> {
+    let uri = spine_name::SpineUri::parse(raw).ok()?;
+    match uri.authority() {
+        spine_name::Authority::Host { host, port } => Some(match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host.clone(),
+        }),
+        _ => None,
+    }
+}
+
 impl SpineConfig {
     /// Load configuration: spine.toml → env overrides → defaults.
     pub fn load() -> Self {
@@ -261,6 +352,15 @@ impl SpineConfig {
                 config.server.shutdown_timeout_secs = s;
             }
         }
+        // Seeds are the one setting a container image cannot bake in, since the
+        // mesh a node joins is a deployment fact rather than a build one.
+        if let Ok(v) = std::env::var("SPINE_SEEDS") {
+            config.namespace.seeds = split_list(&v);
+            config.namespace.enabled = !config.namespace.seeds.is_empty();
+        }
+        if let Ok(v) = std::env::var("SPINE_ADVERTISE") {
+            config.namespace.advertise = split_list(&v);
+        }
 
         config
     }
@@ -277,6 +377,56 @@ mod tests {
         assert_eq!(config.server.max_sessions, 1000);
         assert!(!config.tls.enabled);
         assert_eq!(config.logging.format, "pretty");
+    }
+
+    /// A seed list should accept the namespace's own spelling for an address as
+    /// readily as a bare one — an operator copying a `spine://host:…` name into
+    /// the seed list is doing the obvious thing.
+    #[test]
+    fn seeds_accept_both_spine_names_and_bare_addresses() {
+        let fragment = r#"
+[namespace]
+enabled = true
+seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
+"#;
+        let config: SpineConfig = toml::from_str(fragment).unwrap();
+        assert_eq!(
+            config.namespace.seed_addresses(),
+            vec!["seed.example.org:9440", "10.0.0.7:9440"]
+        );
+    }
+
+    /// An entry that is neither must survive to the dial, so the error names
+    /// what the operator actually wrote instead of vanishing here.
+    #[test]
+    fn an_unrecognized_seed_entry_is_passed_through_not_dropped() {
+        let config = SpineConfig {
+            namespace: NamespaceConfig {
+                seeds: vec!["not a name or an address".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            config.namespace.seed_addresses(),
+            vec!["not a name or an address"]
+        );
+    }
+
+    /// A `cap:` or `did:` name carries no address, so it must not be mistaken
+    /// for one.
+    #[test]
+    fn a_non_host_name_is_not_treated_as_an_address() {
+        assert_eq!(host_address("spine://cap:web.search/"), None);
+    }
+
+    #[test]
+    fn a_seed_env_var_splits_on_commas_and_whitespace() {
+        assert_eq!(
+            split_list(" a:1, b:2\tc:3 "),
+            vec!["a:1".to_string(), "b:2".into(), "c:3".into()]
+        );
+        assert!(split_list("  ,, ").is_empty());
     }
 
     #[test]
