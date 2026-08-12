@@ -48,6 +48,8 @@ use std::collections::VecDeque;
 use subtle::ConstantTimeEq;
 
 // ML-KEM (FIPS 203) post-quantum KEM
+pub mod handshake;
+
 use ml_kem::kem::{Decapsulate, Encapsulate, EncapsulationKey, DecapsulationKey};
 use ml_kem::{MlKem512, MlKem768, MlKem1024, KemCore, EncodedSizeUser, Encoded,
     MlKem512Params, MlKem768Params, MlKem1024Params};
