@@ -33,6 +33,15 @@ pub enum Provenance {
     Local,
     /// Fetched from the network.
     Network,
+    /// Read straight out of a `host:` name, which carries its own address.
+    ///
+    /// Kept distinct from every other provenance because it is the only one that
+    /// involved no attestation at all: nobody signed it and nobody was asked.
+    /// A caller that treats this like a resolved `did:` name has silently
+    /// dropped the namespace's trust model on the floor, so the distinction has
+    /// to survive all the way to the caller rather than being flattened into
+    /// `Local`.
+    Address,
 }
 
 /// A resolved name.
@@ -50,6 +59,14 @@ impl Resolution {
     /// Whether the answer is known-current rather than possibly outdated.
     pub fn is_fresh(&self) -> bool {
         !matches!(self.provenance, Provenance::StaleCache)
+    }
+
+    /// Whether anyone actually vouched for this binding.
+    ///
+    /// False for a `host:` name, whose "resolution" is just its own address read
+    /// back. Worth checking before treating a resolution as authoritative.
+    pub fn is_attested(&self) -> bool {
+        !matches!(self.provenance, Provenance::Address) && self.record.is_attested()
     }
 }
 
@@ -180,6 +197,14 @@ impl Resolver for LocalResolver {
 
         let now = self.now();
 
+        // A `host:` name resolves without consulting anything: the address is
+        // in the name. Answered before the cache, since caching a restatement
+        // of the input would only add a way for it to go stale.
+        if matches!(uri.authority(), Authority::Host { .. }) {
+            let record = NameRecord::for_host(uri.clone(), now, crate::DEFAULT_TTL_SECS)?;
+            return Ok(Resolution::new(record, Provenance::Address));
+        }
+
         match self.cache.lock().unwrap().get(uri, now) {
             CacheLookup::Fresh(record) => {
                 return Ok(Resolution::new(record, Provenance::Cache));
@@ -233,6 +258,48 @@ mod tests {
         }
         rec.sign(&key).unwrap();
         rec
+    }
+
+    /// The escape hatch: a `host:` name resolves with nothing published and no
+    /// network, because the address is in the name.
+    #[tokio::test]
+    async fn a_host_name_resolves_to_the_address_it_contains() {
+        let resolver = LocalResolver::at_time(1_000);
+        let uri = SpineUri::parse("spine://host:seed.example.org:9440/").unwrap();
+
+        let hit = resolver.resolve(&uri).await.unwrap();
+        assert_eq!(hit.provenance, Provenance::Address);
+        assert_eq!(hit.record.endpoints.len(), 1);
+        assert_eq!(hit.record.endpoints[0].address, "seed.example.org:9440");
+    }
+
+    /// The point of the separate provenance: this binding is nobody's word.
+    #[tokio::test]
+    async fn a_host_resolution_is_not_attested() {
+        let resolver = LocalResolver::at_time(1_000);
+        let uri = SpineUri::parse("spine://host:seed.example.org:9440/").unwrap();
+
+        let hit = resolver.resolve(&uri).await.unwrap();
+        assert!(!hit.is_attested(), "nothing signed a hostname");
+        assert!(
+            hit.record.verify().is_err(),
+            "and it must not pass verification either"
+        );
+        // A did: name, by contrast, carries a signature that stands on its own.
+        let signed = signed(3, 1_000, 3_600, &[], 1);
+        resolver.publish(signed.clone()).unwrap();
+        assert!(resolver.resolve(&signed.name).await.unwrap().is_attested());
+    }
+
+    /// A port-less host is still usable — the transport supplies its default —
+    /// so it must not be silently dropped or turned into `host:0`.
+    #[tokio::test]
+    async fn a_host_name_without_a_port_keeps_the_bare_host() {
+        let resolver = LocalResolver::at_time(1_000);
+        let uri = SpineUri::parse("spine://host:seed.example.org/").unwrap();
+
+        let hit = resolver.resolve(&uri).await.unwrap();
+        assert_eq!(hit.record.endpoints[0].address, "seed.example.org");
     }
 
     #[tokio::test]

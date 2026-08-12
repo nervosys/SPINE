@@ -105,6 +105,46 @@ impl NameRecord {
         })
     }
 
+    /// A record for a `host:` name, derived from the name itself.
+    ///
+    /// This is the one binding that needs no publisher: `spine://host:h:9440/`
+    /// already *contains* its endpoint, so resolving it is a restatement rather
+    /// than a lookup. That is exactly why the escape hatch works before any DHT
+    /// contact exists — and exactly why it is the weakest thing in the
+    /// namespace.
+    ///
+    /// The result is unsigned and unsignable, since a hostname is not a key.
+    /// [`NameRecord::verify`] will reject it, which is correct: nothing here has
+    /// been attested, and whoever answers at that address is simply believed.
+    /// Use it to reach a seed, then rely on what the seed proves about itself.
+    pub fn for_host(name: SpineUri, now: u64, ttl_secs: u32) -> Result<Self, NameError> {
+        let Authority::Host { host, port } = name.authority() else {
+            return Err(NameError::InvalidAuthority(name.to_string()));
+        };
+        let address = match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host.clone(),
+        };
+        Ok(Self {
+            name,
+            seq: 0,
+            ttl_secs,
+            published_at: now,
+            endpoints: vec![Endpoint::new("tcp", address)],
+            capabilities: Vec::new(),
+            content_hash: None,
+            links: Vec::new(),
+            meta: BTreeMap::new(),
+            signature: Vec::new(),
+        })
+    }
+
+    /// Whether this record carries a signature that [`NameRecord::verify`] could
+    /// accept — false for anything derived from a `host:` name.
+    pub fn is_attested(&self) -> bool {
+        matches!(self.name.authority(), Authority::Did(_)) && self.signature.len() == 64
+    }
+
     pub fn with_ttl(mut self, ttl_secs: u32) -> Self {
         self.ttl_secs = ttl_secs;
         self

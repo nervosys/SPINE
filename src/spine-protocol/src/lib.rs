@@ -1118,6 +1118,12 @@ pub enum NameProvenance {
     Local,
     /// Fetched from the network.
     Network,
+    /// Read out of a `host:` name, which carries its own address.
+    ///
+    /// Nothing attested this binding — no signature, and nobody asked. A client
+    /// that treats it like any other answer has lost the namespace's trust
+    /// model, so it is reported distinctly rather than folded into `Local`.
+    Address,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
