@@ -43,6 +43,9 @@ pub struct WsNameTransport {
     identities: DashMap<AgentId, [u8; 32]>,
     /// Live outbound connections.
     pool: DashMap<AgentId, ReplyPath>,
+    /// Connections opened to seed URLs during bootstrap, keyed by URL because
+    /// the peer behind them has no known identity yet.
+    bootstrap: DashMap<String, ReplyPath>,
     inbound: mpsc::Sender<Inbound>,
     security: Security,
 }
@@ -72,6 +75,7 @@ impl WsNameTransport {
             urls: DashMap::new(),
             identities: DashMap::new(),
             pool: DashMap::new(),
+            bootstrap: DashMap::new(),
             inbound: tx,
             security,
         });
@@ -148,7 +152,7 @@ impl WsNameTransport {
         Ok(transport)
     }
 
-    async fn send_to(&self, target: AgentId, envelope: &MeshEnvelope) -> Result<(), NameMeshError> {
+    async fn deliver(&self, target: AgentId, envelope: &MeshEnvelope) -> Result<(), NameMeshError> {
         let conn = self.connection(&target).await?;
         if conn.send(envelope.clone()).await.is_ok() {
             return Ok(());
@@ -159,23 +163,76 @@ impl WsNameTransport {
         let conn = self.connection(&target).await?;
         conn.send(envelope.clone()).await
     }
+
+    /// Connect to a seed URL whose mesh identity is not yet known.
+    ///
+    /// Keyed by URL rather than pooled by agent id, and unpinned even when
+    /// encrypted, for the same reason as the TCP path: the identity is what the
+    /// exchange exists to establish. See [`TcpNameTransport::provisional`].
+    ///
+    /// [`TcpNameTransport::provisional`]: crate::mesh_tcp::TcpNameTransport
+    async fn provisional(&self, endpoint: &str) -> Result<ReplyPath, NameMeshError> {
+        if let Some(existing) = self.bootstrap.get(endpoint) {
+            return Ok(existing.value().clone());
+        }
+
+        let bridge = WebSocketBridge::connect(endpoint)
+            .await
+            .map_err(|e| NameMeshError::Transport(format!("ws connect seed {endpoint}: {e}")))?;
+        let mut stream = WebSocketClientStream::new(bridge);
+
+        let path = match &self.security {
+            Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
+            Security::Encrypted(cfg) => {
+                let session = client_handshake(
+                    &mut stream,
+                    &cfg.signing,
+                    None,
+                    cfg.seed.wrapping_add(self.bootstrap.len() as u64),
+                )
+                .await?;
+                ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
+            }
+        };
+        self.bootstrap.insert(endpoint.to_string(), path.clone());
+        Ok(path)
+    }
 }
 
 #[async_trait]
 impl NameTransport for WsNameTransport {
     async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
         match envelope.to {
-            crate::mesh::MeshTarget::Agent(id) => self.send_to(id, &envelope).await,
+            crate::mesh::MeshTarget::Agent(id) => self.deliver(id, &envelope).await,
             _ => {
                 let peers: Vec<AgentId> = self.urls.iter().map(|e| *e.key()).collect();
                 for peer in peers {
                     let mut addressed = envelope.clone();
                     addressed.to = crate::mesh::MeshTarget::Agent(peer);
-                    let _ = self.send_to(peer, &addressed).await;
+                    let _ = self.deliver(peer, &addressed).await;
                 }
                 Ok(())
             }
         }
+    }
+
+    async fn send_to(&self, endpoint: &str, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        self.provisional(endpoint).await?.send(envelope).await
+    }
+
+    /// Take the first endpoint spelled as a WebSocket URL, ignoring bare socket
+    /// addresses meant for another transport.
+    async fn learn(&self, agent: AgentId, endpoints: &[String]) {
+        if let Some(url) = endpoints
+            .iter()
+            .find(|e| e.starts_with("ws://") || e.starts_with("wss://"))
+        {
+            self.set_url(agent, url.clone());
+        }
+    }
+
+    async fn release(&self, endpoint: &str) {
+        self.bootstrap.remove(endpoint);
     }
 }
 

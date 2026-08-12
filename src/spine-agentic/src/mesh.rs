@@ -222,6 +222,12 @@ pub enum MeshPayload {
     NameResolveRequest(crate::naming::ResolveRequest),
     /// Answer a resolution request: the record, providers, or closer nodes.
     NameResolveResponse(Box<crate::naming::ResolveResponse>),
+    /// Introduce this node to a peer reached by address alone, and ask to be
+    /// introduced in return. The first message of bootstrap.
+    NameHello(crate::naming::NameHello),
+    /// Answer a [`MeshPayload::NameHello`]: who the responder is, and the
+    /// keyspace peers it can refer the newcomer to.
+    NameHelloAck(Box<crate::naming::NameHelloAck>),
 }
 
 /// Compact agent message for mesh transport (avoids Box<MessageContent> serialization issues).
@@ -649,6 +655,51 @@ impl MeshNode {
             MeshTarget::Agent(peer),
             MeshPayload::NameResolveResponse(Box::new(response)),
         )
+    }
+
+    /// Build an envelope introducing this node to a peer known only by address.
+    ///
+    /// Addressed to [`MeshTarget::Broadcast`] because the whole point is that the
+    /// recipient's agent id is not yet known — "whoever is listening at this
+    /// address". The naming handler consumes it, so it is never gossiped onward.
+    pub fn name_hello(&self, endpoints: Vec<String>) -> MeshEnvelope {
+        self.create_envelope(
+            MeshTarget::Broadcast,
+            MeshPayload::NameHello(crate::naming::NameHello {
+                public_key: *self.identity.public_key(),
+                endpoints,
+            }),
+        )
+    }
+
+    /// Build an envelope answering a [`MeshPayload::NameHello`].
+    pub fn name_hello_ack(
+        &self,
+        peer: AgentId,
+        endpoints: Vec<String>,
+        closer: Vec<crate::naming::KeyspacePeer>,
+    ) -> MeshEnvelope {
+        self.create_envelope(
+            MeshTarget::Agent(peer),
+            MeshPayload::NameHelloAck(Box::new(crate::naming::NameHelloAck {
+                public_key: *self.identity.public_key(),
+                endpoints,
+                closer,
+            })),
+        )
+    }
+
+    /// Verify an envelope against a key carried *in the envelope itself*, rather
+    /// than one already trusted for its sender.
+    ///
+    /// [`MeshNode::process_envelope`] can only check signatures from senders
+    /// whose keys it already holds, which is exactly the situation bootstrap does
+    /// not have. Checking against the carried key still proves something worth
+    /// having: the sender holds the private half, so it cannot claim a keyspace
+    /// position it is unable to sign for.
+    pub fn verify_carried_key(envelope: &MeshEnvelope, public_key: &[u8; 32]) -> bool {
+        let sig_data = Self::signature_data(&envelope.id, &envelope.from, &envelope.payload);
+        crate::identity::Ed25519Keypair::verify(public_key, &sig_data, &envelope.signature)
     }
 
     /// Create a signed mesh envelope for a message.

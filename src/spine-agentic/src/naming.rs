@@ -25,6 +25,8 @@ use std::collections::{HashMap, HashSet};
 
 use spine_name::{NameKey, NameRecord, NodeInfo, RoutingTable, SpineUri};
 
+use crate::AgentId;
+
 /// How many peers a lookup queries per round. Kademlia's α: enough parallelism
 /// to hide one slow peer, small enough not to flood the mesh.
 pub const ALPHA: usize = 3;
@@ -83,6 +85,34 @@ pub struct ResolveRequest {
     pub query: ResolveQuery,
 }
 
+/// A keyspace neighbour together with the mesh identity needed to address it.
+///
+/// The two routing spaces have to travel together. A bare [`NodeInfo`] says
+/// *where a node sits in the keyspace* and what addresses it claims, but an
+/// envelope is addressed to an [`AgentId`] — so a peer learned purely as a
+/// `NodeInfo` is a peer nothing can send to. Referrals that omit the agent id
+/// therefore look like progress and produce none: the lookup adds the node to
+/// its shortlist, fails to dispatch to it, and marks it unreachable.
+///
+/// Pairing them at the point of referral is what lets a lookup walk to nodes it
+/// was never manually introduced to, which is the whole point of a DHT.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyspacePeer {
+    pub info: NodeInfo,
+    pub agent_id: AgentId,
+}
+
+impl KeyspacePeer {
+    pub fn new(info: NodeInfo, agent_id: AgentId) -> Self {
+        Self { info, agent_id }
+    }
+
+    /// Keyspace position — shorthand for `self.info.id`.
+    pub fn key(&self) -> NameKey {
+        self.info.id
+    }
+}
+
 /// An answer to a [`ResolveRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolveResponse {
@@ -93,9 +123,10 @@ pub struct ResolveResponse {
     #[serde(default)]
     pub providers: Vec<NameRecord>,
     /// Nodes closer to the target than this one — how a lookup makes progress
-    /// when the answer is elsewhere.
+    /// when the answer is elsewhere. Carries mesh identities as well as keyspace
+    /// positions, so the asker can actually dial what it is referred to.
     #[serde(default)]
-    pub closer: Vec<NodeInfo>,
+    pub closer: Vec<KeyspacePeer>,
 }
 
 impl ResolveResponse {
@@ -112,6 +143,45 @@ impl ResolveResponse {
     pub fn is_answer(&self) -> bool {
         self.record.is_some() || !self.providers.is_empty()
     }
+}
+
+/// A node introducing itself to a peer it reached by address alone.
+///
+/// Bootstrap's chicken-and-egg problem is that every other message is addressed
+/// to an [`AgentId`], but a seed node is known only as `host:port`. So the hello
+/// carries the sender's Ed25519 key explicitly rather than relying on the
+/// recipient already holding it: the envelope signature verifies *against the
+/// carried key*, which proves the sender holds the corresponding private key and
+/// binds that key to the envelope's `from` agent id.
+///
+/// That is not a claim taken on trust. The key is simultaneously the sender's
+/// keyspace position, so it cannot lie about where in the DHT it sits without
+/// producing a signature it cannot make — the same self-certification a `did:`
+/// name has, applied to node identity. What it *can* lie about is which
+/// endpoints it claims, which costs a failed dial and nothing more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameHello {
+    /// The sender's Ed25519 public key, and so its keyspace position.
+    pub public_key: [u8; 32],
+    /// Addresses at which the sender can be reached.
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+}
+
+/// The answer to a [`NameHello`]: who answered, and who else to talk to.
+///
+/// Returning neighbours here rather than making the newcomer run a separate
+/// query is what turns one reachable seed into a populated routing table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NameHelloAck {
+    /// The responder's Ed25519 public key, verified the same way as [`NameHello`].
+    pub public_key: [u8; 32],
+    /// Addresses at which the responder can be reached.
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+    /// Peers the responder knows, to seed the newcomer's routing table.
+    #[serde(default)]
+    pub closer: Vec<KeyspacePeer>,
 }
 
 /// The outcome of a completed lookup.
@@ -256,7 +326,7 @@ impl Lookup {
             }
         }
 
-        self.absorb_nodes(response.closer.clone());
+        self.absorb_nodes(response.closer.iter().map(|p| p.info.clone()).collect());
     }
 
     /// Mark a node as unreachable so the lookup stops waiting on it.
@@ -339,6 +409,11 @@ pub struct NameService {
     store: spine_name::RecordStore,
     /// Keyspace-aware peer table, distinct from the mesh's AgentId routing.
     routing: RoutingTable,
+    /// Keyspace position -> mesh identity: the bridge between the two routing
+    /// spaces. Kept beside the routing table rather than in the driver above it
+    /// because [`NameService::handle_request`] has to *emit* mesh identities
+    /// when it refers a peer onward, not merely consume them.
+    peers: HashMap<NameKey, AgentId>,
     /// In-flight lookups by request id.
     lookups: HashMap<u64, Lookup>,
     next_request_id: u64,
@@ -353,6 +428,7 @@ impl NameService {
             local_key,
             store: spine_name::RecordStore::new(),
             routing: RoutingTable::new(local_key),
+            peers: HashMap::new(),
             lookups: HashMap::new(),
             next_request_id: 1,
         }
@@ -370,9 +446,44 @@ impl NameService {
         Ok(())
     }
 
-    /// Learn about a keyspace peer.
+    /// Learn about a keyspace peer whose mesh identity is not known.
+    ///
+    /// Such a peer can be *referred to* but not dialed, so prefer
+    /// [`NameService::add_peer`] wherever the agent id is available.
     pub fn add_node(&mut self, node: NodeInfo) -> bool {
         self.routing.insert(node)
+    }
+
+    /// Learn about a keyspace peer in both routing spaces at once.
+    pub fn add_peer(&mut self, node: NodeInfo, agent_id: AgentId) -> bool {
+        self.peers.insert(node.id, agent_id);
+        self.routing.insert(node)
+    }
+
+    /// The mesh identity of a keyspace peer, if this node knows it.
+    pub fn agent_for(&self, key: &NameKey) -> Option<AgentId> {
+        self.peers.get(key).copied()
+    }
+
+    /// Keyspace peers that can actually be addressed.
+    pub fn addressable_peers(&self) -> usize {
+        self.peers.len()
+    }
+
+    /// Pair each node with its mesh identity, dropping any that has none.
+    ///
+    /// Referring a peer nobody can dial is worse than staying silent: it looks
+    /// like progress, so the asker spends a round of its budget discovering that
+    /// the contact is useless.
+    fn as_keyspace_peers(&self, nodes: Vec<NodeInfo>) -> Vec<KeyspacePeer> {
+        nodes
+            .into_iter()
+            .filter_map(|n| {
+                self.peers
+                    .get(&n.id)
+                    .map(|agent| KeyspacePeer::new(n, *agent))
+            })
+            .collect()
     }
 
     /// Records held locally.
@@ -409,14 +520,36 @@ impl NameService {
             }
         }
 
-        response.closer = self
+        let closer: Vec<NodeInfo> = self
             .routing
             .closest(&target, K)
             .into_iter()
             .filter(|n| n.id.distance(&target) < self.local_key.distance(&target))
             .collect();
+        response.closer = self.as_keyspace_peers(closer);
 
         response
+    }
+
+    /// Peers to offer a newcomer, nearest to its own keyspace position.
+    ///
+    /// Answering with the neighbours of *the newcomer's* key rather than a
+    /// random sample is what makes a single hello worth a round of Kademlia: the
+    /// contacts it gets back are the ones that belong in its own low buckets.
+    pub fn peers_for_newcomer(&self, newcomer: &NameKey) -> Vec<KeyspacePeer> {
+        let closest = self
+            .routing
+            .closest(newcomer, K + 1)
+            .into_iter()
+            // Never refer a node to itself. The newcomer was just added to this
+            // table, and it is by definition the closest entry to its own key,
+            // so without this it would top every list it asked for — spending a
+            // referral slot, and a dispatch, on a peer it already is. Ask for
+            // K + 1 so dropping it still leaves K.
+            .filter(|n| &n.id != newcomer)
+            .take(K)
+            .collect();
+        self.as_keyspace_peers(closest)
     }
 
     /// Answer a query from local knowledge alone, if it can be.
@@ -458,8 +591,11 @@ impl NameService {
     /// Feed a response into a lookup and get the next wave (empty when done).
     pub fn on_response(&mut self, response: &ResolveResponse) -> Vec<NodeInfo> {
         // Learn the keyspace peers the response mentioned, whatever it answered.
-        for node in &response.closer {
-            self.routing.insert(node.clone());
+        // Both spaces at once: a referral that only reached the routing table
+        // would leave the peer un-dialable and the walk would stall on it.
+        for peer in &response.closer {
+            self.peers.insert(peer.info.id, peer.agent_id);
+            self.routing.insert(peer.info.clone());
         }
         let Some(lookup) = self.lookups.get_mut(&response.request_id) else {
             return Vec::new();
@@ -496,6 +632,7 @@ impl NameService {
             lookup.on_timeout(node);
         }
         self.routing.remove(node);
+        self.peers.remove(node);
     }
 
     /// Drop a lookup's state without taking an outcome.
@@ -557,6 +694,16 @@ mod tests {
         NodeInfo::new(NameKey::of(&[seed]), vec![format!("10.0.0.{seed}:9440")], 100)
     }
 
+    /// A stable mesh identity per seed, so a test peer is addressable.
+    fn agent(seed: u8) -> AgentId {
+        AgentId(uuid::Uuid::from_u128(seed as u128))
+    }
+
+    /// The same node, paired with the mesh identity a referral has to carry.
+    fn peer(seed: u8) -> KeyspacePeer {
+        KeyspacePeer::new(node(seed), agent(seed))
+    }
+
     #[test]
     fn capability_queries_route_to_a_stable_point_in_the_keyspace() {
         let a = ResolveQuery::Capability("web.search".into());
@@ -607,7 +754,7 @@ mod tests {
         let local = NameKey::from_bytes([0xFFu8; 32]);
         let mut svc = NameService::new(local);
         for seed in 1..=30u8 {
-            svc.add_node(node(seed));
+            svc.add_peer(node(seed), agent(seed));
         }
         let wanted = SpineUri::did([1u8; 32]);
         let resp = svc.handle_request(
@@ -623,7 +770,7 @@ mod tests {
         let target = wanted.key();
         for n in &resp.closer {
             assert!(
-                n.id.distance(&target) < local.distance(&target),
+                n.info.id.distance(&target) < local.distance(&target),
                 "returning a non-closer node would stall the walk"
             );
         }
@@ -813,7 +960,7 @@ mod tests {
             request_id: 1,
             record: None,
             providers: vec![],
-            closer: vec![node(1)],
+            closer: vec![peer(1)],
         });
         assert!(
             lookup.next_wave().is_empty(),
@@ -845,10 +992,10 @@ mod tests {
                 if lookup.in_flight() == 0 {
                     break;
                 }
-                let fresh: Vec<NodeInfo> = (0..3)
+                let fresh: Vec<KeyspacePeer> = (0..3)
                     .map(|_| {
                         seed = seed.wrapping_add(1);
-                        node(seed)
+                        peer(seed)
                     })
                     .collect();
                 lookup.on_response(&ResolveResponse {
@@ -960,9 +1107,14 @@ mod tests {
             request_id: id,
             record: None,
             providers: vec![],
-            closer: vec![node(2), node(3)],
+            closer: vec![peer(2), peer(3)],
         });
         assert_eq!(svc.node_count(), 3, "the mesh learns from every exchange");
+        assert_eq!(
+            svc.addressable_peers(),
+            2,
+            "a referral must arrive dialable, not merely positioned"
+        );
     }
 
     #[test]
@@ -1089,7 +1241,10 @@ mod tests {
         assert!(resp.record.is_none());
         // Force the referral even if the holder is not numerically closer: the
         // point under test is that the seeker follows referrals it is given.
-        resp.closer = vec![NodeInfo::new(holder_key, vec!["holder:1".into()], 100)];
+        resp.closer = vec![KeyspacePeer::new(
+            NodeInfo::new(holder_key, vec!["holder:1".into()], 100),
+            agent(9),
+        )];
 
         let wave = seeker.on_response(&resp);
         assert_eq!(wave.len(), 1, "the seeker follows the referral");

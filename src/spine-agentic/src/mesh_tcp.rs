@@ -435,6 +435,9 @@ pub struct TcpNameTransport {
     addresses: DashMap<AgentId, SocketAddr>,
     /// Live outbound connections, one per peer.
     pool: DashMap<AgentId, ReplyPath>,
+    /// Connections opened to bare addresses during bootstrap, keyed by endpoint
+    /// because the peer behind them has no known identity yet.
+    bootstrap: DashMap<String, ReplyPath>,
     /// Expected mesh identity per peer, used to pin the handshake.
     identities: DashMap<AgentId, [u8; 32]>,
     /// Everything read off any connection this transport opened.
@@ -502,6 +505,7 @@ impl TcpNameTransport {
         let transport = Arc::new(Self {
             addresses: DashMap::new(),
             pool: DashMap::new(),
+            bootstrap: DashMap::new(),
             identities: DashMap::new(),
             inbound: tx,
             security,
@@ -598,7 +602,7 @@ impl TcpNameTransport {
     }
 
     /// Send to one peer, re-dialing once if the pooled connection is dead.
-    async fn send_to(&self, target: AgentId, envelope: &MeshEnvelope) -> Result<(), NameMeshError> {
+    async fn deliver(&self, target: AgentId, envelope: &MeshEnvelope) -> Result<(), NameMeshError> {
         let conn = self.connection(&target).await?;
         if conn.send(envelope.clone()).await.is_ok() {
             return Ok(());
@@ -609,13 +613,55 @@ impl TcpNameTransport {
         let conn = self.connection(&target).await?;
         conn.send(envelope.clone()).await
     }
+
+    /// Open a connection to a bare address, for a peer with no known identity.
+    ///
+    /// Deliberately not pooled by [`AgentId`] — there is no agent id yet, which
+    /// is the entire reason this path exists. It is keyed by endpoint instead and
+    /// held only until bootstrap learns who answered, because the connection has
+    /// to outlive the send: the ack comes back on it.
+    ///
+    /// The handshake here is unpinned even in encrypted mode. There is nothing to
+    /// pin it to — the identity is what we are asking for — so the channel is
+    /// confidential but the peer is only authenticated afterwards, by the
+    /// signature over the key its ack carries.
+    async fn provisional(&self, endpoint: &str) -> Result<ReplyPath, NameMeshError> {
+        if let Some(existing) = self.bootstrap.get(endpoint) {
+            return Ok(existing.value().clone());
+        }
+
+        let addr: SocketAddr = endpoint
+            .parse()
+            .map_err(|e| NameMeshError::Transport(format!("bad seed address `{endpoint}`: {e}")))?;
+
+        let mut stream = TcpStream::connect(addr)
+            .await
+            .map_err(|e| NameMeshError::Transport(format!("dial seed {addr}: {e}")))?;
+        let _ = stream.set_nodelay(true);
+
+        let path = match &self.security {
+            Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
+            Security::Encrypted(cfg) => {
+                let session = client_handshake(
+                    &mut stream,
+                    &cfg.signing,
+                    None,
+                    cfg.seed.wrapping_add(self.bootstrap.len() as u64),
+                )
+                .await?;
+                ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
+            }
+        };
+        self.bootstrap.insert(endpoint.to_string(), path.clone());
+        Ok(path)
+    }
 }
 
 #[async_trait]
 impl NameTransport for TcpNameTransport {
     async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
         match envelope.to {
-            crate::mesh::MeshTarget::Agent(id) => self.send_to(id, &envelope).await,
+            crate::mesh::MeshTarget::Agent(id) => self.deliver(id, &envelope).await,
             // A broadcast goes to every peer we can reach. Individual failures
             // are not fatal: an announcement is best-effort by nature.
             _ => {
@@ -623,11 +669,30 @@ impl NameTransport for TcpNameTransport {
                 for peer in peers {
                     let mut addressed = envelope.clone();
                     addressed.to = crate::mesh::MeshTarget::Agent(peer);
-                    let _ = self.send_to(peer, &addressed).await;
+                    let _ = self.deliver(peer, &addressed).await;
                 }
                 Ok(())
             }
         }
+    }
+
+    async fn send_to(&self, endpoint: &str, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        self.provisional(endpoint).await?.send(envelope).await
+    }
+
+    /// Take the first endpoint that parses as a socket address.
+    ///
+    /// A peer may advertise `ws://…` or a hostname this transport cannot use;
+    /// those are skipped rather than treated as an error, because the peer is
+    /// describing itself to every transport at once, not just this one.
+    async fn learn(&self, agent: AgentId, endpoints: &[String]) {
+        if let Some(addr) = endpoints.iter().find_map(|e| e.parse::<SocketAddr>().ok()) {
+            self.set_address(agent, addr);
+        }
+    }
+
+    async fn release(&self, endpoint: &str) {
+        self.bootstrap.remove(endpoint);
     }
 }
 
@@ -938,6 +1003,83 @@ mod tests {
         assert_eq!(found, rec, "resolved across a socket, not a test harness");
         assert!(found.verify().is_ok());
         assert_eq!(seeker.transport.pooled_connections(), 1);
+    }
+
+    // ── Bootstrap ──
+
+    /// The entry-point problem, over a real socket: a node given nothing but an
+    /// address ends up with a peer it can dial and an identity it verified.
+    #[tokio::test]
+    async fn a_node_bootstraps_into_the_mesh_from_an_address_alone() {
+        let seed = spawn_node(40).await;
+        let newcomer = spawn_node(41).await;
+        seed.resolver
+            .set_endpoints(vec![seed.addr.to_string()])
+            .await;
+
+        assert_eq!(newcomer.resolver.peer_count().await, 0);
+        assert_eq!(newcomer.transport.known_addresses(), 0);
+
+        let report = newcomer
+            .resolver
+            .bootstrap(&[seed.addr.to_string()])
+            .await;
+
+        assert!(report.is_connected(), "bootstrap failed: {report:?}");
+        assert_eq!(report.reached[0].key, seed.resolver.local_key());
+        assert_eq!(newcomer.resolver.peer_count().await, 1);
+        assert_eq!(
+            newcomer.transport.known_addresses(),
+            1,
+            "knowing a peer must mean being able to dial it"
+        );
+
+        // The proof it is a real contact and not just a table entry.
+        let rec = record(1, &[]);
+        seed.resolver.publish_local(rec.clone()).await.unwrap();
+        assert_eq!(newcomer.resolver.resolve(&rec.name).await.unwrap(), rec);
+    }
+
+    /// The payoff, and the thing that did not work before this: a lookup reaches
+    /// a node it was never introduced to, by following a referral to it.
+    ///
+    /// Referrals used to carry only a keyspace position, so the seeker could
+    /// place the holder in its shortlist and had no way to address it — every
+    /// walk stopped at the peers someone had configured by hand.
+    #[tokio::test]
+    async fn a_lookup_reaches_a_peer_it_was_never_introduced_to() {
+        let seeker = spawn_node(42).await;
+        let middle = spawn_node(43).await;
+        let holder = spawn_node(44).await;
+
+        // The seeker knows only the middle node; the middle node knows the
+        // holder. Nobody tells the seeker how to reach the holder.
+        introduce(&seeker, &middle).await;
+        middle
+            .resolver
+            .register_peer(
+                &holder.mesh.public_identity(),
+                vec![holder.addr.to_string()],
+                NOW,
+            )
+            .await;
+
+        let rec = record(7, &[]);
+        holder.resolver.publish_local(rec.clone()).await.unwrap();
+
+        assert_eq!(
+            seeker.transport.known_addresses(),
+            1,
+            "the seeker starts out able to dial exactly one peer"
+        );
+
+        let found = seeker.resolver.resolve(&rec.name).await.unwrap();
+        assert_eq!(found, rec, "the walk must reach a peer it was referred to");
+        assert_eq!(
+            seeker.transport.known_addresses(),
+            2,
+            "the referral taught the transport a new address"
+        );
     }
 
     #[tokio::test]

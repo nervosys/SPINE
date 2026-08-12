@@ -86,6 +86,9 @@ pub struct QuicNameTransport {
     identities: DashMap<AgentId, [u8; 32]>,
     /// Live connections, one per peer.
     connections: DashMap<AgentId, Connection>,
+    /// Connections opened to bare seed addresses during bootstrap, keyed by
+    /// endpoint because the peer behind them has no known identity yet.
+    bootstrap: DashMap<String, Connection>,
     inbound: mpsc::Sender<Inbound>,
     /// Identity used to authenticate connections, when authentication is on.
     signing: Option<SigningKey>,
@@ -135,6 +138,7 @@ impl QuicNameTransport {
                 addresses: DashMap::new(),
                 identities: DashMap::new(),
                 connections: DashMap::new(),
+                bootstrap: DashMap::new(),
                 inbound: tx,
                 signing,
                 seed,
@@ -276,6 +280,84 @@ impl QuicNameTransport {
         });
         Ok(())
     }
+
+    /// Connect to a seed address whose mesh identity is not yet known, and run
+    /// one exchange on it.
+    ///
+    /// Cached by endpoint rather than by agent id, because there is no agent id
+    /// yet — establishing one is what the exchange is for. When the transport is
+    /// authenticated the handshake still runs, but unpinned: it proves the peer
+    /// holds *some* key, and the ack's signature is what binds that key to an
+    /// identity we then trust.
+    async fn provisional(&self, endpoint: &str) -> Result<Connection, NameMeshError> {
+        if let Some(existing) = self.bootstrap.get(endpoint) {
+            if existing.close_reason().is_none() {
+                return Ok(existing.value().clone());
+            }
+        }
+        self.bootstrap.remove(endpoint);
+
+        let addr: SocketAddr = endpoint
+            .parse()
+            .map_err(|e| NameMeshError::Transport(format!("bad seed address `{endpoint}`: {e}")))?;
+
+        let connecting = self
+            .endpoint
+            .connect(addr, "localhost")
+            .map_err(|e| NameMeshError::Transport(format!("quic connect seed {addr}: {e}")))?;
+        let connection = tokio::time::timeout(CONNECT_TIMEOUT, connecting)
+            .await
+            .map_err(|_| {
+                NameMeshError::Transport(format!("quic handshake to seed {addr} timed out"))
+            })?
+            .map_err(|e| NameMeshError::Transport(format!("quic handshake {addr}: {e}")))?;
+
+        if let Some(signing) = &self.signing {
+            let (send, recv) = connection
+                .open_bi()
+                .await
+                .map_err(|e| NameMeshError::Transport(format!("open control stream: {e}")))?;
+            let mut stream = QuicStream::new(send, recv);
+            let _session = client_handshake(&mut stream, signing, None, self.seed).await?;
+        }
+
+        self.bootstrap.insert(endpoint.to_string(), connection.clone());
+        Ok(connection)
+    }
+
+    /// Run one exchange over a provisional connection.
+    async fn provisional_exchange(
+        &self,
+        endpoint: &str,
+        envelope: &MeshEnvelope,
+    ) -> Result<(), NameMeshError> {
+        let connection = self.provisional(endpoint).await?;
+        let (send, recv) = connection
+            .open_bi()
+            .await
+            .map_err(|e| NameMeshError::Transport(format!("open seed stream: {e}")))?;
+
+        let mut stream = QuicStream::new(send, recv);
+        crate::mesh_tcp::write_envelope(&mut stream, envelope).await?;
+
+        let inbound = self.inbound.clone();
+        tokio::spawn(async move {
+            match crate::mesh_tcp::read_envelope(&mut stream).await {
+                Ok(Some(reply)) => {
+                    let path = ReplyPath::Plain(SocketTransport::from_writer(stream));
+                    let _ = inbound
+                        .send(Inbound {
+                            envelope: reply,
+                            reply: path,
+                        })
+                        .await;
+                }
+                Ok(None) => {}
+                Err(e) => tracing::debug!("quic bootstrap exchange ended: {e}"),
+            }
+        });
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -293,6 +375,22 @@ impl NameTransport for QuicNameTransport {
                 Ok(())
             }
         }
+    }
+
+    async fn send_to(&self, endpoint: &str, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        self.provisional_exchange(endpoint, &envelope).await
+    }
+
+    /// Take the first endpoint that parses as a socket address, ignoring URLs
+    /// meant for another transport.
+    async fn learn(&self, agent: AgentId, endpoints: &[String]) {
+        if let Some(addr) = endpoints.iter().find_map(|e| e.parse::<SocketAddr>().ok()) {
+            self.set_address(agent, addr);
+        }
+    }
+
+    async fn release(&self, endpoint: &str) {
+        self.bootstrap.remove(endpoint);
     }
 }
 
