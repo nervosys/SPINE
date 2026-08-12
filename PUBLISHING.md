@@ -37,32 +37,33 @@ Tier 0 has no internal dependencies and can go in any order:
 
 ```
 spine-nostd  spine-kernel  spine-gpu  spine-cache  spine-k8s
-spine-storage  spine-parser  spine-neural
+spine-storage  spine-neural  spine-name
 ```
 
 Then, strictly in this order (each line's deps are all already published):
 
 ```
- 1. spine-crypto
- 2. spine-embedded
- 3. spine-knowledge
- 4. spine-recursive
- 5. spine-protocol
- 6. spine-transport
- 7. spine-compiler
- 8. spine-grpc
- 9. spine-cluster
-10. spine-wasm
-11. spine-stream
-12. spine-human
-13. spine-agentic
-14. spine-mechgen
-15. spine-agent
-16. spine-core
-17. spine-web         # umbrella facade — must come after every crate it re-exports
-18. spine-browser     # optional (egui app)
-19. spine-gateway     # optional (binary)
-20. spine-cli         # optional (binary)
+ 1. spine-parser      # depends on spine-name
+ 2. spine-crypto
+ 3. spine-embedded
+ 4. spine-knowledge
+ 5. spine-recursive
+ 6. spine-protocol
+ 7. spine-transport
+ 8. spine-compiler
+ 9. spine-grpc
+10. spine-cluster
+11. spine-wasm
+12. spine-stream
+13. spine-human
+14. spine-agentic     # depends on spine-name
+15. spine-mechgen
+16. spine-agent
+17. spine-core        # depends on spine-name
+18. spine-web         # umbrella facade — must come after every crate it re-exports
+19. spine-browser     # optional (egui app)
+20. spine-gateway     # optional (binary)
+21. spine-cli         # optional (binary)
 ```
 
 `spine-web` references its components through *optional* dependencies, but

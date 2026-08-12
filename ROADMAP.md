@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
-> **Headless semantic browser with adaptive encryption for AI agents**
-> 27 Rust crates · 626 tests · 0 warnings · Apache 2.0
+> **An agentic-first web stack — a World Wide Web built for agents from the ground up**
+> 30 Rust crates · 1,355 tests · 0 warnings · AGPL-3.0-or-later
 
 ---
 
@@ -417,6 +417,78 @@
 - [x] **Serde roundtrip**: Full JSON serialization/deserialization for schemas and extracted data
 - [x] 915 tests passing across 28 crates, 0 failures, 0 Clippy warnings
 
+### Phase 38: The Namespace — `spine://`, Resolution, and the Link Graph
+
+The layer that turns the stack into a *web*. Until this phase SPINE could carry,
+represent, secure, and consume content, but a resource could only be named by
+the socket address of the machine currently serving it — so nothing could be
+linked to, referred to, or found without already knowing where it lived.
+
+- [x] **`spine://` URI scheme** (`spine-name`): parsing, normalization,
+      relative-reference resolution, serde, with four authority kinds
+- [x] **Self-certifying names**: a `did:` authority *is* an Ed25519 public key,
+      so records verify against the name itself — no certificate authority in
+      the resolution path
+- [x] **Content addressing**: `blob:<sha-256>` names are immutable by
+      construction — cacheable forever, never revalidated
+- [x] **Capability addressing**: `cap:<term>` names an ability, not an endpoint,
+      and resolves to ranked providers — "who can do X" without a search engine
+- [x] **Signed `NameRecord`s**: endpoints, capabilities, content-hash validator,
+      typed links, and metadata in one signed object, with `seq`-based
+      convergence and canonical signing bytes stable across serializer changes
+- [x] **DHT keyspace**: 256-bit XOR metric, Kademlia k-bucket routing table with
+      freshness-aware eviction that prefers established contacts
+- [x] **Federated resolution** (`spine-agentic::naming`): iterative lookup as a
+      pumpable state machine, doubly bounded (query-once + round cap) so it
+      terminates even against peers that never return closer nodes, and
+      in-flight-aware so a slow peer's answer is never silently discarded
+- [x] **Live mesh driver** (`spine-agentic::naming_mesh`): envelope dispatch,
+      request/response correlation, timeouts, unreachable-peer fallback, and the
+      `NameKey` ↔ `AgentId` bridge between the two routing spaces — with a
+      `NameTransport` seam so TCP/WS/QUIC/in-process all reuse one code path
+- [x] **Mesh socket layer** (`spine-agentic::mesh_tcp`): the mesh had no
+      transport at all until now — length-prefixed framing with a pre-allocation
+      size bound, pooled connections with transparent single re-dial, and
+      symmetric bidirectional connections so a request is answered on the socket
+      it arrived on (works through NAT; no responder needs the asker's address)
+- [x] **Encrypted mesh transport** (`spine-crypto::handshake`): ML-KEM-768
+      (FIPS 203) + Ed25519 signed-ephemeral handshake, AES-256-GCM frames with
+      per-direction keys and counter nonces. Forward-secret (ephemeral KEM
+      keypair per connection), mutually authenticated against the *same* Ed25519
+      key that places a node in the DHT keyspace and signs its records, so a
+      dialer can pin the peer it meant to reach. Plaintext remains available for
+      trusted networks. **Not externally reviewed** — see the module docs for the
+      threat model and known limits.
+- [x] **WebSocket transport** (`spine-agentic::mesh_ws`): the framing,
+      encryption, reply plumbing, and pooling are generic over the stream, so
+      TCP and WebSocket share one code path and only connection establishment
+      differs. WebSocket traverses the proxies and firewalls that drop bare TCP,
+      and is the only transport a browser-resident agent can open at all.
+- [x] **QUIC transport** (`spine-agentic::mesh_quic`): deliberately *not* the
+      byte-pipe path — one connection per peer, one bidirectional stream per
+      exchange, so concurrent lookups cannot head-of-line block one another.
+      Confidentiality from QUIC's TLS 1.3; mesh-identity authentication from a
+      handshake run once per connection (QUIC guarantees all streams share it),
+      since the self-signed endpoint certs authenticate nothing on their own.
+- [x] **Concurrent α-waves**: `dispatch` issued a lookup wave's requests
+      sequentially, serializing the very parallelism Kademlia's α parameter
+      exists to provide — and letting one unreachable peer's connect timeout
+      consume the whole lookup budget. Now issued together.
+- [x] **Typed link graph** (`Rel`): `requires`/`provides`/`child`/`snapshot`/…,
+      so traversal order is a property of the data, not of prose
+- [x] **Crawl frontier**: routing-key dedup, depth and visit budgets, and an
+      explicit skipped-with-reason list so a bounded crawl never reads as
+      exhaustive
+- [x] **Resolver cache**: stale-while-revalidate, negative caching to absorb
+      swarm fan-out, immutable entries exempt from expiry and eviction
+- [x] **Native linking in the UR** (`Element::AgentLink`): `spine://` hrefs
+      become typed edges, distinct from HTTP links
+- [x] **Protocol + origin**: `ResolveName`/`ResolveNames`/`FindProviders`/
+      `PublishName`/`FetchName`/`CrawlNames`, with content-hash validators as a
+      verifiable ETag, served by `spine-core`
+- [x] Runnable example: `cargo run -p spine-name --example agent_web`
+- [x] 1,355 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks
@@ -436,7 +508,7 @@
 
 ---
 
-## Workspace (27 crates)
+## Workspace (30 crates)
 
 | Crate             | Purpose                                                         |
 | ----------------- | --------------------------------------------------------------- |
@@ -445,6 +517,7 @@
 | `spine-parser`    | Recursive semantic HTML → Unified Representation                |
 | `spine-protocol`  | Binary protocol with encryption, compression, Chameleon         |
 | `spine-agent`     | High-level SDK: `AgentClient` (TCP/TLS/WS)                      |
+| `spine-name`      | The `spine://` namespace: URIs, signed records, DHT keyspace, resolution |
 | `spine-agentic`   | Swarm intelligence, game theory, social networks                |
 | `spine-compiler`  | HLS → HLB compiler                                              |
 | `spine-wasm`      | WebAssembly runtime with host function interop                  |

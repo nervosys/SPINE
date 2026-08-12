@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-1060%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1355%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Pathways INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
@@ -70,6 +70,88 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 - **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats, and exposes an OpenAI-compatible `/v1/chat/completions` SSE endpoint so any existing LLM client can drive a SPINE stack without learning a new SDK.
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
 - **Long-Term Memory**: Persistent knowledge base with tagging, querying, and cross-cluster synchronization.
+
+## The Namespace: `spine://`
+
+A stack is not a web until resources have **names** — something to refer to a
+resource by that outlives the machine currently serving it, that a stranger can
+link to, and that an agent can find without already knowing where it lives.
+`spine-name` is that layer.
+
+```
+spine://did:<52-char base32 ed25519 key>/tools/search   ← self-certifying identity
+spine://blob:<52-char base32 sha-256>/                  ← immutable, content-addressed
+spine://cap:web.search/                                 ← an ability, not an endpoint
+spine://host:node.example.org:9440/                     ← bootstrap escape hatch
+```
+
+Three departures from the WWW's URI, each because agents are the users:
+
+| Property | WWW | SPINE |
+|---|---|---|
+| **Trust** | Name says nothing; a CA vouches for it later | The `did:` authority **is** an Ed25519 public key — records verify against the name itself, no CA in the resolution path |
+| **Discovery** | Names an endpoint; finding one needs a search engine | `cap:` names an *ability* and resolves to ranked providers, federated across nodes |
+| **Caching** | Opaque server-chosen ETag you must trust | `blob:` names are content hashes — immutable by construction, and every record carries a verifiable content-hash validator |
+
+A **`NameRecord`** binds a name to its endpoints, capabilities, content hash,
+typed links, and metadata in one signed object — DNS record and HTTP response
+head fused, because an agent resolving a name wants all of it before it can
+start work. Records converge by `seq` with no coordinator.
+
+Resolution is a **Kademlia iterative lookup** over a 256-bit XOR keyspace,
+carried by the existing agent mesh (`spine-agentic::naming`) and driven over a
+live transport by `naming_mesh::MeshNameResolver` — envelope dispatch, request
+correlation, timeouts, and unreachable-peer fallback — over three transports:
+
+| Transport | Model | Why |
+|---|---|---|
+| `mesh_tcp` | one pooled byte stream per peer | the default; lowest overhead |
+| `mesh_ws` | same, over a WebSocket upgrade | traverses proxies and firewalls that drop bare TCP; the only transport a browser-resident agent can open |
+| `mesh_quic` | one connection per peer, **one stream per exchange** | concurrent lookups cannot head-of-line block one another |
+
+TCP and WebSocket share one stream-generic code path and differ only in how a
+connection is established. QUIC deliberately does not: modelling a QUIC
+connection as a single byte pipe would discard the multiplexing that is the
+whole reason to use it. Connections are symmetric in all three: a request is
+answered on the stream it arrived on, so a responder never needs the asker's
+address and resolution works through NAT. Because an agent's
+keyspace position *is* its Ed25519 signing key, the bridge between mesh routing
+(`AgentId`) and namespace routing (`NameKey`) falls straight out of the identity
+the mesh already authenticates. Links are
+**typed** (`requires`, `provides`, `child`, `snapshot`, …), so a crawl frontier
+orders and budgets a traversal from the data alone — dependencies before
+documentation — instead of inferring intent from prose.
+
+```bash
+cargo run -p spine-name --example agent_web   # publish, discover, resolve, crawl
+```
+
+```
+1. Capability lookup — `web.search`:
+   Search tool  2 endpoint(s)  spine://did:rkeohxlubhyzl7ks3mwtz…
+   Index tool   1 endpoint(s)  spine://did:qe4xodvipulv6vvdkrtmg…
+   (ranked by reachability — no search engine consulted)
+
+4. Crawling from the search tool (depth 2):
+   depth 0  via seed      Search tool  caps=["web.search"]
+   depth 1  via requires  Fetcher      caps=["web.fetch"]
+   depth 1  via peer      Index tool   caps=["web.search", "web.index"]
+```
+
+Reachable over the protocol as `ResolveName`, `ResolveNames` (batched — agents
+discover names a dozen at a time), `FindProviders`, `PublishName`, `FetchName`,
+and `CrawlNames`.
+
+**Resolution traffic is encrypted.** Records are signed, so they could never be
+forged over a plaintext link — but a plaintext link leaks *what an agent is
+looking for*, which is usually a direct read on its task. `spine-crypto::handshake`
+gives the mesh an ML-KEM-768 (FIPS 203) + Ed25519 signed-ephemeral handshake with
+AES-256-GCM frames: forward-secret per connection, and mutually authenticated
+against the same Ed25519 key that positions a node in the DHT and signs its
+records — so "the peer I dialed" and "the peer whose records I trust" are one
+fact, and a dialer can pin it. This construction uses standard primitives in a
+standard arrangement but **has not had external cryptographic review**; the
+module docs state the threat model and its known limits.
 
 ## Agentic-First Primitives
 
@@ -153,7 +235,9 @@ SPINE is composed of 28 specialized crates organized into a cohesive bioinspired
 ### Agent Layer
 
 - **`spine-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the SPINE stack.
-- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities.
+- **`spine-name`**: The namespace — the `spine://` URI scheme, self-certifying `did:`/`blob:`/`cap:` authorities, signed name records, the 256-bit DHT keyspace, the resolver cache, and the typed link graph with its crawl frontier.
+- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities. Also hosts mesh-backed name resolution — `naming` (Kademlia lookup state machines), `naming_mesh` (the live driver: dispatch, correlation, timeouts, and the `NameTransport` seam), `mesh_tcp` (the mesh's socket layer: framing, pooled bidirectional connections, listener, and the encrypted-transport mode), `mesh_ws` (the same over WebSocket, for proxy traversal and browser-resident agents), and `mesh_quic` (stream-per-exchange multiplexing).
+- **`spine-crypto`**: X3DH, RLWE lattice keys, ML-KEM (FIPS 203), and `handshake` — the authenticated, forward-secret channel the mesh runs over.
 - **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
 - **`spine-human`**: Legacy web bridge (compatibility layer) with realistic mouse paths, typing delays, and human-like interaction patterns.
 
@@ -751,10 +835,11 @@ SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
 3. **Transport Layer**: `spine-protocol` (Chameleon Protocol), `spine-transport` (zero-copy I/O, BBR), `spine-stream` (reactive streaming, multiplexing).
 4. **Intelligence Layer**: `spine-neural` (Titans architecture), `spine-crypto` (X3DH, quantum-resistant crypto), `spine-recursive` (extended context retrieval), `spine-knowledge` (CRDT-based distributed memory).
-5. **Agent Layer**: `spine-agent` (SDK), `spine-agentic` (swarm intelligence), `spine-cluster` (distributed coordination with Sybil resistance).
-6. **Compatibility Layer**: `spine-human` — legacy web bridge for bot-detection bypass.
-7. **Application Layer**: `spine-browser` — cross-platform GUI browser.
-8. **Bindings Layer**: `spine-ffi` (C FFI), `spine-go` (Go/cgo), `spine-python`* (PyO3), `spine-js`* (WASM).
+5. **Namespace Layer**: `spine-name` — the `spine://` scheme, self-certifying names, signed records, DHT keyspace, and resolution.
+6. **Agent Layer**: `spine-agent` (SDK), `spine-agentic` (swarm intelligence + mesh-backed name resolution), `spine-cluster` (distributed coordination with Sybil resistance).
+7. **Compatibility Layer**: `spine-human` — legacy web bridge for bot-detection bypass.
+8. **Application Layer**: `spine-browser` — cross-platform GUI browser.
+9. **Bindings Layer**: `spine-ffi` (C FFI), `spine-go` (Go/cgo), `spine-python`* (PyO3), `spine-js`* (WASM).
 
 ### Semantic Extraction Pipeline
 
@@ -1111,7 +1196,7 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 28 crates:
+SPINE includes comprehensive test coverage across all 30 crates:
 
 ```bash
 # Run all tests
@@ -1123,10 +1208,10 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (1,060 tests, 0 failures)
+### Test Summary (1,355 tests, 0 failures)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,060 passed / 0 failed / 5 ignored** across all 28 crates. The five
+**1,355 passed / 0 failed / 5 ignored** across all 30 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
 hidden failures. Per-crate breakdown below remains an approximation —
 exact counts shift with each addition.
