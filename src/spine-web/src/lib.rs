@@ -37,6 +37,12 @@ pub use spine_protocol as protocol;
 #[cfg_attr(docsrs, doc(cfg(feature = "transport")))]
 pub use spine_transport as transport;
 
+/// The `spine://` namespace: URI scheme, signed name records, DHT keyspace,
+/// and resolution. This is the layer that makes SPINE addressable.
+#[cfg(feature = "name")]
+#[cfg_attr(docsrs, doc(cfg(feature = "name")))]
+pub use spine_name as name;
+
 #[cfg(feature = "parser")]
 #[cfg_attr(docsrs, doc(cfg(feature = "parser")))]
 pub use spine_parser as parser;

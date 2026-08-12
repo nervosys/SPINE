@@ -19,6 +19,7 @@ readme = "README.md"
 spine-protocol  = { path = "../spine-protocol",  version = "1.0.0", optional = true }
 spine-transport = { path = "../spine-transport", version = "1.0.0", optional = true }
 spine-parser    = { path = "../spine-parser",    version = "1.0.0", optional = true }
+spine-name      = { path = "../spine-name",      version = "1.0.0", optional = true }
 spine-compiler  = { path = "../spine-compiler",  version = "1.0.0", optional = true }
 spine-wasm      = { path = "../spine-wasm",      version = "1.0.0", optional = true }
 spine-neural    = { path = "../spine-neural",    version = "1.0.0", optional = true }
@@ -42,20 +43,21 @@ spine-k8s       = { path = "../spine-k8s",       version = "1.0.0", optional = t
 [features]
 # A practical agentic-web starter: the wire protocol, transport, and the agent
 # runtime (which transitively brings parser/compiler/wasm/cluster/human).
-default = ["protocol", "transport", "agent", "agentic"]
+default = ["protocol", "transport", "agent", "agentic", "name"]
 
 # Everything that is a reusable library. Heavy optional backends (GPU, SQLite,
 # Kubernetes) come in only via their own features below, not via `full`.
 full = [
     "protocol", "transport", "parser", "compiler", "wasm", "neural", "crypto",
     "agent", "agentic", "cluster", "human", "stream", "recursive", "knowledge",
-    "storage", "kernel", "grpc", "mechgen", "core", "cache",
+    "storage", "kernel", "grpc", "mechgen", "core", "cache", "name",
 ]
 
 # One feature per component crate.
 protocol  = ["dep:spine-protocol"]
 transport = ["dep:spine-transport"]
 parser    = ["dep:spine-parser"]
+name      = ["dep:spine-name"]
 compiler  = ["dep:spine-compiler"]
 wasm      = ["dep:spine-wasm"]
 neural    = ["dep:spine-neural"]
