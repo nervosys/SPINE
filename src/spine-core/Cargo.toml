@@ -11,6 +11,7 @@ authors.workspace = true
 description = "Core engine for the SPINE bioinspired agentic browser"
 
 [dependencies]
+spine-name = { path = "../spine-name", version = "1.0.0" }
 spine-parser = { path = "../spine-parser", version = "1.0.0" }
 spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
 spine-agent = { path = "../spine-agent", version = "1.0.0" }

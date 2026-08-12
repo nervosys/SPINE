@@ -1029,6 +1029,95 @@ pub enum BrowserCommand {
         performative: String,
         content: String,
     },
+
+    // ---- Namespace operations ----
+    //
+    // These are what make SPINE addressable rather than merely connectable.
+    // `Navigate` fetches an HTTP URL from the human web; the commands below
+    // operate on `spine://` names, which resolve through SPINE's own namespace
+    // and verify against their own authority.
+    /// Resolve a `spine://` name to its signed record.
+    ///
+    /// `if_none_match` carries a content hash the caller already holds. When it
+    /// still matches, the responder answers [`NameResolution::Unchanged`] with
+    /// no record body — the ETag exchange, but with a hash that is verifiable
+    /// rather than an opaque server-chosen token.
+    ResolveName {
+        name: String,
+        #[serde(default)]
+        if_none_match: Option<[u8; 32]>,
+    },
+    /// Resolve many names in one round trip.
+    ///
+    /// Agents discover names in batches — a plan references a dozen tools at
+    /// once. Making the batch the native shape, rather than something callers
+    /// rebuild out of a fan-out pool, is the single largest latency difference
+    /// between this and one-URL-per-request.
+    ResolveNames {
+        names: Vec<String>,
+    },
+    /// Find providers of a capability, without consulting a central index.
+    FindProviders {
+        capability: String,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    /// Publish a signed name record. The record carries its own signature, so
+    /// the receiver needs no prior trust relationship with the publisher.
+    PublishName {
+        /// A JSON-encoded `spine_name::NameRecord`.
+        record: serde_json::Value,
+    },
+    /// Fetch the representation a name points at, following the record's
+    /// endpoints.
+    FetchName {
+        name: String,
+        #[serde(default)]
+        if_none_match: Option<[u8; 32]>,
+    },
+    /// Walk the agent web from a seed name, bounded by depth and visit count.
+    CrawlNames {
+        seed: String,
+        #[serde(default)]
+        max_depth: Option<u32>,
+        #[serde(default)]
+        max_visits: Option<usize>,
+    },
+}
+
+/// The result of a name resolution.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub enum NameResolution {
+    /// Resolved; the record is a JSON-encoded `spine_name::NameRecord`.
+    Resolved {
+        record: serde_json::Value,
+        /// Where the answer came from — a caller deciding whether to retry
+        /// needs to know whether it got a network answer or a stale cache one.
+        provenance: NameProvenance,
+    },
+    /// The caller's `if_none_match` hash still matches, so no body was sent.
+    Unchanged {
+        /// Seconds the caller may keep treating its copy as fresh.
+        ttl_secs: u32,
+    },
+    /// No record exists for that name.
+    NotFound { name: String },
+    /// The name was malformed, or names a set rather than a single record.
+    Invalid { name: String, reason: String },
+}
+
+/// Where a resolution came from. Mirrors `spine_name::Provenance` at the
+/// protocol boundary so the wire format does not depend on that crate's layout.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum NameProvenance {
+    /// Fresh cache hit — no round trip.
+    Cache,
+    /// Cache hit past its TTL; usable, but a refresh is advisable.
+    StaleCache,
+    /// Served from the responder's own store.
+    Local,
+    /// Fetched from the network.
+    Network,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -119,6 +119,10 @@ struct BrowserState {
     shutting_down: std::sync::atomic::AtomicBool,
     /// Server configuration
     config: SpineConfig,
+    /// The namespace this node serves: names it publishes, plus records it has
+    /// learned. This is what makes the node an *origin* in the agent web rather
+    /// than only a proxy onto the human one.
+    names: spine_name::LocalResolver,
 }
 
 impl BrowserState {
@@ -205,6 +209,77 @@ impl BrowserState {
     }
 }
 
+/// Wall-clock seconds since the Unix epoch, for record freshness.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Map a resolver provenance onto its protocol-level counterpart.
+fn wire_provenance(p: spine_name::Provenance) -> spine_protocol::NameProvenance {
+    match p {
+        spine_name::Provenance::Cache => spine_protocol::NameProvenance::Cache,
+        spine_name::Provenance::StaleCache => spine_protocol::NameProvenance::StaleCache,
+        spine_name::Provenance::Local => spine_protocol::NameProvenance::Local,
+        spine_name::Provenance::Network => spine_protocol::NameProvenance::Network,
+    }
+}
+
+/// Resolve one name, honouring a caller-supplied content-hash validator.
+async fn resolve_one(
+    state: &Arc<BrowserState>,
+    raw: &str,
+    if_none_match: Option<[u8; 32]>,
+) -> spine_protocol::NameResolution {
+    use spine_name::Resolver;
+
+    let uri = match spine_name::SpineUri::parse(raw) {
+        Ok(u) => u,
+        Err(e) => {
+            return spine_protocol::NameResolution::Invalid {
+                name: raw.to_string(),
+                reason: e.to_string(),
+            }
+        }
+    };
+
+    match state.names.resolve(&uri).await {
+        Ok(resolution) => {
+            // The validator exchange: if the caller already holds this exact
+            // representation, say so and send no body. The hash is the content's
+            // own, so unlike an ETag the caller can verify the claim itself.
+            if let (Some(theirs), Some(ours)) = (if_none_match, resolution.record.content_hash) {
+                if theirs == ours {
+                    return spine_protocol::NameResolution::Unchanged {
+                        ttl_secs: resolution.record.remaining_ttl(state.names.now()) as u32,
+                    };
+                }
+            }
+            match serde_json::to_value(&resolution.record) {
+                Ok(record) => spine_protocol::NameResolution::Resolved {
+                    record,
+                    provenance: wire_provenance(resolution.provenance),
+                },
+                Err(e) => spine_protocol::NameResolution::Invalid {
+                    name: raw.to_string(),
+                    reason: e.to_string(),
+                },
+            }
+        }
+        Err(spine_name::NameError::NotFound(_)) => {
+            spine_protocol::NameResolution::NotFound {
+                name: raw.to_string(),
+            }
+        }
+        Err(e) => spine_protocol::NameResolution::Invalid {
+            name: raw.to_string(),
+            reason: e.to_string(),
+        },
+    }
+}
+
 #[instrument(skip(state, session_id, request_id))]
 async fn handle_command(
     state: &Arc<BrowserState>,
@@ -223,6 +298,176 @@ async fn handle_command(
 
     let mut latent_to_stream = Vec::new();
     let response = match command {
+        BrowserCommand::ResolveName {
+            name,
+            if_none_match,
+        } => {
+            let resolution = resolve_one(state, &name, if_none_match).await;
+            Response {
+                id: request_id,
+                result: Some(serde_json::to_value(resolution).unwrap_or_default()),
+                error: None,
+            }
+        }
+
+        BrowserCommand::ResolveNames { names } => {
+            // One round trip for the whole batch. Each name resolves
+            // independently, so a single bad name never fails the others.
+            let mut results = Vec::with_capacity(names.len());
+            for name in &names {
+                results.push(resolve_one(state, name, None).await);
+            }
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({
+                    "resolutions": serde_json::to_value(&results).unwrap_or_default(),
+                })),
+                error: None,
+            }
+        }
+
+        BrowserCommand::FindProviders { capability, limit } => {
+            use spine_name::Resolver;
+            match state.names.find_providers(&capability).await {
+                Ok(mut providers) => {
+                    if let Some(n) = limit {
+                        providers.truncate(n);
+                    }
+                    Response {
+                        id: request_id,
+                        result: Some(serde_json::json!({
+                            "capability": capability,
+                            "providers": serde_json::to_value(&providers).unwrap_or_default(),
+                            "count": providers.len(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => Response {
+                    id: request_id,
+                    result: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+
+        BrowserCommand::PublishName { record } => {
+            match serde_json::from_value::<spine_name::NameRecord>(record) {
+                // publish() verifies the signature, so an unsigned or forged
+                // record is rejected here rather than becoming servable state.
+                Ok(record) => {
+                    let name = record.name.to_string();
+                    match state.names.publish(record) {
+                        Ok(()) => Response {
+                            id: request_id,
+                            result: Some(serde_json::json!({
+                                "status": "published",
+                                "name": name,
+                            })),
+                            error: None,
+                        },
+                        Err(e) => Response {
+                            id: request_id,
+                            result: None,
+                            error: Some(format!("record rejected: {e}")),
+                        },
+                    }
+                }
+                Err(e) => Response {
+                    id: request_id,
+                    result: None,
+                    error: Some(format!("malformed record: {e}")),
+                },
+            }
+        }
+
+        BrowserCommand::FetchName {
+            name,
+            if_none_match,
+        } => {
+            // Resolve first, then hand back the endpoints to dial. Fetching the
+            // bytes is the transport layer's job; conflating the two here would
+            // hide which half failed.
+            let resolution = resolve_one(state, &name, if_none_match).await;
+            let endpoints = match &resolution {
+                spine_protocol::NameResolution::Resolved { record, .. } => {
+                    serde_json::from_value::<spine_name::NameRecord>(record.clone())
+                        .map(|r| {
+                            r.endpoints_by_priority()
+                                .into_iter()
+                                .map(|e| format!("{}://{}", e.transport, e.address))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default()
+                }
+                _ => Vec::new(),
+            };
+            Response {
+                id: request_id,
+                result: Some(serde_json::json!({
+                    "resolution": serde_json::to_value(&resolution).unwrap_or_default(),
+                    "endpoints": endpoints,
+                })),
+                error: None,
+            }
+        }
+
+        BrowserCommand::CrawlNames {
+            seed,
+            max_depth,
+            max_visits,
+        } => match spine_name::SpineUri::parse(&seed) {
+            Ok(seed_uri) => {
+                use spine_name::Resolver;
+                let mut budget = spine_name::CrawlBudget::default();
+                if let Some(d) = max_depth {
+                    budget = budget.with_max_depth(d);
+                }
+                if let Some(v) = max_visits {
+                    budget = budget.with_max_visits(v);
+                }
+                let mut frontier = spine_name::CrawlFrontier::new(budget);
+                frontier.seed(seed_uri);
+
+                let mut visited = Vec::new();
+                while let Some(visit) = frontier.next_visit() {
+                    match state.names.resolve(&visit.uri).await {
+                        Ok(res) => {
+                            frontier.expand(&visit.uri, &res.record.links, visit.depth);
+                            visited.push(serde_json::json!({
+                                "name": visit.uri.to_string(),
+                                "depth": visit.depth,
+                                "capabilities": res.record.capabilities,
+                                "links": res.record.links.len(),
+                            }));
+                        }
+                        Err(_) => visited.push(serde_json::json!({
+                            "name": visit.uri.to_string(),
+                            "depth": visit.depth,
+                            "unresolved": true,
+                        })),
+                    }
+                }
+
+                Response {
+                    id: request_id,
+                    result: Some(serde_json::json!({
+                        "visited": visited,
+                        // Reporting what was *not* walked keeps a bounded crawl
+                        // from reading as an exhaustive one.
+                        "skipped": frontier.skipped().len(),
+                        "pending": frontier.pending(),
+                    })),
+                    error: None,
+                }
+            }
+            Err(e) => Response {
+                id: request_id,
+                result: None,
+                error: Some(format!("invalid seed name: {e}")),
+            },
+        },
+
         BrowserCommand::Navigate { url } => {
             match state.client.get(&url).send().await {
                 Ok(resp) => {
@@ -1055,6 +1300,7 @@ async fn main() -> Result<()> {
         start_time: std::time::Instant::now(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
         config: config.clone(),
+        names: spine_name::LocalResolver::new(unix_now),
     });
 
     // Load persisted sessions

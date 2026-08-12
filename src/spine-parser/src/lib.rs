@@ -1,8 +1,17 @@
 use scraper::{node::Node, Html, Selector};
 use serde::{Deserialize, Serialize};
+use spine_name::{Link, Rel, SpineUri};
 use std::sync::OnceLock;
 
 pub mod extraction;
+
+/// Split a `data-capabilities` attribute into normalized terms.
+fn parse_capability_list(raw: &str) -> Vec<String> {
+    raw.split([',', ' '])
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
 
 // Cached selectors: Selector::parse is expensive — compile once, reuse forever
 static TITLE_SELECTOR: OnceLock<Selector> = OnceLock::new();
@@ -36,6 +45,22 @@ pub enum Element {
         text: String,
         url: String,
     },
+    /// A link into the *agent* web: a `spine://` name rather than an HTTP URL.
+    ///
+    /// Kept distinct from [`Element::Link`] because the two are not
+    /// interchangeable — one is a name that resolves through the SPINE
+    /// namespace and can be verified against its own authority, the other is a
+    /// host-dependent URL. `target` is stored as the canonical string form so
+    /// the UR stays a plain serializable tree; parse it with
+    /// `SpineUri::parse` when a typed value is needed.
+    AgentLink {
+        text: String,
+        target: String,
+        /// Relation, in [`Rel`]'s wire spelling.
+        rel: String,
+        /// Capability terms the target is claimed to offer.
+        capabilities: Vec<String>,
+    },
     Button {
         text: String,
         action_id: String,
@@ -57,6 +82,61 @@ pub enum Element {
         tag: String,
         children: Vec<Element>,
     },
+}
+
+impl UnifiedRepresentation {
+    /// Every agent-web edge in this representation, as typed [`Link`]s ready to
+    /// hand to a [`spine_name::CrawlFrontier`].
+    ///
+    /// Walks the whole tree, since links nest inside containers and lists. Any
+    /// `AgentLink` whose target does not parse is skipped rather than guessed
+    /// at — a malformed name is a publishing bug, and silently coercing it to
+    /// something plausible would send crawlers somewhere nobody asked for.
+    pub fn agent_links(&self) -> Vec<Link> {
+        let mut out = Vec::new();
+        for element in &self.elements {
+            collect_agent_links(element, &mut out);
+        }
+        out
+    }
+
+    /// Whether this representation participates in the agent web at all.
+    pub fn has_agent_links(&self) -> bool {
+        !self.agent_links().is_empty()
+    }
+}
+
+fn collect_agent_links(element: &Element, out: &mut Vec<Link>) {
+    match element {
+        Element::AgentLink {
+            text,
+            target,
+            rel,
+            capabilities,
+        } => {
+            if let Ok(uri) = SpineUri::parse(target) {
+                let mut link = Link::new(Rel::parse(rel), uri);
+                if !text.is_empty() {
+                    link = link.with_title(text.clone());
+                }
+                for cap in capabilities {
+                    link = link.with_capability(cap.clone());
+                }
+                out.push(link);
+            }
+        }
+        Element::List { items, .. } => {
+            for item in items {
+                collect_agent_links(item, out);
+            }
+        }
+        Element::Container { children, .. } => {
+            for child in children {
+                collect_agent_links(child, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn parse_html(html: &str) -> anyhow::Result<UnifiedRepresentation> {
@@ -124,7 +204,25 @@ fn parse_node(node: ego_tree::NodeRef<Node>) -> Option<Element> {
                 "a" => {
                     let text = get_text(node);
                     let url = el.attr("href").unwrap_or_default().to_string();
-                    Some(Element::Link { text, url })
+                    // A `spine://` href is an edge in the agent web, not a
+                    // pointer back into the human one. Classifying it here means
+                    // every consumer of a UR — crawler, planner, gateway — sees
+                    // the distinction without re-parsing the href themselves.
+                    match SpineUri::parse(&url) {
+                        Ok(target) => Some(Element::AgentLink {
+                            text,
+                            target: target.to_string(),
+                            rel: el
+                                .attr("rel")
+                                .map(|r| Rel::parse(r).as_str().to_string())
+                                .unwrap_or_else(|| Rel::Peer.as_str().to_string()),
+                            capabilities: el
+                                .attr("data-capabilities")
+                                .map(parse_capability_list)
+                                .unwrap_or_default(),
+                        }),
+                        Err(_) => Some(Element::Link { text, url }),
+                    }
                 }
                 "button" => {
                     let text = get_text(node);
@@ -197,6 +295,140 @@ fn parse_node(node: ego_tree::NodeRef<Node>) -> Option<Element> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod agent_web_tests {
+    use super::*;
+
+    fn did() -> String {
+        spine_name::SpineUri::did([3u8; 32]).to_string()
+    }
+
+    fn page(body: &str) -> UnifiedRepresentation {
+        parse_html(&format!("<html><body>{body}</body></html>")).unwrap()
+    }
+
+    #[test]
+    fn an_http_href_stays_an_ordinary_link() {
+        let ur = page(r#"<a href="https://example.com/docs">Docs</a>"#);
+        let link = ur
+            .elements
+            .iter()
+            .find(|e| matches!(e, Element::Link { .. }))
+            .expect("expected an Element::Link");
+        match link {
+            Element::Link { text, url } => {
+                assert_eq!(text, "Docs");
+                assert_eq!(url, "https://example.com/docs");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            !ur.has_agent_links(),
+            "an HTTP URL is not an edge in the agent web"
+        );
+    }
+
+    #[test]
+    fn a_spine_href_becomes_a_typed_agent_link() {
+        let ur = page(&format!(
+            r#"<a href="{}" rel="provides" data-capabilities="web.search, Data.Analyze">Search</a>"#,
+            did()
+        ));
+        let links = ur.agent_links();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].rel, spine_name::Rel::Provides);
+        assert_eq!(links[0].title.as_deref(), Some("Search"));
+        assert_eq!(
+            links[0].capabilities,
+            vec!["web.search".to_string(), "data.analyze".to_string()],
+            "capability terms are normalized at parse time"
+        );
+        assert_eq!(links[0].target.public_key(), Some(&[3u8; 32]));
+    }
+
+    #[test]
+    fn an_agent_link_without_a_rel_defaults_to_peer() {
+        let ur = page(&format!(r#"<a href="{}">Somewhere</a>"#, did()));
+        assert_eq!(ur.agent_links()[0].rel, spine_name::Rel::Peer);
+    }
+
+    #[test]
+    fn an_unknown_rel_is_preserved_rather_than_discarded() {
+        let ur = page(&format!(r#"<a href="{}" rel="mirrors">M</a>"#, did()));
+        assert_eq!(
+            ur.agent_links()[0].rel,
+            spine_name::Rel::Other("mirrors".into())
+        );
+    }
+
+    #[test]
+    fn agent_links_are_found_inside_containers_and_lists() {
+        let ur = page(&format!(
+            r#"<div><ul><li><a href="{}" rel="child">Nested</a></li></ul></div>"#,
+            did()
+        ));
+        assert_eq!(
+            ur.agent_links().len(),
+            1,
+            "links nest; a shallow scan would miss them"
+        );
+    }
+
+    #[test]
+    fn a_malformed_spine_name_is_skipped_not_guessed_at() {
+        // Parses as a spine URI attempt but the key is not 32 bytes.
+        let ur = page(r#"<a href="spine://did:mzxw6/">Broken</a>"#);
+        assert!(
+            ur.agent_links().is_empty(),
+            "a malformed name must not be coerced into a plausible one"
+        );
+    }
+
+    #[test]
+    fn a_representation_can_mix_both_webs() {
+        let ur = page(&format!(
+            r#"<a href="https://example.com">Human</a><a href="{}" rel="child">Agent</a>"#,
+            did()
+        ));
+        assert_eq!(ur.agent_links().len(), 1);
+        assert_eq!(
+            ur.elements
+                .iter()
+                .filter(|e| matches!(e, Element::Link { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn extracted_links_feed_a_crawl_frontier_directly() {
+        // The whole point of typing links in the UR: a crawler gets its edges
+        // without re-parsing hrefs or guessing at relations.
+        let ur = page(&format!(
+            r#"<a href="{}" rel="requires">Dep</a>"#,
+            did()
+        ));
+        let mut frontier = spine_name::CrawlFrontier::new(spine_name::CrawlBudget::default());
+        let seed = spine_name::SpineUri::did([1u8; 32]);
+        frontier.seed(seed.clone());
+        frontier.next_visit();
+        assert_eq!(frontier.expand(&seed, &ur.agent_links(), 0), 1);
+
+        let visit = frontier.next_visit().unwrap();
+        assert_eq!(visit.via, Some(spine_name::Rel::Requires));
+        assert_eq!(visit.depth, 1);
+    }
+
+    #[test]
+    fn agent_links_survive_a_json_roundtrip() {
+        let ur = page(&format!(r#"<a href="{}" rel="child">X</a>"#, did()));
+        let json = serde_json::to_string(&ur).unwrap();
+        let back: UnifiedRepresentation = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.agent_links().len(), 1);
+        assert_eq!(back.agent_links()[0].rel, spine_name::Rel::Child);
     }
 }
 
