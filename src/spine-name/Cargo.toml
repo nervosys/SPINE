@@ -1,0 +1,24 @@
+[package]
+name = "spine-name"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SPINE naming layer: the spine:// URI scheme, self-certifying names, signed name records, DHT keyspace, and the resolver that makes an agent web addressable"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+ed25519-dalek.workspace = true
+async-trait = "0.1"
+
+[dev-dependencies]
+rand.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+proptest = "1.4"

@@ -6662,6 +6662,7 @@ name = "spine-agentic"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "criterion",
  "dashmap 5.5.3",
@@ -6669,16 +6670,20 @@ dependencies = [
  "futures",
  "log",
  "petgraph",
+ "quinn",
  "rand 0.8.6",
  "regex",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
  "spine-compiler",
  "spine-crypto",
  "spine-knowledge",
+ "spine-name",
  "spine-neural",
  "spine-protocol",
+ "spine-transport",
  "spine-wasm",
  "thiserror 1.0.69",
  "tokio",
@@ -6808,6 +6813,7 @@ dependencies = [
  "spine-cluster",
  "spine-compiler",
  "spine-human",
+ "spine-name",
  "spine-neural",
  "spine-parser",
  "spine-protocol",
@@ -6829,6 +6835,7 @@ version = "1.0.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "ed25519-dalek",
  "hkdf",
  "log",
  "ml-kem",
@@ -7007,6 +7014,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "spine-name"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "ed25519-dalek",
+ "proptest",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "spine-neural"
 version = "1.0.0"
 dependencies = [
@@ -7035,6 +7057,7 @@ dependencies = [
  "scraper",
  "serde",
  "serde_json",
+ "spine-name",
  "thiserror 1.0.69",
 ]
 
@@ -7220,6 +7243,7 @@ dependencies = [
  "spine-kernel",
  "spine-knowledge",
  "spine-mechgen",
+ "spine-name",
  "spine-neural",
  "spine-parser",
  "spine-protocol",
