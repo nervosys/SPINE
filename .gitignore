@@ -59,3 +59,7 @@ dump.*
 **/Cargo.lock.bak
 **/*.rs.bk
 
+# Local crates.io publish helper + run log (kept local, not committed)
+/scripts/publish_crates.sh
+/publish.log
+
