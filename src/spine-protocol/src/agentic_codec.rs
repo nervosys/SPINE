@@ -289,7 +289,11 @@ pub enum EmbeddingInput {
     Text(String),
     Texts(Vec<String>),
     /// Re-encode this. Useful for cross-codec translation.
-    Encoded(EncodedFrame),
+    ///
+    /// Boxed because an `EncodedFrame` carries its payload inline and dwarfs the
+    /// other variants; without the indirection every `EmbeddingInput` — including
+    /// a one-line `Text` — would be sized for the largest frame.
+    Encoded(Box<EncodedFrame>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
