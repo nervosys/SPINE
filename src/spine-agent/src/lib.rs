@@ -710,6 +710,132 @@ where
         }
         Ok(())
     }
+
+    // ---- Namespace ----
+    //
+    // `navigate` fetches a URL from the human web. Everything below operates on
+    // `spine://` names, which resolve through SPINE's own namespace and verify
+    // against their own authority — no CA, and no host to trust.
+
+    /// Resolve a `spine://` name to its signed record.
+    ///
+    /// `if_none_match` carries a content hash the caller already holds; when it
+    /// still matches, the answer is [`NameResolution::Unchanged`] with no body.
+    /// It is an ETag whose value the caller can verify, rather than an opaque
+    /// token chosen by whoever is answering.
+    pub async fn resolve_name(
+        &mut self,
+        name: &str,
+        if_none_match: Option<[u8; 32]>,
+    ) -> anyhow::Result<spine_protocol::NameResolution> {
+        let res = self
+            .send_request(BrowserCommand::ResolveName {
+                name: name.to_string(),
+                if_none_match,
+            })
+            .await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(serde_json::from_value(res.result.unwrap_or_default())?)
+    }
+
+    /// Resolve many names in one round trip.
+    ///
+    /// Each name resolves independently, so one bad name does not fail the
+    /// batch — the returned vector is positional and carries per-name outcomes.
+    pub async fn resolve_names(
+        &mut self,
+        names: &[String],
+    ) -> anyhow::Result<Vec<spine_protocol::NameResolution>> {
+        let res = self
+            .send_request(BrowserCommand::ResolveNames {
+                names: names.to_vec(),
+            })
+            .await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        let body = res.result.unwrap_or_default();
+        Ok(serde_json::from_value(body["resolutions"].clone())?)
+    }
+
+    /// Find providers of a capability, without consulting a central index.
+    pub async fn find_providers(
+        &mut self,
+        capability: &str,
+        limit: Option<usize>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let res = self
+            .send_request(BrowserCommand::FindProviders {
+                capability: capability.to_string(),
+                limit,
+            })
+            .await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(res.result.unwrap_or_default())
+    }
+
+    /// Publish a signed record.
+    ///
+    /// The record carries its own signature, so the receiver needs no prior
+    /// trust relationship with the publisher — and will reject it outright if
+    /// the signature does not verify against the name.
+    pub async fn publish_name(
+        &mut self,
+        record: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let res = self
+            .send_request(BrowserCommand::PublishName { record })
+            .await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(res.result.unwrap_or_default())
+    }
+
+    /// Resolve a name and get back the endpoints to dial, in priority order.
+    ///
+    /// Deliberately stops short of fetching the bytes: conflating resolution
+    /// and transfer would hide which of the two failed.
+    pub async fn fetch_name(
+        &mut self,
+        name: &str,
+        if_none_match: Option<[u8; 32]>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let res = self
+            .send_request(BrowserCommand::FetchName {
+                name: name.to_string(),
+                if_none_match,
+            })
+            .await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(res.result.unwrap_or_default())
+    }
+
+    /// Walk the agent web from a seed name, bounded by depth and visit count.
+    pub async fn crawl_names(
+        &mut self,
+        seed: &str,
+        max_depth: Option<u32>,
+        max_visits: Option<usize>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let res = self
+            .send_request(BrowserCommand::CrawlNames {
+                seed: seed.to_string(),
+                max_depth,
+                max_visits,
+            })
+            .await?;
+        if let Some(err) = res.error {
+            anyhow::bail!(err);
+        }
+        Ok(res.result.unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
