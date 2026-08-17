@@ -38,7 +38,7 @@ use anyhow::{Context, Result};
 use spine_agentic::identity::SigningIdentity;
 use spine_agentic::mesh::{MeshConfig, MeshNode};
 use spine_agentic::mesh_tcp::{serve_node, TcpNameTransport};
-use spine_agentic::naming_mesh::MeshNameResolver;
+use spine_agentic::naming_mesh::{MaintenancePolicy, MeshNameResolver};
 use tracing::{info, warn};
 
 use crate::config::NamespaceConfig;
@@ -108,7 +108,10 @@ pub async fn join(cfg: &NamespaceConfig, host: &str) -> Result<Arc<MeshNameResol
 /// valid stops being findable.
 fn spawn_maintenance(resolver: Arc<MeshNameResolver>, cfg: &NamespaceConfig) {
     let period = Duration::from_secs(cfg.maintain_secs.max(1));
-    let lapse_window = cfg.lapse_window_secs;
+    let policy = MaintenancePolicy {
+        lapse_window_secs: cfg.lapse_window_secs,
+        max_records: cfg.maintain_batch,
+    };
 
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(period);
@@ -119,13 +122,19 @@ fn spawn_maintenance(resolver: Arc<MeshNameResolver>, cfg: &NamespaceConfig) {
         loop {
             ticker.tick().await;
             let now = resolver.now();
-            let report = resolver.maintain(now, lapse_window).await;
+            let report = resolver.maintain(now, policy).await;
 
-            if report.expired > 0 || report.refreshed > 0 {
+            if report.expired > 0 || report.refreshed > 0 || report.deferred > 0 {
                 info!(
                     expired = report.expired,
                     refreshed = report.refreshed,
                     replicas = report.replicas_sent,
+                    // Both reported rather than left implicit: `deferred`
+                    // above zero for many passes means the budget is below
+                    // what this node holds, and `not_ours` climbing means it
+                    // is carrying copies lookups will never route to.
+                    deferred = report.deferred,
+                    not_ours = report.not_ours,
                     "namespace maintenance"
                 );
             }

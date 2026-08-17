@@ -102,6 +102,13 @@ pub struct NamespaceConfig {
     /// How close to expiry, in seconds, a name has to be before it is reported
     /// as lapsing. Only its signing key's holder can renew it.
     pub lapse_window_secs: u64,
+    /// Most records to re-offer in one maintenance pass.
+    ///
+    /// Each costs a keyspace walk, so this bounds what a node with a large
+    /// store does to the mesh on every tick. Passes resume where the last one
+    /// stopped, so a store larger than the batch is covered across several
+    /// ticks rather than having its tail starved.
+    pub maintain_batch: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +255,7 @@ impl Default for NamespaceConfig {
             // long relative to how long a walk takes.
             maintain_secs: 3600,
             lapse_window_secs: 900,
+            maintain_batch: 64,
         }
     }
 }
