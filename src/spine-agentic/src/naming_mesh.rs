@@ -139,6 +139,12 @@ pub struct ResolverMetrics {
     pub replicas_failed: u64,
     /// Records dropped because they expired.
     pub records_expired: u64,
+    /// Announcements declined for want of room or proximity.
+    ///
+    /// Deliberately not counted as `announcements_rejected`: nothing was wrong
+    /// with these records or with the peers that sent them, so a rise here means
+    /// something quite different from a rise in forgeries.
+    pub announcements_declined: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -763,19 +769,20 @@ impl MeshNameResolver {
     ) -> bool {
         match &envelope.payload {
             MeshPayload::NameAnnounce(announced) => {
-                // publish() verifies, so a forged announcement is counted and
-                // dropped rather than becoming servable state.
-                let accepted = self
+                // accept_announcement verifies and applies admission control, so
+                // a forgery is counted and dropped rather than becoming servable
+                // state, and a record for a key this node has no business
+                // holding is declined rather than stored.
+                let outcome = self
                     .service
                     .lock()
                     .await
-                    .publish(announced.record.clone())
-                    .is_ok();
+                    .accept_announcement(announced.record.clone());
                 let mut m = self.metrics.lock().await;
-                if accepted {
-                    m.announcements_accepted += 1;
-                } else {
-                    m.announcements_rejected += 1;
+                match outcome {
+                    Ok(spine_name::PutOutcome::Rejected) => m.announcements_declined += 1,
+                    Ok(_) => m.announcements_accepted += 1,
+                    Err(_) => m.announcements_rejected += 1,
                 }
                 true
             }

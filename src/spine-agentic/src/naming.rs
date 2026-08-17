@@ -447,7 +447,10 @@ impl NameService {
     pub fn new(local_key: NameKey) -> Self {
         Self {
             local_key,
-            store: spine_name::RecordStore::new(),
+            store: spine_name::RecordStore::with_limits(
+                local_key,
+                spine_name::DEFAULT_CAPACITY,
+            ),
             routing: RoutingTable::new(local_key),
             peers: HashMap::new(),
             lookups: HashMap::new(),
@@ -470,6 +473,28 @@ impl NameService {
         &mut self,
         record: NameRecord,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
+        self.store.put(record)
+    }
+
+    /// Accept a record announced by someone else.
+    ///
+    /// Distinct from [`NameService::publish`], which is how a node stores what
+    /// it is itself publishing, and which is unconditional — a node must be able
+    /// to serve its own names whether or not it happens to sit near their keys.
+    ///
+    /// An announcement is different. A signature proves only that the publisher
+    /// holds the key for that name, and minting a `did:` name costs one keygen,
+    /// so "it verified" is no reason to spend memory on it. A node keeps what it
+    /// is near: records whose keys land outside its neighbourhood are refused,
+    /// because a lookup for such a key would never be routed here and the copy
+    /// would be pure cost.
+    pub fn accept_announcement(
+        &mut self,
+        record: NameRecord,
+    ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
+        if !self.is_responsible_for(&record.name.key()) {
+            return Ok(spine_name::PutOutcome::Rejected);
+        }
         self.store.put(record)
     }
 
@@ -1443,6 +1468,41 @@ mod tests {
             service.records_to_maintain(1_000).is_empty(),
             "K nearer nodes exist, so this copy is not this node's to keep alive"
         );
+    }
+
+    /// A node's own publication is unconditional — it must be able to serve the
+    /// names it publishes whether or not it happens to sit near their keys — but
+    /// an announcement from the network is not. Minting a `did:` name costs one
+    /// keygen, so "the signature verified" is no reason to spend memory.
+    #[test]
+    fn an_announcement_for_a_distant_key_is_declined_but_our_own_publication_is_not() {
+        let rec = record(4, 1, 1_000, &[]);
+        let target = rec.name.key();
+
+        let mut service = NameService::new(NameKey::of(b"far from that key"));
+
+        // Fill the neighbourhood around the record's key with nearer nodes, so
+        // this node is demonstrably not one of the K closest to it.
+        for i in 0..K as u8 {
+            let mut bytes = *target.as_bytes();
+            bytes[31] ^= i;
+            service.add_peer(NodeInfo::new(NameKey::from_bytes(bytes), vec![], 100), agent(i));
+        }
+
+        assert_eq!(
+            service.accept_announcement(rec.clone()).unwrap(),
+            spine_name::PutOutcome::Rejected,
+            "a record belonging elsewhere in the keyspace is not this node's to hold"
+        );
+        assert_eq!(service.record_count(), 0);
+
+        // The same record, published by this node rather than announced to it.
+        assert_eq!(
+            service.publish(rec).unwrap(),
+            spine_name::PutOutcome::Inserted,
+            "a node must be able to serve what it publishes, wherever it sits"
+        );
+        assert_eq!(service.record_count(), 1);
     }
 
     /// An expired record is not something to re-offer; it is something to drop.
