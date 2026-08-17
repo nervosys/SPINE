@@ -63,9 +63,9 @@ impl WsNameTransport {
     /// *server operator*, while this authenticates the *mesh identity* that
     /// signs the records — which is the thing a resolver actually needs to
     /// trust, and it holds end-to-end through any proxy in between.
-    pub fn encrypted(signing: SigningKey, seed: u64) -> (Arc<Self>, mpsc::Receiver<Inbound>) {
+    pub fn encrypted(signing: SigningKey) -> (Arc<Self>, mpsc::Receiver<Inbound>) {
         Self::with_security(Security::Encrypted(Box::new(
-            crate::mesh_tcp::EncryptionConfig { signing, seed },
+            crate::mesh_tcp::EncryptionConfig { signing },
         )))
     }
 
@@ -138,13 +138,8 @@ impl WsNameTransport {
             Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
             Security::Encrypted(cfg) => {
                 let expected = self.identities.get(agent).map(|e| *e.value());
-                let session = client_handshake(
-                    &mut stream,
-                    &cfg.signing,
-                    expected.as_ref(),
-                    cfg.seed.wrapping_add(self.pool.len() as u64),
-                )
-                .await?;
+                let session =
+                    client_handshake(&mut stream, &cfg.signing, expected.as_ref()).await?;
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
         };
@@ -184,13 +179,9 @@ impl WsNameTransport {
         let path = match &self.security {
             Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
             Security::Encrypted(cfg) => {
-                let session = client_handshake(
-                    &mut stream,
-                    &cfg.signing,
-                    None,
-                    cfg.seed.wrapping_add(self.bootstrap.len() as u64),
-                )
-                .await?;
+                // Nothing to pin to: establishing the identity is the point
+                // of dialing a bootstrap address.
+                let session = client_handshake(&mut stream, &cfg.signing, None).await?;
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
         };
@@ -262,7 +253,6 @@ impl WsListener {
     /// The upgrade and any handshake run on the connection's own task, so a peer
     /// that stalls mid-negotiation cannot hold up the accept loop.
     pub async fn serve(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
-        let mut seed: u64 = 0;
         loop {
             let (tcp, peer) = match self.listener.accept().await {
                 Ok(pair) => pair,
@@ -274,11 +264,9 @@ impl WsListener {
             let _ = tcp.set_nodelay(true);
             let inbound = inbound.clone();
             let signing = signing.clone();
-            seed = seed.wrapping_add(1);
-            let s = seed;
 
             tokio::spawn(async move {
-                match upgrade(tcp, inbound, signing, s).await {
+                match upgrade(tcp, inbound, signing).await {
                     Ok(()) => {}
                     Err(e) => tracing::debug!("ws connection from {peer} rejected: {e}"),
                 }
@@ -292,7 +280,6 @@ async fn upgrade(
     tcp: TcpStream,
     inbound: mpsc::Sender<Inbound>,
     signing: Option<SigningKey>,
-    seed: u64,
 ) -> Result<(), NameMeshError> {
     let bridge = WebSocketServerBridge::accept(tcp)
         .await
@@ -304,7 +291,7 @@ async fn upgrade(
             attach(stream, inbound);
         }
         Some(key) => {
-            let session = server_handshake(&mut stream, &key, seed).await?;
+            let session = server_handshake(&mut stream, &key).await?;
             attach_secure(stream, session, inbound);
         }
     }
@@ -364,7 +351,7 @@ mod tests {
         let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
 
         let (transport, inbound) = if encrypted {
-            WsNameTransport::encrypted(signing.clone(), u64::from(seed) + 1)
+            WsNameTransport::encrypted(signing.clone())
         } else {
             WsNameTransport::new()
         };

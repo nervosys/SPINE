@@ -92,7 +92,6 @@ pub struct QuicNameTransport {
     inbound: mpsc::Sender<Inbound>,
     /// Identity used to authenticate connections, when authentication is on.
     signing: Option<SigningKey>,
-    seed: u64,
 }
 
 impl std::fmt::Debug for QuicNameTransport {
@@ -112,20 +111,18 @@ impl QuicNameTransport {
     /// verifies *which* mesh node answered. Envelopes remain individually
     /// signed, so records cannot be forged either way.
     pub fn new() -> Result<(Arc<Self>, mpsc::Receiver<Inbound>), NameMeshError> {
-        Self::build(None, 0)
+        Self::build(None)
     }
 
     /// A transport that authenticates every connection against mesh identity.
     pub fn authenticated(
         signing: SigningKey,
-        seed: u64,
     ) -> Result<(Arc<Self>, mpsc::Receiver<Inbound>), NameMeshError> {
-        Self::build(Some(signing), seed)
+        Self::build(Some(signing))
     }
 
     fn build(
         signing: Option<SigningKey>,
-        seed: u64,
     ) -> Result<(Arc<Self>, mpsc::Receiver<Inbound>), NameMeshError> {
         install_crypto_provider();
         let endpoint = QuicEndpointBuilder::new()
@@ -141,7 +138,6 @@ impl QuicNameTransport {
                 bootstrap: DashMap::new(),
                 inbound: tx,
                 signing,
-                seed,
             }),
             rx,
         ))
@@ -227,7 +223,7 @@ impl QuicNameTransport {
             // The derived session keys are dropped: QUIC already encrypts, and
             // this exchange exists only to prove who is on the far end.
             let _session =
-                client_handshake(&mut stream, signing, expected.as_ref(), self.seed).await?;
+                client_handshake(&mut stream, signing, expected.as_ref()).await?;
         }
 
         self.connections.insert(*agent, connection.clone());
@@ -318,7 +314,7 @@ impl QuicNameTransport {
                 .await
                 .map_err(|e| NameMeshError::Transport(format!("open control stream: {e}")))?;
             let mut stream = QuicStream::new(send, recv);
-            let _session = client_handshake(&mut stream, signing, None, self.seed).await?;
+            let _session = client_handshake(&mut stream, signing, None).await?;
         }
 
         self.bootstrap.insert(endpoint.to_string(), connection.clone());
@@ -423,15 +419,12 @@ impl QuicListener {
 
     /// Accept connections until the task is dropped.
     pub async fn serve(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
-        let mut seed: u64 = 0;
         while let Some(incoming) = self.endpoint.accept().await {
             let inbound = inbound.clone();
             let signing = signing.clone();
-            seed = seed.wrapping_add(1);
-            let s = seed;
             tokio::spawn(async move {
                 match incoming.await {
-                    Ok(connection) => serve_connection(connection, inbound, signing, s).await,
+                    Ok(connection) => serve_connection(connection, inbound, signing).await,
                     Err(e) => tracing::debug!("quic connection failed: {e}"),
                 }
             });
@@ -444,7 +437,6 @@ async fn serve_connection(
     connection: Connection,
     inbound: mpsc::Sender<Inbound>,
     signing: Option<SigningKey>,
-    seed: u64,
 ) {
     // If authentication is on, the first stream is the handshake and carries no
     // envelope. Every stream after it belongs to the same proven connection.
@@ -452,7 +444,7 @@ async fn serve_connection(
         match connection.accept_bi().await {
             Ok((send, recv)) => {
                 let mut stream = QuicStream::new(send, recv);
-                if let Err(e) = server_handshake(&mut stream, key, seed).await {
+                if let Err(e) = server_handshake(&mut stream, key).await {
                     tracing::debug!("quic peer failed authentication: {e}");
                     return;
                 }
@@ -545,7 +537,7 @@ mod tests {
         let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
 
         let (transport, inbound) = if authenticated {
-            QuicNameTransport::authenticated(signing.clone(), u64::from(seed) + 1).unwrap()
+            QuicNameTransport::authenticated(signing.clone()).unwrap()
         } else {
             QuicNameTransport::new().unwrap()
         };

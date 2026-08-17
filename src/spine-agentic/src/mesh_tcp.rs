@@ -242,9 +242,8 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     signing: &SigningKey,
     expected_peer: Option<&[u8; 32]>,
-    seed: u64,
 ) -> Result<Session, NameMeshError> {
-    let (initiator, hello) = Initiator::start(signing, seed);
+    let (initiator, hello) = Initiator::start(signing);
     write_frame(stream, &hello).await?;
     let reply = read_frame(stream, MAX_HANDSHAKE_BYTES)
         .await?
@@ -258,12 +257,11 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     signing: &SigningKey,
-    seed: u64,
 ) -> Result<Session, NameMeshError> {
     let hello = read_frame(stream, MAX_HANDSHAKE_BYTES)
         .await?
         .ok_or_else(|| NameMeshError::Transport("peer closed during handshake".into()))?;
-    let accepted = Responder::accept(signing, &hello, seed)
+    let accepted = Responder::accept(signing, &hello)
         .map_err(|e| NameMeshError::Transport(format!("handshake: {e}")))?;
     write_frame(stream, &accepted.reply).await?;
     Ok(accepted.session)
@@ -468,8 +466,6 @@ pub struct EncryptionConfig {
     /// The node's long-term mesh identity — the same Ed25519 key that places it
     /// in the DHT keyspace and signs its records.
     pub signing: SigningKey,
-    /// Seed for ephemeral keypair generation.
-    pub seed: u64,
 }
 
 impl std::fmt::Debug for Security {
@@ -495,8 +491,8 @@ impl TcpNameTransport {
     ///
     /// Every connection it opens performs an authenticated, forward-secret
     /// handshake, and pins the far end to the identity recorded for that peer.
-    pub fn encrypted(signing: SigningKey, seed: u64) -> (Arc<Self>, mpsc::Receiver<Inbound>) {
-        Self::with_security(Security::Encrypted(Box::new(EncryptionConfig { signing, seed })))
+    pub fn encrypted(signing: SigningKey) -> (Arc<Self>, mpsc::Receiver<Inbound>) {
+        Self::with_security(Security::Encrypted(Box::new(EncryptionConfig { signing })))
     }
 
     /// Build a transport with an explicit security mode.
@@ -576,19 +572,13 @@ impl TcpNameTransport {
         let transport = match &self.security {
             Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
             Security::Encrypted(cfg) => {
-                let (signing, seed) = (&cfg.signing, cfg.seed);
+                let signing = &cfg.signing;
                 // Pin the far end to the identity we meant to reach, when we
                 // know it. The keyspace id and the handshake key are the same
                 // Ed25519 key, so "the peer I dialed" and "the peer whose
                 // records I would trust" are one fact.
                 let expected = self.expected_identity(agent);
-                let session = client_handshake(
-                    &mut stream,
-                    signing,
-                    expected.as_ref(),
-                    seed.wrapping_add(self.pool.len() as u64),
-                )
-                .await?;
+                let session = client_handshake(&mut stream, signing, expected.as_ref()).await?;
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
         };
@@ -642,13 +632,9 @@ impl TcpNameTransport {
         let path = match &self.security {
             Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
             Security::Encrypted(cfg) => {
-                let session = client_handshake(
-                    &mut stream,
-                    &cfg.signing,
-                    None,
-                    cfg.seed.wrapping_add(self.bootstrap.len() as u64),
-                )
-                .await?;
+                // Nothing to pin to: establishing the identity is the point of
+                // dialing a bootstrap address.
+                let session = client_handshake(&mut stream, &cfg.signing, None).await?;
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
         };
@@ -733,7 +719,6 @@ impl MeshListener {
     /// The handshake runs on the connection's own task, so a peer that stalls
     /// mid-handshake cannot hold up the accept loop.
     pub async fn serve_with(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
-        let mut seed: u64 = 0;
         loop {
             match self.listener.accept().await {
                 Ok((mut stream, peer)) => {
@@ -744,10 +729,8 @@ impl MeshListener {
                             attach(stream, inbound);
                         }
                         Some(key) => {
-                            seed = seed.wrapping_add(1);
-                            let s = seed;
                             tokio::spawn(async move {
-                                match server_handshake(&mut stream, &key, s).await {
+                                match server_handshake(&mut stream, &key).await {
                                     Ok(session) => {
                                         attach_secure(stream, session, inbound);
                                     }
@@ -1367,7 +1350,7 @@ mod secure_tests {
         let signing = SigningKey::from_bytes(&[50 + seed; 32]);
         let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
         let (transport, inbound) =
-            TcpNameTransport::encrypted(signing.clone(), u64::from(seed) + 1);
+            TcpNameTransport::encrypted(signing.clone());
         let resolver = Arc::new(
             MeshNameResolver::new(mesh.clone(), transport.clone())
                 .with_clock(|| NOW)
@@ -1453,7 +1436,6 @@ mod secure_tests {
             &mut stream,
             &observer_key,
             Some(&holder.signing.verifying_key().to_bytes()),
-            7,
         )
         .await
         .unwrap();
@@ -1503,7 +1485,7 @@ mod secure_tests {
 
         // Expect somebody else's key at that address.
         let wrong = SigningKey::from_bytes(&[200u8; 32]).verifying_key().to_bytes();
-        let err = client_handshake(&mut stream, &SigningKey::from_bytes(&[9u8; 32]), Some(&wrong), 1)
+        let err = client_handshake(&mut stream, &SigningKey::from_bytes(&[9u8; 32]), Some(&wrong))
             .await
             .unwrap_err();
         assert!(
@@ -1558,7 +1540,6 @@ mod secure_tests {
             &mut stream,
             &key,
             Some(&holder.signing.verifying_key().to_bytes()),
-            11,
         )
         .await
         .unwrap();
