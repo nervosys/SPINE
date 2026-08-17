@@ -11,6 +11,7 @@
 
 mod agentic_sse;
 mod auth;
+mod names;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -55,6 +56,12 @@ use tracing::instrument;
         compile_hls,
         health,
         ready,
+        names::resolve_name,
+        names::resolve_names,
+        names::find_providers,
+        names::publish_name,
+        names::fetch_name,
+        names::crawl_names,
     ),
     components(schemas(
         CreateSessionReq, SessionInfo, NavigateReq, SearchReq,
@@ -63,12 +70,15 @@ use tracing::instrument;
         ExecResponse, PingResponse, ParseResponse,
         CompileResponse, HealthResponse, ReadyResponse,
         ErrorResponse,
+        names::ResolveNamesReq, names::PublishReq,
+        names::ResolvedResponse, names::ResolveBatchResponse,
     )),
     modifiers(&SecurityAddon),
     tags(
         (name = "sessions", description = "Session lifecycle"),
         (name = "browse", description = "Navigation & content"),
         (name = "compute", description = "HLS / WASM execution"),
+        (name = "names", description = "The spine:// namespace over plain HTTP"),
         (name = "ops", description = "Health & readiness"),
     )
 )]
@@ -220,7 +230,7 @@ struct ReadyResponse {
     available_slots: usize,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Debug, Serialize, ToSchema)]
 struct ErrorResponse {
     error: String,
 }
@@ -641,6 +651,16 @@ async fn main() -> anyhow::Result<()> {
         // Neural encoder-decoder protocols — embeddings + codec catalog.
         .route("/v1/embeddings", post(agentic_sse::embeddings))
         .route("/v1/agentic/codecs", get(agentic_sse::codecs))
+        // Namespace — spine:// resolution for clients that speak only HTTP.
+        // Stateless, so deliberately not under /api/sessions/{id}.
+        .route(
+            "/v1/names/resolve",
+            get(names::resolve_name).post(names::resolve_names),
+        )
+        .route("/v1/names/providers", get(names::find_providers))
+        .route("/v1/names/publish", post(names::publish_name))
+        .route("/v1/names/endpoints", get(names::fetch_name))
+        .route("/v1/names/crawl", get(names::crawl_names))
         // Ops
         .route("/health", get(health))
         .route("/ready", get(ready))
