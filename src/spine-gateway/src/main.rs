@@ -116,6 +116,8 @@ struct AppState {
     tls_config: spine_core::config::TlsConfig,
     requests_total: AtomicU64,
     errors_total: AtomicU64,
+    /// Idle origin connections kept for the stateless namespace endpoints.
+    origin_pool: names::OriginPool,
 }
 
 impl AppState {
@@ -128,6 +130,7 @@ impl AppState {
             tls_config: config.tls.clone(),
             requests_total: AtomicU64::new(0),
             errors_total: AtomicU64::new(0),
+            origin_pool: names::OriginPool::default(),
         }
     }
 }
@@ -555,6 +558,7 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
     let sessions = state.sessions.len();
     let requests = state.requests_total.load(Ordering::Relaxed);
     let errors = state.errors_total.load(Ordering::Relaxed);
+    let idle_origins = state.origin_pool.idle_count();
 
     let body = format!(
         "# HELP spine_gateway_uptime_seconds Gateway uptime in seconds\n\
@@ -568,8 +572,11 @@ async fn metrics(State(state): State<Arc<AppState>>) -> Response {
          spine_gateway_requests_total {}\n\
          # HELP spine_gateway_errors_total Total API errors\n\
          # TYPE spine_gateway_errors_total counter\n\
-         spine_gateway_errors_total {}\n",
-        uptime, sessions, requests, errors
+         spine_gateway_errors_total {}\n\
+         # HELP spine_gateway_idle_origin_connections Pooled connections to the SPINE origin\n\
+         # TYPE spine_gateway_idle_origin_connections gauge\n\
+         spine_gateway_idle_origin_connections {}\n",
+        uptime, sessions, requests, errors, idle_origins
     );
 
     Response::builder()

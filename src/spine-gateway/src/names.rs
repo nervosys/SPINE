@@ -107,18 +107,94 @@ pub struct ResolveBatchResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Open a connection to the SPINE origin for one namespace request.
+/// Idle origin connections, kept so a namespace request need not open one.
 ///
 /// Resolution is stateless, so these endpoints deliberately take no session:
 /// requiring a client to create one, resolve, and tear it down would be three
-/// round trips to answer a question that needs one. The cost is a connection
-/// per request, which is the same bargain HTTP itself made before keep-alive.
-async fn backend(
-    state: &AppState,
-) -> Result<AgentClient<TcpStream>, (StatusCode, Json<ErrorResponse>)> {
-    AgentClient::connect(&state.backend_addr)
+/// round trips to answer a question that needs one. That left a TCP connect in
+/// front of every request, which this removes.
+///
+/// A plain free-list rather than a fair pool. There is no fixed connection count
+/// to queue behind — under load the gateway simply opens more and keeps only up
+/// to `MAX_IDLE` of them afterwards — so nothing here can starve and nothing
+/// needs to wait its turn.
+pub struct OriginPool<C = AgentClient<TcpStream>> {
+    idle: std::sync::Mutex<Vec<C>>,
+}
+
+// Written out rather than derived: `derive(Default)` would demand `C: Default`,
+// and an origin connection has no default. The empty pool does.
+impl<C> Default for OriginPool<C> {
+    fn default() -> Self {
+        Self {
+            idle: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+/// Idle connections retained. Past this a finished connection is dropped rather
+/// than hoarded: the origin caps its own sessions, so a gateway holding idle
+/// connections open is spending the origin's budget to save itself a connect it
+/// may never make.
+const MAX_IDLE: usize = 8;
+
+impl<C> OriginPool<C> {
+    fn take(&self) -> Option<C> {
+        self.idle.lock().ok()?.pop()
+    }
+
+    fn put(&self, client: C) {
+        if let Ok(mut idle) = self.idle.lock() {
+            if idle.len() < MAX_IDLE {
+                idle.push(client);
+            }
+        }
+    }
+
+    /// Idle connections currently held.
+    pub fn idle_count(&self) -> usize {
+        self.idle.lock().map(|i| i.len()).unwrap_or(0)
+    }
+}
+
+type OriginFut<'a, T> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<T>> + Send + 'a>>;
+
+/// Run one namespace command against the origin, reusing a pooled connection.
+///
+/// A pooled connection may have been closed since it was last used — the origin
+/// reaps idle sessions on its own schedule — and that is not the caller's fault.
+/// So a failure on a *pooled* connection is retried once on a fresh one, and only
+/// a failure on a connection this call opened is reported. That is the same
+/// single transparent re-dial the mesh transport already does, for the same
+/// reason.
+///
+/// A connection is returned to the pool only after a successful call. One that
+/// failed is dropped: it may be half-closed or stopped mid-frame, and handing it
+/// to the next request would spread one failure across two.
+async fn with_origin<T, F>(state: &AppState, mut op: F) -> anyhow::Result<T>
+where
+    F: for<'a> FnMut(&'a mut AgentClient<TcpStream>) -> OriginFut<'a, T>,
+{
+    if let Some(mut client) = state.origin_pool.take() {
+        if let Ok(value) = op(&mut client).await {
+            state.origin_pool.put(client);
+            return Ok(value);
+        }
+        // Fall through and try once on a connection we know is fresh.
+    }
+
+    let mut client = AgentClient::connect(&state.backend_addr)
         .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("origin unreachable: {e}")))
+        .map_err(|e| anyhow::anyhow!("origin unreachable: {e}"))?;
+    let value = op(&mut client).await?;
+    state.origin_pool.put(client);
+    Ok(value)
+}
+
+/// Map an origin failure to a gateway response.
+fn upstream(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
+    err(StatusCode::BAD_GATEWAY, e)
 }
 
 /// Decode a hex content hash from `if_none_match`.
@@ -228,11 +304,13 @@ pub async fn resolve_name(
     Query(params): Query<ResolveParams>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let if_none_match = parse_hash(&params.if_none_match)?;
-    let mut client = backend(&state).await?;
-    let resolution = client
-        .resolve_name(&params.name, if_none_match)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let name = params.name.clone();
+    let resolution = with_origin(&state, move |c| {
+        let name = name.clone();
+        Box::pin(async move { c.resolve_name(&name, if_none_match).await })
+    })
+    .await
+    .map_err(upstream)?;
     Ok(into_response(resolution))
 }
 
@@ -250,11 +328,13 @@ pub async fn resolve_names(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ResolveNamesReq>,
 ) -> Result<Json<ResolveBatchResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let mut client = backend(&state).await?;
-    let resolutions = client
-        .resolve_names(&req.names)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let names = req.names.clone();
+    let resolutions = with_origin(&state, move |c| {
+        let names = names.clone();
+        Box::pin(async move { c.resolve_names(&names).await })
+    })
+    .await
+    .map_err(upstream)?;
     // The batch itself always succeeds; per-name outcomes travel in the body,
     // because one unresolvable name in a dozen is not a failed request.
     Ok(Json(ResolveBatchResponse {
@@ -276,11 +356,14 @@ pub async fn find_providers(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ProvidersParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let mut client = backend(&state).await?;
-    let body = client
-        .find_providers(&params.capability, params.limit)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let capability = params.capability.clone();
+    let limit = params.limit;
+    let body = with_origin(&state, move |c| {
+        let capability = capability.clone();
+        Box::pin(async move { c.find_providers(&capability, limit).await })
+    })
+    .await
+    .map_err(upstream)?;
     Ok(Json(body))
 }
 
@@ -299,14 +382,16 @@ pub async fn publish_name(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PublishReq>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
-    let mut client = backend(&state).await?;
     // A rejected record is the caller's problem, not the origin's: the origin
     // verified the signature and found it wanting, which is a 400 and not the
     // 502 that a naive error passthrough would produce.
-    let body = client
-        .publish_name(req.record)
-        .await
-        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let record = req.record.clone();
+    let body = with_origin(&state, move |c| {
+        let record = record.clone();
+        Box::pin(async move { c.publish_name(record).await })
+    })
+    .await
+    .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     Ok((StatusCode::CREATED, Json(body)))
 }
 
@@ -326,14 +411,16 @@ pub async fn fetch_name(
     Query(params): Query<ResolveParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let if_none_match = parse_hash(&params.if_none_match)?;
-    let mut client = backend(&state).await?;
     // Stops at the endpoints rather than dialing them. Fetching the bytes is
     // the caller's business, and folding it in here would hide which half of
     // "resolve, then fetch" failed.
-    let body = client
-        .fetch_name(&params.name, if_none_match)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let name = params.name.clone();
+    let body = with_origin(&state, move |c| {
+        let name = name.clone();
+        Box::pin(async move { c.fetch_name(&name, if_none_match).await })
+    })
+    .await
+    .map_err(upstream)?;
     Ok(Json(body))
 }
 
@@ -351,17 +438,55 @@ pub async fn crawl_names(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CrawlParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let mut client = backend(&state).await?;
-    let body = client
-        .crawl_names(&params.seed, params.max_depth, params.max_visits)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    let seed = params.seed.clone();
+    let (max_depth, max_visits) = (params.max_depth, params.max_visits);
+    let body = with_origin(&state, move |c| {
+        let seed = seed.clone();
+        Box::pin(async move { c.crawl_names(&seed, max_depth, max_visits).await })
+    })
+    .await
+    .map_err(upstream)?;
     Ok(Json(body))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// The cap is the whole reason `put` is not just `push`. The origin limits
+    /// its own sessions, so a gateway that hoarded idle connections would be
+    /// spending the origin's budget on connects it may never make.
+    #[test]
+    fn the_pool_stops_accepting_connections_at_its_cap() {
+        let pool: OriginPool<u32> = OriginPool::default();
+        for i in 0..(MAX_IDLE as u32 * 4) {
+            pool.put(i);
+        }
+        assert_eq!(pool.idle_count(), MAX_IDLE);
+    }
+
+    /// A taken connection must leave the pool, or two requests would end up
+    /// writing down the same socket.
+    #[test]
+    fn taking_a_connection_removes_it_from_the_pool() {
+        let pool: OriginPool<u32> = OriginPool::default();
+        pool.put(7);
+        assert_eq!(pool.idle_count(), 1);
+        assert_eq!(pool.take(), Some(7));
+        assert_eq!(pool.idle_count(), 0);
+        assert_eq!(pool.take(), None, "an empty pool hands out nothing");
+    }
+
+    /// Most-recently-returned first. The connection idle for the shortest time
+    /// is the one likeliest to still be open, and the origin reaps by idleness.
+    #[test]
+    fn the_pool_hands_back_the_most_recently_returned_connection() {
+        let pool: OriginPool<u32> = OriginPool::default();
+        pool.put(1);
+        pool.put(2);
+        assert_eq!(pool.take(), Some(2));
+    }
 
     #[test]
     fn a_hex_validator_round_trips() {
