@@ -21,6 +21,35 @@ pub use agentic_codec::{
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 
+/// Derive the Chameleon layer's seed from a shared secret.
+///
+/// This replaced `DefaultHasher`, which was wrong for two independent reasons.
+///
+/// The cryptographic one: `DefaultHasher::new()` is SipHash keyed with zeros, a
+/// hash designed for HashMap collision resistance rather than for deriving key
+/// material. It offers no guarantee that its 64-bit output is a uniform,
+/// secret-dependent value, which is exactly the guarantee a key derivation
+/// needs. HKDF-SHA-256 does, and the info string separates this use from the
+/// AEAD key derived from the same secret.
+///
+/// The correctness one, which is arguably worse: the algorithm behind
+/// `DefaultHasher` is explicitly unspecified by the standard library and may
+/// change between Rust releases. Two peers built with different compilers could
+/// therefore derive different seeds from the same shared secret and fail to
+/// understand each other, with nothing in the protocol to say why.
+///
+/// The output is still 64 bits, which is a ceiling this function cannot lift:
+/// `NeuralLatentEncoder` and `TransformerConfig` are seeded by a `u64`. Raising
+/// it means widening their keying, which is a change to those crates rather than
+/// to this derivation. See `SECURITY_AUDIT.md`.
+fn chameleon_seed(secret: &[u8; 32]) -> u64 {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, secret);
+    let mut bytes = [0u8; 8];
+    hk.expand(b"spine-chameleon-seed", &mut bytes)
+        .expect("HKDF expand into 8 bytes cannot fail");
+    u64::from_le_bytes(bytes)
+}
+
 /// A fresh 96-bit AES-GCM nonce from the operating system's CSPRNG.
 ///
 /// The previous construction was `counter(8) || session_nonce(4)`, with the
@@ -460,9 +489,7 @@ impl ChameleonKey {
             p: 12289,
             sigma: 3.2,
         };
-        let mut hasher = DefaultHasher::new();
-        secret.hash(&mut hasher);
-        let seed = hasher.finish();
+        let seed = chameleon_seed(secret);
 
         Self {
             // attention_heads (8) must divide latent_dim (128): 128/8=16 ✓
@@ -495,9 +522,7 @@ impl ChameleonKey {
             p: 12289,
             sigma: 3.2,
         };
-        let mut hasher = DefaultHasher::new();
-        secret.hash(&mut hasher);
-        let seed = hasher.finish();
+        let seed = chameleon_seed(secret);
 
         let miras_config = NeuralEncoderConfig {
             input_dim: 256,
@@ -5169,6 +5194,51 @@ mod tests {
                 | DecorrelationGene::Full => {} // All valid
             }
         }
+    }
+
+
+    /// The derivation has to be a function of the secret alone, or two peers
+    /// sharing a secret would key their encoders differently and never agree.
+    #[test]
+    fn the_chameleon_seed_is_determined_by_the_secret() {
+        let secret = [7u8; 32];
+        assert_eq!(chameleon_seed(&secret), chameleon_seed(&secret));
+    }
+
+    /// And it has to actually depend on the secret. A derivation that ignored
+    /// part of its input would silently shrink the key space further than the
+    /// 64-bit output already does.
+    #[test]
+    fn every_byte_of_the_secret_changes_the_chameleon_seed() {
+        let base = [0u8; 32];
+        let baseline = chameleon_seed(&base);
+        for position in 0..32 {
+            let mut altered = base;
+            altered[position] ^= 0xff;
+            assert_ne!(
+                chameleon_seed(&altered),
+                baseline,
+                "byte {position} of the secret does not reach the seed"
+            );
+        }
+    }
+
+    /// The seed must not be recoverable by a hash anyone can compute. This
+    /// pins the derivation to HKDF rather than to the `DefaultHasher` it
+    /// replaced — which was not merely weak but *unstable*, since the standard
+    /// library does not promise its algorithm across Rust releases, so two
+    /// peers on different compilers could disagree about the same secret.
+    #[test]
+    fn the_chameleon_seed_is_not_the_std_hash_of_the_secret() {
+        use std::hash::{Hash, Hasher};
+        let secret = [3u8; 32];
+        let mut hasher = DefaultHasher::new();
+        secret.hash(&mut hasher);
+        assert_ne!(
+            chameleon_seed(&secret),
+            hasher.finish(),
+            "the seed must come from a KDF, not from a HashMap hasher"
+        );
     }
 
     /// The defect this replaced: the nonce was `counter(8) || session_nonce(4)`
