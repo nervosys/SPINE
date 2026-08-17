@@ -69,6 +69,42 @@ the Rust crate we use is a **FIPS-validated cryptographic module**
 | **Titans speculative decoding** | — | ❌ Not crypto at all (ML technique) | in-tree | n/a |
 | PRNG — message keys, nonces | SP 800-90A (HMAC_DRBG / CTR_DRBG / Hash_DRBG) | We use `rand::rngs::StdRng` (ChaCha12 — **not** SP 800-90A) | `rand = "0.8"` | ❌ Not validated |
 
+### Finding: the Chameleon layer keys itself with 64 bits
+
+`ChameleonKey::new(secret: &[u8; 32])` — the type `enable_chameleon` installs —
+reduces the 256-bit shared secret to a `u64` before using it:
+
+```rust
+let mut hasher = DefaultHasher::new();
+secret.hash(&mut hasher);
+let seed = hasher.finish();          // 64 bits, from a non-cryptographic hash
+```
+
+That `seed` is the entire keying material for the neural encoder and for the
+lattice key evolution beneath it. `DefaultHasher::new()` is SipHash with fixed
+keys, so the derivation is deterministic across processes and machines: the same
+secret always yields the same seed, and an attacker searching the seed space
+faces at most 2^64 — far below the 256-bit secret it came from, and below the
+strength of every other primitive in the table above.
+
+**Severity depends on which entry point is used.**
+
+- `enable_chameleon_aead` derives an AES-256-GCM key by HKDF-SHA-256 over the
+  full 32-byte secret, and that is where confidentiality actually rests. The
+  finding weakens a defense-in-depth layer without breaking the guarantee.
+- `enable_chameleon` alone has no AEAD beneath it. Whatever protection it offers
+  is the ≤64-bit-keyed encoding, which should be described as obfuscation and
+  not as encryption. Three of the shipped examples use this form.
+
+The same pattern appears in `ProtocolMorphology::new_keyed`, which takes
+`u64::from_le_bytes(secret[0..8])` — the first 64 bits of the secret — though it
+also receives the full secret alongside it.
+
+This is the same species of defect as the handshake's seeded RNG (see
+`HANDSHAKE-REVIEW.md` §6): the primitives are conventional and the arrangement is
+standard, and what is wrong is the entropy fed in. It is worth assuming there are
+more of these and looking for them specifically.
+
 ### Posture
 
 - **Algorithm choices are FIPS-approved by spec.** Anyone reading the
@@ -76,7 +112,9 @@ the Rust crate we use is a **FIPS-validated cryptographic module**
 - **No crate in our tree is a FIPS 140-3 validated cryptographic
   module.** Federal deployments that require FIPS 140-3 must:
   1. Swap `ring` for `aws-lc-rs` in FIPS mode (rustls supports both).
-  2. Replace `rand::StdRng` with a SP 800-90A-validated DRBG.
+  2. Replace `rand::StdRng` with a SP 800-90A-validated DRBG. Note that the
+     mesh handshake no longer uses it — ephemeral ML-KEM keys come from the OS
+     CSPRNG as of Phase 42 — but the lattice and Chameleon paths still do.
   3. Disable / remove the in-tree lattice + X3DH paths; they are
      research-grade and not approved for protection of CUI.
 

@@ -422,7 +422,18 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
    there is a connection pool for the backend hop, and TLS termination in front
    of the gateway if these endpoints are exposed publicly.
-5. **Find the flaky test** described at the end of Phase 43, or establish that it
+5. **Fix the Chameleon layer's key derivation** — see the new finding in
+   `SECURITY_AUDIT.md`. `ChameleonKey::new` collapses the 256-bit shared secret
+   to a `u64` with `DefaultHasher` before using it, so that layer is keyed by at
+   most 64 bits, derived deterministically by a non-cryptographic hash. Where
+   `enable_chameleon_aead` is used the AES-256-GCM key is derived properly by
+   HKDF over the full secret, so this weakens defense-in-depth rather than
+   breaking confidentiality — but `enable_chameleon` alone has nothing beneath
+   it, and three shipped examples use that form. I found this while auditing for
+   siblings of the Phase 42 handshake defect and stopped at documenting it,
+   because fixing it changes a wire-visible derivation and deserves its own
+   phase.
+6. **Find the flaky test** described at the end of Phase 43, or establish that it
    was environmental. A test suite with one unidentified intermittent failure is
    a suite whose green runs mean slightly less than they should.
 
