@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-1355%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1404%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Pathways INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
@@ -166,12 +166,21 @@ that name will go looking.
 [namespace]
 maintain_secs = 3600      # re-offer held records to whoever is closest now
 lapse_window_secs = 900   # report names this close to expiring
+maintain_batch = 64       # most records one pass re-offers
 ```
 
 The maintenance pass exists because the K closest nodes to a key are not the same
 K nodes an hour later. Peers join and leave; without a periodic re-offer, a
 record's copies drift away from the position lookups converge on while the record
 itself is still perfectly valid.
+
+It re-offers only the records this node is one of the K closest to. A copy held
+while nearer nodes exist is one no lookup will route to, and re-offering it
+spends a keyspace walk telling the rightful holders what they already have.
+`maintain_batch` bounds the rest: each re-offer costs a walk, so an unbounded
+pass on a large store is a self-inflicted flood every tick. Passes resume where
+the last one stopped, and report how many records they deferred — a bounded pass
+should never read as an exhaustive one.
 
 It cannot renew anything, and does not pretend to. A record's expiry is signed
 into it, so re-announcing one does not move it — only the holder of its signing
@@ -1294,10 +1303,10 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (1,355 tests, 0 failures)
+### Test Summary (1,404 tests, 0 failures)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,355 passed / 0 failed / 5 ignored** across all 30 crates. The five
+**1,404 passed / 0 failed / 5 ignored** across all 30 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
 hidden failures. Per-crate breakdown below remains an approximation —
 exact counts shift with each addition.
