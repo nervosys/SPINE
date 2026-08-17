@@ -201,6 +201,30 @@ impl ReplicationReport {
     }
 }
 
+/// How much work one maintenance pass may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaintenancePolicy {
+    /// How close to expiry a name must be to be reported as lapsing.
+    pub lapse_window_secs: u64,
+    /// Most records to re-offer in a single pass.
+    ///
+    /// Each one costs a keyspace walk, so an unbounded pass on a node with a
+    /// large store is a self-inflicted flood every tick. What does not fit
+    /// carries over: passes resume where the last stopped, so a store larger
+    /// than the budget is covered across several ticks rather than having its
+    /// tail starved.
+    pub max_records: usize,
+}
+
+impl Default for MaintenancePolicy {
+    fn default() -> Self {
+        Self {
+            lapse_window_secs: 900,
+            max_records: 64,
+        }
+    }
+}
+
 /// What one maintenance pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MaintenanceReport {
@@ -210,6 +234,13 @@ pub struct MaintenanceReport {
     pub refreshed: usize,
     /// Directed copies sent across all refreshed records.
     pub replicas_sent: usize,
+    /// Records held but not this node's to keep alive, because K nearer nodes
+    /// exist. Reported rather than silently dropped from the count: a rising
+    /// number here means this node is carrying copies lookups will never reach.
+    pub not_ours: usize,
+    /// Records this node is responsible for that the budget deferred to the
+    /// next pass. Reported so a bounded pass never reads as an exhaustive one.
+    pub deferred: usize,
     /// Names about to lapse. Only the holder of the signing key can renew one,
     /// so this is a report for the layer above, not something the pass fixes.
     pub lapsing: Vec<SpineUri>,
@@ -226,6 +257,9 @@ pub struct MeshNameResolver {
     waiters: DashMap<u64, oneshot::Sender<LookupOutcome>>,
     /// Bootstrap handshakes awaiting an ack, by the endpoint dialed.
     greetings: DashMap<String, oneshot::Sender<BootstrapPeer>>,
+    /// Last record key a maintenance pass re-offered, so the next one resumes
+    /// after it rather than restarting at the same prefix.
+    maintenance_cursor: Mutex<Option<NameKey>>,
     timeout: Duration,
     metrics: Mutex<ResolverMetrics>,
     /// Injected clock (Unix seconds), so record freshness is testable without
@@ -254,6 +288,7 @@ impl MeshNameResolver {
             endpoints: Mutex::new(Vec::new()),
             waiters: DashMap::new(),
             greetings: DashMap::new(),
+            maintenance_cursor: Mutex::new(None),
             timeout: DEFAULT_LOOKUP_TIMEOUT,
             metrics: Mutex::new(ResolverMetrics::default()),
             clock: Box::new(|| {
@@ -509,26 +544,56 @@ impl MeshNameResolver {
     /// Deliberately not the same thing as renewal. A record's expiry is signed
     /// into it, so re-announcing one cannot extend its life — only its holder's
     /// key can do that. Names close to lapsing come back in the report instead.
-    pub async fn maintain(&self, now: u64, lapse_window: u64) -> MaintenanceReport {
+    pub async fn maintain(&self, now: u64, policy: MaintenancePolicy) -> MaintenanceReport {
         let mut report = MaintenanceReport::default();
 
-        let (expired, held, lapsing) = {
+        let (expired, held, mine, lapsing) = {
             let mut service = self.service.lock().await;
             let expired = service.sweep(now);
-            (expired, service.records(), service.lapsing(now, lapse_window))
+            (
+                expired,
+                service.record_count(),
+                service.records_to_maintain(now),
+                service.lapsing(now, policy.lapse_window_secs),
+            )
         };
         report.expired = expired;
         report.lapsing = lapsing;
+        report.not_ours = held.saturating_sub(mine.len());
 
+        // Resume after the last key the previous pass handled, so a store larger
+        // than the budget is covered over several passes instead of the same
+        // prefix being re-offered forever.
+        let start = {
+            let cursor = self.maintenance_cursor.lock().await;
+            match &*cursor {
+                Some(last) => mine
+                    .iter()
+                    .position(|r| r.name.key().as_bytes() > last.as_bytes())
+                    .unwrap_or(0),
+                None => 0,
+            }
+        };
+
+        let budget = policy.max_records.min(mine.len());
+        report.deferred = mine.len().saturating_sub(budget);
+
+        let mut last_key = None;
         // One record at a time: each re-offer runs its own keyspace walk, and
         // firing them concurrently would have a node with a full store flood the
         // mesh with lookups every maintenance tick.
-        for record in held {
-            let result = self.replicate(&record).await;
+        for offset in 0..budget {
+            let record = &mine[(start + offset) % mine.len()];
+            last_key = Some(record.name.key());
+            let result = self.replicate(record).await;
             if result.sent > 0 {
                 report.refreshed += 1;
                 report.replicas_sent += result.sent;
             }
+        }
+
+        if last_key.is_some() {
+            *self.maintenance_cursor.lock().await = last_key;
         }
 
         self.metrics.lock().await.records_expired += expired as u64;
@@ -1525,7 +1590,7 @@ mod tests {
         h.introduce(0, 1).await;
 
         let node = h.nodes[0].clone();
-        let run = tokio::spawn(async move { node.maintain(NOW, 0).await });
+        let run = tokio::spawn(async move { node.maintain(NOW, MaintenancePolicy::default()).await });
         h.pump_until(16).await;
         let report = run.await.unwrap();
 
@@ -1543,10 +1608,51 @@ mod tests {
         let h = Harness::new(1);
         h.nodes[0].publish(record(1, &[])).await.unwrap();
 
-        let report = h.nodes[0].maintain(NOW + 7200, 0).await;
+        let report = h.nodes[0].maintain(NOW + 7200, MaintenancePolicy::default()).await;
         assert_eq!(report.expired, 1);
         assert_eq!(h.nodes[0].record_count().await, 0);
         assert_eq!(report.refreshed, 0, "nothing left to refresh");
+    }
+
+    /// A bounded pass must not re-offer the same prefix forever. Each pass
+    /// resumes after the last key the previous one handled, so a store larger
+    /// than the budget is covered across ticks rather than having its tail
+    /// starved — and it says how many it left, so a bounded pass never reads as
+    /// an exhaustive one.
+    #[tokio::test]
+    async fn a_bounded_pass_resumes_where_the_last_one_stopped() {
+        let h = Harness::new(2);
+        for seed in 1..=4u8 {
+            h.nodes[0].publish(record(seed, &[])).await.unwrap();
+        }
+        h.introduce(0, 1).await;
+
+        let policy = MaintenancePolicy {
+            lapse_window_secs: 0,
+            max_records: 2,
+        };
+
+        let node = h.nodes[0].clone();
+        let run = tokio::spawn(async move { node.maintain(NOW, policy).await });
+        h.pump_until(24).await;
+        let first = run.await.unwrap();
+
+        assert_eq!(first.refreshed, 2, "the budget is two: {first:?}");
+        assert_eq!(first.deferred, 2, "and it must say it left two");
+
+        let node = h.nodes[0].clone();
+        let run = tokio::spawn(async move { node.maintain(NOW, policy).await });
+        h.pump_until(24).await;
+        let second = run.await.unwrap();
+
+        assert_eq!(second.refreshed, 2);
+        // All four are now on the peer, which only happens if the second pass
+        // handled the two the first one skipped.
+        assert_eq!(
+            h.nodes[1].record_count().await,
+            4,
+            "two passes of two must cover four records, not repeat the first two"
+        );
     }
 
     /// Maintenance cannot renew a name — the expiry is signed into the record —
@@ -1558,7 +1664,15 @@ mod tests {
         h.nodes[0].publish(rec.clone()).await.unwrap();
 
         // 600 seconds of a 3600-second TTL left, against a 900-second window.
-        let report = h.nodes[0].maintain(NOW + 3000, 900).await;
+        let report = h.nodes[0]
+            .maintain(
+                NOW + 3000,
+                MaintenancePolicy {
+                    lapse_window_secs: 900,
+                    ..Default::default()
+                },
+            )
+            .await;
         assert_eq!(report.lapsing, vec![rec.name.clone()]);
         assert_eq!(report.expired, 0);
         assert_eq!(

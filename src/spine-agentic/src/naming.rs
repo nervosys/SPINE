@@ -603,6 +603,29 @@ impl NameService {
         self.store.records().cloned().collect()
     }
 
+    /// Records this node is one of the nodes responsible for, in a stable order.
+    ///
+    /// Maintenance walks the keyspace once per record it re-offers, so the set
+    /// it iterates has to be the set that is actually this node's to keep alive.
+    /// A record held here while K nearer nodes exist is a copy that lookups will
+    /// never route to; re-offering it spends a walk to tell the rightful holders
+    /// something they already know, and every node doing that multiplies the
+    /// traffic by however many stale copies the mesh is carrying.
+    ///
+    /// Ordered by key so a bounded pass can resume where the last one stopped
+    /// rather than starving the tail of the store.
+    pub fn records_to_maintain(&self, now: u64) -> Vec<NameRecord> {
+        let mut records: Vec<NameRecord> = self
+            .store
+            .records()
+            .filter(|r| !r.is_expired(now))
+            .filter(|r| self.is_responsible_for(&r.name.key()))
+            .cloned()
+            .collect();
+        records.sort_by(|a, b| a.name.key().as_bytes().cmp(b.name.key().as_bytes()));
+        records
+    }
+
     /// Records within `window` seconds of lapsing.
     ///
     /// Only the holder of the signing key can extend a record's life, so this is
@@ -1386,6 +1409,49 @@ mod tests {
         let peers = service.closest_peers(&NameKey::of(b"target"), K);
         assert_eq!(peers.len(), 1, "only the addressable peer: {peers:?}");
         assert_eq!(peers[0].key(), node(2).id);
+    }
+
+    /// Maintenance walks the keyspace once per record it re-offers, so it must
+    /// only iterate records this node is actually one of the holders for. A copy
+    /// held while K nearer nodes exist is one no lookup will route to; re-offering
+    /// it spends a walk telling the rightful holders what they already have.
+    #[test]
+    fn maintenance_skips_records_this_node_is_not_responsible_for() {
+        // A node at one end of the keyspace, with K peers that all sit nearer
+        // the record's key than it does.
+        let rec = record(4, 1, 1_000, &[]);
+        let target = rec.name.key();
+
+        let mut service = NameService::new(NameKey::of(b"far away"));
+        service.publish(rec.clone()).unwrap();
+        assert_eq!(
+            service.records_to_maintain(1_000).len(),
+            1,
+            "with no peers, this node is trivially among the closest"
+        );
+
+        for i in 0..K as u8 {
+            // Keys derived from the target itself, so each is nearer to it than
+            // an unrelated local key is.
+            let mut bytes = *target.as_bytes();
+            bytes[31] ^= i;
+            let nearer = NodeInfo::new(NameKey::from_bytes(bytes), vec![], 100);
+            service.add_peer(nearer, agent(i));
+        }
+
+        assert!(
+            service.records_to_maintain(1_000).is_empty(),
+            "K nearer nodes exist, so this copy is not this node's to keep alive"
+        );
+    }
+
+    /// An expired record is not something to re-offer; it is something to drop.
+    #[test]
+    fn maintenance_ignores_records_that_have_already_expired() {
+        let mut service = NameService::new(NameKey::of(&[1]));
+        service.publish(record(4, 1, 1_000, &[])).unwrap(); // ttl 3600
+        assert_eq!(service.records_to_maintain(2_000).len(), 1);
+        assert!(service.records_to_maintain(9_000).is_empty());
     }
 
     /// Re-offering a record cannot extend its life, so a record near expiry is
