@@ -91,6 +91,17 @@ pub struct NamespaceConfig {
     /// and orphans every record published under the old name. It is persisted
     /// for that reason, not for convenience.
     pub key_path: String,
+    /// How often, in seconds, to re-offer held records to the nodes now closest
+    /// to them and drop the expired.
+    ///
+    /// This is churn insurance, not renewal: a record's expiry is signed into it
+    /// and cannot be extended by re-announcing. Too long and records drift away
+    /// from the keyspace position lookups converge on; too short and every node
+    /// runs a keyspace walk per held record more often than the mesh changes.
+    pub maintain_secs: u64,
+    /// How close to expiry, in seconds, a name has to be before it is reported
+    /// as lapsing. Only its signing key's holder can renew it.
+    pub lapse_window_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +243,11 @@ impl Default for NamespaceConfig {
             enabled: false,
             port: 9440,
             key_path: "spine-node.key".into(),
+            // Kademlia's hourly replication interval, and for the same reason:
+            // it is short relative to how fast a neighbourhood turns over and
+            // long relative to how long a walk takes.
+            maintain_secs: 3600,
+            lapse_window_secs: 900,
         }
     }
 }

@@ -14,6 +14,14 @@
 //! routing entries for a node that no longer exists. So the key is persisted,
 //! and the file is the node's identity in a stronger sense than a config value.
 //!
+//! ## Why joining is not the end of it
+//!
+//! A node that joins and then sits still slowly stops being useful. Records are
+//! stored at the nodes closest to their keys *as of the moment they were
+//! published*, and that set changes as peers come and go — so [`join`] also
+//! starts a maintenance task that re-offers held records to whoever is closest
+//! now, and drops the ones that have expired.
+//!
 //! ## Why joining is allowed to fail
 //!
 //! [`join`] returns the node even when no seed answered. A namespace this node
@@ -24,6 +32,7 @@
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use spine_agentic::identity::SigningIdentity;
@@ -85,7 +94,48 @@ pub async fn join(cfg: &NamespaceConfig, host: &str) -> Result<Arc<MeshNameResol
         warn!(seed = %endpoint, error = %why, "seed unreachable");
     }
 
+    spawn_maintenance(resolver.clone(), cfg);
+
     Ok(resolver)
+}
+
+/// Keep held records where lookups will find them, for as long as the node runs.
+///
+/// A record is stored at the K closest nodes *at the time it is published*, and
+/// the set of K closest nodes changes underneath it as peers join and leave.
+/// Without this the copies stay where they were put while the keyspace position
+/// lookups converge on moves away from them, and a name that is still perfectly
+/// valid stops being findable.
+fn spawn_maintenance(resolver: Arc<MeshNameResolver>, cfg: &NamespaceConfig) {
+    let period = Duration::from_secs(cfg.maintain_secs.max(1));
+    let lapse_window = cfg.lapse_window_secs;
+
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        // The first tick fires immediately; skip it. At startup the node has
+        // just bootstrapped and has nothing worth re-offering.
+        ticker.tick().await;
+
+        loop {
+            ticker.tick().await;
+            let now = resolver.now();
+            let report = resolver.maintain(now, lapse_window).await;
+
+            if report.expired > 0 || report.refreshed > 0 {
+                info!(
+                    expired = report.expired,
+                    refreshed = report.refreshed,
+                    replicas = report.replicas_sent,
+                    "namespace maintenance"
+                );
+            }
+            for name in &report.lapsing {
+                // Nothing here can renew it: the expiry is signed into the
+                // record, so only whoever holds its key can extend it.
+                warn!(name = %name, "name is about to lapse and needs re-signing");
+            }
+        }
+    });
 }
 
 /// Read the node's key seed, creating one on first run.
