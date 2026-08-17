@@ -1,10 +1,10 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,401 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,404 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
-Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), and 42 (handshake
-randomness) followed on the same branch and have their own sections near the end
-of this file.
+Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
+randomness), and 43 (maintenance cost) followed on the same branch and have their
+own sections near the end of this file.
 
 ---
 
@@ -381,6 +381,36 @@ that assert something adjacent to the property they name.
 
 ---
 
+## Phase 43 — bounding what maintenance costs (done, on branch `phase-38-namespace`)
+
+A defect in my own Phase 40 work. `maintain` iterated every record in the store
+and called `replicate` on each, and `replicate` runs a full keyspace walk. So a
+node holding a thousand records ran a thousand walks per tick, and did it for
+records it was only holding a drifted copy of — spending a walk to tell the
+rightful holders something they already had. Every node behaving that way
+multiplies mesh traffic by the number of stale copies in circulation.
+
+`is_responsible_for` had been sitting in `naming.rs` since Phase 38, written for
+precisely this question, with no caller. Now `records_to_maintain` uses it, and
+also drops already-expired records, which were being re-offered pointlessly.
+
+Passes are bounded by `MaintenancePolicy::max_records` (default 64) and resume
+after the last key handled, so a store larger than the budget is covered across
+ticks rather than having its tail starved. `deferred` and `not_ours` are in the
+report and in the log line: a bounded pass must not read as an exhaustive one,
+and `not_ours` climbing is how an operator learns a node is holding copies
+nothing will ever ask it for.
+
+**One caveat on the verification.** Across the runs for this phase, one workspace
+run reported a single failure. It did not reproduce in seven subsequent runs
+(four of `spine-agentic`, three of the other network-heavy crates, plus full
+workspace runs), and I did not capture the test name before it vanished — so I
+cannot say which test it was or rule out a genuine flake. The network suites bind
+real loopback ports and the disk was near full at the time, both of which make
+environmental failure plausible, but that is a hypothesis and not a finding.
+
+---
+
 ## Suggested next steps, in order
 
 1. ~~**Bootstrap discovery.**~~ Done — see above.
@@ -392,6 +422,9 @@ that assert something adjacent to the property they name.
 4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
    there is a connection pool for the backend hop, and TLS termination in front
    of the gateway if these endpoints are exposed publicly.
+5. **Find the flaky test** described at the end of Phase 43, or establish that it
+   was environmental. A test suite with one unidentified intermittent failure is
+   a suite whose green runs mean slightly less than they should.
 
 ---
 
@@ -421,7 +454,7 @@ that assert something adjacent to the property they name.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,401 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,404 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```

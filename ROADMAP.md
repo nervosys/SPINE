@@ -619,6 +619,25 @@ ephemeral in lifetime, not in value.
       should answer
 - [x] 1,401 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
+### Phase 43: Bounding What Maintenance Costs
+
+Phase 40's maintenance pass re-offered *every* record a node held, and each
+re-offer runs its own keyspace walk. A node with a large store therefore ran one
+walk per record on every tick — and did it for records it was merely holding a
+stale copy of, telling the rightful holders something they already knew. Every
+node doing that multiplies mesh traffic by however many drifted copies exist.
+`is_responsible_for` had been written for exactly this and was never called.
+
+- [x] **Responsibility filter** (`NameService::records_to_maintain`): only
+      records this node is among the K closest to, and only unexpired ones
+- [x] **Bounded, resumable passes** (`MaintenancePolicy::max_records`, default
+      64): passes resume after the last key handled, so a store larger than the
+      budget is covered across ticks instead of having its tail starved
+- [x] **`deferred` and `not_ours` in the report**, and logged: a bounded pass
+      must never read as an exhaustive one, and `not_ours` climbing is the signal
+      that a node is carrying copies no lookup will route to
+- [x] 1,404 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks
