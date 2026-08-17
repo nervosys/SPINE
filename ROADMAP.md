@@ -530,6 +530,36 @@ transport.
       degrades to serving local names rather than failing to start
 - [x] 1,378 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
+### Phase 40: Replication — Making a Name Outlive Its Publisher
+
+Bootstrap made the DHT reachable; a record still lived in exactly one place.
+Publishing broadcast an announcement to whatever peers the publisher happened to
+be connected to, which has nothing to do with where the record belongs, so the
+publisher going down took its names with it.
+
+- [x] **Node lookup** (`ResolveQuery::Node`, Kademlia's FIND_NODE): the walk that
+      converges on a neighbourhood rather than stopping at an answer. Storing
+      needs it — a name lookup ends the moment any node hands back the record,
+      long before it has found where the record belongs.
+- [x] **Directed store** (`MeshNode::announce_name_to`): copies go to the K
+      nodes closest to the record's key, found by walking, not to whoever
+      happens to be connected
+- [x] **Honest reporting** (`ReplicationReport`): a publisher learns how many
+      copies landed. A node with no keyspace peers still broadcasts to warm
+      caches, and the report says plainly that nothing durable happened rather
+      than letting a broadcast pass for a replica.
+- [x] **Maintenance** (`MeshNameResolver::maintain`): re-offer held records to
+      whoever is closest *now* and drop the expired. The K closest nodes to a key
+      change as peers join and leave; without this, copies drift away from the
+      position lookups converge on while the record is still perfectly valid.
+- [x] **Lapse reporting, not renewal**: a record's expiry is signed into it, so
+      re-announcing cannot extend it. Names near expiry come back in the report
+      for whoever holds the key, which is the only party that can renew one.
+- [x] **Background task in `spine-core`**: `maintain_secs` (default 3600, for
+      Kademlia's reason — short against neighbourhood churn, long against the
+      cost of a walk) and `lapse_window_secs`
+- [x] 1,390 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks

@@ -1,7 +1,9 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,355 tests passing, 0 failures, 0 Clippy warnings.
-**Not committed.** Everything below is in the working tree only.
+**Status:** complete and verified. 1,390 tests passing, 0 failures, 0 Clippy warnings.
+**Committed** on branch `phase-38-namespace`, which is not merged into `master`.
+Phases 39 (bootstrap) and 40 (replication) followed on the same branch and have
+their own sections near the end of this file.
 
 ---
 
@@ -219,10 +221,12 @@ configured in `spine.toml`, dialed by address, and prove their own identity. Wha
 is still missing is *automatic* discovery: no DNS bootstrap, no rendezvous, no
 peer exchange beyond what a seed hands back at greeting time.
 
-**No record replication or republication.** `needing_republish` reports what is
-about to lapse, and `is_responsible_for` says whether this node is among the K
-closest to a key — but nothing acts on either. Records live only where they were
-published, so a node going down takes its names with it.
+**~~No record replication or republication.~~** *Solved in Phase 40 — see below.*
+Records are stored at the K closest nodes and re-offered periodically. What is
+still missing is **renewal**: a record's expiry is signed into it, so nothing but
+the holder of its signing key can extend a name's life. A node whose owner stops
+re-signing loses its names on schedule, by design, and the maintenance pass only
+reports the coming lapse.
 
 **`FetchName` resolves but does not fetch.** It returns the record and its ranked
 endpoints; dialing them is left to the caller. This is deliberate — conflating
@@ -263,14 +267,51 @@ Fixed in `peers_for_newcomer`.
 
 ---
 
+## Phase 40 — replication (done, on branch `phase-38-namespace`)
+
+Step 2 below. The gap was not only that nothing replicated, but that nothing
+*could*: publishing broadcast to whatever peers the publisher was connected to,
+and the DHT had no way to ask "which nodes are closest to this key" at all. A
+name lookup cannot answer that — it stops the moment any node hands back the
+record, which is usually long before the walk has converged.
+
+- `ResolveQuery::Node` — Kademlia's FIND_NODE, the walk with no early answer to
+  stop on. `LookupOutcome::Closest` carries the converged shortlist.
+- `MeshNode::announce_name_to` — the directed store. Copies go where the record
+  belongs, not where the publisher happens to have a connection.
+- `MeshNameResolver::replicate` / `find_node` / `maintain`, and
+  `ReplicationReport` / `MaintenanceReport`
+- `spine-core` runs a maintenance task on a `maintain_secs` interval (default
+  3600), re-offering held records and dropping expired ones
+
+Two decisions worth knowing about:
+
+**A broadcast does not count as a replica.** A node with no addressable keyspace
+peers still broadcasts, because warming a cache is better than nothing, but
+`ReplicationReport::replicas()` reports zero. The peers a broadcast reaches were
+not chosen for their position, so nothing about durability follows from it, and
+counting them would let a single-node mesh report itself as durable.
+
+**Maintenance re-offers; it does not renew.** Re-announcing cannot move an expiry
+that is signed into the record. Conflating the two would produce a node that
+looks like it is keeping names alive and is not. Lapsing names come back in the
+report instead.
+
+Tests worth knowing about:
+`a_published_record_is_served_by_a_node_that_did_not_publish_it` (over real
+sockets — the point of the whole phase), `a_replica_reaches_a_node_the_publisher_never_met`,
+and `maintenance_re_offers_a_record_to_a_peer_that_arrived_later`.
+
+One test-writing note: `publish` returns once the copy is on the wire, and an
+announcement has no ack, so asserting on the holder immediately after publishing
+races the delivery. The TCP test polls rather than sleeping a fixed interval.
+
+---
+
 ## Suggested next steps, in order
 
 1. ~~**Bootstrap discovery.**~~ Done — see above.
-2. **Replication.** Store each record at the K closest nodes and republish before
-   TTL expiry. The predicates already exist; they need a background task. This is
-   now the largest gap: bootstrap made the DHT reachable, but a record still
-   lives only where it was published, so a node going down still takes its names
-   with it.
+2. ~~**Replication.**~~ Done — see above.
 3. **Get the handshake reviewed** if the transport will ever carry anything whose
    safety does not rest on the signed envelopes inside it.
 4. **Wire the namespace into the gateway** so `spine://` names are resolvable over
@@ -281,8 +322,8 @@ Fixed in `peers_for_newcomer`.
 
 ## Housekeeping
 
-- **Nothing is committed.** The tree also carries pre-existing uncommitted changes
-  to `.gitignore` and `Cargo.lock` from before this work started.
+- **Phases 38-40 are committed on `phase-38-namespace`**, which is not merged into
+  `master`. Each phase is a coherent group of dependency-ordered commits.
 - **`spine-cli` is still unpublished** to crates.io — the old publish run hit a 429
   rate limit at the last crate in the order. One re-run finishes it.
 - **Docs updated:** README (namespace section, transport table, crate list),
@@ -293,13 +334,19 @@ Fixed in `peers_for_newcomer`.
   builds took the disk from 71 GB free to zero and the test runner started
   failing with ENOSPC. It is regenerable compiler cache; I chose it over
   `target/debug/deps` specifically to avoid forcing a full dependency rebuild.
+- **The disk is the binding constraint on this machine.** It has since filled
+  twice more; Phase 40 hit `LNK1318` (a PDB write failure that is really ENOSPC
+  wearing a linker's clothes) with 637 MB free, and clearing
+  `target/debug/incremental` again was what unblocked it. Budget a few GB before
+  a full workspace build, and expect to clear that directory rather than
+  `target/debug/deps`.
 
 ---
 
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,355 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,390 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```

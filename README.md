@@ -155,6 +155,34 @@ all. It resolves with no network and no publisher — the address is *in* the na
 attested it. Use it to reach a seed; trust what the seed then proves about
 itself.
 
+### Where a name lives
+
+Publishing stores the record locally and then places copies at the nodes closest
+to its key — found by walking the keyspace, not by asking whoever happens to be
+connected. Those are two different sets, and only the first is where a lookup for
+that name will go looking.
+
+```toml
+[namespace]
+maintain_secs = 3600      # re-offer held records to whoever is closest now
+lapse_window_secs = 900   # report names this close to expiring
+```
+
+The maintenance pass exists because the K closest nodes to a key are not the same
+K nodes an hour later. Peers join and leave; without a periodic re-offer, a
+record's copies drift away from the position lookups converge on while the record
+itself is still perfectly valid.
+
+It cannot renew anything, and does not pretend to. A record's expiry is signed
+into it, so re-announcing one does not move it — only the holder of its signing
+key can extend a name's life. Names close to lapsing are reported instead, which
+is the honest thing a node that does not hold your key can do.
+
+`publish` returns how many copies actually landed. A node with no keyspace peers
+still broadcasts to warm whatever caches are listening, but reports zero
+replicas: a broadcast may well have reached peers, just not peers chosen for
+their position, so nothing about the record's durability follows from it.
+
 ```bash
 cargo run -p spine-name --example agent_web   # publish, discover, resolve, crawl
 ```
