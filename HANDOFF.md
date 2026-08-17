@@ -1,6 +1,6 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,408 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,410 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
 Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
 randomness), and 43 (maintenance cost) followed on the same branch and have their
@@ -422,18 +422,26 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
    there is a connection pool for the backend hop, and TLS termination in front
    of the gateway if these endpoints are exposed publicly.
-5. **Fix the latent-AEAD key/nonce construction** — the most serious of the
-   findings, documented in `SECURITY_AUDIT.md`. `enable_chameleon_aead` derives
+5. ~~**Fix the latent-AEAD key/nonce construction.**~~ Done in Phase 45; it was
+   the most serious of the findings, and is written up in `SECURITY_AUDIT.md`.
+   `enable_chameleon_aead` derived
    its AES-256-GCM key by HKDF with no salt and no per-session input, so the key
-   is a pure function of the shared secret and is identical in every session
-   between the same pair. The nonce is a counter that restarts at zero, prefixed
-   by only 32 random bits — so two sessions collide with probability ~39% after
-   65,536 sessions, and a collision means repeated `(key, nonce)` under
+   was a pure function of the shared secret and identical in every session
+   between the same pair. The nonce was a counter that restarted at zero,
+   prefixed by only 32 random bits — so two sessions collided with probability
+   ~39% after 65,536 sessions, and a collision meant repeated `(key, nonce)` under
    AES-GCM. That leaks plaintext XOR *and* the authentication subkey, so it
-   costs forgery as well as confidentiality. Either salt the HKDF per session
-   and transmit the salt, or widen the random nonce portion to 96 bits and drop
-   the counter. Both change the wire format, which is why I stopped at
-   documenting it.
+   costs forgery as well as confidentiality. Fixed by drawing the full 96-bit
+   nonce from the OS CSPRNG per message.
+
+   I had first recorded this as needing a wire-format change and therefore as a
+   decision to hand over. That was wrong: the receiver has always read the whole
+   nonce off the frame rather than reconstructing it from a counter, so the
+   sender's choice of those bytes was never part of the format. The error is
+   worth naming because it would have left the most serious of the four findings
+   sitting behind a decision that did not need making. The key is still a pure
+   function of the shared secret, which is worth revisiting if a handshake is
+   ever added here, but it is no longer load-bearing for nonce uniqueness.
 6. **Fix the Chameleon layer's key derivation** — see the new finding in
    `SECURITY_AUDIT.md`. `ChameleonKey::new` collapses the 256-bit shared secret
    to a `u64` with `DefaultHasher` before using it, so that layer is keyed by at
@@ -487,7 +495,7 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,408 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,410 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```

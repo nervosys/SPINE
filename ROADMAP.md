@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
-> 30 Rust crates · 1,408 tests · 0 warnings · AGPL-3.0-or-later
+> 30 Rust crates · 1,410 tests · 0 warnings · AGPL-3.0-or-later
 
 ---
 
@@ -663,6 +663,25 @@ closest nodes rather than broadcast to whoever happened to be connected.
       a forgery, and counting them together would make ordinary keyspace
       pressure look like an attack
 - [x] 1,408 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
+### Phase 45: A Nonce That Never Repeats
+
+The most serious of the four findings from the Phase 42 audit. The latent-AEAD
+nonce was `counter(8) || session_nonce(4)` with the counter restarting at zero
+each session, while the key is `HKDF(secret)` with no per-session input and so
+identical in every session between the same pair. Thirty-two bits of session
+nonce were the only thing keeping two sessions from reusing `(key, nonce)` —
+about a 39% chance after 65,536 sessions — and AES-GCM answers nonce reuse with
+both plaintext disclosure and recovery of its authentication subkey.
+
+- [x] **96-bit nonces from the OS CSPRNG**, at all five encrypt sites
+- [x] **Dead nonce state removed** rather than left in place, since a spare
+      counter and session value invite the broken pattern to be rebuilt
+- [x] **Not a wire-format change**, contrary to how it was first recorded: the
+      receiver has always read the whole nonce off the frame, so the sender's
+      choice of those bytes was never part of the format. The correction is
+      documented in `SECURITY_AUDIT.md` rather than quietly dropped.
+- [x] 1,410 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
 ------
 

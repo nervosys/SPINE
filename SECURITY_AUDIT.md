@@ -105,7 +105,7 @@ This is the same species of defect as the handshake's seeded RNG (see
 standard, and what is wrong is the entropy fed in. It is worth assuming there are
 more of these and looking for them specifically.
 
-### Finding: the latent-AEAD path reuses one key across every session
+### Finding: the latent-AEAD path reuses one key across every session — *fixed in Phase 45*
 
 `enable_chameleon_aead` derives its AES-256-GCM key with
 
@@ -140,10 +140,23 @@ reuses a shared secret across many connections, which is the deployment the API
 invites: `enable_chameleon_aead(secret)` takes a long-term secret and says
 nothing about rotation.
 
-Two adequate fixes, neither attempted here because both change the wire format:
-give HKDF a per-session salt that is transmitted (making the key per-session, so
-nonce collisions no longer matter), or widen the random portion of the nonce to
-96 bits and drop the counter.
+**Fixed in Phase 45** by drawing the whole 96-bit nonce from the OS CSPRNG per
+message. The birthday bound is then over all messages under the key rather than
+over a 32-bit session value — about 2^-33 after 2^32 messages, the regime NIST
+SP 800-38D sanctions for random IVs — and the session dimension disappears,
+which is what matters given the key never rotates.
+
+An earlier draft of this document claimed the fix required a wire-format change.
+That was wrong, and worth correcting rather than quietly deleting, because it is
+the kind of error that leaves a serious defect unfixed behind a decision nobody
+needed to make. The full nonce has always been prepended to the ciphertext and
+the receiver has always read it from there, so how the sender chooses those
+twelve bytes was only ever a sender-side decision: old and new senders
+interoperate with any receiver.
+
+The alternative fix — giving HKDF a transmitted per-session salt, making the key
+itself per-session — would have changed the format, and remains the better
+long-term shape if a handshake is ever added to this path.
 
 **Note the contrast with the mesh handshake in `spine-crypto`**, which gets this
 right for the reason described in `HANDSHAKE-REVIEW.md` §3: keys are derived per
