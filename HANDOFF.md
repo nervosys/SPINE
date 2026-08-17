@@ -1,9 +1,9 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,390 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,398 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
-Phases 39 (bootstrap) and 40 (replication) followed on the same branch and have
-their own sections near the end of this file.
+Phases 39 (bootstrap), 40 (replication), and 41 (HTTP interop) followed on the
+same branch and have their own sections near the end of this file.
 
 ---
 
@@ -308,15 +308,48 @@ races the delivery. The TCP test polls rather than sleeping a fixed interval.
 
 ---
 
+## Phase 41 — HTTP interop (done, on branch `phase-38-namespace`)
+
+Step 4 below: the namespace over plain HTTP, which was the cheapest interop win
+available. `/v1/names/{resolve,providers,publish,endpoints,crawl}` on
+`spine-gateway`, plus the `AgentClient` methods they needed — the protocol
+carried these commands and `spine-core` served them, but the SDK client had no
+way to send one, so the gateway had nothing to call.
+
+Two things worth knowing:
+
+**Namespace outcomes are mapped onto HTTP status codes rather than stuffed into
+a 200 body.** Resolved is `200`, unchanged is `304` with the TTL in
+`Cache-Control`, unpublished is `404`, malformed is `400`. An HTTP client's cache
+and retry logic is then correct without knowing anything about SPINE.
+
+**Provenance survives translation, including the unattested kind.** Every
+resolution reports where it came from and whether anything vouched for it. A
+`host:` name's address was read out of the name and nobody signed it; returning
+it shaped like a signed binding would launder exactly the distinction the
+namespace's trust model rests on.
+
+**A real defect found on the way: `PublishName` never left the node.** It wrote
+to the local resolver only, so a record published over the protocol was
+resolvable on one machine and findable nowhere — invisible until Phase 40 gave
+it something to be measured against. It now replicates and reports the count.
+
+The endpoints deliberately take no session: resolution is stateless, and making
+a caller create one, resolve, and tear it down is three round trips for a
+one-round-trip question. The cost is a backend connection per request, which is
+worth revisiting if these become hot.
+
+---
+
 ## Suggested next steps, in order
 
 1. ~~**Bootstrap discovery.**~~ Done — see above.
 2. ~~**Replication.**~~ Done — see above.
 3. **Get the handshake reviewed** if the transport will ever carry anything whose
    safety does not rest on the signed envelopes inside it.
-4. **Wire the namespace into the gateway** so `spine://` names are resolvable over
-   plain HTTPS, which is the cheapest possible interop win given Interop is the
-   self-assessed weakest axis.
+4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
+   there is a connection pool for the backend hop, and TLS termination in front
+   of the gateway if these endpoints are exposed publicly.
 
 ---
 
@@ -346,7 +379,7 @@ races the delivery. The TCP test polls rather than sleeping a fixed interval.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,390 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,398 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```

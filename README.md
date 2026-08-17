@@ -183,6 +183,31 @@ still broadcasts to warm whatever caches are listening, but reports zero
 replicas: a broadcast may well have reached peers, just not peers chosen for
 their position, so nothing about the record's durability follows from it.
 
+### Resolving a name with nothing but curl
+
+The namespace is reachable over plain HTTP through `spine-gateway`, for the large
+part of the world that does not speak SPINE's protocol. This costs nothing in
+trust: records are signed and verify against the name, so a client that checks
+one is not trusting the gateway — only using it as a lens.
+
+```bash
+curl 'http://localhost:8080/v1/names/resolve?name=spine://did:rkeohxlubhyz…/tools/search'
+curl 'http://localhost:8080/v1/names/providers?capability=web.search&limit=5'
+curl -X POST http://localhost:8080/v1/names/publish -d '{"record": …}'
+```
+
+Namespace outcomes map onto the HTTP status codes that already mean them:
+resolved is `200`, unchanged is `304` with the granted freshness in
+`Cache-Control`, a name nobody has published is `404`, a malformed name is `400`.
+An HTTP client's existing cache and retry behaviour is then correct without it
+knowing anything about SPINE.
+
+Every answer carries its provenance, in the body and in `X-Spine-Provenance`,
+with an explicit `attested` flag. This matters most for `host:` names: the
+address was read out of the name, nothing signed it, and nobody was asked.
+Returning that in the same shape as a signed binding would quietly launder the
+one binding in the namespace that is nobody's word.
+
 ```bash
 cargo run -p spine-name --example agent_web   # publish, discover, resolve, crawl
 ```

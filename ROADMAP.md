@@ -560,6 +560,37 @@ publisher going down took its names with it.
       cost of a walk) and `lapse_window_secs`
 - [x] 1,390 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
+### Phase 41: Interop — The Namespace Over Plain HTTP
+
+Resolution worked over SPINE's own protocol, which most of the world cannot
+speak. Interop is the self-assessed weakest axis, and this is its cheapest win:
+a client with nothing but an HTTP stack can now resolve a name, find who
+provides a capability, and publish a record — without trusting the gateway,
+because records are signed and verify against the name.
+
+- [x] **Namespace methods on `AgentClient`**: `resolve_name`, `resolve_names`,
+      `find_providers`, `publish_name`, `fetch_name`, `crawl_names`. The
+      protocol carried these commands and `spine-core` served them, but the SDK
+      client had no way to send one.
+- [x] **`/v1/names/*` on the gateway**: resolve (single and batch), providers,
+      publish, endpoints, crawl — with OpenAPI schemas and Swagger UI, and no
+      session, because resolution is stateless
+- [x] **Namespace outcomes mapped onto HTTP status codes**: resolved is `200`,
+      unchanged is `304` carrying its TTL in `Cache-Control`, unpublished is
+      `404`, malformed is `400`. An HTTP client's existing cache and retry logic
+      then does the right thing knowing nothing about SPINE.
+- [x] **Provenance survives the translation**: every resolution reports where it
+      came from, in the body and in `X-Spine-Provenance`, with an explicit
+      `attested` flag. A `host:` name's address was read out of the name and
+      nobody signed it; handing that to an HTTP client in the same shape as a
+      signed binding would launder the one thing in the namespace that is
+      nobody's word.
+- [x] **Fixed: `PublishName` never left the node.** It stored to the local
+      resolver only, so a record published over the protocol was resolvable on
+      one machine and findable nowhere. It now replicates and reports how many
+      copies landed.
+- [x] 1,398 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks
