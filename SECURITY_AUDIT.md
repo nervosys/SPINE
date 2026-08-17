@@ -69,7 +69,7 @@ the Rust crate we use is a **FIPS-validated cryptographic module**
 | **Titans speculative decoding** | — | ❌ Not crypto at all (ML technique) | in-tree | n/a |
 | PRNG — message keys, nonces | SP 800-90A (HMAC_DRBG / CTR_DRBG / Hash_DRBG) | We use `rand::rngs::StdRng` (ChaCha12 — **not** SP 800-90A) | `rand = "0.8"` | ❌ Not validated |
 
-### Finding: the Chameleon layer keys itself with 64 bits
+### Finding: the Chameleon layer keys itself with 64 bits — *partly fixed in Phase 47*
 
 `ChameleonKey::new(secret: &[u8; 32])` — the type `enable_chameleon` installs —
 reduces the 256-bit shared secret to a `u64` before using it:
@@ -104,6 +104,23 @@ This is the same species of defect as the handshake's seeded RNG (see
 `HANDSHAKE-REVIEW.md` §6): the primitives are conventional and the arrangement is
 standard, and what is wrong is the entropy fed in. It is worth assuming there are
 more of these and looking for them specifically.
+
+**Phase 47 replaced `DefaultHasher` with HKDF-SHA-256**, under a distinct info
+string so this seed is separated from the AEAD key derived from the same secret.
+That removes the reliance on a HashMap hasher for key material — and removes a
+second problem found while fixing the first: the standard library does not
+specify which algorithm `DefaultHasher` uses and may change it between Rust
+releases, so two peers built with different compilers could have derived
+different seeds from the same shared secret and silently failed to interoperate.
+
+**The 64-bit ceiling remains, and is the open half of this finding.**
+`NeuralLatentEncoder` and `TransformerConfig` take a `u64` seed, so the
+derivation cannot hand them more entropy than that no matter how it is computed.
+Lifting it means widening the keying of those types, which is a change to
+`spine-neural` rather than to this call site.
+
+Note that Phase 47 is a breaking change to the Chameleon layer: the derived seed
+differs from the old one, so peers must be upgraded together.
 
 ### Finding: the latent-AEAD path reuses one key across every session — *fixed in Phase 45*
 

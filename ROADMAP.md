@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
-> 30 Rust crates · 1,413 tests · 0 warnings · AGPL-3.0-or-later
+> 30 Rust crates · 1,416 tests · 0 warnings · AGPL-3.0-or-later
 
 ---
 
@@ -702,6 +702,31 @@ one-round-trip question. That left a TCP connect in front of every request.
       number to look at when deciding whether the gateway is thrashing
       connections
 - [x] 1,413 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
+### Phase 47: A Seed From a KDF
+
+The last of the four findings from the Phase 42 audit, and it turned out to have
+a second defect underneath the security one.
+
+`ChameleonKey::new` derived its seed by running the 256-bit shared secret through
+`DefaultHasher`. That is SipHash keyed with zeros — a hash built for HashMap
+collision resistance, offering none of the guarantees a key derivation needs. But
+the standard library also declines to specify which algorithm `DefaultHasher`
+uses, and reserves the right to change it between releases: two peers built with
+different compilers could derive different seeds from the same secret and fail to
+understand one another, with nothing in the protocol to explain why.
+
+- [x] **HKDF-SHA-256 with a distinct info string**, separating this seed from the
+      AEAD key derived from the same secret
+- [x] **Only the two secret-derived sites changed.** The remaining `DefaultHasher`
+      uses hash non-secret payload data for change detection, where a fast
+      non-cryptographic hash is the right tool.
+- [x] **Breaking change to the Chameleon layer**: the derived seed differs, so a
+      peer on this code cannot interoperate with one on the old code
+- [x] **The 64-bit ceiling remains**, and this derivation cannot lift it —
+      `NeuralLatentEncoder` and `TransformerConfig` are seeded by a `u64`, so
+      widening it is a change to those crates. Recorded in `SECURITY_AUDIT.md`.
+- [x] 1,416 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
 ------
 

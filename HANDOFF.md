@@ -1,6 +1,6 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,413 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,416 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
 Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
 randomness), and 43 (maintenance cost) followed on the same branch and have their
@@ -443,7 +443,14 @@ environmental failure plausible, but that is a hypothesis and not a finding.
    sitting behind a decision that did not need making. The key is still a pure
    function of the shared secret, which is worth revisiting if a handshake is
    ever added here, but it is no longer load-bearing for nonce uniqueness.
-6. **Fix the Chameleon layer's key derivation** — see the new finding in
+6. ~~**Fix the Chameleon layer's key derivation.**~~ Partly done in Phase 47:
+   the derivation now runs through HKDF-SHA-256 rather than `DefaultHasher`,
+   which also removed a latent interoperability bug — the standard library does
+   not promise `DefaultHasher`'s algorithm across Rust releases, so peers built
+   with different compilers could have disagreed about the same secret. Note it
+   is a breaking change; peers must upgrade together. **Still open:** the 64-bit
+   ceiling, which needs `NeuralLatentEncoder` and `TransformerConfig` to accept
+   more than a `u64` seed. Original writeup: — see the new finding in
    `SECURITY_AUDIT.md`. `ChameleonKey::new` collapses the 256-bit shared secret
    to a `u64` with `DefaultHasher` before using it, so that layer is keyed by at
    most 64 bits, derived deterministically by a non-cryptographic hash. Where
@@ -496,7 +503,7 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,413 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,416 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```
