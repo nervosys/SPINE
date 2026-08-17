@@ -1,6 +1,6 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,410 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,413 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
 Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
 randomness), and 43 (maintenance cost) followed on the same branch and have their
@@ -419,9 +419,10 @@ environmental failure plausible, but that is a hypothesis and not a finding.
    commission: `HANDSHAKE-REVIEW.md` is written for someone with no knowledge of
    this codebase. Phase 42 fixed one defect in the construction; that it existed
    at all is the argument for paying for the review rather than skipping it.
-4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
-   there is a connection pool for the backend hop, and TLS termination in front
-   of the gateway if these endpoints are exposed publicly.
+4. ~~**Wire the namespace into the gateway.**~~ Done — see above, and the
+   connection pool for the backend hop landed in Phase 46. What remains there is
+   TLS termination in front of the gateway if these endpoints are exposed
+   publicly.
 5. ~~**Fix the latent-AEAD key/nonce construction.**~~ Done in Phase 45; it was
    the most serious of the findings, and is written up in `SECURITY_AUDIT.md`.
    `enable_chameleon_aead` derived
@@ -495,7 +496,7 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,410 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,413 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```

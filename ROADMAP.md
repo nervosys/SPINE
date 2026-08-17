@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
-> 30 Rust crates · 1,410 tests · 0 warnings · AGPL-3.0-or-later
+> 30 Rust crates · 1,413 tests · 0 warnings · AGPL-3.0-or-later
 
 ---
 
@@ -682,6 +682,26 @@ both plaintext disclosure and recovery of its authentication subkey.
       choice of those bytes was never part of the format. The correction is
       documented in `SECURITY_AUDIT.md` rather than quietly dropped.
 - [x] 1,410 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
+### Phase 46: Keeping the Origin Connection
+
+The namespace endpoints take no session, because resolution is stateless and
+making a caller open one, resolve, and tear it down is three round trips for a
+one-round-trip question. That left a TCP connect in front of every request.
+
+- [x] **`OriginPool`**: a free-list of idle origin connections, not a fair pool
+      with permits — there is no fixed connection count to queue behind, so
+      nothing can starve and nothing needs to wait its turn
+- [x] **One transparent re-dial**: the origin reaps idle sessions on its own
+      schedule, so a pooled connection can be dead through no fault of the
+      caller. Without the retry, pooling would turn "we held this too long" into
+      a 502 — a latency win paid for with a correctness regression.
+- [x] **Failed connections are dropped, never pooled**: one that stopped
+      mid-frame would spread a single failure across two requests
+- [x] **`spine_gateway_idle_origin_connections`** in `/metrics`, which is the
+      number to look at when deciding whether the gateway is thrashing
+      connections
+- [x] 1,413 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
 ------
 
