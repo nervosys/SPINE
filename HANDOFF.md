@@ -445,7 +445,16 @@ environmental failure plausible, but that is a hypothesis and not a finding.
    siblings of the Phase 42 handshake defect and stopped at documenting it,
    because fixing it changes a wire-visible derivation and deserves its own
    phase.
-7. **Find the flaky test** described at the end of Phase 43, or establish that it
+7. **Bound the record store** — see `SECURITY_AUDIT.md`. It has no size cap and
+   admits any signed record for any key, however far from this node's keyspace
+   position. Since a `did:` name is just a fresh Ed25519 key, an attacker can
+   mint unlimited valid names and fill every node's memory. My Phase 40 work
+   made this worse by a factor of K: a publish is now pushed to the K closest
+   nodes rather than broadcast to whoever was connected. Unlike items 5 and 6
+   this needs no wire-format change — reject keys this node is not responsible
+   for, and cap the store with furthest-first eviction — so it is the cheapest
+   of the three to take.
+8. **Find the flaky test** described at the end of Phase 43, or establish that it
    was environmental. A test suite with one unidentified intermittent failure is
    a suite whose green runs mean slightly less than they should.
 

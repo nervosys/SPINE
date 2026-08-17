@@ -151,6 +151,38 @@ connection from a transcript that includes a fresh ephemeral key, and each
 direction gets its own key so the two counters cannot collide. The defect is in
 the older `spine-protocol` AEAD path, not in the mesh channel.
 
+### Finding: the record store is unbounded and accepts anything signed
+
+`RecordStore` has no size limit and no eviction other than the TTL sweep, and
+`NameService::publish` admits any record whose signature verifies. Verification
+proves the publisher holds the key for the name — it does not prove the record
+is worth storing, and a `did:` name *is* a freshly generated Ed25519 key, so an
+attacker can mint unlimited valid names and announce a record under each. Every
+receiving node stores all of them until their TTLs run out, and the publisher
+chooses the TTL.
+
+There is also no admission control on *locality*. A node stores announcements
+for keys arbitrarily far from its own keyspace position, even though a lookup
+for such a key would never route to it — so the copies are pure cost.
+
+**Phase 40 amplified this.** Before replication, one announcement reached
+whatever peers the publisher happened to be connected to. Now a publish is
+deliberately pushed to the K closest nodes, so a single record costs K stores
+instead of one, and the attack gets a factor of K for free.
+
+The fix does not need a wire-format change, which is why this one is worth doing
+next: refuse announcements for keys this node is not responsible for
+(`NameService::is_responsible_for` already exists and is already used by
+maintenance), and cap the store with furthest-key-first eviction. Both are the
+ordinary Kademlia discipline — a node keeps what it is near — rather than a new
+policy invented for this codebase.
+
+Note that the HTTP surface is not the exposure here: `/v1/names/publish` sits
+under the gateway's bearer-token layer, and the gateway refuses to start unless
+a token is configured or `SPINE_GATEWAY_ALLOW_UNAUTH=1` is set explicitly. The
+mesh `NameAnnounce` path is the open one, and it is open by design — a DHT that
+required authentication to accept a signed record would not be a DHT.
+
 ### Posture
 
 - **Algorithm choices are FIPS-approved by spec.** Anyone reading the
