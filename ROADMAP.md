@@ -591,6 +591,34 @@ because records are signed and verify against the name.
       copies landed.
 - [x] 1,398 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
+### Phase 42: The Handshake's Randomness
+
+Preparing the handshake for external review found a defect in it. The ephemeral
+ML-KEM keypair — the only secret standing between a recorded connection and its
+plaintext — was generated from `StdRng::seed_from_u64(seed)`, and the seed was a
+counter: listeners passed 0, 1, 2, … per accepted connection, dialers a constant
+plus the connection-pool size. The Nth connection a node accepted after start-up
+always used the same keypair, so anyone who could count connections could
+reconstruct the session key. Forward secrecy was nominal — the keypair was
+ephemeral in lifetime, not in value.
+
+- [x] **Ephemeral keys come from the OS CSPRNG** (`OsRng`), on both the
+      initiator and responder sides
+- [x] **`start_with_rng` / `accept_with_rng`** as the deterministic seam for
+      tests, bounded on `CryptoRng` so it cannot quietly become the production
+      path
+- [x] **Seed plumbing deleted** from all three transports — `EncryptionConfig`,
+      `TcpNameTransport::encrypted`, `WsNameTransport::encrypted`, and
+      `QuicNameTransport::authenticated` no longer take or store one
+- [x] **Tests that assert unpredictability, not difference.** The existing
+      `separate_connections_derive_independent_keys` passed two different
+      constants and so only proved different seeds give different keys — which
+      is why it never failed.
+- [x] **`HANDSHAKE-REVIEW.md`**: a self-contained protocol description, threat
+      model, claimed properties, and the specific questions an external reviewer
+      should answer
+- [x] 1,401 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
 ------
 
 ## Performance Benchmarks

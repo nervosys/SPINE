@@ -1,9 +1,10 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,398 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,401 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
-Phases 39 (bootstrap), 40 (replication), and 41 (HTTP interop) followed on the
-same branch and have their own sections near the end of this file.
+Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), and 42 (handshake
+randomness) followed on the same branch and have their own sections near the end
+of this file.
 
 ---
 
@@ -341,12 +342,53 @@ worth revisiting if these become hot.
 
 ---
 
+## Phase 42 — the handshake's randomness (done, on branch `phase-38-namespace`)
+
+Step 3 below was "get the handshake reviewed", which I cannot do. Preparing the
+package that makes it possible found a defect first.
+
+**The ephemeral ML-KEM keypair was generated from a counter.**
+`Initiator::start` and `Responder::accept` took a `seed: u64` and built an RNG
+with `StdRng::seed_from_u64(seed)`. The TCP and WebSocket listeners passed a
+counter starting at 0, incremented per accepted connection; dialers passed a
+configured constant plus the connection-pool size. So the Nth connection a node
+accepted after start-up always used the same ephemeral keypair, and anyone who
+could count connections — or try small integers — could regenerate the
+decapsulation key, recover the shared secret, and read the session.
+
+Forward secrecy was nominal. The keypair was ephemeral in lifetime but not in
+value, and the long-term-key-compromise argument the module makes was true and
+irrelevant, because the ephemeral key was the thing worth attacking.
+
+Fixed by generating from `OsRng` on both sides, with `start_with_rng` /
+`accept_with_rng` as a deterministic seam for tests — bounded on `CryptoRng` so
+the seam cannot become the production path by accident. The `seed` parameter is
+gone from all three transports and from `EncryptionConfig`.
+
+**Why the tests did not catch it.** `separate_connections_derive_independent_keys`
+existed and passed. It handed the two handshakes different constants, so it only
+ever proved that different seeds produce different keys — never that a key was
+unpredictable. Two new tests assert the property that was actually wanted:
+`every_handshake_generates_a_fresh_ephemeral_key` and
+`a_responder_draws_fresh_randomness_for_every_connection`.
+
+`HANDSHAKE-REVIEW.md` is the review package: protocol description, threat model,
+claimed properties, the concessions, and the specific questions a reviewer should
+answer. It documents this defect too, because it says where the remaining risk
+most likely is — the composition is conventional and the primitives are vetted,
+so what is left is primitives being fed something they do not require, and tests
+that assert something adjacent to the property they name.
+
+---
+
 ## Suggested next steps, in order
 
 1. ~~**Bootstrap discovery.**~~ Done — see above.
 2. ~~**Replication.**~~ Done — see above.
-3. **Get the handshake reviewed** if the transport will ever carry anything whose
-   safety does not rest on the signed envelopes inside it.
+3. **Get the handshake reviewed** — still outstanding, and now possible to
+   commission: `HANDSHAKE-REVIEW.md` is written for someone with no knowledge of
+   this codebase. Phase 42 fixed one defect in the construction; that it existed
+   at all is the argument for paying for the review rather than skipping it.
 4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
    there is a connection pool for the backend hop, and TLS termination in front
    of the gateway if these endpoints are exposed publicly.
@@ -379,7 +421,7 @@ worth revisiting if these become hot.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,398 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,401 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```
