@@ -411,15 +411,37 @@ async fn handle_command(
                 // record is rejected here rather than becoming servable state.
                 Ok(record) => {
                     let name = record.name.to_string();
-                    match state.names.publish(record) {
-                        Ok(()) => Response {
-                            id: request_id,
-                            result: Some(serde_json::json!({
-                                "status": "published",
-                                "name": name,
-                            })),
-                            error: None,
-                        },
+                    match state.names.publish(record.clone()) {
+                        Ok(()) => {
+                            // Publishing locally makes a name resolvable *here*.
+                            // It does not make it findable: a record that never
+                            // leaves this node is one node's private opinion
+                            // about a name, and it dies with the process. Push
+                            // it to the nodes closest to its key as well, and
+                            // report how many copies actually landed.
+                            let replicas = match state.mesh_names.as_ref() {
+                                Some(mesh) => mesh
+                                    .publish(record)
+                                    .await
+                                    .map(|r| r.replicas())
+                                    .unwrap_or(0),
+                                None => 0,
+                            };
+                            Response {
+                                id: request_id,
+                                result: Some(serde_json::json!({
+                                    "status": "published",
+                                    "name": name,
+                                    "replicas": replicas,
+                                    // False means the name lives here and
+                                    // nowhere else — usually not what a
+                                    // publisher intends, and never visible
+                                    // before this was reported.
+                                    "durable": replicas > 0,
+                                })),
+                                error: None,
+                            }
+                        }
                         Err(e) => Response {
                             id: request_id,
                             result: None,
