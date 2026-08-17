@@ -1,6 +1,6 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,404 tests passing, 0 failures, 0 Clippy warnings.
+**Status:** complete and verified. 1,408 tests passing, 0 failures, 0 Clippy warnings.
 **Committed** on branch `phase-38-namespace`, which is not merged into `master`.
 Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
 randomness), and 43 (maintenance cost) followed on the same branch and have their
@@ -445,7 +445,8 @@ environmental failure plausible, but that is a hypothesis and not a finding.
    siblings of the Phase 42 handshake defect and stopped at documenting it,
    because fixing it changes a wire-visible derivation and deserves its own
    phase.
-7. **Bound the record store** — see `SECURITY_AUDIT.md`. It has no size cap and
+7. ~~**Bound the record store.**~~ Done in Phase 44 — see `SECURITY_AUDIT.md`.
+   For the record, the problem was: It has no size cap and
    admits any signed record for any key, however far from this node's keyspace
    position. Since a `did:` name is just a fresh Ed25519 key, an attacker can
    mint unlimited valid names and fill every node's memory. My Phase 40 work
@@ -486,7 +487,7 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,404 passed / 0 failed / 5 ignored
+cargo test --workspace                     # 1,408 passed / 0 failed / 5 ignored
 cargo clippy --workspace --all-targets     # 0 warnings
 cargo run -p spine-name --example agent_web
 ```

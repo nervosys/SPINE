@@ -151,7 +151,7 @@ connection from a transcript that includes a fresh ephemeral key, and each
 direction gets its own key so the two counters cannot collide. The defect is in
 the older `spine-protocol` AEAD path, not in the mesh channel.
 
-### Finding: the record store is unbounded and accepts anything signed
+### Finding: the record store was unbounded and accepted anything signed — *fixed in Phase 44*
 
 `RecordStore` has no size limit and no eviction other than the TTL sweep, and
 `NameService::publish` admits any record whose signature verifies. Verification
@@ -170,12 +170,15 @@ whatever peers the publisher happened to be connected to. Now a publish is
 deliberately pushed to the K closest nodes, so a single record costs K stores
 instead of one, and the attack gets a factor of K for free.
 
-The fix does not need a wire-format change, which is why this one is worth doing
-next: refuse announcements for keys this node is not responsible for
-(`NameService::is_responsible_for` already exists and is already used by
-maintenance), and cap the store with furthest-key-first eviction. Both are the
-ordinary Kademlia discipline — a node keeps what it is near — rather than a new
-policy invented for this codebase.
+**Fixed in Phase 44**, and it needed no wire-format change. `RecordStore` now
+holds at most `DEFAULT_CAPACITY` records and evicts the key furthest from this
+node's own position; a record further away than everything held is refused
+rather than swapped in, since otherwise a stream of distant names would evict
+exactly the records the node is responsible for. `NameService::accept_announcement`
+applies the responsibility check to records arriving from the network, while
+`publish` stays unconditional so a node can still serve the names it publishes
+itself. Both are the ordinary Kademlia discipline — a node keeps what it is
+near — rather than policy invented for this codebase.
 
 Note that the HTTP surface is not the exposure here: `/v1/names/publish` sits
 under the gateway's bearer-token layer, and the gateway refuses to start unless

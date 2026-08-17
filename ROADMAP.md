@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
-> 30 Rust crates · 1,404 tests · 0 warnings · AGPL-3.0-or-later
+> 30 Rust crates · 1,408 tests · 0 warnings · AGPL-3.0-or-later
 
 ---
 
@@ -637,6 +637,32 @@ node doing that multiplies mesh traffic by however many drifted copies exist.
       must never read as an exhaustive one, and `not_ours` climbing is the signal
       that a node is carrying copies no lookup will route to
 - [x] 1,404 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
+### Phase 44: A Store That Says No
+
+Auditing for siblings of the Phase 42 defect turned up three more. This phase
+fixes the one that needed no wire-format change; the other two are recorded in
+`SECURITY_AUDIT.md` for a decision rather than fixed quietly.
+
+The record store had no size cap and no eviction beyond the TTL sweep, and
+admitted any record whose signature verified — for any key, however far from
+this node's position. Verification is a weak bound: a `did:` name is a fresh
+Ed25519 key, so an attacker mints unlimited valid names at one keygen each.
+Phase 40 made it worse by a factor of K, since a publish is now pushed to the K
+closest nodes rather than broadcast to whoever happened to be connected.
+
+- [x] **Bounded store** with `DEFAULT_CAPACITY`, evicting the key furthest from
+      this node's own keyspace position
+- [x] **Refusal rather than displacement**: a record further away than everything
+      held is declined, because otherwise a flood of distant names would evict
+      precisely the records this node is responsible for
+- [x] **Locality admission** (`accept_announcement`) for records arriving from
+      the network, while `publish` stays unconditional so a node can serve the
+      names it publishes itself
+- [x] **`announcements_declined`** as its own counter — a declined record is not
+      a forgery, and counting them together would make ordinary keyspace
+      pressure look like an attack
+- [x] 1,408 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
 ------
 
