@@ -20,6 +20,34 @@ pub use agentic_codec::{
 };
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
+
+/// A fresh 96-bit AES-GCM nonce from the operating system's CSPRNG.
+///
+/// The previous construction was `counter(8) || session_nonce(4)`, with the
+/// counter restarting at zero every session. That would be sound if each session
+/// had its own key — but the key here is `HKDF(secret)` with no salt and no
+/// per-session input, so every session between the same pair shares one key, and
+/// the only thing separating their nonce streams was 32 random bits. By the
+/// birthday bound two sessions collide with probability near 39% after 65,536 of
+/// them, and a collision repeats `(key, nonce)` for every message index the two
+/// have in common.
+///
+/// AES-GCM does not survive that. It leaks the XOR of the two plaintexts, and
+/// because GCM authenticates with a polynomial MAC it also exposes the
+/// authentication subkey — so nonce reuse costs forgery, not only secrecy.
+///
+/// Random 96-bit nonces remove the session dimension entirely: the birthday
+/// bound is now over all messages under the key, at roughly 2^-33 after 2^32 of
+/// them, which is the regime NIST SP 800-38D sanctions for random IVs.
+///
+/// This is not a wire-format change. The full nonce has always been prepended to
+/// the ciphertext and the receiver has always read it from there, so how the
+/// sender chooses those twelve bytes was only ever a sender-side decision.
+fn fresh_nonce() -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    nonce
+}
 use hmac::{Hmac, Mac};
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -1193,10 +1221,6 @@ pub struct ProtocolHandler<S> {
     chameleon: Option<ChameleonKey>,
     /// Current protocol shape
     morphology: ProtocolMorphology,
-    /// Nonce counter for AES-GCM (prevents nonce reuse)
-    nonce_counter: u64,
-    /// Random session nonce mixed into AES-GCM IV (prevents cross-session reuse)
-    session_nonce: [u8; 4],
     /// Enable moving-target defense
     moving_target: bool,
     /// Speculative predictor for outgoing messages
@@ -1269,8 +1293,6 @@ where
             cipher: None,
             chameleon: None,
             morphology: ProtocolMorphology::new(0),
-            nonce_counter: 0,
-            session_nonce: rand::random::<[u8; 4]>(),
             moving_target: false,
             output_predictor: SpeculativePredictor::new(),
             input_predictor: SpeculativePredictor::new(),
@@ -1494,10 +1516,7 @@ where
             // An attacker must break BOTH the neural latent encoder AND AES-256-GCM.
             if self.latent_aead {
                 if let Some(cipher) = &self.cipher {
-                    self.nonce_counter = self.nonce_counter.wrapping_add(1);
-                    let mut nonce_full = [0u8; 12];
-                    nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
-                    nonce_full[8..].copy_from_slice(&self.session_nonce);
+                    let nonce_full = fresh_nonce();
                     let nonce = Nonce::from_slice(&nonce_full);
                     data = cipher
                         .encrypt(nonce, data.as_ref())
@@ -1516,12 +1535,7 @@ where
         }
         // Fallback to AES encryption (without Chameleon)
         else if let Some(cipher) = &self.cipher {
-            // SECURITY: Nonce = [counter (8 bytes)] || [session_nonce (4 bytes)]
-            // Session nonce prevents cross-session nonce reuse with same key
-            self.nonce_counter = self.nonce_counter.wrapping_add(1);
-            let mut nonce_full = [0u8; 12];
-            nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
-            nonce_full[8..].copy_from_slice(&self.session_nonce);
+            let nonce_full = fresh_nonce();
             let nonce = Nonce::from_slice(&nonce_full);
             data = cipher
                 .encrypt(nonce, data.as_ref())
@@ -1574,10 +1588,7 @@ where
             // M2: Latent-space AEAD on raw path too
             if self.latent_aead {
                 if let Some(cipher) = &self.cipher {
-                    self.nonce_counter = self.nonce_counter.wrapping_add(1);
-                    let mut nonce_full = [0u8; 12];
-                    nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
-                    nonce_full[8..].copy_from_slice(&self.session_nonce);
+                    let nonce_full = fresh_nonce();
                     let nonce = Nonce::from_slice(&nonce_full);
                     data = cipher
                         .encrypt(nonce, data.as_ref())
@@ -1594,10 +1605,7 @@ where
             }
         } else if let Some(cipher) = &self.cipher {
             // SECURITY: Use counter-based nonce to prevent nonce reuse
-            self.nonce_counter = self.nonce_counter.wrapping_add(1);
-            let mut nonce_full = [0u8; 12];
-            nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
-            nonce_full[8..].copy_from_slice(&self.session_nonce);
+            let nonce_full = fresh_nonce();
             let nonce = Nonce::from_slice(&nonce_full);
             data = cipher
                 .encrypt(nonce, data.as_ref())
@@ -2292,10 +2300,6 @@ struct ProtocolHandlerState {
     pub speculation_stats: SpeculationStats,
     /// Latent-space AEAD mode (M2)
     latent_aead: bool,
-    /// Nonce counter for AEAD
-    nonce_counter: u64,
-    /// Session nonce for cross-session uniqueness
-    session_nonce: [u8; 4],
 }
 
 impl SpineConnection {
@@ -2446,8 +2450,6 @@ impl ProtocolHandlerState {
             last_input_prediction: None,
             speculation_stats: SpeculationStats::default(),
             latent_aead: false,
-            nonce_counter: 0,
-            session_nonce: rand::random::<[u8; 4]>(),
         }
     }
 
@@ -2481,10 +2483,7 @@ impl ProtocolHandlerState {
             // M2: Latent-space AEAD
             if self.latent_aead {
                 if let Some(cipher) = &self.cipher {
-                    self.nonce_counter = self.nonce_counter.wrapping_add(1);
-                    let mut nonce_full = [0u8; 12];
-                    nonce_full[..8].copy_from_slice(&self.nonce_counter.to_le_bytes());
-                    nonce_full[8..].copy_from_slice(&self.session_nonce);
+                    let nonce_full = fresh_nonce();
                     let nonce = Nonce::from_slice(&nonce_full);
                     data = cipher
                         .encrypt(nonce, data.as_ref())
@@ -5169,6 +5168,44 @@ mod tests {
                 | DecorrelationGene::BasisRotation
                 | DecorrelationGene::Full => {} // All valid
             }
+        }
+    }
+
+    /// The defect this replaced: the nonce was `counter(8) || session_nonce(4)`
+    /// with the counter restarting at zero each session, while the AEAD key is a
+    /// pure function of the shared secret and so identical across sessions. Two
+    /// sessions that drew the same 32-bit `session_nonce` — about a 39% chance
+    /// after 65,536 of them — then reused `(key, nonce)` on every message index
+    /// they shared, which costs AES-GCM both confidentiality and unforgeability.
+    ///
+    /// A nonce must never repeat under one key, so the property to assert is
+    /// that fresh nonces do not collide, not merely that consecutive ones differ.
+    #[test]
+    fn nonces_do_not_repeat_across_sessions() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for _ in 0..10_000 {
+            assert!(
+                seen.insert(fresh_nonce()),
+                "a nonce repeated under a key that never changes"
+            );
+        }
+    }
+
+    /// A counter-based nonce is recognisable: its low bytes walk 1, 2, 3 and the
+    /// top four never move. This asserts the replacement is not that — the whole
+    /// 96 bits vary, which is what removes the session dimension from the
+    /// birthday bound.
+    #[test]
+    fn every_byte_of_the_nonce_carries_entropy() {
+        let samples: Vec<[u8; 12]> = (0..256).map(|_| fresh_nonce()).collect();
+        for position in 0..12 {
+            let distinct: std::collections::HashSet<u8> =
+                samples.iter().map(|n| n[position]).collect();
+            assert!(
+                distinct.len() > 1,
+                "byte {position} never varies, so it is structure and not entropy"
+            );
         }
     }
 }
