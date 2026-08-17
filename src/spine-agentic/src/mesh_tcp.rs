@@ -1082,6 +1082,44 @@ mod tests {
         );
     }
 
+    /// What replication is for, over real sockets: a name is answerable by a
+    /// node that never published it, so the publisher is no longer the single
+    /// point of failure for its own names.
+    #[tokio::test]
+    async fn a_published_record_is_served_by_a_node_that_did_not_publish_it() {
+        let publisher = spawn_node(45).await;
+        let holder = spawn_node(46).await;
+        let seeker = spawn_node(47).await;
+
+        // The seeker and the publisher share only the holder. Nothing connects
+        // the seeker to the node the record came from.
+        introduce(&publisher, &holder).await;
+        introduce(&seeker, &holder).await;
+
+        let rec = record(9, &[]);
+        let report = publisher.resolver.publish(rec.clone()).await.unwrap();
+        assert!(report.is_durable(), "no copy was placed: {report:?}");
+
+        // An announcement is fire-and-forget: `publish` returns once the copy
+        // is on the wire, and there is no ack to await. Wait for the holder to
+        // have processed it rather than assuming a send is an arrival.
+        let mut held = 0;
+        for _ in 0..50 {
+            held = holder.resolver.record_count().await;
+            if held == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(held, 1, "the holder never stored the copy");
+
+        assert_eq!(
+            seeker.resolver.resolve(&rec.name).await.unwrap(),
+            rec,
+            "the copy answered on the publisher's behalf"
+        );
+    }
+
     #[tokio::test]
     async fn the_responder_answers_without_knowing_how_to_dial_the_asker() {
         // The property that makes this work through NAT: only the seeker knows

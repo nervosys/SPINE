@@ -37,7 +37,9 @@ use spine_name::{NameKey, NameRecord, NodeInfo, SpineUri};
 
 use crate::identity::PublicIdentity;
 use crate::mesh::{MeshEnvelope, MeshNode, MeshPayload};
-use crate::naming::{LookupOutcome, NameService, ResolveQuery, ResolveResponse};
+use crate::naming::{
+    KeyspacePeer, LookupOutcome, NameService, ResolveQuery, ResolveResponse, K,
+};
 use crate::AgentId;
 
 /// Default time a lookup waits before giving up.
@@ -131,6 +133,12 @@ pub struct ResolverMetrics {
     pub greetings_answered: u64,
     /// Hellos or acks whose signature did not match the key they carried.
     pub greetings_rejected: u64,
+    /// Directed copies of records sent to the nodes closest to their keys.
+    pub replicas_sent: u64,
+    /// Replicas this node could not deliver.
+    pub replicas_failed: u64,
+    /// Records dropped because they expired.
+    pub records_expired: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -163,6 +171,48 @@ impl BootstrapReport {
     pub fn is_connected(&self) -> bool {
         !self.reached.is_empty()
     }
+}
+
+/// Where a record ended up.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplicationReport {
+    /// Peers that accepted a directed copy.
+    pub sent: usize,
+    /// Peers the copy could not be delivered to.
+    pub failed: usize,
+    /// Whether the fan-out fell back to a broadcast because no keyspace peer
+    /// could be addressed.
+    pub broadcast: bool,
+}
+
+impl ReplicationReport {
+    /// How many copies exist beyond the publisher's own.
+    ///
+    /// A broadcast counts as none: it may well have reached peers, but not
+    /// peers chosen for their position, so nothing about the record's
+    /// durability follows from it.
+    pub fn replicas(&self) -> usize {
+        self.sent
+    }
+
+    /// Whether the record survives this node going away.
+    pub fn is_durable(&self) -> bool {
+        self.sent > 0
+    }
+}
+
+/// What one maintenance pass did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MaintenanceReport {
+    /// Records dropped because their TTL had run out.
+    pub expired: usize,
+    /// Records re-offered to the nodes currently closest to their keys.
+    pub refreshed: usize,
+    /// Directed copies sent across all refreshed records.
+    pub replicas_sent: usize,
+    /// Names about to lapse. Only the holder of the signing key can renew one,
+    /// so this is a report for the layer above, not something the pass fixes.
+    pub lapsing: Vec<SpineUri>,
 }
 
 /// A [`NameService`] wired to a live mesh.
@@ -374,12 +424,15 @@ impl MeshNameResolver {
         let _ = self.resolve(&own).await;
     }
 
-    /// Publish a signed record into the local store and announce it to the mesh.
-    pub async fn publish(&self, record: NameRecord) -> Result<(), NameMeshError> {
+    /// Publish a signed record: store it locally, then place copies at the nodes
+    /// closest to its key.
+    ///
+    /// The report says how many copies landed. A publisher that cares whether
+    /// its name outlives its own process should check it — `sent == 0` means the
+    /// record exists in exactly one place.
+    pub async fn publish(&self, record: NameRecord) -> Result<ReplicationReport, NameMeshError> {
         self.service.lock().await.publish(record.clone())?;
-        // announce_name re-verifies, so an invalid record never reaches the wire.
-        let envelope = self.node.announce_name(record)?;
-        self.transport.send(envelope).await
+        Ok(self.replicate(&record).await)
     }
 
     /// Publish locally without announcing — for names that should be resolvable
@@ -387,6 +440,99 @@ impl MeshNameResolver {
     pub async fn publish_local(&self, record: NameRecord) -> Result<(), NameMeshError> {
         self.service.lock().await.publish(record)?;
         Ok(())
+    }
+
+    /// Place copies of a record at the nodes closest to its key.
+    ///
+    /// Walks the keyspace first rather than trusting the local routing table:
+    /// the nodes that joined nearest this key since the last walk are exactly
+    /// the ones a stale table omits, and they are the ones that will be asked
+    /// for the record.
+    pub async fn replicate(&self, record: &NameRecord) -> ReplicationReport {
+        let key = record.name.key();
+        let targets = self.find_node(key).await;
+
+        let mut report = ReplicationReport::default();
+
+        if targets.is_empty() {
+            // No addressable keyspace peer. Broadcasting is not replication, but
+            // it is what a node with a mesh connection and no routing table can
+            // still do, and it warms whatever caches are listening. The report
+            // says plainly that nothing durable happened.
+            if let Ok(envelope) = self.node.announce_name(record.clone()) {
+                report.broadcast = self.transport.send(envelope).await.is_ok();
+            }
+            return report;
+        }
+
+        let mut sends = Vec::new();
+        for peer in &targets {
+            // announce_name_to re-verifies, so an invalid record never reaches
+            // the wire even if it somehow entered the store.
+            let Ok(envelope) = self.node.announce_name_to(peer.agent_id, record.clone()) else {
+                continue;
+            };
+            let transport = self.transport.clone();
+            sends.push(async move { transport.send(envelope).await });
+        }
+
+        for result in futures::future::join_all(sends).await {
+            match result {
+                Ok(()) => report.sent += 1,
+                Err(_) => report.failed += 1,
+            }
+        }
+
+        let mut m = self.metrics.lock().await;
+        m.replicas_sent += report.sent as u64;
+        m.replicas_failed += report.failed as u64;
+        report
+    }
+
+    /// Find the addressable peers closest to a keyspace point.
+    ///
+    /// Kademlia's FIND_NODE. The walk's job is to converge on the neighbourhood;
+    /// the peers are then read back out of the routing table, which absorbed
+    /// every referral the walk collected on the way.
+    pub async fn find_node(&self, key: NameKey) -> Vec<KeyspacePeer> {
+        let _ = self.run_lookup(ResolveQuery::Node(key)).await;
+        self.service.lock().await.closest_peers(&key, K)
+    }
+
+    /// Re-offer held records to the nodes now closest to them, and drop the dead.
+    ///
+    /// This is what keeps a record alive under churn. A record is stored at the
+    /// K closest nodes *at the time it was published*; nodes then join, leave,
+    /// and fail, and without a periodic re-offer the copies drift away from the
+    /// keyspace position that lookups actually converge on.
+    ///
+    /// Deliberately not the same thing as renewal. A record's expiry is signed
+    /// into it, so re-announcing one cannot extend its life — only its holder's
+    /// key can do that. Names close to lapsing come back in the report instead.
+    pub async fn maintain(&self, now: u64, lapse_window: u64) -> MaintenanceReport {
+        let mut report = MaintenanceReport::default();
+
+        let (expired, held, lapsing) = {
+            let mut service = self.service.lock().await;
+            let expired = service.sweep(now);
+            (expired, service.records(), service.lapsing(now, lapse_window))
+        };
+        report.expired = expired;
+        report.lapsing = lapsing;
+
+        // One record at a time: each re-offer runs its own keyspace walk, and
+        // firing them concurrently would have a node with a full store flood the
+        // mesh with lookups every maintenance tick.
+        for record in held {
+            let result = self.replicate(&record).await;
+            if result.sent > 0 {
+                report.refreshed += 1;
+                report.replicas_sent += result.sent;
+            }
+        }
+
+        self.metrics.lock().await.records_expired += expired as u64;
+        report
     }
 
     /// Resolve a name, walking the mesh if it is not held locally.
@@ -1288,5 +1434,137 @@ mod tests {
         assert!(h.nodes[0].publish(forged).await.is_err());
         assert_eq!(h.nodes[0].record_count().await, 0);
         assert!(h.board.is_empty());
+    }
+
+    /// A record whose key sits closer to `near` than to `far`.
+    ///
+    /// Found by search rather than constructed: a record's key is the hash of a
+    /// name nobody chooses for its position, so which node a given record
+    /// belongs to is a fact about the keys, not something a test can arrange.
+    fn record_nearer(near: NameKey, far: NameKey) -> NameRecord {
+        (1u8..=255)
+            .map(|seed| record(seed, &[]))
+            .find(|rec| {
+                let target = rec.name.key();
+                near.distance(&target) < far.distance(&target)
+            })
+            .expect("some seed lands nearer")
+    }
+
+    /// The point of replication: after publishing, the record exists somewhere
+    /// other than the publisher.
+    #[tokio::test]
+    async fn publishing_places_copies_at_the_closest_nodes() {
+        let h = Harness::new(3);
+        h.introduce(0, 1).await;
+        h.introduce(0, 2).await;
+
+        let publisher = h.nodes[0].clone();
+        let rec = record(1, &["web.search"]);
+        let run = tokio::spawn(async move { publisher.publish(rec).await.unwrap() });
+        h.pump_until(16).await;
+        let report = run.await.unwrap();
+
+        assert!(report.is_durable(), "nothing was replicated: {report:?}");
+        assert_eq!(report.sent, 2, "both keyspace peers should hold a copy");
+        assert!(!report.broadcast, "a directed store is not a broadcast");
+        assert_eq!(h.nodes[1].record_count().await, 1);
+        assert_eq!(h.nodes[2].record_count().await, 1);
+    }
+
+    /// The stronger property: a copy reaches a node the publisher was never
+    /// introduced to, because the walk found it. Without the keyspace walk,
+    /// replication would only ever reach nodes already in the routing table —
+    /// which are not the nodes a lookup for that record will ask.
+    #[tokio::test]
+    async fn a_replica_reaches_a_node_the_publisher_never_met() {
+        let h = Harness::new(3);
+        h.introduce(0, 1).await;
+        h.introduce(1, 2).await;
+
+        // Node 2 must be the right home for the record, or node 1 has no reason
+        // to refer it — a peer only refers nodes closer to the target than
+        // itself.
+        let rec = record_nearer(h.nodes[2].local_key(), h.nodes[1].local_key());
+        assert_eq!(h.nodes[0].peer_count().await, 1, "node 2 is a stranger");
+
+        let publisher = h.nodes[0].clone();
+        let handed = rec.clone();
+        let run = tokio::spawn(async move { publisher.publish(handed).await.unwrap() });
+        h.pump_until(16).await;
+        let report = run.await.unwrap();
+
+        assert_eq!(
+            h.nodes[2].record_count().await,
+            1,
+            "the record should have travelled to where it belongs: {report:?}"
+        );
+    }
+
+    /// A node with no keyspace peers has nowhere durable to put a record, and
+    /// says so rather than letting a broadcast pass for a replica.
+    #[tokio::test]
+    async fn a_publisher_alone_in_the_mesh_reports_nothing_durable() {
+        let h = Harness::new(1);
+        let report = h.nodes[0].publish(record(1, &[])).await.unwrap();
+
+        assert!(!report.is_durable());
+        assert_eq!(report.replicas(), 0);
+        assert!(report.broadcast, "it still warms whatever caches are listening");
+        assert_eq!(h.nodes[0].record_count().await, 1, "held locally regardless");
+    }
+
+    /// Churn insurance. A record published while the node was alone belongs on
+    /// the peer that showed up afterwards, and maintenance is what puts it there.
+    #[tokio::test]
+    async fn maintenance_re_offers_a_record_to_a_peer_that_arrived_later() {
+        let h = Harness::new(2);
+        h.nodes[0].publish(record(1, &[])).await.unwrap();
+        assert_eq!(h.nodes[1].record_count().await, 0);
+
+        h.introduce(0, 1).await;
+
+        let node = h.nodes[0].clone();
+        let run = tokio::spawn(async move { node.maintain(NOW, 0).await });
+        h.pump_until(16).await;
+        let report = run.await.unwrap();
+
+        assert_eq!(report.refreshed, 1);
+        assert_eq!(report.replicas_sent, 1);
+        assert_eq!(
+            h.nodes[1].record_count().await,
+            1,
+            "the late arrival now holds the record"
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_drops_a_record_whose_ttl_ran_out() {
+        let h = Harness::new(1);
+        h.nodes[0].publish(record(1, &[])).await.unwrap();
+
+        let report = h.nodes[0].maintain(NOW + 7200, 0).await;
+        assert_eq!(report.expired, 1);
+        assert_eq!(h.nodes[0].record_count().await, 0);
+        assert_eq!(report.refreshed, 0, "nothing left to refresh");
+    }
+
+    /// Maintenance cannot renew a name — the expiry is signed into the record —
+    /// so a name about to lapse comes back as a report for its owner.
+    #[tokio::test]
+    async fn a_lapsing_name_is_reported_rather_than_renewed() {
+        let h = Harness::new(1);
+        let rec = record(1, &[]);
+        h.nodes[0].publish(rec.clone()).await.unwrap();
+
+        // 600 seconds of a 3600-second TTL left, against a 900-second window.
+        let report = h.nodes[0].maintain(NOW + 3000, 900).await;
+        assert_eq!(report.lapsing, vec![rec.name.clone()]);
+        assert_eq!(report.expired, 0);
+        assert_eq!(
+            h.nodes[0].record_count().await,
+            1,
+            "still valid, just not for long"
+        );
     }
 }
