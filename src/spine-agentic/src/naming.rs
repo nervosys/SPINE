@@ -57,6 +57,14 @@ pub enum ResolveQuery {
     Name(SpineUri),
     /// Find providers of a capability term.
     Capability(String),
+    /// Find the nodes closest to a keyspace point, with no record to fetch.
+    ///
+    /// Kademlia's FIND_NODE, and storing a record is what needs it: to put a
+    /// record at the K closest nodes you first have to know which nodes those
+    /// are, and a name lookup cannot tell you. A name lookup stops the moment
+    /// any node hands back the record — usually long before the walk has
+    /// converged on the neighbourhood the record belongs in.
+    Node(NameKey),
 }
 
 impl ResolveQuery {
@@ -72,6 +80,7 @@ impl ResolveQuery {
             ResolveQuery::Capability(term) => {
                 NameKey::of(format!("cap:{}", term.to_ascii_lowercase()).as_bytes())
             }
+            ResolveQuery::Node(key) => *key,
         }
     }
 }
@@ -191,6 +200,8 @@ pub enum LookupOutcome {
     Found(Box<NameRecord>),
     /// A capability query found providers.
     Providers(Vec<NameRecord>),
+    /// A node query converged on these peers, nearest-first.
+    Closest(Vec<NodeInfo>),
     /// The keyspace was exhausted without an answer.
     NotFound,
 }
@@ -354,6 +365,9 @@ impl Lookup {
             // A capability query wants breadth, so it keeps going until the
             // keyspace is exhausted or it has collected K providers.
             ResolveQuery::Capability(_) => self.providers.len() >= K,
+            // A node query has no early answer to stop on. Its result *is* the
+            // converged shortlist, so it runs until the keyspace is exhausted.
+            ResolveQuery::Node(_) => false,
         }
     }
 
@@ -361,6 +375,9 @@ impl Lookup {
     pub fn outcome(&self) -> Option<LookupOutcome> {
         if !self.is_done() {
             return None;
+        }
+        if matches!(self.query, ResolveQuery::Node(_)) {
+            return Some(LookupOutcome::Closest(self.shortlist.clone()));
         }
         if let Some(record) = &self.record {
             return Some(LookupOutcome::Found(Box::new(record.clone())));
@@ -375,13 +392,17 @@ impl Lookup {
         match &self.query {
             ResolveQuery::Name(uri) => record.name.key() == uri.key(),
             ResolveQuery::Capability(term) => record.has_capability(term),
+            // A node query asks about the keyspace, not about names. Refusing
+            // every record keeps a peer from ending the walk early by answering
+            // a question that was not asked.
+            ResolveQuery::Node(_) => false,
         }
     }
 
     fn wants_capability(&self, record: &NameRecord) -> bool {
         match &self.query {
             ResolveQuery::Capability(term) => record.has_capability(term),
-            ResolveQuery::Name(_) => false,
+            ResolveQuery::Name(_) | ResolveQuery::Node(_) => false,
         }
     }
 
@@ -441,9 +462,15 @@ impl NameService {
 
     /// Store a signed record. Verification happens inside the store, so an
     /// unverifiable announcement cannot enter.
-    pub fn publish(&mut self, record: NameRecord) -> Result<(), spine_name::NameError> {
-        self.store.put(record)?;
-        Ok(())
+    ///
+    /// The outcome matters to whatever is above this: a record that was
+    /// superseded by one already held must not be replicated onward, or two
+    /// nodes holding different versions will announce at each other forever.
+    pub fn publish(
+        &mut self,
+        record: NameRecord,
+    ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
+        self.store.put(record)
     }
 
     /// Learn about a keyspace peer whose mesh identity is not known.
@@ -518,6 +545,9 @@ impl NameService {
                     .cloned()
                     .collect();
             }
+            // Nothing to look up: the closer peers appended below are the whole
+            // answer to a node query.
+            ResolveQuery::Node(_) => {}
         }
 
         let closer: Vec<NodeInfo> = self
@@ -552,6 +582,40 @@ impl NameService {
         self.as_keyspace_peers(closest)
     }
 
+    /// The `n` addressable peers nearest `key`, nearest-first.
+    ///
+    /// This is where a record's replicas belong. Peers with no known mesh
+    /// identity are dropped rather than counted: a replica sent nowhere is not a
+    /// replica, and reporting one would overstate how many copies exist.
+    pub fn closest_peers(&self, key: &NameKey, n: usize) -> Vec<KeyspacePeer> {
+        let closest = self
+            .routing
+            .closest(key, n + 1)
+            .into_iter()
+            .filter(|node| node.id != self.local_key)
+            .take(n)
+            .collect();
+        self.as_keyspace_peers(closest)
+    }
+
+    /// Records held locally, cheapest-first to iterate for maintenance.
+    pub fn records(&self) -> Vec<NameRecord> {
+        self.store.records().cloned().collect()
+    }
+
+    /// Records within `window` seconds of lapsing.
+    ///
+    /// Only the holder of the signing key can extend a record's life, so this is
+    /// a report rather than something the service can act on: re-announcing a
+    /// record does not move its expiry, which is signed into it.
+    pub fn lapsing(&self, now: u64, window: u64) -> Vec<SpineUri> {
+        self.store
+            .needing_republish(now, window)
+            .into_iter()
+            .map(|r| r.name.clone())
+            .collect()
+    }
+
     /// Answer a query from local knowledge alone, if it can be.
     ///
     /// Checked before any lookup starts: a node that already holds the answer
@@ -573,6 +637,12 @@ impl NameService {
                 // An empty local index is not an answer — the mesh may know more.
                 (!providers.is_empty()).then_some(LookupOutcome::Providers(providers))
             }
+            // Never answerable locally. This node's own view of the
+            // neighbourhood is precisely what a node query exists to correct:
+            // the peers that joined nearest a key since the last walk are the
+            // ones missing from the routing table, and they are the ones a
+            // replica has to reach.
+            ResolveQuery::Node(_) => None,
         }
     }
 
@@ -1265,6 +1335,90 @@ mod tests {
             seeker.finish_lookup(id),
             Some(LookupOutcome::Found(Box::new(rec))),
             "the seeker resolved a name it had never seen, from a node it had never met"
+        );
+    }
+
+    /// A node query has no answer to stop on, so a peer volunteering a record
+    /// must not be able to end the walk early. Storing a record depends on this:
+    /// a walk cut short reports a neighbourhood it never reached.
+    #[test]
+    fn a_node_query_is_not_satisfied_by_a_record() {
+        let target = NameKey::of(b"somewhere");
+        let mut lookup = Lookup::new(ResolveQuery::Node(target), vec![node(1), node(2)]);
+        let wave = lookup.next_wave();
+        assert!(!wave.is_empty());
+
+        let mut response = ResolveResponse::empty(1);
+        response.record = Some(record(9, 1, 100, &[]));
+        lookup.on_response(&response);
+
+        assert!(!lookup.is_done(), "a record is not an answer to a node query");
+        assert!(lookup.outcome().is_none());
+    }
+
+    /// The result of a node query is the converged shortlist, nearest-first.
+    #[test]
+    fn a_node_query_returns_the_closest_peers_it_found() {
+        let target = NameKey::of(b"somewhere");
+        let mut lookup = Lookup::new(ResolveQuery::Node(target), vec![node(1), node(2)]);
+
+        // Query and time out both seeds, so the walk runs itself out.
+        while !lookup.next_wave().is_empty() {}
+        lookup.on_timeout(&node(1).id);
+        lookup.on_timeout(&node(2).id);
+        while !lookup.next_wave().is_empty() {}
+
+        match lookup.outcome() {
+            Some(LookupOutcome::Closest(_)) => {}
+            other => panic!("expected a closest-peers outcome, got {other:?}"),
+        }
+    }
+
+    /// Replicas go to peers that can be reached. A peer with no mesh identity
+    /// cannot be sent to, and one of them is this node itself.
+    #[test]
+    fn closest_peers_skips_this_node_and_anything_unaddressable() {
+        let mut service = NameService::new(NameKey::of(&[1]));
+        service.add_peer(node(2), agent(2));
+        // Known in the keyspace, but nothing can address it.
+        service.add_node(node(3));
+
+        let peers = service.closest_peers(&NameKey::of(b"target"), K);
+        assert_eq!(peers.len(), 1, "only the addressable peer: {peers:?}");
+        assert_eq!(peers[0].key(), node(2).id);
+    }
+
+    /// Re-offering a record cannot extend its life, so a record near expiry is
+    /// something to report upward rather than something to fix here.
+    #[test]
+    fn a_record_close_to_expiry_is_reported_as_lapsing() {
+        let mut service = NameService::new(NameKey::of(&[1]));
+        let rec = record(4, 1, 1_000, &[]); // ttl 3600
+        let name = rec.name.clone();
+        service.publish(rec).unwrap();
+
+        assert!(service.lapsing(1_000, 900).is_empty(), "not yet");
+        assert_eq!(service.lapsing(4_000, 900), vec![name], "600s left");
+        assert!(
+            service.lapsing(9_000, 900).is_empty(),
+            "already expired, so past reporting"
+        );
+    }
+
+    /// A record already held at an equal or newer version must not be treated as
+    /// news, or two nodes holding different versions announce at each other
+    /// without end.
+    #[test]
+    fn re_offering_the_same_record_is_reported_as_superseded() {
+        let mut service = NameService::new(NameKey::of(&[1]));
+        let rec = record(4, 1, 1_000, &[]);
+        assert_eq!(
+            service.publish(rec.clone()).unwrap(),
+            spine_name::PutOutcome::Inserted
+        );
+        assert_eq!(
+            service.publish(rec).unwrap(),
+            spine_name::PutOutcome::Superseded
         );
     }
 }

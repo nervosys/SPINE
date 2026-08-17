@@ -632,6 +632,24 @@ impl MeshNode {
         ))
     }
 
+    /// Build an envelope asking one specific peer to store a signed record.
+    ///
+    /// The directed form of [`MeshNode::announce_name`], and the one replication
+    /// uses. A broadcast reaches whoever this node happens to be connected to,
+    /// which has nothing to do with where the record belongs; a record belongs
+    /// with the nodes closest to its key, and those are reached by name.
+    pub fn announce_name_to(
+        &self,
+        peer: AgentId,
+        record: spine_name::NameRecord,
+    ) -> Result<MeshEnvelope, spine_name::NameError> {
+        record.verify()?;
+        Ok(self.create_envelope(
+            MeshTarget::Agent(peer),
+            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(record))),
+        ))
+    }
+
     /// Build an envelope asking a specific peer to resolve a query.
     pub fn name_resolve_request(
         &self,
