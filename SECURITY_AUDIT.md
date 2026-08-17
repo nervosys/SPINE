@@ -105,6 +105,52 @@ This is the same species of defect as the handshake's seeded RNG (see
 standard, and what is wrong is the entropy fed in. It is worth assuming there are
 more of these and looking for them specifically.
 
+### Finding: the latent-AEAD path reuses one key across every session
+
+`enable_chameleon_aead` derives its AES-256-GCM key with
+
+```rust
+let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, &secret);   // salt = None
+hk.expand(b"spine-latent-aead-key", &mut aes_key)
+```
+
+There is no salt and no per-session input, so **the key is a pure function of the
+shared secret**: every session between the same pair, forever, uses the same
+AES-256-GCM key. That is sound on its own — provided nonces never repeat under
+it. The nonce is
+
+```
+nonce = counter (8 bytes, starts at 0) || session_nonce (4 bytes, random)
+```
+
+`session_nonce` is 32 bits from the OS CSPRNG, and the counter restarts at zero
+in every session. So the only thing preventing two sessions from issuing
+identical `(key, nonce)` pairs is a 32-bit random value.
+
+By the birthday bound, after *N* sessions the probability that two share a
+`session_nonce` is about `1 − exp(−N² / 2^33)`: roughly **39% after 65,536
+sessions**, and about 1% after 9,000. A colliding pair immediately produces
+repeated `(key, nonce)` for every message index they have in common.
+
+Nonce reuse is the failure mode AES-GCM does not survive. It leaks the XOR of
+the two plaintexts, and — because GCM's authentication is polynomial-based —
+also permits recovery of the authentication subkey, which turns confidentiality
+loss into the ability to forge. This is a genuine break for any deployment that
+reuses a shared secret across many connections, which is the deployment the API
+invites: `enable_chameleon_aead(secret)` takes a long-term secret and says
+nothing about rotation.
+
+Two adequate fixes, neither attempted here because both change the wire format:
+give HKDF a per-session salt that is transmitted (making the key per-session, so
+nonce collisions no longer matter), or widen the random portion of the nonce to
+96 bits and drop the counter.
+
+**Note the contrast with the mesh handshake in `spine-crypto`**, which gets this
+right for the reason described in `HANDSHAKE-REVIEW.md` §3: keys are derived per
+connection from a transcript that includes a fresh ephemeral key, and each
+direction gets its own key so the two counters cannot collide. The defect is in
+the older `spine-protocol` AEAD path, not in the mesh channel.
+
 ### Posture
 
 - **Algorithm choices are FIPS-approved by spec.** Anyone reading the

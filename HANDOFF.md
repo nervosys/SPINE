@@ -422,7 +422,19 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 4. ~~**Wire the namespace into the gateway.**~~ Done — see above. What remains
    there is a connection pool for the backend hop, and TLS termination in front
    of the gateway if these endpoints are exposed publicly.
-5. **Fix the Chameleon layer's key derivation** — see the new finding in
+5. **Fix the latent-AEAD key/nonce construction** — the most serious of the
+   findings, documented in `SECURITY_AUDIT.md`. `enable_chameleon_aead` derives
+   its AES-256-GCM key by HKDF with no salt and no per-session input, so the key
+   is a pure function of the shared secret and is identical in every session
+   between the same pair. The nonce is a counter that restarts at zero, prefixed
+   by only 32 random bits — so two sessions collide with probability ~39% after
+   65,536 sessions, and a collision means repeated `(key, nonce)` under
+   AES-GCM. That leaks plaintext XOR *and* the authentication subkey, so it
+   costs forgery as well as confidentiality. Either salt the HKDF per session
+   and transmit the salt, or widen the random nonce portion to 96 bits and drop
+   the counter. Both change the wire format, which is why I stopped at
+   documenting it.
+6. **Fix the Chameleon layer's key derivation** — see the new finding in
    `SECURITY_AUDIT.md`. `ChameleonKey::new` collapses the 256-bit shared secret
    to a `u64` with `DefaultHasher` before using it, so that layer is keyed by at
    most 64 bits, derived deterministically by a non-cryptographic hash. Where
@@ -433,7 +445,7 @@ environmental failure plausible, but that is a hypothesis and not a finding.
    siblings of the Phase 42 handshake defect and stopped at documenting it,
    because fixing it changes a wire-visible derivation and deserves its own
    phase.
-6. **Find the flaky test** described at the end of Phase 43, or establish that it
+7. **Find the flaky test** described at the end of Phase 43, or establish that it
    was environmental. A test suite with one unidentified intermittent failure is
    a suite whose green runs mean slightly less than they should.
 
