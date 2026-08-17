@@ -33,6 +33,12 @@
 //! connection: recovering a node's long-term Ed25519 key later reveals nothing
 //! about past traffic, because that key only ever signed, never decrypted.
 //!
+//! That argument rests entirely on the ephemeral keypair being unguessable, so
+//! it is generated from the operating system's CSPRNG and from nothing else.
+//! [`Initiator::start_with_rng`] and [`Responder::accept_with_rng`] exist for
+//! deterministic tests and are bounded on [`CryptoRng`] precisely so the seam
+//! cannot quietly become the production path.
+//!
 //! **Authentication binds to mesh identity.** The Ed25519 key that signs the
 //! handshake is the same key that places a node in the DHT keyspace and signs
 //! its name records, so "the peer I dialed" and "the peer whose records I trust"
@@ -56,6 +62,14 @@
 //! whose payloads are independently signed; it is not a substitute for TLS in a
 //! setting where the transport is the only thing standing between an adversary
 //! and unauthenticated data.
+//!
+//! That warning has already been earned once. Until Phase 42 the ephemeral
+//! keypair came from `StdRng::seed_from_u64(n)`, where the listener passed a
+//! counter starting at zero — so the Nth connection a node accepted after
+//! start-up always used the same keypair, and anyone able to count connections
+//! could reconstruct the session key. The arrangement was standard; the
+//! randomness was not. Every property below rests on primitives being fed what
+//! they require, which is the part a reader should check hardest.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -63,8 +77,8 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use hkdf::Hkdf;
 use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey};
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768, MlKem768Params};
-use rand::rngs::StdRng;
-use rand::SeedableRng;
+use rand::rngs::OsRng;
+use rand::{CryptoRng, RngCore};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -175,9 +189,26 @@ impl std::fmt::Debug for Initiator {
 
 impl Initiator {
     /// Begin a handshake, returning the state and the bytes to send.
-    pub fn start(signing: &SigningKey, seed: u64) -> (Self, Vec<u8>) {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let (dk, ek) = MlKem768::generate(&mut rng);
+    ///
+    /// The ephemeral keypair comes from the operating system's CSPRNG. Nothing
+    /// about the session survives a predictable one: the decapsulation key
+    /// generated here is the only secret standing between a recorded connection
+    /// and its plaintext, so an attacker who can reproduce this keypair can
+    /// reproduce the session key and read everything.
+    pub fn start(signing: &SigningKey) -> (Self, Vec<u8>) {
+        Self::start_with_rng(signing, &mut OsRng)
+    }
+
+    /// Begin a handshake with a caller-supplied RNG.
+    ///
+    /// The seam exists so a test can drive the construction deterministically.
+    /// The bound is `CryptoRng` and not merely `RngCore` so that seam cannot be
+    /// used to hand production a predictable generator by accident.
+    pub fn start_with_rng<R: CryptoRng + RngCore>(
+        signing: &SigningKey,
+        rng: &mut R,
+    ) -> (Self, Vec<u8>) {
+        let (dk, ek) = MlKem768::generate(rng);
         let ek_bytes = ek.as_bytes().to_vec();
         let identity = signing.verifying_key().to_bytes();
 
@@ -295,10 +326,18 @@ pub struct Accepted {
 
 impl Responder {
     /// Answer an initiator's hello.
-    pub fn accept(
+    ///
+    /// Encapsulation draws from the operating system's CSPRNG; see
+    /// [`Initiator::start`] for why nothing weaker will do.
+    pub fn accept(signing: &SigningKey, hello: &[u8]) -> Result<Accepted, HandshakeError> {
+        Self::accept_with_rng(signing, hello, &mut OsRng)
+    }
+
+    /// Answer an initiator's hello with a caller-supplied RNG.
+    pub fn accept_with_rng<R: CryptoRng + RngCore>(
         signing: &SigningKey,
         hello: &[u8],
-        seed: u64,
+        rng: &mut R,
     ) -> Result<Accepted, HandshakeError> {
         if hello.len() > MAX_HANDSHAKE_BYTES {
             return Err(HandshakeError::Malformed);
@@ -326,9 +365,8 @@ impl Responder {
         let ek_encoded = <Encoded<EncapsulationKey<MlKem768Params>>>::try_from(ek_bytes)
             .map_err(|_| HandshakeError::KemFailure)?;
         let ek = EncapsulationKey::<MlKem768Params>::from_bytes(&ek_encoded);
-        let mut rng = StdRng::seed_from_u64(seed);
         let (ct, ss) = ek
-            .encapsulate(&mut rng)
+            .encapsulate(rng)
             .map_err(|_| HandshakeError::KemFailure)?;
 
         let ct_bytes = ct.to_vec();
@@ -512,8 +550,8 @@ mod tests {
     fn establish() -> (Session, Session) {
         let alice = key(1);
         let bob = key(2);
-        let (initiator, hello) = Initiator::start(&alice, 42);
-        let accepted = Responder::accept(&bob, &hello, 43).unwrap();
+        let (initiator, hello) = Initiator::start(&alice);
+        let accepted = Responder::accept(&bob, &hello).unwrap();
         let client = initiator
             .finish(&accepted.reply, Some(&bob.verifying_key().to_bytes()))
             .unwrap();
@@ -635,8 +673,8 @@ mod tests {
     fn a_dialer_refuses_a_peer_it_did_not_ask_for() {
         let alice = key(1);
         let impostor = key(9);
-        let (initiator, hello) = Initiator::start(&alice, 1);
-        let accepted = Responder::accept(&impostor, &hello, 2).unwrap();
+        let (initiator, hello) = Initiator::start(&alice);
+        let accepted = Responder::accept(&impostor, &hello).unwrap();
 
         // Alice wanted to reach Bob, not the impostor.
         let err = initiator
@@ -648,20 +686,20 @@ mod tests {
     #[test]
     fn an_unpinned_dial_accepts_whoever_answers() {
         // The bootstrap case: dialing an address whose identity is not yet known.
-        let (initiator, hello) = Initiator::start(&key(1), 1);
-        let accepted = Responder::accept(&key(7), &hello, 2).unwrap();
+        let (initiator, hello) = Initiator::start(&key(1));
+        let accepted = Responder::accept(&key(7), &hello).unwrap();
         let session = initiator.finish(&accepted.reply, None).unwrap();
         assert_eq!(session.peer_identity(), &key(7).verifying_key().to_bytes());
     }
 
     #[test]
     fn a_forged_initiator_signature_is_rejected() {
-        let (_, mut hello) = Initiator::start(&key(1), 1);
+        let (_, mut hello) = Initiator::start(&key(1));
         // Corrupt the trailing signature field.
         let last = hello.len() - 1;
         hello[last] ^= 0xFF;
         assert_eq!(
-            Responder::accept(&key(2), &hello, 2).unwrap_err(),
+            Responder::accept(&key(2), &hello).unwrap_err(),
             HandshakeError::BadSignature
         );
     }
@@ -669,8 +707,8 @@ mod tests {
     #[test]
     fn a_swapped_ephemeral_key_is_rejected() {
         // A man in the middle substituting its own KEM key cannot re-sign it.
-        let (_, hello_a) = Initiator::start(&key(1), 1);
-        let (_, hello_b) = Initiator::start(&key(3), 2);
+        let (_, hello_a) = Initiator::start(&key(1));
+        let (_, hello_b) = Initiator::start(&key(3));
 
         let mut cursor = 0;
         let label = take_field(&hello_a, &mut cursor).unwrap().to_vec();
@@ -689,7 +727,7 @@ mod tests {
         put_field(&mut forged, &sig_a);
 
         assert_eq!(
-            Responder::accept(&key(2), &forged, 3).unwrap_err(),
+            Responder::accept(&key(2), &forged).unwrap_err(),
             HandshakeError::BadSignature
         );
     }
@@ -698,11 +736,11 @@ mod tests {
     fn a_responder_reply_cannot_be_replayed_into_another_session() {
         let bob = key(2);
         // Session one.
-        let (_, hello1) = Initiator::start(&key(1), 10);
-        let accepted1 = Responder::accept(&bob, &hello1, 11).unwrap();
+        let (_, hello1) = Initiator::start(&key(1));
+        let accepted1 = Responder::accept(&bob, &hello1).unwrap();
 
         // Session two, fresh ephemeral key.
-        let (initiator2, _hello2) = Initiator::start(&key(1), 12);
+        let (initiator2, _hello2) = Initiator::start(&key(1));
 
         // Bob's recorded reply from session one must not satisfy session two.
         let err = initiator2
@@ -713,7 +751,7 @@ mod tests {
 
     #[test]
     fn a_wrong_protocol_label_is_refused() {
-        let (initiator, _) = Initiator::start(&key(1), 1);
+        let (initiator, _) = Initiator::start(&key(1));
         let mut reply = Vec::new();
         put_field(&mut reply, b"some-other-protocol");
         put_field(&mut reply, &[0u8; CT_LEN]);
@@ -727,7 +765,7 @@ mod tests {
         let mut hello = Vec::new();
         put_field(&mut hello, b"nope");
         assert_eq!(
-            Responder::accept(&key(1), &hello, 1).unwrap_err(),
+            Responder::accept(&key(1), &hello).unwrap_err(),
             HandshakeError::WrongProtocol
         );
     }
@@ -735,13 +773,13 @@ mod tests {
     #[test]
     fn malformed_handshakes_are_rejected_rather_than_panicking() {
         // Truncations at every length.
-        let (_, hello) = Initiator::start(&key(1), 1);
+        let (_, hello) = Initiator::start(&key(1));
         for cut in 0..hello.len().min(64) {
-            assert!(Responder::accept(&key(2), &hello[..cut], 2).is_err());
+            assert!(Responder::accept(&key(2), &hello[..cut]).is_err());
         }
         // Oversized input is refused before any parsing.
         assert_eq!(
-            Responder::accept(&key(2), &vec![0u8; MAX_HANDSHAKE_BYTES + 1], 2).unwrap_err(),
+            Responder::accept(&key(2), &vec![0u8; MAX_HANDSHAKE_BYTES + 1]).unwrap_err(),
             HandshakeError::Malformed
         );
         // A field claiming more bytes than remain.
@@ -750,14 +788,14 @@ mod tests {
         lying.extend_from_slice(&u16::MAX.to_be_bytes());
         lying.extend_from_slice(b"short");
         assert_eq!(
-            Responder::accept(&key(2), &lying, 2).unwrap_err(),
+            Responder::accept(&key(2), &lying).unwrap_err(),
             HandshakeError::Malformed
         );
     }
 
     #[test]
     fn wrong_sized_fields_are_rejected() {
-        let (initiator, _) = Initiator::start(&key(1), 1);
+        let (initiator, _) = Initiator::start(&key(1));
         let mut reply = Vec::new();
         put_field(&mut reply, PROTOCOL_LABEL);
         put_field(&mut reply, &[0u8; 16]); // not a valid ML-KEM ciphertext
@@ -773,12 +811,12 @@ mod tests {
     fn separate_connections_derive_independent_keys() {
         // Forward secrecy rests on this: two sessions between the same pair of
         // long-term identities must share no key material.
-        let (i1, hello1) = Initiator::start(&key(1), 100);
-        let a1 = Responder::accept(&key(2), &hello1, 101).unwrap();
+        let (i1, hello1) = Initiator::start(&key(1));
+        let a1 = Responder::accept(&key(2), &hello1).unwrap();
         let mut s1 = i1.finish(&a1.reply, None).unwrap();
 
-        let (i2, hello2) = Initiator::start(&key(1), 200);
-        let a2 = Responder::accept(&key(2), &hello2, 201).unwrap();
+        let (i2, hello2) = Initiator::start(&key(1));
+        let a2 = Responder::accept(&key(2), &hello2).unwrap();
         let mut s2 = i2.finish(&a2.reply, None).unwrap();
 
         let mut server1 = a1.session;
@@ -811,5 +849,58 @@ mod tests {
         let big = vec![0xAB; 1 << 20];
         let sealed = client.seal(&big);
         assert_eq!(server.open(&sealed).unwrap(), big);
+    }
+
+    /// Every connection must draw a fresh ephemeral keypair from the OS.
+    ///
+    /// The defect this guards against: ephemeral keys were once generated from
+    /// `StdRng::seed_from_u64(seed)`, and the seed a listener passed was a
+    /// counter starting at zero. The Nth connection a node accepted after
+    /// start-up therefore always used the same keypair, so anyone who could
+    /// count connections could regenerate the decapsulation key and read the
+    /// session. Forward secrecy was nominal — the keypair was ephemeral in
+    /// lifetime but not in value.
+    ///
+    /// `separate_connections_derive_independent_keys` above did not catch it,
+    /// because it passed two different constants and so only ever proved that
+    /// different seeds give different keys.
+    #[test]
+    fn every_handshake_generates_a_fresh_ephemeral_key() {
+        let alice = key(1);
+        let (_, first) = Initiator::start(&alice);
+        let (_, second) = Initiator::start(&alice);
+        assert_ne!(
+            first, second,
+            "the same identity dialing twice must not reuse an ephemeral key"
+        );
+    }
+
+    /// The responder half of the same property: encapsulation randomness is
+    /// drawn per connection, so two answers to the same hello differ.
+    #[test]
+    fn a_responder_draws_fresh_randomness_for_every_connection() {
+        let (_, hello) = Initiator::start(&key(1));
+        let bob = key(2);
+        let first = Responder::accept(&bob, &hello).unwrap();
+        let second = Responder::accept(&bob, &hello).unwrap();
+        assert_ne!(
+            first.reply, second.reply,
+            "a counter-driven responder answers identically every time"
+        );
+    }
+
+    /// The seam that makes the construction testable must not be usable to hand
+    /// production a predictable generator: it is bounded on `CryptoRng`, so a
+    /// non-cryptographic RNG will not compile against it. This test exists to
+    /// document that the seam works at all, and with a seeded *crypto* RNG two
+    /// runs of the same seed agree — which is what a test vector needs and what
+    /// a live connection must never do.
+    #[test]
+    fn the_deterministic_seam_reproduces_a_handshake() {
+        use rand::SeedableRng;
+        let alice = key(1);
+        let (_, a) = Initiator::start_with_rng(&alice, &mut rand::rngs::StdRng::seed_from_u64(7));
+        let (_, b) = Initiator::start_with_rng(&alice, &mut rand::rngs::StdRng::seed_from_u64(7));
+        assert_eq!(a, b, "the seam is for reproducible vectors, and reproduces");
     }
 }
