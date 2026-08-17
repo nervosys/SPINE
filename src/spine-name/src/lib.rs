@@ -83,7 +83,7 @@ pub use link::{Link, Rel};
 pub use record::{Endpoint, NameRecord, DEFAULT_TTL_SECS};
 pub use resolver::{LocalResolver, Provenance, Resolution, Resolver};
 pub use routing::{NodeInfo, RoutingTable, DEFAULT_K};
-pub use store::{PutOutcome, RecordStore};
+pub use store::{PutOutcome, RecordStore, DEFAULT_CAPACITY};
 pub use uri::{Authority, SpineUri, SCHEME};
 
 use sha2::{Digest, Sha256};

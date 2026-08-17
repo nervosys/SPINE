@@ -23,19 +23,85 @@ pub enum PutOutcome {
     Updated,
     /// Kept the existing record because it was newer or equal.
     Superseded,
+    /// The store was full and this record was the least worth keeping.
+    ///
+    /// Distinct from an error: nothing was wrong with the record, and the
+    /// caller has not been told its peer misbehaved. It simply belongs
+    /// somewhere else in the keyspace more than it belongs here.
+    Rejected,
 }
 
+/// How many records a store holds before it starts evicting.
+///
+/// A signature proves the publisher holds the key for a name, which costs an
+/// attacker one keygen — so "verified" is not a bound on how much anyone may
+/// store here. This is.
+pub const DEFAULT_CAPACITY: usize = 10_000;
+
 /// A verified, expiry-aware collection of name records.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct RecordStore {
     by_key: HashMap<NameKey, NameRecord>,
     /// Capability term -> the names advertising it.
     by_capability: BTreeMap<String, HashSet<NameKey>>,
+    capacity: usize,
+    /// This node's own keyspace position, when it has one.
+    ///
+    /// Eviction is by distance from here: a store under pressure should give up
+    /// what is furthest from it first, because those are the records lookups are
+    /// least likely to route to this node for. Without a home key there is no
+    /// such ordering, so eviction falls back to dropping whatever expires
+    /// soonest.
+    home: Option<NameKey>,
+}
+
+impl Default for RecordStore {
+    fn default() -> Self {
+        Self {
+            by_key: HashMap::new(),
+            by_capability: BTreeMap::new(),
+            capacity: DEFAULT_CAPACITY,
+            home: None,
+        }
+    }
 }
 
 impl RecordStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A store that evicts by distance from `home`, holding at most `capacity`.
+    pub fn with_limits(home: NameKey, capacity: usize) -> Self {
+        Self {
+            home: Some(home),
+            capacity: capacity.max(1),
+            ..Self::default()
+        }
+    }
+
+    /// How many records this store will hold.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Rank a key by how readily this store would give it up — larger is worse.
+    fn eviction_rank(&self, key: &NameKey, record: &NameRecord) -> (u64, [u8; 32]) {
+        match &self.home {
+            // Furthest from home goes first. The distance is the whole ordering;
+            // the key breaks ties so the choice is deterministic.
+            Some(home) => (0, home.distance(key).0),
+            // No position to measure from, so shortest remaining life goes first.
+            None => (u64::MAX - record.published_at, *key.as_bytes()),
+        }
+    }
+
+    /// The record this store would give up first, if it holds any.
+    fn eviction_candidate(&self) -> Option<(NameKey, (u64, [u8; 32]))> {
+        self.by_key
+            .iter()
+            .map(|(k, r)| (*k, self.eviction_rank(k, r)))
+            .max_by(|a, b| a.1.cmp(&b.1))
     }
 
     /// Offer a record to the store.
@@ -55,6 +121,22 @@ impl RecordStore {
             self.index(&key, &record);
             self.by_key.insert(key, record);
             return Ok(PutOutcome::Updated);
+        }
+
+        // Full: something has to go, and it should be whatever this node is
+        // least suited to hold. If that is the arriving record, it is refused
+        // rather than displacing a record nearer to us — otherwise a stream of
+        // distant names would evict exactly the ones we are responsible for.
+        if self.by_key.len() >= self.capacity {
+            let incoming = self.eviction_rank(&key, &record);
+            match self.eviction_candidate() {
+                Some((worst_key, worst_rank)) if worst_rank > incoming => {
+                    if let Some(evicted) = self.by_key.remove(&worst_key) {
+                        self.deindex(&worst_key, evicted.capabilities);
+                    }
+                }
+                _ => return Ok(PutOutcome::Rejected),
+            }
         }
 
         self.index(&key, &record);
@@ -351,5 +433,56 @@ mod tests {
         assert!(s.is_empty());
         assert!(s.providers_of("web.search", 1_000).is_empty());
         assert!(s.remove(&rec.name).is_none());
+    }
+
+    /// A signature proves the publisher holds the key for a name, and minting a
+    /// `did:` name costs one keygen — so verification is no bound on how much
+    /// anyone may store here. The capacity is.
+    #[test]
+    fn a_full_store_stops_growing() {
+        let mut s = RecordStore::with_limits(NameKey::of(b"home"), 3);
+        for seed in 1..=8u8 {
+            let _ = s.put(record(seed, 1, 1_000, &[], 0));
+        }
+        assert_eq!(s.len(), 3, "the cap has to hold under a flood");
+    }
+
+    /// What a store gives up first should be what it is least suited to hold.
+    /// Records near this node are the ones lookups will actually route here for.
+    #[test]
+    fn eviction_gives_up_the_furthest_key_first() {
+        // Pick a home adjacent to one record's key, so that record is nearest.
+        let near = record(1, 1, 1_000, &[], 0);
+        let home = near.name.key();
+
+        let mut s = RecordStore::with_limits(home, 2);
+        s.put(near.clone()).unwrap();
+        for seed in 2..=6u8 {
+            let _ = s.put(record(seed, 1, 1_000, &[], 0));
+        }
+
+        assert_eq!(s.len(), 2);
+        assert!(
+            s.get(&near.name).is_some(),
+            "the record nearest home must survive a flood of distant ones"
+        );
+    }
+
+    /// A record further away than everything held is refused outright, rather
+    /// than displacing something nearer. Otherwise a stream of distant names
+    /// would evict exactly the records this node is responsible for.
+    #[test]
+    fn a_record_further_than_all_of_them_is_refused_not_swapped_in() {
+        let near = record(1, 1, 1_000, &[], 0);
+        let home = near.name.key();
+        let mut s = RecordStore::with_limits(home, 1);
+        s.put(near.clone()).unwrap();
+
+        // Find some record further from home than `near` — which is at distance
+        // zero, so any other will do.
+        let far = record(9, 1, 1_000, &[], 0);
+        assert_eq!(s.put(far.clone()).unwrap(), PutOutcome::Rejected);
+        assert!(s.get(&near.name).is_some(), "the nearer record stayed");
+        assert!(s.get(&far.name).is_none());
     }
 }
