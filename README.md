@@ -5,6 +5,7 @@
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
 [![Tests](https://img.shields.io/badge/tests-1418%20passing-brightgreen.svg)](#testing)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](CHANGELOG.md)
 
 **SPINE** (Synaptic Pathways INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
@@ -668,7 +669,10 @@ The Chameleon Protocol uses **Titans Neural Long-Term Memory** to hide communica
 
 - **Latent Morphing**: Messages are projected into a high-dimensional latent space using a Variational Autoencoder (VAE).
 - **Dynamic Evolution**: The transformation matrices evolve over time based on quantum-resistant seeds, ensuring that the "language" of the protocol is constantly changing.
-- **Implicit Encryption**: The latent space projection itself acts as a form of encryption where the model weights and Titans memory state are the keys.
+- **Keyed encoding, not a cipher**: the model weights and Titans memory state
+  are derived from the shared secret, so the encoding is unreproducible without
+  it — but confidentiality proper comes from the AES-256-GCM layer that
+  `enable_chameleon_aead` puts underneath.
 
 ## Deployment
 
@@ -723,6 +727,19 @@ cargo build --release -p spine-core
 ```bash
 cargo build --release
 ```
+
+### Verifying
+
+```bash
+scripts/verify.sh 1418     # tests + Clippy, and checks the run finished
+```
+
+Preferred over running `cargo test` and `cargo clippy` by hand. Summing test
+results cannot distinguish a passing run from a truncated one — a run that dies
+early still reports `ok` for everything that got as far as reporting — so the
+script also asserts the suite count, the ignored count, and the expected total.
+Do not pipe it into `tail`: the pipeline returns that command's status and the
+exit code is lost.
 
 ### Running the Core
 
@@ -820,9 +837,22 @@ Binary execution result: {"status": "executed", "instruction_count": 2}
 
 ### Chameleon Protocol (Moving-Target Defense)
 
-SPINE introduces the **Chameleon Protocol**, a revolutionary approach to secure communication that treats latent-space representations as a form of implicit encryption.
+The **Chameleon Protocol** encodes messages into a keyed latent space and
+changes that encoding as a session proceeds, so a passive observer sees traffic
+whose shape and statistics keep moving.
 
-**Core Insight**: High-dimensional vector spaces are inherently encrypted—the transformation matrix IS the key. By evolving the transformation based on message history, we create a protocol that is impossible to statically analyze.
+**What it is:** obfuscation and traffic-analysis resistance. The encoder's
+weights are derived from the shared secret, so an observer without the secret
+cannot reproduce the encoding.
+
+**What it is not:** a cipher. High-dimensional projection is not encryption, and
+a latent representation is not a ciphertext with a security proof behind it. For
+confidentiality use `enable_chameleon_aead`, which puts AES-256-GCM under the
+encoding with a key derived by HKDF-SHA-256 from the full 32-byte secret;
+Chameleon then contributes defence in depth rather than the guarantee itself.
+See [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) — earlier versions of this section
+claimed rather more, and a 2.0.0 audit found the encoder had been keyed by 64
+bits derived with a non-cryptographic hash.
 
 #### Key Components
 
@@ -834,7 +864,13 @@ SPINE introduces the **Chameleon Protocol**, a revolutionary approach to secure 
    - The header format morphs
    - The padding strategy shifts
 
-3. **Forward Secrecy**: Each message's hash is incorporated into the key derivation, ensuring past messages cannot be decrypted even if the current key is compromised.
+3. **Per-message evolution**: each message's hash feeds the next morph, so the
+   encoding does not repeat across a session. This is *not* forward secrecy —
+   message hashes are derivable by anyone holding the transcript, and the
+   long-term secret still keys everything. Genuine forward secrecy lives in the
+   mesh handshake (`spine-crypto::handshake`), whose ML-KEM keypair is ephemeral
+   per connection and is described in
+   [`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md).
 
 4. **Decoy Traffic**: Agents can inject noise traffic to confuse traffic analysis.
 
@@ -842,7 +878,9 @@ SPINE introduces the **Chameleon Protocol**, a revolutionary approach to secure 
 
 ```rust
 let secret: [u8; 32] = /* shared secret */;
-client.handler.enable_chameleon(secret);
+// AEAD variant: AES-256-GCM beneath the latent encoding. Prefer this — plain
+// `enable_chameleon` gives obfuscation with no cipher under it.
+client.handler.enable_chameleon_aead(secret);
 
 // Protocol now automatically:
 // - Encodes messages into latent space
@@ -924,7 +962,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (28 Crates)
+### The SPINE Stack (30 Crates)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
