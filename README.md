@@ -1044,7 +1044,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] Traditional encryption (AES-256-GCM)
 - [x] Compression (Zstd)
 - [x] HLS/HLB basic compiler
-- [x] **Chameleon Protocol** (latent-space cryptography)
+- [x] **Chameleon Protocol** (latent-space obfuscation over AES-256-GCM)
 - [x] **Moving-Target Defense** (dynamic protocol morphing)
 - [x] **Decoy Traffic** injection
 - [x] **Titans Speculative Decoding** (prediction-accelerated communication with NLM)
@@ -1078,6 +1078,22 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Agent `connect_ws()`** (WebSocket transport for `AgentClient`)
 - [x] **QUIC Server Integration** (feature-gated `quinn` endpoint)
 - [x] **Agent Capability Marketplace** (decentralized registry, discovery, bidding, contracts, reputation, audit log)
+- [x] **The `spine://` namespace** (self-certifying `did:` names, immutable
+      `blob:` content addresses, routable `cap:` capabilities, `host:` bootstrap)
+- [x] **Federated resolution** (Kademlia lookup over TCP / WebSocket / QUIC, with
+      a capability index so "who can do X" is routed rather than broadcast)
+- [x] **Mesh handshake** (ML-KEM-768 + Ed25519, forward-secret per connection,
+      authenticated against the same key that positions a node in the keyspace)
+- [x] **Bootstrap from an address** (a seed proves its identity by signing with
+      the key that *is* its keyspace position)
+- [x] **Replication and maintenance** (records stored at the K closest nodes and
+      re-offered as the neighbourhood changes, so a name outlives its publisher)
+- [x] **The namespace over plain HTTP** (`/v1/names/*` on the gateway, mapping
+      namespace outcomes onto the HTTP status codes that already mean them)
+- [x] **Cryptographic audit, 2.0.0** (four findings fixed: counter-seeded
+      ephemeral keys, AES-GCM nonce reuse, an unbounded record store, and a
+      64-bit-keyed Chameleon encoder — see
+      [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md))
 
 ## Adversarial Multi-Agent Intelligence
 
