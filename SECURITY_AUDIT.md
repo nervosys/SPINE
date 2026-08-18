@@ -69,7 +69,7 @@ the Rust crate we use is a **FIPS-validated cryptographic module**
 | **Titans speculative decoding** | — | ❌ Not crypto at all (ML technique) | in-tree | n/a |
 | PRNG — message keys, nonces | SP 800-90A (HMAC_DRBG / CTR_DRBG / Hash_DRBG) | We use `rand::rngs::StdRng` (ChaCha12 — **not** SP 800-90A) | `rand = "0.8"` | ❌ Not validated |
 
-### Finding: the Chameleon layer keys itself with 64 bits — *partly fixed in Phase 47*
+### Finding: the Chameleon layer keys itself with 64 bits — *fixed in Phases 47 and 48*
 
 `ChameleonKey::new(secret: &[u8; 32])` — the type `enable_chameleon` installs —
 reduces the 256-bit shared secret to a `u64` before using it:
@@ -113,11 +113,21 @@ specify which algorithm `DefaultHasher` uses and may change it between Rust
 releases, so two peers built with different compilers could have derived
 different seeds from the same shared secret and silently failed to interoperate.
 
-**The 64-bit ceiling remains, and is the open half of this finding.**
-`NeuralLatentEncoder` and `TransformerConfig` take a `u64` seed, so the
-derivation cannot hand them more entropy than that no matter how it is computed.
-Lifting it means widening the keying of those types, which is a change to
-`spine-neural` rather than to this call site.
+**Phase 48 lifted the 64-bit ceiling.** It was never in the derivation:
+`NeuralLatentEncoder::new` takes `seed: u64`, so 64 bits was all that could reach
+the weights however carefully the seed was computed. `new_keyed` seeds the
+generator from all 32 bytes, and `ChameleonKey` passes the secret straight
+through. The old constructor remains for reproducible model initialisation and
+fixtures, which is what a short seed is genuinely for.
+
+Per-message morph seeds are still `u64` and should stay that way. They are
+diversifiers derived from message hashes rather than key material, so widening
+them would imitate the fix rather than apply it.
+
+The lattice key evolution in `spine-crypto` also takes a `u64` seed, and its
+output feeds a `u64` morph seed regardless, so widening it would not raise the
+strength of anything downstream. That is a design limit of the moving-target
+layer, not a defect in this derivation.
 
 Note that Phase 47 is a breaking change to the Chameleon layer: the derived seed
 differs from the old one, so peers must be upgraded together.

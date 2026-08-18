@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-1416%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1418%20passing-brightgreen.svg)](#testing)
 
 **SPINE** (Synaptic Pathways INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
 
@@ -1303,10 +1303,10 @@ cargo test -p spine-neural
 cargo test -p spine-crypto
 ```
 
-### Test Summary (1,416 tests, 0 failures)
+### Test Summary (1,418 tests, 0 failures)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,416 passed / 0 failed / 5 ignored** across all 30 crates. The five
+**1,418 passed / 0 failed / 5 ignored** across all 30 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
 hidden failures. Per-crate breakdown below remains an approximation —
 exact counts shift with each addition.

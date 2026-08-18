@@ -1,7 +1,7 @@
 # SPINE Roadmap
 
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
-> 30 Rust crates · 1,416 tests · 0 warnings · AGPL-3.0-or-later
+> 30 Rust crates · 1,418 tests · 0 warnings · AGPL-3.0-or-later
 
 ---
 
@@ -727,6 +727,29 @@ understand one another, with nothing in the protocol to explain why.
       `NeuralLatentEncoder` and `TransformerConfig` are seeded by a `u64`, so
       widening it is a change to those crates. Recorded in `SECURITY_AUDIT.md`.
 - [x] 1,416 tests passing across 30 crates, 0 failures, 0 Clippy warnings
+
+### Phase 48: Lifting the Ceiling
+
+Phase 47 fixed how the Chameleon seed was *derived* and could not fix how much of
+it survived. `NeuralLatentEncoder::new` takes `seed: u64`, so 64 bits was all
+that ever reached the weights — and when this encoder is used for obfuscation the
+weights are the key. The ceiling was in a function signature, one layer below the
+derivation everyone was looking at.
+
+- [x] **`NeuralLatentEncoder::new_keyed`** seeds the generator from all 32 bytes.
+      `StdRng` is ChaCha12 and accepts a `[u8; 32]` seed, so this needed no new
+      dependency.
+- [x] **Additive, not breaking, for `spine-neural`.** `new` stays and is still
+      right for what it is actually for — reproducible model initialisation,
+      tests, fixtures — where a short readable seed is a feature. Two
+      constructors now say which job each is for.
+- [x] **Per-message morph seeds stay `u64`**, correctly: they are diversifiers
+      derived from message hashes, not key material, and widening them would be
+      cargo-culting the fix rather than applying it
+- [x] **Tested with keys differing only in the last byte** — keys that collide
+      under any `u64` derivation — asserting the encoders differ. The property
+      the change exists for, and one the old code fails by construction.
+- [x] 1,418 tests passing across 30 crates, 0 failures, 0 Clippy warnings
 
 ------
 
