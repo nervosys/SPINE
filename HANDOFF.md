@@ -1,7 +1,13 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete and verified. 1,418 tests passing, 0 failures, 0 Clippy warnings.
-**Committed** on branch `phase-38-namespace`, which is not merged into `master`.
+**Status:** complete, verified, merged, and released as **2.0.0**. 1,418 tests
+passing, 0 failures, 0 Clippy warnings, across 68 suites. `master` and
+`origin/master` agree; `phase-38-namespace` was fast-forwarded in and can be
+deleted.
+
+**Verify with `scripts/verify.sh 1418`** rather than by hand — it also checks
+that the run finished, which a bare test tally cannot (see item 8).
+
 Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
 randomness), and 43 (maintenance cost) followed on the same branch and have their
 own sections near the end of this file.

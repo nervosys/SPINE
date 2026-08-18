@@ -4,11 +4,16 @@
 
 | Version | Status        | Receives security fixes |
 |---------|---------------|-------------------------|
-| 1.3.x   | Current       | Yes                     |
-| 1.2.x   | Previous      | Yes (critical only)     |
-| 1.1.x   | EOL           | No (please upgrade)     |
-| 1.0.x   | EOL           | No (please upgrade)     |
-| < 1.0   | Pre-release   | No                      |
+| 2.0.x   | Current       | Yes                     |
+| 1.9.x   | Previous      | Yes (critical only)     |
+| < 1.9   | EOL           | No (please upgrade)     |
+
+2.0.0 carries fixes for four cryptographic defects found during an internal
+audit — see [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md). Three of them (ephemeral
+key generation, AES-GCM nonce reuse, and record-store admission) affect anyone
+running a 1.x mesh. **Upgrading is a wire-breaking change:** 2.0.0 peers cannot
+speak to 1.x peers over the Chameleon layer, so a deployment upgrades together
+or not at all.
 
 ## Reporting a Vulnerability
 

@@ -674,6 +674,39 @@ The Chameleon Protocol uses **Titans Neural Long-Term Memory** to hide communica
   it — but confidentiality proper comes from the AES-256-GCM layer that
   `enable_chameleon_aead` puts underneath.
 
+## Security
+
+Four documents, because they answer different questions:
+
+| Document | Question it answers |
+| --- | --- |
+| [`SECURITY.md`](SECURITY.md) | Which versions get fixes, and how to report a vulnerability privately |
+| [`THREAT_MODEL.md`](THREAT_MODEL.md) | Which adversaries this is built against, and which it is not |
+| [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) | What an internal audit found, including what remains open |
+| [`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md) | The mesh handshake in full, written for an external reviewer |
+
+**What is solid.** Name records are signed and verify against the name itself,
+so resolution needs no CA and a client that checks a record is not trusting the
+resolver. The mesh handshake is ML-KEM-768 + Ed25519 with per-connection
+ephemeral keys, AES-256-GCM frames, and per-direction keys so nonce counters
+cannot collide. The same Ed25519 key positions a node in the DHT, signs its
+records, and authenticates its connections, so "the peer I dialled" and "the
+peer whose records I trust" are one fact.
+
+**What is not.** The handshake has had **no external cryptographic review** —
+the package to commission one is written and ready. The Chameleon layer is
+obfuscation, not a cipher; use `enable_chameleon_aead` when you need
+confidentiality. The lattice and X3DH paths are research-grade. No crate here
+is a FIPS 140-3 validated module.
+
+**What an audit already found.** Four defects, all now fixed, all sharing one
+shape: vetted primitives, conventional composition, and inadequate entropy fed
+in — a counter-seeded ephemeral keypair, a 32-bit session nonce under a
+non-rotating key, an unbounded record store, and a 64-bit-keyed encoder. None
+would have been visible in a review of the algorithm list, which is the part a
+security summary usually shows you. That is the argument for reading
+`SECURITY_AUDIT.md` rather than this section.
+
 ## Deployment
 
 SPINE is designed for high-performance native deployment in distributed clusters.
