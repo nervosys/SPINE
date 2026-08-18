@@ -493,7 +493,10 @@ impl ChameleonKey {
 
         Self {
             // attention_heads (8) must divide latent_dim (128): 128/8=16 ✓
-            encoder: NeuralLatentEncoder::new(dimension, 128, &[256, 128], 8, seed),
+            // Keyed from the whole secret: the encoder weights are the key here,
+            // so the u64 seed below is only a per-instance diversifier for the
+            // machinery that still takes one.
+            encoder: NeuralLatentEncoder::new_keyed(dimension, 128, &[256, 128], 8, secret),
             miras_encoder: None,
             quantum: QuantumSpeculativeProtocol::new(config, params, seed),
             dimension,
@@ -536,7 +539,10 @@ impl ChameleonKey {
 
         Self {
             // attention_heads (8) must divide latent_dim (128): 128/8=16 ✓
-            encoder: NeuralLatentEncoder::new(dimension, 128, &[256, 128], 8, seed),
+            // Keyed from the whole secret: the encoder weights are the key here,
+            // so the u64 seed below is only a per-instance diversifier for the
+            // machinery that still takes one.
+            encoder: NeuralLatentEncoder::new_keyed(dimension, 128, &[256, 128], 8, secret),
             miras_encoder: Some(miras_config.build_miras()),
             quantum: QuantumSpeculativeProtocol::new(config, params, seed),
             dimension,

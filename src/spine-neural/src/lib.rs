@@ -1360,8 +1360,50 @@ impl NeuralLatentEncoder {
         attention_heads: usize,
         seed: u64,
     ) -> Self {
-        let mut rng = StdRng::seed_from_u64(seed);
+        Self::from_rng(
+            input_dim,
+            latent_dim,
+            hidden_dims,
+            attention_heads,
+            StdRng::seed_from_u64(seed),
+        )
+    }
 
+    /// Build an encoder keyed by a full 256-bit secret.
+    ///
+    /// The weights *are* the key when this encoder is used for obfuscation, so
+    /// how much entropy reaches them is how much an attacker has to search.
+    /// [`NeuralLatentEncoder::new`] takes a `u64`, which caps that at 64 bits
+    /// however carefully the caller derived it — the ceiling is in the
+    /// signature, not in the derivation. This constructor removes it by seeding
+    /// the generator from all 32 bytes.
+    ///
+    /// `new` remains the right choice for everything that is not keying:
+    /// reproducible model initialisation, tests, and fixtures, where a small
+    /// readable seed is a feature.
+    pub fn new_keyed(
+        input_dim: usize,
+        latent_dim: usize,
+        hidden_dims: &[usize],
+        attention_heads: usize,
+        key: &[u8; 32],
+    ) -> Self {
+        Self::from_rng(
+            input_dim,
+            latent_dim,
+            hidden_dims,
+            attention_heads,
+            StdRng::from_seed(*key),
+        )
+    }
+
+    fn from_rng(
+        input_dim: usize,
+        latent_dim: usize,
+        hidden_dims: &[usize],
+        attention_heads: usize,
+        mut rng: StdRng,
+    ) -> Self {
         let variational_encoder =
             VariationalEncoder::new(input_dim, latent_dim, hidden_dims, &mut rng);
         // Titans memory with 8 persistent memory tokens
@@ -1823,6 +1865,39 @@ impl MirasNeuralEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whole point of the keyed constructor: entropy past the first 64 bits
+    /// has to actually reach the weights. Two keys that agree on their first
+    /// eight bytes — and so would collide under any `u64` seed derived from
+    /// them — must still produce different encoders.
+    #[test]
+    fn a_keyed_encoder_uses_the_whole_key() {
+        let mut a_key = [0u8; 32];
+        let mut b_key = [0u8; 32];
+        a_key[31] = 1;
+        b_key[31] = 2;
+
+        let mut a = NeuralLatentEncoder::new_keyed(64, 32, &[64], 4, &a_key);
+        let mut b = NeuralLatentEncoder::new_keyed(64, 32, &[64], 4, &b_key);
+
+        let message = b"resolve spine://did:example/tools/search";
+        assert_ne!(
+            a.encode(message),
+            b.encode(message),
+            "keys differing only past byte 8 must not produce the same encoder"
+        );
+    }
+
+    /// Keying must still be deterministic, or two peers sharing a secret would
+    /// build different encoders and never agree on a latent.
+    #[test]
+    fn the_same_key_builds_the_same_encoder() {
+        let key = [9u8; 32];
+        let mut a = NeuralLatentEncoder::new_keyed(64, 32, &[64], 4, &key);
+        let mut b = NeuralLatentEncoder::new_keyed(64, 32, &[64], 4, &key);
+        let message = b"the same message";
+        assert_eq!(a.encode(message), b.encode(message));
+    }
 
     #[test]
     fn test_dense_layer_forward() {
