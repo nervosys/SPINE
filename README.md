@@ -1308,37 +1308,43 @@ cargo test -p spine-crypto
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
 **1,418 passed / 0 failed / 5 ignored** across all 30 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
-hidden failures. Per-crate breakdown below remains an approximation —
-exact counts shift with each addition.
+hidden failures. The per-crate breakdown below is measured rather than
+estimated — it is produced by running each crate on its own, and the
+column sums to the workspace total.
 
 
-| Crate           | Tests | Description                                              |
-| --------------- | ----- | -------------------------------------------------------- |
-| spine-agentic   | 207   | Lifecycle, sandbox, scheduler, contracts, mesh, swarm    |
-| spine-protocol  | 80    | Chameleon protocol, chaos, integration, property         |
-| spine-transport | 57    | Zero-copy I/O, BBR, connection pooling, property         |
-| spine-crypto    | 52    | RLWE, ML-KEM, Titans predictor, MIRAS, property         |
-| spine-cluster   | 37    | Load balancing, session management, Sybil resistance     |
-| spine-core      | 35    | Session orchestration, config, TLS/cert, CT logs         |
-| spine-kernel    | 35    | SIMD, allocators, atomics, ring buffers                  |
-| spine-stream    | 35    | Reactive streams, multiplexing, flow                     |
-| spine-nostd     | 30    | Fixed-point math, FNV hashing, frame codec               |
-| spine-wasm      | 30    | HLB compilation, execution, stack ops                    |
-| spine-embedded  | 24    | Agent runtime, ring buffers, routing, watchdog           |
-| spine-compiler  | 21    | HLS parsing, type checking, compilation                  |
-| spine-neural    | 19    | VAE, attention, memory variants                          |
-| spine-ffi       | 18    | C FFI null-safety, parse, compile, version               |
-| spine-cache     | 16    | LRU, tiered caching, TTL eviction                        |
-| spine-recursive | 15    | Infinite context, LLM dispatchers                        |
-| spine-cli       | 15    | Init scaffolding, config, addr/tag parsing               |
-| spine-k8s       | 13    | CRD generation, autoscaling, manifests                   |
-| spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders                  |
-| spine-agent     | 11    | SDK API, protocol types, connection handling              |
-| spine-knowledge | 9     | Episodic, semantic, collective memory                    |
-| spine-storage   | 9     | SQLite WAL, RocksDB, typed storage                       |
-| spine-parser    | 8     | HTML parsing, UR extraction, property tests              |
-| spine-gateway   | 7     | REST API gateway, health checks                          |
-| spine-human     | 2     | Human interaction patterns                               |
+| Crate           | Tests | Description                                                   |
+| --------------- | ----- | ------------------------------------------------------------- |
+| spine-agentic   | 392   | Lifecycle, sandbox, scheduler, contracts, mesh, naming, swarm |
+| spine-protocol  | 148   | Chameleon protocol, AEAD, chaos, integration, property        |
+| spine-name      | 113   | The `spine://` namespace: URIs, records, keyspace, resolution |
+| spine-transport | 85    | Zero-copy I/O, BBR, connection pooling, property              |
+| spine-crypto    | 83    | RLWE, ML-KEM, mesh handshake, Titans predictor, property      |
+| spine-gateway   | 56    | REST gateway, namespace over HTTP, auth, health checks        |
+| spine-parser    | 53    | HTML parsing, UR extraction, agent links, property tests      |
+| spine-core      | 48    | Session orchestration, config, namespace join, TLS/cert       |
+| spine-cluster   | 37    | Load balancing, session management, Sybil resistance          |
+| spine-kernel    | 36    | SIMD, allocators, atomics, ring buffers                       |
+| spine-stream    | 35    | Reactive streams, multiplexing, flow control                  |
+| spine-ffi       | 34    | C FFI null-safety, parse, compile, version                    |
+| spine-wasm      | 30    | HLB compilation, execution, stack ops                         |
+| spine-nostd     | 30    | Fixed-point math, FNV hashing, frame codec                    |
+| spine-storage   | 24    | SQLite WAL, RocksDB, typed storage                            |
+| spine-embedded  | 24    | Agent runtime, ring buffers, routing, watchdog                |
+| spine-human     | 23    | Human interaction patterns, timing, bot-detection bypass      |
+| spine-neural    | 21    | VAE, attention, keyed encoders, memory variants               |
+| spine-knowledge | 21    | Episodic, semantic, collective memory, CRDT                   |
+| spine-compiler  | 21    | HLS parsing, type checking, compilation                       |
+| spine-grpc      | 16    | gRPC service definitions and codec                            |
+| spine-cache     | 16    | LRU, tiered caching, TTL eviction                             |
+| spine-recursive | 15    | Infinite context, LLM dispatchers                             |
+| spine-cli       | 15    | Init scaffolding, config, addr/tag parsing                    |
+| spine-k8s       | 13    | CRD generation, autoscaling, manifests                        |
+| spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders                       |
+| spine-agent     | 12    | SDK API, namespace commands, connection handling              |
+| spine-mechgen   | 5     | Mechanism generation                                          |
+| spine-web       | 0     | Umbrella facade crate (re-exports only)                       |
+| spine-browser   | 0     | Cross-platform GUI browser (egui)                             |
 
 ### Benchmarks
 
