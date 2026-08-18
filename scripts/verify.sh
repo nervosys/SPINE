@@ -21,6 +21,11 @@
 #
 # Usage:  scripts/verify.sh [expected_test_total]
 # Exit:   0 green and complete, 1 otherwise.
+#
+# Do not pipe this into `tail`, `head`, or anything else without `pipefail`:
+# the pipeline reports the *last* command's status, so a failing run comes back
+# as exit 0 and the whole point of the exit code is lost. Read the output, or
+# use `set -o pipefail` in the caller.
 
 set -uo pipefail
 

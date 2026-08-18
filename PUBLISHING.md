@@ -98,11 +98,22 @@ cargo workspaces publish --from-git    # computes order, waits on the index
 ## Notes
 
 - Every internal dependency carries both a `path` (for in-repo builds) and a
-  `version = "1.0.0"` (used once on crates.io). Bump both together on release;
+  `version` matching the workspace version (which is what crates.io resolves
+  against). **The workspace is at 2.0.0.** Bump both together on release;
   `cargo workspaces version` keeps them in sync.
 - `dev-dependencies` are path-only (no version) on purpose — Cargo strips them
-  from the published manifest, and `spine-embedded` (0.1.0) must not be pinned
-  to the 1.0.0 workspace version.
+  from the published manifest, and `spine-embedded` (0.1.0) keeps its own
+  version rather than inheriting the workspace one.
+- **2.0.0 is a breaking release, and the break is on the wire rather than in
+  any signature.** A peer running the Chameleon layer from 2.0.0 cannot talk to
+  one running 1.x: the encoder's key derivation changed (Phases 47-48) and so
+  did the AEAD nonce construction (Phase 45). Cargo's semver rules do not see
+  this — no public API broke — which is precisely why it is written down here.
+  Peers must be upgraded together.
+- Publishing at 1.0.0 is no longer possible or meaningful: those versions are
+  already on crates.io and predate the entire `spine://` namespace. Finishing
+  the interrupted 1.0.0 publish run would have shipped a `spine-cli` resolving
+  its siblings from the old published crates rather than from this tree.
 - Benchmark/figure numbers in `README.md`, `LEGACY.md`, and `paper/` follow the
   "only verified numbers" standard; nothing in the published metadata asserts an
   unmeasured claim.

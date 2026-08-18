@@ -35,7 +35,7 @@ exclude = ["src/spine-python", "src/spine-js"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 authors = ["Nervosys LLC <opensource@nervosys.ai>"]
 description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, W3C tracing, and neural encoder-decoder protocols for LLM swarms"

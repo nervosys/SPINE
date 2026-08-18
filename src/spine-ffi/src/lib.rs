@@ -566,7 +566,11 @@ mod tests {
         let ptr = spine_version();
         assert!(!ptr.is_null());
         let version = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
-        assert_eq!(version, "1.0.0");
+        // Compared against the crate version rather than a literal. The literal
+        // was "1.0.0", which made a release bump look like a test failure — the
+        // test asserted what the version happened to be, not that the FFI hands
+        // back the version it was built with, which is the property worth having.
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
@@ -846,7 +850,7 @@ mod integration_tests {
                     let ptr = spine_version();
                     assert!(!ptr.is_null());
                     let v = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
-                    assert_eq!(v, "1.0.0");
+                    assert_eq!(v, env!("CARGO_PKG_VERSION"));
                 })
             })
             .collect();

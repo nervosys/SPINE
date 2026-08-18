@@ -17,8 +17,8 @@ serde = { workspace = true }
 serde_json.workspace = true
 
 # Internal dependencies - unified memory architecture
-spine-neural = { path = "../spine-neural", version = "1.0.0" }
-spine-storage = { path = "../spine-storage", version = "1.0.0" }
+spine-neural = { path = "../spine-neural", version = "2.0.0" }
+spine-storage = { path = "../spine-storage", version = "2.0.0" }
 anyhow.workspace = true
 
 # CRDTs for distributed consistency

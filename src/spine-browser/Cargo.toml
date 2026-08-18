@@ -11,12 +11,12 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
-spine-agent = { path = "../spine-agent", version = "1.0.0" }
-spine-human = { path = "../spine-human", version = "1.0.0" }
-spine-wasm = { path = "../spine-wasm", version = "1.0.0" }
-spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
-spine-cluster = { path = "../spine-cluster", version = "1.0.0" }
-spine-agentic = { path = "../spine-agentic", version = "1.0.0" }
+spine-agent = { path = "../spine-agent", version = "2.0.0" }
+spine-human = { path = "../spine-human", version = "2.0.0" }
+spine-wasm = { path = "../spine-wasm", version = "2.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.0" }
+spine-cluster = { path = "../spine-cluster", version = "2.0.0" }
+spine-agentic = { path = "../spine-agentic", version = "2.0.0" }
 eframe = "0.28"
 egui = "0.28"
 tokio = { workspace = true }

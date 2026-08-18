@@ -11,7 +11,7 @@ authors.workspace = true
 description = "Compiler for SPINE Source (HLS) to SPINE Binary (HLB)"
 
 [dependencies]
-spine-protocol = { path = "../spine-protocol", version = "1.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.0" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
