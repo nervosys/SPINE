@@ -413,69 +413,57 @@ environmental failure plausible, but that is a hypothesis and not a finding.
 
 ## Suggested next steps, in order
 
-1. ~~**Bootstrap discovery.**~~ Done — see above.
-2. ~~**Replication.**~~ Done — see above.
-3. **Get the handshake reviewed** — still outstanding, and now possible to
-   commission: `HANDSHAKE-REVIEW.md` is written for someone with no knowledge of
-   this codebase. Phase 42 fixed one defect in the construction; that it existed
-   at all is the argument for paying for the review rather than skipping it.
-4. ~~**Wire the namespace into the gateway.**~~ Done — see above, and the
-   connection pool for the backend hop landed in Phase 46. What remains there is
-   TLS termination in front of the gateway if these endpoints are exposed
-   publicly.
-5. ~~**Fix the latent-AEAD key/nonce construction.**~~ Done in Phase 45; it was
-   the most serious of the findings, and is written up in `SECURITY_AUDIT.md`.
-   `enable_chameleon_aead` derived
-   its AES-256-GCM key by HKDF with no salt and no per-session input, so the key
-   was a pure function of the shared secret and identical in every session
-   between the same pair. The nonce was a counter that restarted at zero,
-   prefixed by only 32 random bits — so two sessions collided with probability
-   ~39% after 65,536 sessions, and a collision meant repeated `(key, nonce)` under
-   AES-GCM. That leaks plaintext XOR *and* the authentication subkey, so it
-   costs forgery as well as confidentiality. Fixed by drawing the full 96-bit
-   nonce from the OS CSPRNG per message.
+Items 1-2 and 4-7 are done; each has its own phase section above, and the
+security findings are written up in `SECURITY_AUDIT.md`. They are kept here,
+struck through, so the order the work was actually taken in stays legible.
 
-   I had first recorded this as needing a wire-format change and therefore as a
-   decision to hand over. That was wrong: the receiver has always read the whole
-   nonce off the frame rather than reconstructing it from a counter, so the
-   sender's choice of those bytes was never part of the format. The error is
-   worth naming because it would have left the most serious of the four findings
-   sitting behind a decision that did not need making. The key is still a pure
-   function of the shared secret, which is worth revisiting if a handshake is
-   ever added here, but it is no longer load-bearing for nonce uniqueness.
-6. ~~**Fix the Chameleon layer's key derivation.**~~ Partly done in Phase 47:
-   the derivation now runs through HKDF-SHA-256 rather than `DefaultHasher`,
-   which also removed a latent interoperability bug — the standard library does
-   not promise `DefaultHasher`'s algorithm across Rust releases, so peers built
-   with different compilers could have disagreed about the same secret. Note it
-   is a breaking change; peers must upgrade together. Phase 48 then lifted the
-   64-bit ceiling, which was never in the derivation but in
-   `NeuralLatentEncoder::new`'s signature — `new_keyed` seeds from all 32 bytes.
-   Original writeup: — see the new finding in
-   `SECURITY_AUDIT.md`. `ChameleonKey::new` collapses the 256-bit shared secret
-   to a `u64` with `DefaultHasher` before using it, so that layer is keyed by at
-   most 64 bits, derived deterministically by a non-cryptographic hash. Where
-   `enable_chameleon_aead` is used the AES-256-GCM key is derived properly by
-   HKDF over the full secret, so this weakens defense-in-depth rather than
-   breaking confidentiality — but `enable_chameleon` alone has nothing beneath
-   it, and three shipped examples use that form. I found this while auditing for
-   siblings of the Phase 42 handshake defect and stopped at documenting it,
-   because fixing it changes a wire-visible derivation and deserves its own
-   phase.
-7. ~~**Bound the record store.**~~ Done in Phase 44 — see `SECURITY_AUDIT.md`.
-   For the record, the problem was: It has no size cap and
-   admits any signed record for any key, however far from this node's keyspace
-   position. Since a `did:` name is just a fresh Ed25519 key, an attacker can
-   mint unlimited valid names and fill every node's memory. My Phase 40 work
-   made this worse by a factor of K: a publish is now pushed to the K closest
-   nodes rather than broadcast to whoever was connected. Unlike items 5 and 6
-   this needs no wire-format change — reject keys this node is not responsible
-   for, and cap the store with furthest-first eviction — so it is the cheapest
-   of the three to take.
-8. **Find the flaky test** described at the end of Phase 43, or establish that it
-   was environmental. A test suite with one unidentified intermittent failure is
-   a suite whose green runs mean slightly less than they should.
-
+1. ~~**Bootstrap discovery.**~~ Done in Phase 39.
+2. ~~**Replication.**~~ Done in Phase 40.
+3. **Get the handshake reviewed.** Still outstanding, and the only item here
+   that cannot be done from inside this repo. `HANDSHAKE-REVIEW.md` is written
+   for someone with no knowledge of this codebase: protocol description, threat
+   model, claimed properties, concessions, and the questions worth answering.
+   Phase 42 found a real defect in the construction while that document was
+   being written, which is the argument for commissioning the review rather than
+   treating the package as a substitute for it.
+4. ~~**Wire the namespace into the gateway.**~~ Done in Phase 41, with the
+   backend connection pool following in Phase 46. What remains is TLS
+   termination in front of the gateway if these endpoints are ever exposed
+   publicly — a deployment decision, not a code change.
+5. ~~**Fix the latent-AEAD key/nonce construction.**~~ Done in Phase 45. The
+   nonce now comes whole from the OS CSPRNG. Worth knowing: I first recorded
+   this as needing a wire-format change and therefore as a decision to hand
+   over, and that was wrong — the receiver has always read the whole nonce off
+   the frame, so the sender's choice of those bytes was never part of the
+   format. The error would have left the most serious of the four findings
+   parked behind a decision nobody needed to make.
+6. ~~**Fix the Chameleon layer's key derivation.**~~ Done across Phases 47 and
+   48, because it was two problems under one description. Phase 47 replaced
+   `DefaultHasher` with HKDF-SHA-256 — and turned up a latent interoperability
+   bug on the way, since the standard library does not promise `DefaultHasher`'s
+   algorithm across Rust releases, so peers built with different compilers could
+   have disagreed about the same secret. Phase 48 then lifted the 64-bit
+   ceiling, which was never in the derivation at all but in
+   `NeuralLatentEncoder::new`'s `u64` parameter. **Together these are one
+   breaking change to the Chameleon layer: peers must upgrade together.**
+7. ~~**Bound the record store.**~~ Done in Phase 44. It now caps at
+   `DEFAULT_CAPACITY`, evicts the key furthest from this node's position, and
+   refuses announcements for keys it is not responsible for. Note for whoever
+   reads Phase 40: replication amplified this by a factor of K before it was
+   fixed, since a publish is pushed to the K closest nodes rather than broadcast
+   to whoever happened to be connected.
+8. **Find the flaky test** described at the end of Phase 43, or establish that
+   it was environmental. One workspace run reported a single failure that never
+   reproduced across ten subsequent runs; the same run reported `ignored=1`
+   where every other reports `ignored=5`, which suggests truncated output rather
+   than a genuine test failure. That is a hypothesis, not a finding. A suite
+   with one unidentified intermittent failure is a suite whose green runs mean
+   slightly less than they should.
+9. **Publish `spine-cli` to crates.io.** Never attempted in this session. The
+   old publish run hit a 429 rate limit at the last crate in the order and one
+   re-run finishes it. Left alone deliberately: publishing is irreversible —
+   versions can be yanked, never withdrawn — so it wants an explicit decision
+   rather than an inferred one.
 ---
 
 ## Housekeeping
