@@ -324,7 +324,7 @@ jobs:
 
   # ── Release ─────────────────────────────────────────────────────────────────
   release:
-    needs: [build, docker, docs]
+    needs: [build, docker, docs, version-guard]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
@@ -342,3 +342,43 @@ jobs:
             artifacts/spine-linux-x64/*.tar.gz
             artifacts/spine-windows-x64/*.zip
             artifacts/spine-macos-arm64/*.tar.gz
+
+  # ── Release version guard ───────────────────────────────────────────────────
+  # Fails a release whose tag disagrees with the workspace manifest.
+  #
+  # This is not hypothetical. Every tag from v1.0.0 through v1.9.1 shipped with
+  # Cargo.toml still reading version = "1.0.0" — thirteen releases declaring one
+  # crate version between them. Nothing objected, because nothing was looking.
+  # crates.io would have: it rejects a duplicate version, so no release after
+  # the first could have been published there at all.
+  version-guard:
+    name: Manifest version matches the tag
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare the workspace version with the release tag
+        run: |
+          set -euo pipefail
+          manifest=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          tag="${GITHUB_REF_NAME#v}"
+
+          echo "manifest: ${manifest:-<none found>}"
+          echo "tag:      $tag"
+
+          if [ -z "$manifest" ]; then
+            echo "::error::no version found under [workspace.package] in Cargo.toml"
+            exit 1
+          fi
+
+          if [ "$manifest" != "$tag" ]; then
+            echo "::error::release tag $tag does not match the manifest version $manifest."
+            echo "::error::Bump [workspace.package].version and the intra-workspace"
+            echo "::error::dependency pins together, then re-tag."
+            exit 1
+          fi
+
+          echo "OK: manifest and tag agree at $manifest"
