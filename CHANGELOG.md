@@ -6,6 +6,75 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-08-18 — The `spine://` namespace, and four cryptographic fixes
+
+The namespace work (Phases 38-48) plus the security findings that came out of
+preparing the mesh handshake for external review.
+
+**This release breaks the wire without breaking a single signature.** A 2.0.0
+peer cannot talk to a 1.x peer over the Chameleon layer. Cargo's semver rules
+cannot see this — no public API changed — which is why it is stated here and in
+`PUBLISHING.md`. Peers must be upgraded together.
+
+### Added
+
+- **`spine-name`** — the `spine://` namespace: URIs with four authority kinds
+  (`did:`, `blob:`, `cap:`, `host:`), signed records, a 256-bit Kademlia
+  keyspace, a capability index alongside the keyspace index, and a crawl
+  frontier.
+- **Federated resolution** over TCP, WebSocket and QUIC, with bootstrap from a
+  seed address (`NameHello`/`NameHelloAck`), replication to the K closest
+  nodes, and a bounded, resumable maintenance pass.
+- **The namespace over plain HTTP** — `/v1/names/{resolve,providers,publish,
+  endpoints,crawl}` on `spine-gateway`, mapping namespace outcomes onto the
+  HTTP status codes that already mean them, and reporting provenance so a
+  `host:` name's unattested address is never dressed up as a signed one.
+- **`scripts/verify.sh`** — asserts the *shape* of a workspace run (suite
+  count, ignored count, expected total, cargo's own exit status), because
+  summing "test result" lines cannot tell a passing run from a truncated one.
+
+### Security
+
+- **The mesh handshake's ephemeral ML-KEM keypair came from a counter.**
+  `StdRng::seed_from_u64` was fed a per-connection counter starting at zero, so
+  the Nth connection a node accepted always used the same keypair and forward
+  secrecy was nominal. Now drawn from the OS CSPRNG.
+- **AES-GCM nonce reuse across sessions.** The nonce was a counter restarting at
+  zero behind 32 random bits, under a key that is a pure function of the shared
+  secret — two sessions collided with probability near 39% after 65,536 of them,
+  costing both confidentiality and unforgeability. Nonces are now 96 random bits.
+- **The record store was unbounded and accepted anything signed.** Minting a
+  `did:` name costs one keygen, so verification bounded nothing. Now capped,
+  evicting the key furthest from the node's own position, and refusing
+  announcements for keys it is not responsible for.
+- **The Chameleon layer keyed itself with 64 bits** derived by `DefaultHasher`.
+  Now HKDF-SHA-256, seeding the encoder from all 32 bytes. `DefaultHasher` was
+  also unspecified across Rust releases, so peers built with different compilers
+  could have disagreed about the same secret.
+
+### Fixed
+
+- **Referrals carried no mesh identity**, so a peer learned mid-lookup could be
+  shortlisted and never addressed — multi-hop lookups did not work over any real
+  transport. The in-process test harness pre-registered every node, which is why
+  the suite passed throughout.
+- **`PublishName` never left the node**, making a record resolvable on one
+  machine and findable nowhere.
+- **Two `spine-ffi` tests asserted the version literal** rather than
+  `CARGO_PKG_VERSION`, so they failed on any release.
+
+### Notes
+
+- **The workspace manifest had said `1.0.0` since v1.0.0**, unchanged through
+  every tag to v1.9.1 — so those thirteen tagged releases all declared the same
+  crate version, and none after the first could have been published to
+  crates.io, which rejects a duplicate version. This release corrects the
+  manifest as well as bumping it.
+
+### Tests
+
+- Workspace: 1,418 passing / 0 failing / 5 ignored, across 68 suites.
+
 ## [1.9.1] — 2026-06-08 — Harden the gRPC model backend against secret leaks
 
 Release hardening for the v1.9.0 `OpenAiChatModel`, ensuring the bearer token
