@@ -452,13 +452,28 @@ struck through, so the order the work was actually taken in stays legible.
    reads Phase 40: replication amplified this by a factor of K before it was
    fixed, since a publish is pushed to the K closest nodes rather than broadcast
    to whoever happened to be connected.
-8. **Find the flaky test** described at the end of Phase 43, or establish that
-   it was environmental. One workspace run reported a single failure that never
-   reproduced across ten subsequent runs; the same run reported `ignored=1`
-   where every other reports `ignored=5`, which suggests truncated output rather
-   than a genuine test failure. That is a hypothesis, not a finding. A suite
-   with one unidentified intermittent failure is a suite whose green runs mean
-   slightly less than they should.
+8. ~~**Find the flaky test.**~~ Closed as *not a test failure*, with the
+   caveat below. Sixteen full workspace runs — ten during Phases 43-46 and six
+   consecutive runs afterwards — were identical: 68 suites, 1,418 passed, 0
+   failed. The single anomalous run reported `ignored=1` where every other run
+   reports `ignored=5`, and ignored tests do not vanish, so its output was cut
+   short rather than a test having failed. It also coincided with the disk at
+   637 MB free, the same condition that produced `LNK1318` and `LNK1180` linker
+   failures in the same period.
+
+   **The caveat:** disk is now at 377 GB free, so the suspected condition cannot
+   be recreated without deliberately filling it, which is not worth doing. This
+   is a well-supported explanation, not a confirmed diagnosis.
+
+   What came out of it matters more than the answer. Every tally I was running
+   summed `test result:` lines and looked for failures, and that cannot tell a
+   passing run from a truncated one: when a run dies early the surviving lines
+   still say `ok` and the total is merely smaller. The evidence was sitting in
+   my own output — `ignored=1` — and the check was not built to look at it.
+   `scripts/verify.sh` now asserts the shape of a run (suite count, ignored
+   count, optional expected total, cargo's own exit status) so a short run
+   announces itself instead of passing for a small green one. Use it in place
+   of an ad-hoc `grep | awk` when verifying.
 9. **Publish `spine-cli` to crates.io.** Never attempted in this session. The
    old publish run hit a 429 rate limit at the last crate in the order and one
    re-run finishes it. Left alone deliberately: publishing is irreversible —
@@ -492,10 +507,13 @@ struck through, so the order the work was actually taken in stays legible.
 ## Reproducing the verification
 
 ```bash
-cargo test --workspace                     # 1,418 passed / 0 failed / 5 ignored
-cargo clippy --workspace --all-targets     # 0 warnings
+scripts/verify.sh 1418     # tests + Clippy, and checks the run was complete
 cargo run -p spine-name --example agent_web
 ```
+
+`verify.sh` is preferred over running the two cargo commands by hand. It checks
+the same things and additionally refuses to call a truncated run green — see
+item 8 below for why that distinction cost an afternoon.
 
 The network suites bind real OS-assigned ports on `127.0.0.1`, so they need no
 fixtures and no external services, but they will contend with a firewall that
