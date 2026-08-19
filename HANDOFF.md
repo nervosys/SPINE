@@ -514,7 +514,17 @@ work is untouched on its own branch.
 - [ ] Decide separately whether `docs/ironstack-manifest` should merge. It is
       unrelated to this release and was deliberately left off `master`.
 
-**Gate:** `git ls-remote origin 'refs/tags/v2.0.1^{}'` matches `master`.
+**Gate:** `master` *contains* the tagged commit, and the tag is the release
+commit:
+
+```bash
+r=$(git ls-remote origin 'refs/tags/v2.0.1^{}' | awk '{print $1}')
+git merge-base --is-ancestor "$r" master && git log -1 --oneline "$r"
+```
+
+Not "the tag equals `master`" — that was the first wording here and it is
+wrong the moment anything lands after the release, which it did within the
+hour. A tag marks a point; a branch keeps moving.
 
 ### 2. Authenticate to crates.io — *you*
 
