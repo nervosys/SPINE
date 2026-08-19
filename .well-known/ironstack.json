@@ -1,0 +1,195 @@
+{
+  "ironstack": "1",
+  "id": "spine",
+  "product": "SPINE",
+  "layer": "communications",
+  "role": "Agentic-first web stack: communication, execution, and coordination framed around tokens, tools, capabilities, traces, and swarms.",
+  "ontology": {
+    "command": "GET /v1/agentic/capabilities",
+    "api": "spine-agentic capabilities_json()",
+    "schema": 1
+  },
+  "capabilities": [
+    {
+      "name": "GET /health",
+      "description": "Liveness. Declared unauthenticated.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /ready",
+      "description": "Readiness. Declared unauthenticated.",
+      "requires_grant": false,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /metrics",
+      "description": "Prometheus metrics.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /v1/agentic/capabilities",
+      "description": "The agentic capability document -- what this gateway offers and how to ask.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /v1/agentic/codecs",
+      "description": "Codecs the gateway can negotiate.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /v1/names/providers",
+      "description": "Name providers the gateway knows.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /v1/names/endpoints",
+      "description": "Endpoints registered under a name.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /api/sessions",
+      "description": "Create a browsing session. Holds a live browser context until deleted.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "DELETE /api/sessions/{id}",
+      "description": "Destroy a session and release its context.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /api/sessions/{id}/navigate",
+      "description": "Drive a session to a URL. Fetches whatever the caller names.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /api/sessions/{id}/ur",
+      "description": "The session's structured page representation.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /api/sessions/{id}/html",
+      "description": "The session's raw HTML.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /api/sessions/{id}/search",
+      "description": "Search within the session's page.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /api/sessions/{id}/ping",
+      "description": "Session keepalive.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /api/sessions/{id}/execute",
+      "description": "Execute script in the session -- arbitrary code in a live browser context.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /api/parse",
+      "description": "Parse a document the caller supplies.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /api/compile",
+      "description": "Compile a document the caller supplies.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /v1/embeddings",
+      "description": "Embed the supplied input. Cost scales with the text sent.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "POST /v1/names/publish",
+      "description": "Publish a name to the registry.",
+      "requires_grant": true,
+      "budgeted": false,
+      "surfaces": [
+        "rest"
+      ]
+    },
+    {
+      "name": "GET /v1/names/crawl",
+      "description": "Crawl registered endpoints. Reaches out across the network.",
+      "requires_grant": true,
+      "budgeted": true,
+      "surfaces": [
+        "rest"
+      ]
+    }
+  ],
+  "note": "requires_grant is derived from the gateway's own auth middleware, which is a total rule rather than a per-route annotation: is_unauthenticated_path admits only /health, /ready and the documentation paths, and every other route is refused without a bearer token. So the field carries little information here -- eighteen of twenty routes require a grant because SPINE authenticates by default. That is the correct reading of its design, not a gap in this manifest. SPINE has no scopes. A token that can read a session can also execute script in it, and requires_grant cannot express a distinction the gateway does not draw. If per-route scopes are ever added, this file gains real signal; until then the honest summary is authenticated or not. budgeted is judged here and marks the routes whose cost is set by what the caller sends or asks the gateway to reach: embeddings scales with the submitted text, parse and compile with the submitted document, navigate and crawl fetch whatever the caller names, session creation holds a live browser context, and execute runs arbitrary script in one. /metrics is left ungranted-and-unbudgeted as declared, though it is worth noting it is authenticated while conventionally it is the endpoint operators scrape."
+}
