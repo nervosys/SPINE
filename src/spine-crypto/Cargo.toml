@@ -12,7 +12,7 @@ authors.workspace = true
 description = "Advanced cryptographic primitives for SPINE including transformer prediction and post-quantum key evolution"
 
 [dependencies]
-spine-neural = { path = "../spine-neural", version = "2.0.0" }
+spine-neural = { path = "../spine-neural", version = "2.0.1" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

@@ -13,7 +13,7 @@ description = "Distributed agent coordination for SPINE"
 
 [dependencies]
 tracing = { workspace = true }
-spine-protocol = { path = "../spine-protocol", version = "2.0.0" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.1" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
