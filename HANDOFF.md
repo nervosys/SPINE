@@ -487,6 +487,83 @@ struck through, so the order the work was actually taken in stays legible.
    rather than an inferred one.
 ---
 
+## Completing the 2.0.1 release
+
+Where it stands: `master` is at `3f62981`, tree clean, version 2.0.1, 1,418
+tests green. Everything that can be done inside the repo is done. What is left
+needs a credential or a person, and is ordered so that each step is checkable
+before the next becomes irreversible.
+
+**A note on order.** Step 3 is the only irreversible one. Steps 1-2 exist to
+make sure that what goes to crates.io is exactly what the tag says, because
+after step 3 a mistake can only be yanked, never withdrawn.
+
+### 1. Settle the refs — *you, then verify*
+
+The branch moved mid-session: `docs/ironstack-manifest` was created and
+committed to while the release was being prepared, and the release commit
+initially landed there. It has been cherry-picked onto `master`; the ironstack
+work is untouched on its own branch.
+
+- [ ] Confirm no other session is moving refs in this repo
+- [ ] `git push origin master` — one commit
+- [ ] `git push --force origin v2.0.1` — the remote tag still points at
+      `d99527c`, the copy that went up from the ironstack branch. Force is
+      needed and is cheap now; it stops being cheap once anything is published
+      against the tag.
+- [ ] Decide separately whether `docs/ironstack-manifest` should merge. It is
+      unrelated to this release and was deliberately left off `master`.
+
+**Gate:** `git ls-remote origin 'refs/tags/v2.0.1^{}'` matches `master`.
+
+### 2. Authenticate to crates.io — *you*
+
+Both stored credentials return 403. Do this in your own terminal, not through
+an agent session: a publish-scoped token pasted into a transcript is a live
+credential in a log.
+
+- [ ] Generate a token at crates.io/settings/tokens with **publish-new** and
+      **publish-update** scopes
+- [ ] `cargo login`
+- [ ] Check `CARGO_REGISTRY_TOKEN` in your environment — it **overrides**
+      `credentials.toml`, so a stale value there makes `cargo login` appear to
+      work while publishing still 403s. Unset it or update it to match.
+
+**Gate:** `scripts/publish.sh --dry-run` reaches the summary without an
+`AUTH FAILED` line.
+
+### 3. Publish — *either of us*
+
+- [ ] `scripts/publish.sh`
+
+The script computes its order from the dependency graph, skips crates already
+published, resumes after a rate limit, and stops on the first real error rather
+than leaving a half-published set. Expect it to pause: crates.io rate-limits
+new crates, and 29 is well past the threshold. Re-running is the intended
+response, not a workaround.
+
+**Gate:** the run reports `n/29` with no `ERROR` line. Spot-check two crate
+pages for the README and the correct version.
+
+### 4. Commission the handshake review — *you*
+
+- [ ] Send `HANDSHAKE-REVIEW.md` to a cryptographer
+
+It is written for someone who has never seen this codebase: threat model,
+message flow, key schedule, claimed properties, the concessions, and the
+specific questions worth answering. The argument for paying for it is that
+writing it turned up a real defect, and three more followed.
+
+### Not blocking, worth doing
+
+- [ ] Cut a GitHub Release from `v2.0.1` if you want binaries built and
+      uploaded — CI fires on `release: [created]`, not on a tag push, and the
+      `version-guard` job runs first.
+- [ ] Item 8 above: the unreproduced test failure, closed as environmental on
+      sixteen clean runs but never positively diagnosed.
+
+---
+
 ## Housekeeping
 
 - **Phases 38-40 are committed on `phase-38-namespace`**, which is not merged into
