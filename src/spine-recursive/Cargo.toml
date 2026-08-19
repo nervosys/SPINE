@@ -5,6 +5,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
+readme = "README.md"
 edition.workspace = true
 authors.workspace = true
 description = "Recursive Language Model (RLM) support for infinite context processing"

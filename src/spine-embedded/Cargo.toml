@@ -5,6 +5,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version = "0.1.0"
+readme = "README.md"
 edition.workspace = true
 license.workspace = true
 description = "Minimal agent runtime for embedded/IoT targets (ARM Cortex-M, ESP32, RISC-V)"

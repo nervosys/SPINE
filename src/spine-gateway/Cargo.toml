@@ -5,6 +5,7 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
+readme = "README.md"
 edition.workspace = true
 authors.workspace = true
 description = "OpenAPI REST gateway for SPINE — exposes agentic web APIs to non-Rust clients"

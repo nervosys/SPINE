@@ -12,6 +12,9 @@
 # So this script is tracked, path-independent, and derives what it publishes
 # from `cargo metadata`. A crate added to the workspace cannot be forgotten.
 #
+# Requires a clean working tree: cargo refuses to publish uncommitted changes,
+# so that you cannot ship code that is not in the repository. Commit first.
+#
 # Usage:   scripts/publish.sh [--dry-run]
 # Resume:  just re-run it; already-published crates are skipped.
 # Exit:    0 done, 1 error, 2 stopped by a rate limit (re-run later).
