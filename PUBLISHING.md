@@ -88,12 +88,26 @@ for c in spine-nostd spine-kernel spine-gpu spine-cache spine-k8s \
 done
 ```
 
-Or automate the ordering and wait-for-index with a helper:
+Or use the in-repo helper, which is what the ordering above is for:
 
 ```bash
-cargo install cargo-workspaces
-cargo workspaces publish --from-git    # computes order, waits on the index
+scripts/publish.sh --dry-run    # verify packaging without uploading
+scripts/publish.sh              # publish; re-run to resume
 ```
+
+It **computes** the order from `cargo metadata` rather than reading the list
+above, so the two cannot disagree. That matters: the previous helper kept a
+hand-written order, was gitignored because it hardcoded an absolute path, and
+had silently dropped `spine-name` — which `spine-parser` depends on. A run would
+have failed at the seventh crate, after six were permanently on crates.io. The
+list in this document was correct the whole time; nothing compared them.
+
+The script skips already-published crates, stops cleanly on a rate limit so it
+can be resumed, and stops on a 403 with the fix spelled out — an expired or
+read-only token is the usual cause.
+
+`cargo workspaces publish --from-git` is a reasonable third-party alternative if
+you would rather not maintain a script at all.
 
 ## Notes
 
