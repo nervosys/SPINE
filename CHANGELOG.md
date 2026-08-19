@@ -65,6 +65,13 @@ cannot see this — no public API changed — which is why it is stated here and
 
 ### Notes
 
+- **`spine-embedded` moves to 0.2.0.** It versions independently of the
+  workspace, and its published 0.1.0 had drifted from the repo's: 0.1.0 went to
+  crates.io when the crate was much smaller, after which it gained code and
+  moved its `spine-nostd` dependency to a new major. A published version is
+  immutable, so the two could only be reconciled by a new version. The publish
+  script had been skipping it as "already published", which hid the divergence
+  rather than causing it.
 - **The workspace manifest had said `1.0.0` since v1.0.0**, unchanged through
   every tag to v1.9.1 — so those thirteen tagged releases all declared the same
   crate version, and none after the first could have been published to

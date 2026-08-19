@@ -1,6 +1,6 @@
 # Publishing SPINE to crates.io
 
-This workspace is **28 interdependent crates**. crates.io has no atomic
+This workspace publishes **29 interdependent crates**, four of which also ship a binary (spine-core, spine-cli, spine-gateway, spine-browser). crates.io has no atomic
 multi-crate publish, so they must go up **in dependency order** (a crate can
 only be published after every crate it depends on is already on the registry).
 
@@ -20,7 +20,7 @@ SPDX `license` field, so the crate page will show AGPL-3.0-or-later only.
 
 ## What is published
 
-- **27 library crates** are publishable, including the umbrella facade
+- **25 library-only crates** are publishable, including the umbrella facade
   **`spine-web`** (re-exports the component crates behind feature flags; it is
   the recommended front door for new users).
 - **`spine-ffi`** is marked `publish = false` (C `cdylib`/`staticlib`, consumed
@@ -116,8 +116,14 @@ you would rather not maintain a script at all.
   against). **The workspace is at 2.0.0.** Bump both together on release;
   `cargo workspaces version` keeps them in sync.
 - `dev-dependencies` are path-only (no version) on purpose — Cargo strips them
-  from the published manifest, and `spine-embedded` (0.1.0) keeps its own
-  version rather than inheriting the workspace one.
+  from the published manifest.
+- `spine-embedded` keeps its own version rather than inheriting the workspace
+  one, and is at **0.2.0**. It was bumped from 0.1.0 because the repo and the
+  registry had diverged under a single version number: 0.1.0 was published when
+  the crate was much smaller, then gained code and moved its `spine-nostd`
+  dependency to a new major. A published version is immutable, so the fix is a
+  new version rather than a re-publish — and a crate that is versioned
+  independently still has to be *versioned*, not merely left alone.
 - **2.0.0 is a breaking release, and the break is on the wire rather than in
   any signature.** A peer running the Chameleon layer from 2.0.0 cannot talk to
   one running 1.x: the encoder's key derivation changed (Phases 47-48) and so
