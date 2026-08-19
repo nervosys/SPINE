@@ -113,7 +113,7 @@ you would rather not maintain a script at all.
 
 - Every internal dependency carries both a `path` (for in-repo builds) and a
   `version` matching the workspace version (which is what crates.io resolves
-  against). **The workspace is at 2.0.0.** Bump both together on release;
+  against). **The workspace is at 2.0.1.** Bump both together on release;
   `cargo workspaces version` keeps them in sync.
 - `dev-dependencies` are path-only (no version) on purpose — Cargo strips them
   from the published manifest.

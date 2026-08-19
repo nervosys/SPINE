@@ -25,18 +25,18 @@ ed25519-dalek.workspace = true
 zeroize = { version = "1.8", features = ["derive"] }
 
 # Internal dependencies
-spine-neural = { path = "../spine-neural", version = "2.0.0" }
-spine-crypto = { path = "../spine-crypto", version = "2.0.0" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.0" }
-spine-compiler = { path = "../spine-compiler", version = "2.0.0" }
-spine-knowledge = { path = "../spine-knowledge", version = "2.0.0" }
-spine-name = { path = "../spine-name", version = "2.0.0" }
-spine-transport = { path = "../spine-transport", version = "2.0.0" }
+spine-neural = { path = "../spine-neural", version = "2.0.1" }
+spine-crypto = { path = "../spine-crypto", version = "2.0.1" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.1" }
+spine-compiler = { path = "../spine-compiler", version = "2.0.1" }
+spine-knowledge = { path = "../spine-knowledge", version = "2.0.1" }
+spine-name = { path = "../spine-name", version = "2.0.1" }
+spine-transport = { path = "../spine-transport", version = "2.0.1" }
 # Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
 # Default-on so the runtime executes out of the box; disable default-features to
 # drop the wasmtime dependency (Action::Execute then returns an honest error,
 # never a fake success).
-spine-wasm = { path = "../spine-wasm", version = "2.0.0", optional = true }
+spine-wasm = { path = "../spine-wasm", version = "2.0.1", optional = true }
 
 # Agent-specific
 uuid = { version = "1", features = ["v4", "serde"] }

@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-08-19 — The release that ships
+
+Same code as 2.0.0 plus the packaging it needed. 2.0.0 was tagged before the
+crates were actually ready to publish, and a published version is immutable —
+so rather than move a tag that was already pushed, this is a new patch release
+whose tag points at what is genuinely being published.
+
+### Added
+
+- A `README.md` for each of the 29 publishable crates. Every crate but one had
+  none, so each would have arrived on crates.io showing a single line of
+  description. Generated from each crate's own metadata rather than by pointing
+  all of them at the 78 KiB workspace README, which cargo copies wholesale into
+  every package.
+- `scripts/publish.sh`, which computes the publish order from `cargo metadata`
+  instead of maintaining it by hand. The previous helper was gitignored, kept a
+  hand-written list, and had silently dropped `spine-name` — which three crates
+  depend on, so a run would have failed partway with earlier crates already
+  permanently published.
+
+### Changed
+
+- `spine-embedded` moves to 0.2.0, reconciling a repo/registry divergence under
+  a single version number; see the 2.0.0 notes below.
+- `PUBLISHING.md` corrected: 29 publishable crates, four of which ship a
+  binary. It had claimed 28 and 27.
+
+### Notes
+
+- Nothing was published from 2.0.0. It exists as a tag only.
+
+
 ## [2.0.0] — 2026-08-18 — The `spine://` namespace, and four cryptographic fixes
 
 The namespace work (Phases 38-48) plus the security findings that came out of

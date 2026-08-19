@@ -11,7 +11,7 @@ license.workspace = true
 description = "Minimal agent runtime for embedded/IoT targets (ARM Cortex-M, ESP32, RISC-V)"
 
 [dependencies]
-spine-nostd = { path = "../spine-nostd", version = "2.0.0" }
+spine-nostd = { path = "../spine-nostd", version = "2.0.1" }
 
 [features]
 default = []

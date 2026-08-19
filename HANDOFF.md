@@ -1,6 +1,6 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete, verified, merged, and released as **2.0.0**. 1,418 tests
+**Status:** complete, verified, merged, and released as **2.0.1**. 1,418 tests
 passing, 0 failures, 0 Clippy warnings, across 68 suites. `master` and
 `origin/master` agree; `phase-38-namespace` was fast-forwarded in and can be
 deleted.

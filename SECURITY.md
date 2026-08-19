@@ -4,7 +4,7 @@
 
 | Version | Status        | Receives security fixes |
 |---------|---------------|-------------------------|
-| 2.0.x   | Current       | Yes                     |
+| 2.0.x   | Current       | Yes (2.0.1 is the published release) |
 | 1.9.x   | Previous      | Yes (critical only)     |
 | < 1.9   | EOL           | No (please upgrade)     |
 

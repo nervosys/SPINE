@@ -12,7 +12,7 @@ authors.workspace = true
 description = "Unified representation parser for SPINE"
 
 [dependencies]
-spine-name = { path = "../spine-name", version = "2.0.0" }
+spine-name = { path = "../spine-name", version = "2.0.1" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
