@@ -1399,10 +1399,7 @@ mod tests {
             .unwrap();
 
         for (g, h) in c_gpu.iter().zip(c_cpu.iter()) {
-            assert!(
-                (g - h).abs() < 1e-3,
-                "GPU/CPU GEMM mismatch: {g} vs {h}"
-            );
+            assert!((g - h).abs() < 1e-3, "GPU/CPU GEMM mismatch: {g} vs {h}");
         }
     }
 

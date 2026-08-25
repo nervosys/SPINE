@@ -24,13 +24,13 @@ use spine_transport::websocket::{
     WebSocketBridge, WebSocketClientStream, WebSocketServerBridge, WebSocketStream,
 };
 
+use crate::mesh::MeshEnvelope;
 use crate::mesh_tcp::{
     attach, attach_secure, client_handshake, server_handshake, Inbound, ReplyPath, Security,
     INBOUND_QUEUE,
 };
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
 use crate::AgentId;
-use crate::mesh::MeshEnvelope;
 
 use async_trait::async_trait;
 

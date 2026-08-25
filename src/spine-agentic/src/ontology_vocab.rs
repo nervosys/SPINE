@@ -38,8 +38,7 @@ fn cap_desc(path: &str, label: &str, desc: &str) -> OntologyTerm {
 }
 
 fn cap_child(path: &str, label: &str, parent_path: &str) -> OntologyTerm {
-    term(&format!("spine:cap/{path}"), label)
-        .with_parent(format!("spine:cap/{parent_path}"))
+    term(&format!("spine:cap/{path}"), label).with_parent(format!("spine:cap/{parent_path}"))
 }
 
 fn cap_child_desc(path: &str, label: &str, parent_path: &str, desc: &str) -> OntologyTerm {
@@ -66,37 +65,73 @@ fn proto(name: &str, label: &str, desc: &str) -> OntologyTerm {
 fn web_capabilities() -> Vec<OntologyTerm> {
     vec![
         // Root
-        cap_desc("web", "Web Interaction", "Interact with web content and services"),
+        cap_desc(
+            "web",
+            "Web Interaction",
+            "Interact with web content and services",
+        ),
         // Navigation
-        cap_child_desc("web/navigate", "Web Navigation", "web",
-            "Navigate to URLs, follow links, handle redirects"),
+        cap_child_desc(
+            "web/navigate",
+            "Web Navigation",
+            "web",
+            "Navigate to URLs, follow links, handle redirects",
+        ),
         cap_child("web/navigate/single-page", "SPA Navigation", "web/navigate"),
-        cap_child("web/navigate/multi-tab", "Multi-Tab Navigation", "web/navigate"),
-        cap_child("web/navigate/headless", "Headless Navigation", "web/navigate"),
+        cap_child(
+            "web/navigate/multi-tab",
+            "Multi-Tab Navigation",
+            "web/navigate",
+        ),
+        cap_child(
+            "web/navigate/headless",
+            "Headless Navigation",
+            "web/navigate",
+        ),
         // Scraping
-        cap_child_desc("web/scraping", "Web Scraping", "web",
-            "Extract structured data from web pages"),
+        cap_child_desc(
+            "web/scraping",
+            "Web Scraping",
+            "web",
+            "Extract structured data from web pages",
+        ),
         cap_child("web/scraping/html", "HTML Scraping", "web/scraping"),
         cap_child("web/scraping/json-ld", "JSON-LD Extraction", "web/scraping"),
-        cap_child("web/scraping/microdata", "Microdata Extraction", "web/scraping"),
+        cap_child(
+            "web/scraping/microdata",
+            "Microdata Extraction",
+            "web/scraping",
+        ),
         cap_child("web/scraping/rss", "RSS/Atom Feed Parsing", "web/scraping"),
         cap_child("web/scraping/table", "Table Extraction", "web/scraping"),
         // API interaction
-        cap_child_desc("web/api", "API Interaction", "web",
-            "Call REST, GraphQL, gRPC, and WebSocket APIs"),
+        cap_child_desc(
+            "web/api",
+            "API Interaction",
+            "web",
+            "Call REST, GraphQL, gRPC, and WebSocket APIs",
+        ),
         cap_child("web/api/rest", "REST API", "web/api"),
         cap_child("web/api/graphql", "GraphQL API", "web/api"),
         cap_child("web/api/grpc", "gRPC API", "web/api"),
         cap_child("web/api/websocket", "WebSocket API", "web/api"),
         // Forms
-        cap_child_desc("web/forms", "Form Interaction", "web",
-            "Fill, submit, and validate web forms"),
+        cap_child_desc(
+            "web/forms",
+            "Form Interaction",
+            "web",
+            "Fill, submit, and validate web forms",
+        ),
         cap_child("web/forms/login", "Login Forms", "web/forms"),
         cap_child("web/forms/search", "Search Forms", "web/forms"),
         cap_child("web/forms/checkout", "Checkout Forms", "web/forms"),
         // Authentication
-        cap_child_desc("web/auth", "Web Authentication", "web",
-            "Handle web authentication flows"),
+        cap_child_desc(
+            "web/auth",
+            "Web Authentication",
+            "web",
+            "Handle web authentication flows",
+        ),
         cap_child("web/auth/oauth2", "OAuth 2.0", "web/auth"),
         cap_child("web/auth/cookies", "Cookie Management", "web/auth"),
         cap_child("web/auth/jwt", "JWT Tokens", "web/auth"),
@@ -106,49 +141,136 @@ fn web_capabilities() -> Vec<OntologyTerm> {
 /// Natural language processing capabilities.
 fn nlp_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("nlp", "Natural Language Processing",
-            "Process, understand, and generate natural language"),
-        cap_child_desc("nlp/extraction", "Information Extraction", "nlp",
-            "Extract entities, relations, and facts from text"),
-        cap_child("nlp/extraction/ner", "Named Entity Recognition", "nlp/extraction"),
-        cap_child("nlp/extraction/relation", "Relation Extraction", "nlp/extraction"),
-        cap_child("nlp/extraction/keyword", "Keyword Extraction", "nlp/extraction"),
+        cap_desc(
+            "nlp",
+            "Natural Language Processing",
+            "Process, understand, and generate natural language",
+        ),
+        cap_child_desc(
+            "nlp/extraction",
+            "Information Extraction",
+            "nlp",
+            "Extract entities, relations, and facts from text",
+        ),
+        cap_child(
+            "nlp/extraction/ner",
+            "Named Entity Recognition",
+            "nlp/extraction",
+        ),
+        cap_child(
+            "nlp/extraction/relation",
+            "Relation Extraction",
+            "nlp/extraction",
+        ),
+        cap_child(
+            "nlp/extraction/keyword",
+            "Keyword Extraction",
+            "nlp/extraction",
+        ),
         cap_child("nlp/extraction/topic", "Topic Extraction", "nlp/extraction"),
-        cap_child_desc("nlp/generation", "Text Generation", "nlp",
-            "Generate coherent text from prompts or context"),
+        cap_child_desc(
+            "nlp/generation",
+            "Text Generation",
+            "nlp",
+            "Generate coherent text from prompts or context",
+        ),
         cap_child("nlp/generation/summary", "Summarization", "nlp/generation"),
-        cap_child("nlp/generation/translation", "Translation", "nlp/generation"),
-        cap_child("nlp/generation/paraphrase", "Paraphrasing", "nlp/generation"),
+        cap_child(
+            "nlp/generation/translation",
+            "Translation",
+            "nlp/generation",
+        ),
+        cap_child(
+            "nlp/generation/paraphrase",
+            "Paraphrasing",
+            "nlp/generation",
+        ),
         cap_child("nlp/generation/code", "Code Generation", "nlp/generation"),
-        cap_child_desc("nlp/understanding", "Language Understanding", "nlp",
-            "Understand intent, sentiment, and meaning"),
-        cap_child("nlp/understanding/sentiment", "Sentiment Analysis", "nlp/understanding"),
-        cap_child("nlp/understanding/intent", "Intent Classification", "nlp/understanding"),
-        cap_child("nlp/understanding/qa", "Question Answering", "nlp/understanding"),
-        cap_child("nlp/understanding/entailment", "Textual Entailment", "nlp/understanding"),
-        cap_child_desc("nlp/embedding", "Text Embedding", "nlp",
-            "Produce dense vector representations of text"),
+        cap_child_desc(
+            "nlp/understanding",
+            "Language Understanding",
+            "nlp",
+            "Understand intent, sentiment, and meaning",
+        ),
+        cap_child(
+            "nlp/understanding/sentiment",
+            "Sentiment Analysis",
+            "nlp/understanding",
+        ),
+        cap_child(
+            "nlp/understanding/intent",
+            "Intent Classification",
+            "nlp/understanding",
+        ),
+        cap_child(
+            "nlp/understanding/qa",
+            "Question Answering",
+            "nlp/understanding",
+        ),
+        cap_child(
+            "nlp/understanding/entailment",
+            "Textual Entailment",
+            "nlp/understanding",
+        ),
+        cap_child_desc(
+            "nlp/embedding",
+            "Text Embedding",
+            "nlp",
+            "Produce dense vector representations of text",
+        ),
     ]
 }
 
 /// Data processing and analysis capabilities.
 fn data_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("data", "Data Processing", "Transform, analyze, and manage data"),
-        cap_child_desc("data/transform", "Data Transformation", "data",
-            "Convert, clean, and reshape data"),
-        cap_child("data/transform/json", "JSON Transformation", "data/transform"),
+        cap_desc(
+            "data",
+            "Data Processing",
+            "Transform, analyze, and manage data",
+        ),
+        cap_child_desc(
+            "data/transform",
+            "Data Transformation",
+            "data",
+            "Convert, clean, and reshape data",
+        ),
+        cap_child(
+            "data/transform/json",
+            "JSON Transformation",
+            "data/transform",
+        ),
         cap_child("data/transform/csv", "CSV Processing", "data/transform"),
         cap_child("data/transform/xml", "XML Processing", "data/transform"),
         cap_child("data/transform/etl", "ETL Pipeline", "data/transform"),
-        cap_child_desc("data/analysis", "Data Analysis", "data",
-            "Statistical analysis and pattern recognition"),
-        cap_child("data/analysis/statistical", "Statistical Analysis", "data/analysis"),
-        cap_child("data/analysis/timeseries", "Time Series Analysis", "data/analysis"),
-        cap_child("data/analysis/anomaly", "Anomaly Detection", "data/analysis"),
+        cap_child_desc(
+            "data/analysis",
+            "Data Analysis",
+            "data",
+            "Statistical analysis and pattern recognition",
+        ),
+        cap_child(
+            "data/analysis/statistical",
+            "Statistical Analysis",
+            "data/analysis",
+        ),
+        cap_child(
+            "data/analysis/timeseries",
+            "Time Series Analysis",
+            "data/analysis",
+        ),
+        cap_child(
+            "data/analysis/anomaly",
+            "Anomaly Detection",
+            "data/analysis",
+        ),
         cap_child("data/analysis/clustering", "Clustering", "data/analysis"),
-        cap_child_desc("data/storage", "Data Storage", "data",
-            "Persistent storage and retrieval"),
+        cap_child_desc(
+            "data/storage",
+            "Data Storage",
+            "data",
+            "Persistent storage and retrieval",
+        ),
         cap_child("data/storage/kv", "Key-Value Store", "data/storage"),
         cap_child("data/storage/document", "Document Store", "data/storage"),
         cap_child("data/storage/graph", "Graph Database", "data/storage"),
@@ -160,129 +282,371 @@ fn data_capabilities() -> Vec<OntologyTerm> {
 /// Code execution and computation capabilities.
 fn compute_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("compute", "Computation", "Execute code, run models, perform calculations"),
-        cap_child_desc("compute/code", "Code Execution", "compute",
-            "Execute code in various languages"),
+        cap_desc(
+            "compute",
+            "Computation",
+            "Execute code, run models, perform calculations",
+        ),
+        cap_child_desc(
+            "compute/code",
+            "Code Execution",
+            "compute",
+            "Execute code in various languages",
+        ),
         cap_child("compute/code/rust", "Rust Execution", "compute/code"),
         cap_child("compute/code/python", "Python Execution", "compute/code"),
         cap_child("compute/code/wasm", "WASM Execution", "compute/code"),
-        cap_child("compute/code/javascript", "JavaScript Execution", "compute/code"),
+        cap_child(
+            "compute/code/javascript",
+            "JavaScript Execution",
+            "compute/code",
+        ),
         cap_child("compute/code/shell", "Shell Execution", "compute/code"),
-        cap_child_desc("compute/ml", "Machine Learning", "compute",
-            "Train and run machine learning models"),
+        cap_child_desc(
+            "compute/ml",
+            "Machine Learning",
+            "compute",
+            "Train and run machine learning models",
+        ),
         cap_child("compute/ml/inference", "Model Inference", "compute/ml"),
         cap_child("compute/ml/training", "Model Training", "compute/ml"),
         cap_child("compute/ml/fine-tuning", "Fine-Tuning", "compute/ml"),
         cap_child("compute/ml/embedding", "Embedding Generation", "compute/ml"),
-        cap_child_desc("compute/math", "Mathematical Computation", "compute",
-            "Symbolic and numerical mathematics"),
+        cap_child_desc(
+            "compute/math",
+            "Mathematical Computation",
+            "compute",
+            "Symbolic and numerical mathematics",
+        ),
         cap_child("compute/math/symbolic", "Symbolic Math", "compute/math"),
-        cap_child("compute/math/numerical", "Numerical Computation", "compute/math"),
+        cap_child(
+            "compute/math/numerical",
+            "Numerical Computation",
+            "compute/math",
+        ),
         cap_child("compute/math/optimization", "Optimization", "compute/math"),
-        cap_child("compute/math/linear-algebra", "Linear Algebra", "compute/math"),
+        cap_child(
+            "compute/math/linear-algebra",
+            "Linear Algebra",
+            "compute/math",
+        ),
     ]
 }
 
 /// Security and cryptography capabilities.
 fn security_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("security", "Security", "Cryptography, authentication, and threat detection"),
-        cap_child_desc("security/crypto", "Cryptography", "security",
-            "Encryption, signatures, and key management"),
-        cap_child("security/crypto/symmetric", "Symmetric Encryption", "security/crypto"),
-        cap_child("security/crypto/asymmetric", "Asymmetric Encryption", "security/crypto"),
-        cap_child("security/crypto/post-quantum", "Post-Quantum Cryptography", "security/crypto"),
-        cap_child("security/crypto/signing", "Digital Signatures", "security/crypto"),
-        cap_child("security/crypto/key-exchange", "Key Exchange", "security/crypto"),
-        cap_child("security/crypto/hashing", "Cryptographic Hashing", "security/crypto"),
-        cap_child_desc("security/auth", "Authentication", "security",
-            "Identity verification and access control"),
+        cap_desc(
+            "security",
+            "Security",
+            "Cryptography, authentication, and threat detection",
+        ),
+        cap_child_desc(
+            "security/crypto",
+            "Cryptography",
+            "security",
+            "Encryption, signatures, and key management",
+        ),
+        cap_child(
+            "security/crypto/symmetric",
+            "Symmetric Encryption",
+            "security/crypto",
+        ),
+        cap_child(
+            "security/crypto/asymmetric",
+            "Asymmetric Encryption",
+            "security/crypto",
+        ),
+        cap_child(
+            "security/crypto/post-quantum",
+            "Post-Quantum Cryptography",
+            "security/crypto",
+        ),
+        cap_child(
+            "security/crypto/signing",
+            "Digital Signatures",
+            "security/crypto",
+        ),
+        cap_child(
+            "security/crypto/key-exchange",
+            "Key Exchange",
+            "security/crypto",
+        ),
+        cap_child(
+            "security/crypto/hashing",
+            "Cryptographic Hashing",
+            "security/crypto",
+        ),
+        cap_child_desc(
+            "security/auth",
+            "Authentication",
+            "security",
+            "Identity verification and access control",
+        ),
         cap_child("security/auth/x509", "X.509 Certificates", "security/auth"),
-        cap_child("security/auth/did", "Decentralized Identity", "security/auth"),
+        cap_child(
+            "security/auth/did",
+            "Decentralized Identity",
+            "security/auth",
+        ),
         cap_child("security/auth/mtls", "Mutual TLS", "security/auth"),
-        cap_child_desc("security/threat", "Threat Detection", "security",
-            "Identify security threats and vulnerabilities"),
-        cap_child("security/threat/malware", "Malware Analysis", "security/threat"),
-        cap_child("security/threat/intrusion", "Intrusion Detection", "security/threat"),
-        cap_child("security/threat/vuln-scan", "Vulnerability Scanning", "security/threat"),
+        cap_child_desc(
+            "security/threat",
+            "Threat Detection",
+            "security",
+            "Identify security threats and vulnerabilities",
+        ),
+        cap_child(
+            "security/threat/malware",
+            "Malware Analysis",
+            "security/threat",
+        ),
+        cap_child(
+            "security/threat/intrusion",
+            "Intrusion Detection",
+            "security/threat",
+        ),
+        cap_child(
+            "security/threat/vuln-scan",
+            "Vulnerability Scanning",
+            "security/threat",
+        ),
     ]
 }
 
 /// Communication and coordination capabilities.
 fn communication_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("comm", "Communication", "Agent-to-agent and agent-to-human communication"),
-        cap_child_desc("comm/messaging", "Messaging", "comm",
-            "Send and receive structured messages"),
-        cap_child("comm/messaging/request-reply", "Request-Reply", "comm/messaging"),
-        cap_child("comm/messaging/pubsub", "Publish-Subscribe", "comm/messaging"),
+        cap_desc(
+            "comm",
+            "Communication",
+            "Agent-to-agent and agent-to-human communication",
+        ),
+        cap_child_desc(
+            "comm/messaging",
+            "Messaging",
+            "comm",
+            "Send and receive structured messages",
+        ),
+        cap_child(
+            "comm/messaging/request-reply",
+            "Request-Reply",
+            "comm/messaging",
+        ),
+        cap_child(
+            "comm/messaging/pubsub",
+            "Publish-Subscribe",
+            "comm/messaging",
+        ),
         cap_child("comm/messaging/broadcast", "Broadcast", "comm/messaging"),
-        cap_child("comm/messaging/streaming", "Streaming Messages", "comm/messaging"),
-        cap_child_desc("comm/negotiation", "Negotiation", "comm",
-            "Multi-party negotiation and agreement"),
-        cap_child("comm/negotiation/auction", "Auction Protocol", "comm/negotiation"),
-        cap_child("comm/negotiation/contract", "Contract Negotiation", "comm/negotiation"),
-        cap_child("comm/negotiation/consensus", "Consensus Building", "comm/negotiation"),
-        cap_child_desc("comm/coordination", "Coordination", "comm",
-            "Synchronize actions across multiple agents"),
-        cap_child("comm/coordination/task-delegation", "Task Delegation", "comm/coordination"),
-        cap_child("comm/coordination/leader-election", "Leader Election", "comm/coordination"),
-        cap_child("comm/coordination/barrier-sync", "Barrier Synchronization", "comm/coordination"),
-        cap_child("comm/coordination/stigmergy", "Stigmergic Coordination", "comm/coordination"),
+        cap_child(
+            "comm/messaging/streaming",
+            "Streaming Messages",
+            "comm/messaging",
+        ),
+        cap_child_desc(
+            "comm/negotiation",
+            "Negotiation",
+            "comm",
+            "Multi-party negotiation and agreement",
+        ),
+        cap_child(
+            "comm/negotiation/auction",
+            "Auction Protocol",
+            "comm/negotiation",
+        ),
+        cap_child(
+            "comm/negotiation/contract",
+            "Contract Negotiation",
+            "comm/negotiation",
+        ),
+        cap_child(
+            "comm/negotiation/consensus",
+            "Consensus Building",
+            "comm/negotiation",
+        ),
+        cap_child_desc(
+            "comm/coordination",
+            "Coordination",
+            "comm",
+            "Synchronize actions across multiple agents",
+        ),
+        cap_child(
+            "comm/coordination/task-delegation",
+            "Task Delegation",
+            "comm/coordination",
+        ),
+        cap_child(
+            "comm/coordination/leader-election",
+            "Leader Election",
+            "comm/coordination",
+        ),
+        cap_child(
+            "comm/coordination/barrier-sync",
+            "Barrier Synchronization",
+            "comm/coordination",
+        ),
+        cap_child(
+            "comm/coordination/stigmergy",
+            "Stigmergic Coordination",
+            "comm/coordination",
+        ),
     ]
 }
 
 /// Knowledge management capabilities.
 fn knowledge_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("knowledge", "Knowledge Management",
-            "Store, retrieve, reason over, and share knowledge"),
-        cap_child_desc("knowledge/graph", "Knowledge Graph", "knowledge",
-            "Build and query knowledge graphs"),
-        cap_child("knowledge/graph/construct", "Graph Construction", "knowledge/graph"),
+        cap_desc(
+            "knowledge",
+            "Knowledge Management",
+            "Store, retrieve, reason over, and share knowledge",
+        ),
+        cap_child_desc(
+            "knowledge/graph",
+            "Knowledge Graph",
+            "knowledge",
+            "Build and query knowledge graphs",
+        ),
+        cap_child(
+            "knowledge/graph/construct",
+            "Graph Construction",
+            "knowledge/graph",
+        ),
         cap_child("knowledge/graph/query", "Graph Querying", "knowledge/graph"),
-        cap_child("knowledge/graph/inference", "Graph Inference", "knowledge/graph"),
+        cap_child(
+            "knowledge/graph/inference",
+            "Graph Inference",
+            "knowledge/graph",
+        ),
         cap_child("knowledge/graph/merge", "Graph Merging", "knowledge/graph"),
-        cap_child_desc("knowledge/memory", "Memory Systems", "knowledge",
-            "Episodic, semantic, and working memory"),
-        cap_child("knowledge/memory/episodic", "Episodic Memory", "knowledge/memory"),
-        cap_child("knowledge/memory/semantic", "Semantic Memory", "knowledge/memory"),
-        cap_child("knowledge/memory/working", "Working Memory", "knowledge/memory"),
-        cap_child("knowledge/memory/collective", "Collective Memory", "knowledge/memory"),
-        cap_child_desc("knowledge/reasoning", "Reasoning", "knowledge",
-            "Logical and probabilistic reasoning"),
-        cap_child("knowledge/reasoning/deductive", "Deductive Reasoning", "knowledge/reasoning"),
-        cap_child("knowledge/reasoning/abductive", "Abductive Reasoning", "knowledge/reasoning"),
-        cap_child("knowledge/reasoning/planning", "Automated Planning", "knowledge/reasoning"),
-        cap_child("knowledge/reasoning/causal", "Causal Reasoning", "knowledge/reasoning"),
-        cap_child_desc("knowledge/learning", "Continual Learning", "knowledge",
-            "Learn from experience without catastrophic forgetting"),
-        cap_child("knowledge/learning/online", "Online Learning", "knowledge/learning"),
-        cap_child("knowledge/learning/few-shot", "Few-Shot Learning", "knowledge/learning"),
-        cap_child("knowledge/learning/transfer", "Transfer Learning", "knowledge/learning"),
+        cap_child_desc(
+            "knowledge/memory",
+            "Memory Systems",
+            "knowledge",
+            "Episodic, semantic, and working memory",
+        ),
+        cap_child(
+            "knowledge/memory/episodic",
+            "Episodic Memory",
+            "knowledge/memory",
+        ),
+        cap_child(
+            "knowledge/memory/semantic",
+            "Semantic Memory",
+            "knowledge/memory",
+        ),
+        cap_child(
+            "knowledge/memory/working",
+            "Working Memory",
+            "knowledge/memory",
+        ),
+        cap_child(
+            "knowledge/memory/collective",
+            "Collective Memory",
+            "knowledge/memory",
+        ),
+        cap_child_desc(
+            "knowledge/reasoning",
+            "Reasoning",
+            "knowledge",
+            "Logical and probabilistic reasoning",
+        ),
+        cap_child(
+            "knowledge/reasoning/deductive",
+            "Deductive Reasoning",
+            "knowledge/reasoning",
+        ),
+        cap_child(
+            "knowledge/reasoning/abductive",
+            "Abductive Reasoning",
+            "knowledge/reasoning",
+        ),
+        cap_child(
+            "knowledge/reasoning/planning",
+            "Automated Planning",
+            "knowledge/reasoning",
+        ),
+        cap_child(
+            "knowledge/reasoning/causal",
+            "Causal Reasoning",
+            "knowledge/reasoning",
+        ),
+        cap_child_desc(
+            "knowledge/learning",
+            "Continual Learning",
+            "knowledge",
+            "Learn from experience without catastrophic forgetting",
+        ),
+        cap_child(
+            "knowledge/learning/online",
+            "Online Learning",
+            "knowledge/learning",
+        ),
+        cap_child(
+            "knowledge/learning/few-shot",
+            "Few-Shot Learning",
+            "knowledge/learning",
+        ),
+        cap_child(
+            "knowledge/learning/transfer",
+            "Transfer Learning",
+            "knowledge/learning",
+        ),
     ]
 }
 
 /// Swarm and multi-agent capabilities.
 fn swarm_capabilities() -> Vec<OntologyTerm> {
     vec![
-        cap_desc("swarm", "Swarm Intelligence",
-            "Participate in and coordinate multi-agent swarms"),
-        cap_child_desc("swarm/topology", "Topology Management", "swarm",
-            "Manage swarm structure and connectivity"),
+        cap_desc(
+            "swarm",
+            "Swarm Intelligence",
+            "Participate in and coordinate multi-agent swarms",
+        ),
+        cap_child_desc(
+            "swarm/topology",
+            "Topology Management",
+            "swarm",
+            "Manage swarm structure and connectivity",
+        ),
         cap_child("swarm/topology/mesh", "Mesh Network", "swarm/topology"),
-        cap_child("swarm/topology/hierarchical", "Hierarchical Cluster", "swarm/topology"),
+        cap_child(
+            "swarm/topology/hierarchical",
+            "Hierarchical Cluster",
+            "swarm/topology",
+        ),
         cap_child("swarm/topology/ring", "Ring Topology", "swarm/topology"),
-        cap_child_desc("swarm/consensus", "Swarm Consensus", "swarm",
-            "Byzantine fault tolerant collective decisions"),
+        cap_child_desc(
+            "swarm/consensus",
+            "Swarm Consensus",
+            "swarm",
+            "Byzantine fault tolerant collective decisions",
+        ),
         cap_child("swarm/consensus/bft", "BFT Voting", "swarm/consensus"),
         cap_child("swarm/consensus/raft", "Raft Consensus", "swarm/consensus"),
         cap_child("swarm/consensus/borda", "Ranked Voting", "swarm/consensus"),
-        cap_child_desc("swarm/federation", "Federation", "swarm",
-            "Cross-swarm trust and resource sharing"),
-        cap_child("swarm/federation/discovery", "Cross-Swarm Discovery", "swarm/federation"),
-        cap_child("swarm/federation/delegation", "Cross-Swarm Delegation", "swarm/federation"),
-        cap_child("swarm/federation/migration", "Agent Migration", "swarm/federation"),
+        cap_child_desc(
+            "swarm/federation",
+            "Federation",
+            "swarm",
+            "Cross-swarm trust and resource sharing",
+        ),
+        cap_child(
+            "swarm/federation/discovery",
+            "Cross-Swarm Discovery",
+            "swarm/federation",
+        ),
+        cap_child(
+            "swarm/federation/delegation",
+            "Cross-Swarm Delegation",
+            "swarm/federation",
+        ),
+        cap_child(
+            "swarm/federation/migration",
+            "Agent Migration",
+            "swarm/federation",
+        ),
     ]
 }
 
@@ -290,26 +654,42 @@ fn swarm_capabilities() -> Vec<OntologyTerm> {
 fn specialized_capabilities() -> Vec<OntologyTerm> {
     vec![
         // File and media processing
-        cap_desc("media", "Media Processing", "Process images, audio, video, and documents"),
+        cap_desc(
+            "media",
+            "Media Processing",
+            "Process images, audio, video, and documents",
+        ),
         cap_child("media/image", "Image Processing", "media"),
         cap_child("media/audio", "Audio Processing", "media"),
         cap_child("media/video", "Video Processing", "media"),
         cap_child("media/document", "Document Processing", "media"),
         cap_child("media/ocr", "Optical Character Recognition", "media"),
         // IoT and embedded
-        cap_desc("iot", "IoT & Embedded", "Interact with sensors, actuators, and edge devices"),
+        cap_desc(
+            "iot",
+            "IoT & Embedded",
+            "Interact with sensors, actuators, and edge devices",
+        ),
         cap_child("iot/sensors", "Sensor Reading", "iot"),
         cap_child("iot/actuators", "Actuator Control", "iot"),
         cap_child("iot/edge-compute", "Edge Computation", "iot"),
         cap_child("iot/mesh-network", "Sensor Mesh Network", "iot"),
         // Financial
-        cap_desc("finance", "Financial Operations", "Market data, trading, and accounting"),
+        cap_desc(
+            "finance",
+            "Financial Operations",
+            "Market data, trading, and accounting",
+        ),
         cap_child("finance/market-data", "Market Data", "finance"),
         cap_child("finance/trading", "Algorithmic Trading", "finance"),
         cap_child("finance/risk", "Risk Assessment", "finance"),
         cap_child("finance/compliance", "Regulatory Compliance", "finance"),
         // DevOps
-        cap_desc("devops", "DevOps", "CI/CD, monitoring, and infrastructure automation"),
+        cap_desc(
+            "devops",
+            "DevOps",
+            "CI/CD, monitoring, and infrastructure automation",
+        ),
         cap_child("devops/ci-cd", "CI/CD Pipeline", "devops"),
         cap_child("devops/monitoring", "System Monitoring", "devops"),
         cap_child("devops/deployment", "Deployment Automation", "devops"),
@@ -321,36 +701,81 @@ fn specialized_capabilities() -> Vec<OntologyTerm> {
 
 fn role_terms() -> Vec<OntologyTerm> {
     vec![
-        role("coordinator", "Coordinator",
-            "Orchestrates task distribution and monitors progress across agents"),
-        role("worker", "Worker",
-            "Executes assigned tasks and reports results"),
-        role("researcher", "Researcher",
-            "Gathers information, analyzes data, and synthesizes findings"),
-        role("validator", "Validator",
-            "Verifies outputs, checks quality, and enforces constraints"),
-        role("monitor", "Monitor",
-            "Observes system health, detects anomalies, and raises alerts"),
-        role("gateway", "Gateway",
-            "Bridges external services, APIs, or legacy systems"),
-        role("archivist", "Archivist",
-            "Manages long-term knowledge storage and retrieval"),
-        role("sentinel", "Sentinel",
-            "Enforces security policies and detects threats"),
-        role("scout", "Scout",
-            "Explores new data sources and discovers opportunities"),
-        role("mediator", "Mediator",
-            "Resolves conflicts and negotiates between agents"),
-        role("specialist", "Specialist",
-            "Deep expertise in a narrow domain"),
-        role("generalist", "Generalist",
-            "Broad capabilities across multiple domains"),
-        role("learner", "Learner",
-            "Actively acquiring new skills and adapting behavior"),
-        role("teacher", "Teacher",
-            "Shares knowledge and trains other agents"),
-        role("auditor", "Auditor",
-            "Reviews agent actions for compliance and correctness"),
+        role(
+            "coordinator",
+            "Coordinator",
+            "Orchestrates task distribution and monitors progress across agents",
+        ),
+        role(
+            "worker",
+            "Worker",
+            "Executes assigned tasks and reports results",
+        ),
+        role(
+            "researcher",
+            "Researcher",
+            "Gathers information, analyzes data, and synthesizes findings",
+        ),
+        role(
+            "validator",
+            "Validator",
+            "Verifies outputs, checks quality, and enforces constraints",
+        ),
+        role(
+            "monitor",
+            "Monitor",
+            "Observes system health, detects anomalies, and raises alerts",
+        ),
+        role(
+            "gateway",
+            "Gateway",
+            "Bridges external services, APIs, or legacy systems",
+        ),
+        role(
+            "archivist",
+            "Archivist",
+            "Manages long-term knowledge storage and retrieval",
+        ),
+        role(
+            "sentinel",
+            "Sentinel",
+            "Enforces security policies and detects threats",
+        ),
+        role(
+            "scout",
+            "Scout",
+            "Explores new data sources and discovers opportunities",
+        ),
+        role(
+            "mediator",
+            "Mediator",
+            "Resolves conflicts and negotiates between agents",
+        ),
+        role(
+            "specialist",
+            "Specialist",
+            "Deep expertise in a narrow domain",
+        ),
+        role(
+            "generalist",
+            "Generalist",
+            "Broad capabilities across multiple domains",
+        ),
+        role(
+            "learner",
+            "Learner",
+            "Actively acquiring new skills and adapting behavior",
+        ),
+        role(
+            "teacher",
+            "Teacher",
+            "Shares knowledge and trains other agents",
+        ),
+        role(
+            "auditor",
+            "Auditor",
+            "Reviews agent actions for compliance and correctness",
+        ),
     ]
 }
 
@@ -358,21 +783,81 @@ fn role_terms() -> Vec<OntologyTerm> {
 
 fn domain_terms() -> Vec<OntologyTerm> {
     vec![
-        domain("healthcare", "Healthcare", "Medical data, clinical workflows, drug discovery"),
-        domain("education", "Education", "Learning management, tutoring, assessment"),
-        domain("legal", "Legal", "Contract analysis, compliance, case research"),
-        domain("science", "Scientific Research", "Literature review, experiment design, data analysis"),
-        domain("engineering", "Engineering", "CAD, simulation, manufacturing, testing"),
-        domain("cybersecurity", "Cybersecurity", "Threat intelligence, vulnerability analysis, incident response"),
-        domain("logistics", "Logistics", "Supply chain, routing, inventory, fleet management"),
-        domain("marketing", "Marketing", "Market research, content creation, analytics"),
-        domain("customer-service", "Customer Service", "Ticket handling, FAQ, escalation"),
-        domain("hr", "Human Resources", "Recruiting, onboarding, performance tracking"),
-        domain("creative", "Creative", "Art generation, music composition, creative writing"),
-        domain("gaming", "Gaming", "NPC behavior, procedural generation, game testing"),
-        domain("agriculture", "Agriculture", "Crop monitoring, precision farming, yield prediction"),
-        domain("energy", "Energy", "Grid optimization, renewable forecasting, demand response"),
-        domain("telecom", "Telecommunications", "Network optimization, spectrum management, QoS"),
+        domain(
+            "healthcare",
+            "Healthcare",
+            "Medical data, clinical workflows, drug discovery",
+        ),
+        domain(
+            "education",
+            "Education",
+            "Learning management, tutoring, assessment",
+        ),
+        domain(
+            "legal",
+            "Legal",
+            "Contract analysis, compliance, case research",
+        ),
+        domain(
+            "science",
+            "Scientific Research",
+            "Literature review, experiment design, data analysis",
+        ),
+        domain(
+            "engineering",
+            "Engineering",
+            "CAD, simulation, manufacturing, testing",
+        ),
+        domain(
+            "cybersecurity",
+            "Cybersecurity",
+            "Threat intelligence, vulnerability analysis, incident response",
+        ),
+        domain(
+            "logistics",
+            "Logistics",
+            "Supply chain, routing, inventory, fleet management",
+        ),
+        domain(
+            "marketing",
+            "Marketing",
+            "Market research, content creation, analytics",
+        ),
+        domain(
+            "customer-service",
+            "Customer Service",
+            "Ticket handling, FAQ, escalation",
+        ),
+        domain(
+            "hr",
+            "Human Resources",
+            "Recruiting, onboarding, performance tracking",
+        ),
+        domain(
+            "creative",
+            "Creative",
+            "Art generation, music composition, creative writing",
+        ),
+        domain(
+            "gaming",
+            "Gaming",
+            "NPC behavior, procedural generation, game testing",
+        ),
+        domain(
+            "agriculture",
+            "Agriculture",
+            "Crop monitoring, precision farming, yield prediction",
+        ),
+        domain(
+            "energy",
+            "Energy",
+            "Grid optimization, renewable forecasting, demand response",
+        ),
+        domain(
+            "telecom",
+            "Telecommunications",
+            "Network optimization, spectrum management, QoS",
+        ),
     ]
 }
 
@@ -380,18 +865,32 @@ fn domain_terms() -> Vec<OntologyTerm> {
 
 fn protocol_terms() -> Vec<OntologyTerm> {
     vec![
-        proto("spine-tcp", "SPINE TCP", "Native SPINE binary protocol over TCP"),
+        proto(
+            "spine-tcp",
+            "SPINE TCP",
+            "Native SPINE binary protocol over TCP",
+        ),
         proto("spine-tls", "SPINE TLS", "SPINE protocol over TLS 1.3"),
-        proto("spine-ws", "SPINE WebSocket", "SPINE protocol over WebSocket"),
+        proto(
+            "spine-ws",
+            "SPINE WebSocket",
+            "SPINE protocol over WebSocket",
+        ),
         proto("spine-quic", "SPINE QUIC", "SPINE protocol over QUIC"),
-        proto("spine-chameleon", "Chameleon Protocol",
-            "Latent-space morphing protocol with moving-target defense"),
+        proto(
+            "spine-chameleon",
+            "Chameleon Protocol",
+            "Latent-space morphing protocol with moving-target defense",
+        ),
         proto("http-rest", "HTTP REST", "Standard HTTP/HTTPS REST API"),
         proto("grpc", "gRPC", "Protocol Buffers over HTTP/2"),
         proto("mqtt", "MQTT", "Lightweight pub/sub for IoT"),
         proto("amqp", "AMQP", "Advanced Message Queuing Protocol"),
-        proto("mcp", "Model Context Protocol",
-            "Anthropic Model Context Protocol for LLM tool use"),
+        proto(
+            "mcp",
+            "Model Context Protocol",
+            "Anthropic Model Context Protocol for LLM tool use",
+        ),
         proto("a2a", "Agent-to-Agent", "Google Agent2Agent protocol"),
     ]
 }
@@ -425,18 +924,25 @@ fn io_terms() -> Vec<OntologyTerm> {
 
 fn qos_terms() -> Vec<OntologyTerm> {
     vec![
-        term("spine:qos/realtime", "Real-Time").with_description("Sub-millisecond response latency")
+        term("spine:qos/realtime", "Real-Time")
+            .with_description("Sub-millisecond response latency")
             .with_property("max_latency_ms", "1"),
-        term("spine:qos/low-latency", "Low Latency").with_description("Response within 100ms")
+        term("spine:qos/low-latency", "Low Latency")
+            .with_description("Response within 100ms")
             .with_property("max_latency_ms", "100"),
-        term("spine:qos/batch", "Batch Processing").with_description("Optimized for throughput, not latency")
+        term("spine:qos/batch", "Batch Processing")
+            .with_description("Optimized for throughput, not latency")
             .with_property("max_latency_ms", "60000"),
-        term("spine:qos/high-throughput", "High Throughput").with_description("Processes large volumes efficiently")
+        term("spine:qos/high-throughput", "High Throughput")
+            .with_description("Processes large volumes efficiently")
             .with_property("min_throughput_rps", "1000"),
-        term("spine:qos/high-availability", "High Availability").with_description("99.9%+ uptime guarantee")
+        term("spine:qos/high-availability", "High Availability")
+            .with_description("99.9%+ uptime guarantee")
             .with_property("availability", "0.999"),
-        term("spine:qos/idempotent", "Idempotent").with_description("Safe to retry without side effects"),
-        term("spine:qos/stateless", "Stateless").with_description("No session state between requests"),
+        term("spine:qos/idempotent", "Idempotent")
+            .with_description("Safe to retry without side effects"),
+        term("spine:qos/stateless", "Stateless")
+            .with_description("No session state between requests"),
         term("spine:qos/stateful", "Stateful").with_description("Maintains session state"),
         term("spine:qos/at-most-once", "At-Most-Once Delivery")
             .with_description("Message delivered zero or one times"),
@@ -478,8 +984,7 @@ fn hardware_terms() -> Vec<OntologyTerm> {
             .with_description("Uses SIMD intrinsics (AVX2/NEON)"),
         term("spine:hw/embedded", "Embedded Runtime")
             .with_description("Runs on ARM Cortex-M, ESP32, RISC-V"),
-        term("spine:hw/wasm", "WASM Runtime")
-            .with_description("Runs as WebAssembly module"),
+        term("spine:hw/wasm", "WASM Runtime").with_description("Runs as WebAssembly module"),
         term("spine:hw/no-std", "no_std Compatible")
             .with_description("Runs without standard library (bare metal)"),
         term("spine:hw/cloud", "Cloud Native")
@@ -532,18 +1037,56 @@ pub fn full_ontology() -> AgentOntology {
 pub fn web_researcher_ontology() -> AgentOntology {
     let mut ont = AgentOntology::new("spine:ontology/web-researcher", "1.0.0");
     // Capabilities
-    for t in web_capabilities() { ont.add_term(t); }
-    ont.add_term(cap_child("nlp/extraction/ner", "Named Entity Recognition", "nlp/extraction"));
-    ont.add_term(cap_child("nlp/extraction/keyword", "Keyword Extraction", "nlp/extraction"));
-    ont.add_term(cap_child("nlp/generation/summary", "Summarization", "nlp/generation"));
-    ont.add_term(cap_child("nlp/understanding/qa", "Question Answering", "nlp/understanding"));
-    ont.add_term(cap_child("knowledge/graph/construct", "Graph Construction", "knowledge/graph"));
-    ont.add_term(cap_child("knowledge/memory/episodic", "Episodic Memory", "knowledge/memory"));
+    for t in web_capabilities() {
+        ont.add_term(t);
+    }
+    ont.add_term(cap_child(
+        "nlp/extraction/ner",
+        "Named Entity Recognition",
+        "nlp/extraction",
+    ));
+    ont.add_term(cap_child(
+        "nlp/extraction/keyword",
+        "Keyword Extraction",
+        "nlp/extraction",
+    ));
+    ont.add_term(cap_child(
+        "nlp/generation/summary",
+        "Summarization",
+        "nlp/generation",
+    ));
+    ont.add_term(cap_child(
+        "nlp/understanding/qa",
+        "Question Answering",
+        "nlp/understanding",
+    ));
+    ont.add_term(cap_child(
+        "knowledge/graph/construct",
+        "Graph Construction",
+        "knowledge/graph",
+    ));
+    ont.add_term(cap_child(
+        "knowledge/memory/episodic",
+        "Episodic Memory",
+        "knowledge/memory",
+    ));
     // Role
-    ont.add_term(role("researcher", "Researcher", "Gathers information, analyzes data, and synthesizes findings"));
+    ont.add_term(role(
+        "researcher",
+        "Researcher",
+        "Gathers information, analyzes data, and synthesizes findings",
+    ));
     // Protocols
-    ont.add_term(proto("spine-tcp", "SPINE TCP", "Native SPINE binary protocol over TCP"));
-    ont.add_term(proto("http-rest", "HTTP REST", "Standard HTTP/HTTPS REST API"));
+    ont.add_term(proto(
+        "spine-tcp",
+        "SPINE TCP",
+        "Native SPINE binary protocol over TCP",
+    ));
+    ont.add_term(proto(
+        "http-rest",
+        "HTTP REST",
+        "Standard HTTP/HTTPS REST API",
+    ));
     // I/O
     ont.add_term(term("spine:io/in/html", "HTML Input"));
     ont.add_term(term("spine:io/in/json", "JSON Input"));
@@ -557,11 +1100,24 @@ pub fn web_researcher_ontology() -> AgentOntology {
 /// Build an ontology for a **security sentinel agent**.
 pub fn security_sentinel_ontology() -> AgentOntology {
     let mut ont = AgentOntology::new("spine:ontology/security-sentinel", "1.0.0");
-    for t in security_capabilities() { ont.add_term(t); }
-    ont.add_term(role("sentinel", "Sentinel", "Enforces security policies and detects threats"));
-    ont.add_term(proto("spine-tls", "SPINE TLS", "SPINE protocol over TLS 1.3"));
-    ont.add_term(proto("spine-chameleon", "Chameleon Protocol",
-        "Latent-space morphing protocol with moving-target defense"));
+    for t in security_capabilities() {
+        ont.add_term(t);
+    }
+    ont.add_term(role(
+        "sentinel",
+        "Sentinel",
+        "Enforces security policies and detects threats",
+    ));
+    ont.add_term(proto(
+        "spine-tls",
+        "SPINE TLS",
+        "SPINE protocol over TLS 1.3",
+    ));
+    ont.add_term(proto(
+        "spine-chameleon",
+        "Chameleon Protocol",
+        "Latent-space morphing protocol with moving-target defense",
+    ));
     ont.add_term(term("spine:sec/encrypted", "Encrypted Transport"));
     ont.add_term(term("spine:sec/pq-safe", "Post-Quantum Safe"));
     ont.add_term(term("spine:sec/forward-secrecy", "Forward Secrecy"));
@@ -578,9 +1134,21 @@ pub fn iot_edge_ontology() -> AgentOntology {
     ont.add_term(cap_child("iot/actuators", "Actuator Control", "iot"));
     ont.add_term(cap_child("iot/edge-compute", "Edge Computation", "iot"));
     ont.add_term(cap_child("iot/mesh-network", "Sensor Mesh Network", "iot"));
-    ont.add_term(cap_child("data/analysis/timeseries", "Time Series Analysis", "data/analysis"));
-    ont.add_term(cap_child("data/analysis/anomaly", "Anomaly Detection", "data/analysis"));
-    ont.add_term(role("worker", "Worker", "Executes assigned tasks and reports results"));
+    ont.add_term(cap_child(
+        "data/analysis/timeseries",
+        "Time Series Analysis",
+        "data/analysis",
+    ));
+    ont.add_term(cap_child(
+        "data/analysis/anomaly",
+        "Anomaly Detection",
+        "data/analysis",
+    ));
+    ont.add_term(role(
+        "worker",
+        "Worker",
+        "Executes assigned tasks and reports results",
+    ));
     ont.add_term(proto("mqtt", "MQTT", "Lightweight pub/sub for IoT"));
     ont.add_term(term("spine:hw/embedded", "Embedded Runtime"));
     ont.add_term(term("spine:hw/no-std", "no_std Compatible"));
@@ -591,11 +1159,29 @@ pub fn iot_edge_ontology() -> AgentOntology {
 /// Build an ontology for a **data pipeline agent**.
 pub fn data_pipeline_ontology() -> AgentOntology {
     let mut ont = AgentOntology::new("spine:ontology/data-pipeline", "1.0.0");
-    for t in data_capabilities() { ont.add_term(t); }
-    ont.add_term(cap_child("compute/code/python", "Python Execution", "compute/code"));
-    ont.add_term(cap_child("compute/code/wasm", "WASM Execution", "compute/code"));
-    ont.add_term(role("worker", "Worker", "Executes assigned tasks and reports results"));
-    ont.add_term(proto("spine-tcp", "SPINE TCP", "Native SPINE binary protocol over TCP"));
+    for t in data_capabilities() {
+        ont.add_term(t);
+    }
+    ont.add_term(cap_child(
+        "compute/code/python",
+        "Python Execution",
+        "compute/code",
+    ));
+    ont.add_term(cap_child(
+        "compute/code/wasm",
+        "WASM Execution",
+        "compute/code",
+    ));
+    ont.add_term(role(
+        "worker",
+        "Worker",
+        "Executes assigned tasks and reports results",
+    ));
+    ont.add_term(proto(
+        "spine-tcp",
+        "SPINE TCP",
+        "Native SPINE binary protocol over TCP",
+    ));
     ont.add_term(term("spine:io/in/json", "JSON Input"));
     ont.add_term(term("spine:io/in/binary", "Binary Input"));
     ont.add_term(term("spine:io/out/json", "JSON Output"));
@@ -608,12 +1194,27 @@ pub fn data_pipeline_ontology() -> AgentOntology {
 /// Build an ontology for a **swarm coordinator agent**.
 pub fn swarm_coordinator_ontology() -> AgentOntology {
     let mut ont = AgentOntology::new("spine:ontology/swarm-coordinator", "1.0.0");
-    for t in swarm_capabilities() { ont.add_term(t); }
-    for t in communication_capabilities() { ont.add_term(t); }
-    ont.add_term(role("coordinator", "Coordinator",
-        "Orchestrates task distribution and monitors progress across agents"));
-    ont.add_term(proto("spine-tcp", "SPINE TCP", "Native SPINE binary protocol over TCP"));
-    ont.add_term(proto("spine-ws", "SPINE WebSocket", "SPINE protocol over WebSocket"));
+    for t in swarm_capabilities() {
+        ont.add_term(t);
+    }
+    for t in communication_capabilities() {
+        ont.add_term(t);
+    }
+    ont.add_term(role(
+        "coordinator",
+        "Coordinator",
+        "Orchestrates task distribution and monitors progress across agents",
+    ));
+    ont.add_term(proto(
+        "spine-tcp",
+        "SPINE TCP",
+        "Native SPINE binary protocol over TCP",
+    ));
+    ont.add_term(proto(
+        "spine-ws",
+        "SPINE WebSocket",
+        "SPINE protocol over WebSocket",
+    ));
     ont.add_term(term("spine:qos/high-availability", "High Availability"));
     ont.add_term(term("spine:sec/signed", "Signed Messages"));
     ont
@@ -624,13 +1225,29 @@ pub fn ml_inference_ontology() -> AgentOntology {
     let mut ont = AgentOntology::new("spine:ontology/ml-inference", "1.0.0");
     ont.add_term(cap("compute", "Computation"));
     ont.add_term(cap_child("compute/ml", "Machine Learning", "compute"));
-    ont.add_term(cap_child("compute/ml/inference", "Model Inference", "compute/ml"));
-    ont.add_term(cap_child("compute/ml/embedding", "Embedding Generation", "compute/ml"));
+    ont.add_term(cap_child(
+        "compute/ml/inference",
+        "Model Inference",
+        "compute/ml",
+    ));
+    ont.add_term(cap_child(
+        "compute/ml/embedding",
+        "Embedding Generation",
+        "compute/ml",
+    ));
     ont.add_term(cap("nlp", "Natural Language Processing"));
     ont.add_term(cap_child("nlp/embedding", "Text Embedding", "nlp"));
     ont.add_term(cap_child("nlp/generation", "Text Generation", "nlp"));
-    ont.add_term(role("specialist", "Specialist", "Deep expertise in a narrow domain"));
-    ont.add_term(proto("spine-tcp", "SPINE TCP", "Native SPINE binary protocol over TCP"));
+    ont.add_term(role(
+        "specialist",
+        "Specialist",
+        "Deep expertise in a narrow domain",
+    ));
+    ont.add_term(proto(
+        "spine-tcp",
+        "SPINE TCP",
+        "Native SPINE binary protocol over TCP",
+    ));
     ont.add_term(proto("grpc", "gRPC", "Protocol Buffers over HTTP/2"));
     ont.add_term(term("spine:io/in/text", "Plain Text Input"));
     ont.add_term(term("spine:io/in/latent", "Latent Vector Input"));
@@ -646,7 +1263,10 @@ pub fn ml_inference_ontology() -> AgentOntology {
 /// Find all terms in the vocabulary whose URI starts with the given prefix.
 /// E.g., `find_by_prefix("spine:cap/web")` returns all web capability terms.
 pub fn find_by_prefix(prefix: &str) -> Vec<OntologyTerm> {
-    all_terms().into_iter().filter(|t| t.uri.starts_with(prefix)).collect()
+    all_terms()
+        .into_iter()
+        .filter(|t| t.uri.starts_with(prefix))
+        .collect()
 }
 
 /// Find all capability terms (URIs starting with `spine:cap/`).
@@ -677,7 +1297,9 @@ pub fn compatibility_score(a: &AgentOntology, b: &AgentOntology) -> f64 {
     let b_uris: HashSet<&str> = b.terms.iter().map(|t| t.uri.as_str()).collect();
     let intersection = a_uris.intersection(&b_uris).count();
     let union = a_uris.union(&b_uris).count();
-    if union == 0 { return 0.0; }
+    if union == 0 {
+        return 0.0;
+    }
     intersection as f64 / union as f64
 }
 
@@ -691,7 +1313,11 @@ mod tests {
     #[test]
     fn test_all_terms_nonempty() {
         let terms = all_terms();
-        assert!(terms.len() > 200, "Expected 200+ terms, got {}", terms.len());
+        assert!(
+            terms.len() > 200,
+            "Expected 200+ terms, got {}",
+            terms.len()
+        );
     }
 
     #[test]
@@ -706,7 +1332,11 @@ mod tests {
     #[test]
     fn test_all_uris_have_namespace() {
         for t in all_terms() {
-            assert!(t.uri.starts_with("spine:"), "URI missing spine: prefix: {}", t.uri);
+            assert!(
+                t.uri.starts_with("spine:"),
+                "URI missing spine: prefix: {}",
+                t.uri
+            );
         }
     }
 
@@ -716,8 +1346,12 @@ mod tests {
         let uris: std::collections::HashSet<String> = all.iter().map(|t| t.uri.clone()).collect();
         for t in &all {
             for parent in &t.parents {
-                assert!(uris.contains(parent),
-                    "Term {} references non-existent parent: {}", t.uri, parent);
+                assert!(
+                    uris.contains(parent),
+                    "Term {} references non-existent parent: {}",
+                    t.uri,
+                    parent
+                );
             }
         }
     }
@@ -726,12 +1360,25 @@ mod tests {
     fn test_category_coverage() {
         let terms = all_terms();
         let prefixes = [
-            "spine:cap/web", "spine:cap/nlp", "spine:cap/data", "spine:cap/compute",
-            "spine:cap/security", "spine:cap/comm", "spine:cap/knowledge",
-            "spine:cap/swarm", "spine:cap/media", "spine:cap/iot",
-            "spine:cap/finance", "spine:cap/devops",
-            "spine:role/", "spine:domain/", "spine:proto/",
-            "spine:io/", "spine:qos/", "spine:sec/", "spine:hw/",
+            "spine:cap/web",
+            "spine:cap/nlp",
+            "spine:cap/data",
+            "spine:cap/compute",
+            "spine:cap/security",
+            "spine:cap/comm",
+            "spine:cap/knowledge",
+            "spine:cap/swarm",
+            "spine:cap/media",
+            "spine:cap/iot",
+            "spine:cap/finance",
+            "spine:cap/devops",
+            "spine:role/",
+            "spine:domain/",
+            "spine:proto/",
+            "spine:io/",
+            "spine:qos/",
+            "spine:sec/",
+            "spine:hw/",
         ];
         for prefix in prefixes {
             let count = terms.iter().filter(|t| t.uri.starts_with(prefix)).count();
@@ -801,8 +1448,11 @@ mod tests {
     fn test_compatibility_same_ontology() {
         let a = web_researcher_ontology();
         let score = compatibility_score(&a, &a);
-        assert!((score - 1.0).abs() < f64::EPSILON,
-            "Self-compatibility should be 1.0, got {}", score);
+        assert!(
+            (score - 1.0).abs() < f64::EPSILON,
+            "Self-compatibility should be 1.0, got {}",
+            score
+        );
     }
 
     #[test]
@@ -810,7 +1460,11 @@ mod tests {
         let web = web_researcher_ontology();
         let iot = iot_edge_ontology();
         let score = compatibility_score(&web, &iot);
-        assert!(score < 0.3, "Web/IoT compatibility should be low, got {}", score);
+        assert!(
+            score < 0.3,
+            "Web/IoT compatibility should be low, got {}",
+            score
+        );
     }
 
     #[test]
@@ -819,13 +1473,21 @@ mod tests {
         let data = data_pipeline_ontology();
         let score = compatibility_score(&web, &data);
         // Both have JSON I/O and SPINE TCP
-        assert!(score > 0.0, "Web/Data should share some terms, got {}", score);
+        assert!(
+            score > 0.0,
+            "Web/Data should share some terms, got {}",
+            score
+        );
     }
 
     #[test]
     fn test_find_by_prefix() {
         let web_terms = find_by_prefix("spine:cap/web");
-        assert!(web_terms.len() >= 20, "Expected 20+ web terms, got {}", web_terms.len());
+        assert!(
+            web_terms.len() >= 20,
+            "Expected 20+ web terms, got {}",
+            web_terms.len()
+        );
         for t in &web_terms {
             assert!(t.uri.starts_with("spine:cap/web"));
         }
@@ -842,9 +1504,7 @@ mod tests {
         let h3 = t3.neural_hash(64);
 
         // Cosine similarity helper
-        let cos = |a: &[f32], b: &[f32]| -> f32 {
-            a.iter().zip(b).map(|(x, y)| x * y).sum()
-        };
+        let cos = |a: &[f32], b: &[f32]| -> f32 { a.iter().zip(b).map(|(x, y)| x * y).sum() };
 
         let sim_12 = cos(&h1, &h2);
         let sim_13 = cos(&h1, &h3);
@@ -861,14 +1521,22 @@ mod tests {
     #[test]
     fn test_disclosed_view_filtering() {
         let mut ont = AgentOntology::new("spine:test/disclosure", "1.0.0");
-        ont.add_term(OntologyTerm::new("spine:cap/public", "Public Cap")
-            .with_visibility(OntologyVisibility::Public));
-        ont.add_term(OntologyTerm::new("spine:cap/hashed", "Hashed Cap")
-            .with_visibility(OntologyVisibility::HashOnly));
-        ont.add_term(OntologyTerm::new("spine:cap/neural", "Neural Cap")
-            .with_visibility(OntologyVisibility::NeuralHash));
-        ont.add_term(OntologyTerm::new("spine:cap/private", "Private Cap")
-            .with_visibility(OntologyVisibility::Private));
+        ont.add_term(
+            OntologyTerm::new("spine:cap/public", "Public Cap")
+                .with_visibility(OntologyVisibility::Public),
+        );
+        ont.add_term(
+            OntologyTerm::new("spine:cap/hashed", "Hashed Cap")
+                .with_visibility(OntologyVisibility::HashOnly),
+        );
+        ont.add_term(
+            OntologyTerm::new("spine:cap/neural", "Neural Cap")
+                .with_visibility(OntologyVisibility::NeuralHash),
+        );
+        ont.add_term(
+            OntologyTerm::new("spine:cap/private", "Private Cap")
+                .with_visibility(OntologyVisibility::Private),
+        );
 
         let disclosed = ont.disclosed_view(32);
         assert_eq!(disclosed.public_terms.len(), 1);

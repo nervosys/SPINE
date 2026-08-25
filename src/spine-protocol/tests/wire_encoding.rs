@@ -65,7 +65,9 @@ fn sample_stream_token() -> Message {
 fn sample_encoded_frame() -> Message {
     // 256-dim f32 embedding => 1024 raw bytes. JSON renders each byte as a
     // decimal-with-comma; CBOR keeps them as integer-array elements.
-    let data: Vec<u8> = (0..1024u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+    let data: Vec<u8> = (0..1024u32)
+        .map(|i| (i.wrapping_mul(31) % 251) as u8)
+        .collect();
     Message::Encoded(EncodedFrame {
         codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
         variant: Some("layer=11".into()),
@@ -101,8 +103,14 @@ fn sample_capability_ad() -> Message {
         id: "q-9921".into(),
         agent_id: "did:spine:ed25519:7Hk9...4Qm".into(),
         capabilities: vec![
-            cap("agent.web/fetch_url", "Fetch a URL and return the response body."),
-            cap("agent.web/post_json", "POST a JSON document to an endpoint."),
+            cap(
+                "agent.web/fetch_url",
+                "Fetch a URL and return the response body.",
+            ),
+            cap(
+                "agent.web/post_json",
+                "POST a JSON document to an endpoint.",
+            ),
         ],
     })
 }
@@ -113,8 +121,12 @@ fn representative_frames_roundtrip() {
     assert_roundtrips(&sample_stream_token());
     assert_roundtrips(&sample_encoded_frame());
     assert_roundtrips(&sample_capability_ad());
-    assert_roundtrips(&Message::Ping { timestamp: 1_700_000_000 });
-    assert_roundtrips(&Message::Pong { timestamp: 1_700_000_001 });
+    assert_roundtrips(&Message::Ping {
+        timestamp: 1_700_000_000,
+    });
+    assert_roundtrips(&Message::Pong {
+        timestamp: 1_700_000_001,
+    });
     assert_roundtrips(&Message::StreamCancel(StreamCancel {
         id: "stream-7f3a".into(),
         reason: Some("user aborted".into()),
@@ -140,7 +152,12 @@ fn every_frame_beats_json() {
         ("StreamToken", sample_stream_token()),
         ("EncodedFrame", sample_encoded_frame()),
         ("CapabilityAd", sample_capability_ad()),
-        ("Ping", Message::Ping { timestamp: 1_700_000_000 }),
+        (
+            "Ping",
+            Message::Ping {
+                timestamp: 1_700_000_000,
+            },
+        ),
     ] {
         let (wire, json, ratio) = size_ratio(&msg);
         assert!(
@@ -200,9 +217,18 @@ fn text_and_structured_frames_shrink_modestly_on_plain_cbor() {
     // be squeezed below their own content without compression, but dropping
     // JSON's quotes/punctuation still shaves real bytes on the fast path.
     let (cw, cj, cr) = size_ratio(&sample_tool_call());
-    assert!(cr < 0.90, "ToolCall: {cw}B vs {cj}B = {cr:.2} (want < 0.90)");
+    assert!(
+        cr < 0.90,
+        "ToolCall: {cw}B vs {cj}B = {cr:.2} (want < 0.90)"
+    );
     let (sw, sj, sr) = size_ratio(&sample_stream_token());
-    assert!(sr < 0.97, "StreamToken: {sw}B vs {sj}B = {sr:.2} (want < 0.97)");
+    assert!(
+        sr < 0.97,
+        "StreamToken: {sw}B vs {sj}B = {sr:.2} (want < 0.97)"
+    );
     let (aw, aj, ar) = size_ratio(&sample_capability_ad());
-    assert!(ar < 0.90, "CapabilityAd: {aw}B vs {aj}B = {ar:.2} (want < 0.90)");
+    assert!(
+        ar < 0.90,
+        "CapabilityAd: {aw}B vs {aj}B = {ar:.2} (want < 0.90)"
+    );
 }

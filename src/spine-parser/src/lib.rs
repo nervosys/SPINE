@@ -407,10 +407,7 @@ mod agent_web_tests {
     fn extracted_links_feed_a_crawl_frontier_directly() {
         // The whole point of typing links in the UR: a crawler gets its edges
         // without re-parsing hrefs or guessing at relations.
-        let ur = page(&format!(
-            r#"<a href="{}" rel="requires">Dep</a>"#,
-            did()
-        ));
+        let ur = page(&format!(r#"<a href="{}" rel="requires">Dep</a>"#, did()));
         let mut frontier = spine_name::CrawlFrontier::new(spine_name::CrawlBudget::default());
         let seed = spine_name::SpineUri::did([1u8; 32]);
         frontier.seed(seed.clone());
@@ -438,7 +435,8 @@ mod tests {
 
     #[test]
     fn test_parse_title_extraction() {
-        let ur = parse_html("<html><head><title>My Page</title></head><body></body></html>").unwrap();
+        let ur =
+            parse_html("<html><head><title>My Page</title></head><body></body></html>").unwrap();
         assert_eq!(ur.title, "My Page");
     }
 
@@ -526,9 +524,16 @@ mod tests {
 
     #[test]
     fn test_parse_input_types() {
-        let ur = parse_html(r#"<body><input type="email" name="user_email" placeholder="Email"></body>"#).unwrap();
+        let ur = parse_html(
+            r#"<body><input type="email" name="user_email" placeholder="Email"></body>"#,
+        )
+        .unwrap();
         match &ur.elements[0] {
-            Element::Input { label, input_type, id } => {
+            Element::Input {
+                label,
+                input_type,
+                id,
+            } => {
                 assert_eq!(label, "Email");
                 assert_eq!(input_type, "email");
                 assert_eq!(id, "user_email");
@@ -541,7 +546,11 @@ mod tests {
     fn test_parse_input_defaults() {
         let ur = parse_html(r#"<body><input></body>"#).unwrap();
         match &ur.elements[0] {
-            Element::Input { label, input_type, id } => {
+            Element::Input {
+                label,
+                input_type,
+                id,
+            } => {
                 assert_eq!(label, "input");
                 assert_eq!(input_type, "text");
                 assert_eq!(id, "unknown");

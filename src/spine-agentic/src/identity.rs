@@ -59,7 +59,6 @@ impl Drop for Ed25519Keypair {
     }
 }
 
-
 impl std::fmt::Debug for Ed25519Keypair {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Ed25519Keypair")
@@ -73,14 +72,20 @@ impl Ed25519Keypair {
         let mut csprng = rand::thread_rng();
         let signing_key = SigningKey::generate(&mut csprng);
         let cached_pub = signing_key.verifying_key().to_bytes();
-        Self { signing_key, cached_pub }
+        Self {
+            signing_key,
+            cached_pub,
+        }
     }
 
     /// Create a keypair from a known 32-byte seed (deterministic).
     pub fn from_seed(seed: [u8; ED25519_SEED_LEN]) -> Self {
         let signing_key = SigningKey::from_bytes(&seed);
         let cached_pub = signing_key.verifying_key().to_bytes();
-        Self { signing_key, cached_pub }
+        Self {
+            signing_key,
+            cached_pub,
+        }
     }
 
     /// Get the public key as a 32-byte array.

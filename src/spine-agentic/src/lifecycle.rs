@@ -443,10 +443,7 @@ impl LifecycleManager {
     }
 
     /// Complete migration on the source node (remove the agent after successful transfer).
-    pub fn complete_migration_source(
-        &self,
-        agent_id: &AgentId,
-    ) -> Result<(), LifecycleError> {
+    pub fn complete_migration_source(&self, agent_id: &AgentId) -> Result<(), LifecycleError> {
         self.pending_migrations.remove(agent_id);
         self.agents.remove(agent_id);
         self.checkpoints.remove(agent_id);
@@ -631,7 +628,9 @@ mod tests {
         let id = mgr.spawn(test_profile()).unwrap();
 
         let memory = serde_json::json!({"knowledge": ["fact1", "fact2"]});
-        let cp = mgr.checkpoint(&id, memory.clone(), vec!["task1".into()]).unwrap();
+        let cp = mgr
+            .checkpoint(&id, memory.clone(), vec!["task1".into()])
+            .unwrap();
         assert_eq!(cp.version, 1);
         assert!(!cp.checksum.is_empty());
 
@@ -646,9 +645,7 @@ mod tests {
         let mgr = LifecycleManager::new(node_id, LifecycleConfig::default());
         let id = mgr.spawn(test_profile()).unwrap();
 
-        let cp = mgr
-            .checkpoint(&id, serde_json::json!({}), vec![])
-            .unwrap();
+        let cp = mgr.checkpoint(&id, serde_json::json!({}), vec![]).unwrap();
         mgr.terminate(&id, "test").unwrap();
         assert_eq!(mgr.agent_count(), 0);
 
@@ -668,7 +665,13 @@ mod tests {
 
         // Begin migration on source
         let (_req, cp) = source
-            .begin_migration(&id, target_node, "load balance", serde_json::json!({}), vec![])
+            .begin_migration(
+                &id,
+                target_node,
+                "load balance",
+                serde_json::json!({}),
+                vec![],
+            )
             .unwrap();
         assert_eq!(source.get_state(&id), Some(AgentState::Migrating));
 
@@ -693,7 +696,10 @@ mod tests {
         mgr.spawn(test_profile()).unwrap();
         mgr.spawn(test_profile()).unwrap();
         let result = mgr.spawn(test_profile());
-        assert!(matches!(result, Err(LifecycleError::CapacityExceeded { .. })));
+        assert!(matches!(
+            result,
+            Err(LifecycleError::CapacityExceeded { .. })
+        ));
     }
 
     #[test]
@@ -719,7 +725,8 @@ mod tests {
         let id = mgr.spawn(test_profile()).unwrap();
 
         for i in 0..5 {
-            mgr.checkpoint(&id, serde_json::json!({"i": i}), vec![]).unwrap();
+            mgr.checkpoint(&id, serde_json::json!({"i": i}), vec![])
+                .unwrap();
         }
 
         let cps = mgr.checkpoints.get(&id).unwrap();

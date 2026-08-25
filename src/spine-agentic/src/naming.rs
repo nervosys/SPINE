@@ -447,10 +447,7 @@ impl NameService {
     pub fn new(local_key: NameKey) -> Self {
         Self {
             local_key,
-            store: spine_name::RecordStore::with_limits(
-                local_key,
-                spine_name::DEFAULT_CAPACITY,
-            ),
+            store: spine_name::RecordStore::with_limits(local_key, spine_name::DEFAULT_CAPACITY),
             routing: RoutingTable::new(local_key),
             peers: HashMap::new(),
             lookups: HashMap::new(),
@@ -809,7 +806,11 @@ mod tests {
     }
 
     fn node(seed: u8) -> NodeInfo {
-        NodeInfo::new(NameKey::of(&[seed]), vec![format!("10.0.0.{seed}:9440")], 100)
+        NodeInfo::new(
+            NameKey::of(&[seed]),
+            vec![format!("10.0.0.{seed}:9440")],
+            100,
+        )
     }
 
     /// A stable mesh identity per seed, so a test peer is addressable.
@@ -826,7 +827,11 @@ mod tests {
     fn capability_queries_route_to_a_stable_point_in_the_keyspace() {
         let a = ResolveQuery::Capability("web.search".into());
         let b = ResolveQuery::Capability("WEB.SEARCH".into());
-        assert_eq!(a.target_key(), b.target_key(), "case must not split the key");
+        assert_eq!(
+            a.target_key(),
+            b.target_key(),
+            "case must not split the key"
+        );
         assert_ne!(
             a.target_key(),
             ResolveQuery::Capability("web.crawl".into()).target_key()
@@ -999,7 +1004,11 @@ mod tests {
             closer: vec![],
         });
         if let Some(outcome) = svc.lookup_outcome(id) {
-            assert_eq!(outcome, LookupOutcome::NotFound, "wrong-name record ignored");
+            assert_eq!(
+                outcome,
+                LookupOutcome::NotFound,
+                "wrong-name record ignored"
+            );
         }
     }
 
@@ -1125,7 +1134,10 @@ mod tests {
             }
         }
 
-        assert!(lookup.is_done(), "an adversarial peer must not stall a lookup");
+        assert!(
+            lookup.is_done(),
+            "an adversarial peer must not stall a lookup"
+        );
         assert_eq!(lookup.outcome(), Some(LookupOutcome::NotFound));
         assert_eq!(lookup.in_flight(), 0, "no request left dangling");
     }
@@ -1153,7 +1165,10 @@ mod tests {
         });
         assert!(lookup.next_wave().is_empty());
         assert_eq!(lookup.in_flight(), 1);
-        assert!(!lookup.is_done(), "must not settle while a peer is outstanding");
+        assert!(
+            !lookup.is_done(),
+            "must not settle while a peer is outstanding"
+        );
 
         // Second peer answers; now it is genuinely done, with both providers.
         lookup.on_response(&ResolveResponse {
@@ -1208,7 +1223,10 @@ mod tests {
 
     #[test]
     fn a_timeout_removes_a_peer_from_consideration() {
-        let mut lookup = Lookup::new(ResolveQuery::Name(SpineUri::did([1u8; 32])), vec![node(1), node(2)]);
+        let mut lookup = Lookup::new(
+            ResolveQuery::Name(SpineUri::did([1u8; 32])),
+            vec![node(1), node(2)],
+        );
         lookup.next_wave();
         lookup.on_timeout(&node(1).id);
         assert!(!lookup.shortlist.iter().any(|n| n.id == node(1).id));
@@ -1293,7 +1311,8 @@ mod tests {
 
         // A request and its answer are ordinary addressed envelopes.
         let peer = *node.agent_id();
-        let req = node.name_resolve_request(peer, 42, ResolveQuery::Capability("web.search".into()));
+        let req =
+            node.name_resolve_request(peer, 42, ResolveQuery::Capability("web.search".into()));
         assert_eq!(req.to, MeshTarget::Agent(peer));
         match &req.payload {
             MeshPayload::NameResolveRequest(r) => assert_eq!(r.request_id, 42),
@@ -1400,7 +1419,10 @@ mod tests {
         response.record = Some(record(9, 1, 100, &[]));
         lookup.on_response(&response);
 
-        assert!(!lookup.is_done(), "a record is not an answer to a node query");
+        assert!(
+            !lookup.is_done(),
+            "a record is not an answer to a node query"
+        );
         assert!(lookup.outcome().is_none());
     }
 
@@ -1486,7 +1508,10 @@ mod tests {
         for i in 0..K as u8 {
             let mut bytes = *target.as_bytes();
             bytes[31] ^= i;
-            service.add_peer(NodeInfo::new(NameKey::from_bytes(bytes), vec![], 100), agent(i));
+            service.add_peer(
+                NodeInfo::new(NameKey::from_bytes(bytes), vec![], 100),
+                agent(i),
+            );
         }
 
         assert_eq!(

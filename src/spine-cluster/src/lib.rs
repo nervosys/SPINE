@@ -479,15 +479,13 @@ impl ClusterNode {
                                         session_id,
                                         from_node,
                                         to_node,
+                                    } if to_node == id => {
+                                        let _ =
+                                            event_tx.send(ClusterEvent::SessionTransferRequested {
+                                                session_id,
+                                                from_node,
+                                            });
                                     }
-                                        if to_node == id => {
-                                            let _ = event_tx.send(
-                                                ClusterEvent::SessionTransferRequested {
-                                                    session_id,
-                                                    from_node,
-                                                },
-                                            );
-                                        }
                                     ClusterMessage::SessionTransferData { session_id, data } => {
                                         let _ = event_tx.send(ClusterEvent::SessionDataReceived {
                                             session_id,
@@ -498,14 +496,13 @@ impl ClusterNode {
                                         query,
                                         request_id,
                                         origin_node,
+                                    } if origin_node != id => {
+                                        let _ = event_tx.send(ClusterEvent::SearchRequested {
+                                            query,
+                                            request_id,
+                                            origin_node,
+                                        });
                                     }
-                                        if origin_node != id => {
-                                            let _ = event_tx.send(ClusterEvent::SearchRequested {
-                                                query,
-                                                request_id,
-                                                origin_node,
-                                            });
-                                        }
                                     ClusterMessage::SearchResponse {
                                         request_id,
                                         results,
@@ -534,59 +531,53 @@ impl ClusterNode {
                                         value,
                                         tags,
                                         origin_node,
+                                    } if origin_node != id => {
+                                        let _ = event_tx.send(ClusterEvent::KnowledgeSynced {
+                                            key,
+                                            value,
+                                            tags,
+                                            origin_node,
+                                        });
                                     }
-                                        if origin_node != id => {
-                                            let _ = event_tx.send(ClusterEvent::KnowledgeSynced {
-                                                key,
-                                                value,
-                                                tags,
-                                                origin_node,
-                                            });
-                                        }
                                     ClusterMessage::SwarmSearchRequest {
                                         query,
                                         depth,
                                         request_id,
                                         origin_node,
+                                    } if origin_node != id => {
+                                        let _ = event_tx.send(ClusterEvent::SwarmSearchRequested {
+                                            query,
+                                            depth,
+                                            request_id,
+                                            origin_node,
+                                        });
                                     }
-                                        if origin_node != id => {
-                                            let _ =
-                                                event_tx.send(ClusterEvent::SwarmSearchRequested {
-                                                    query,
-                                                    depth,
-                                                    request_id,
-                                                    origin_node,
-                                                });
-                                        }
                                     ClusterMessage::TaskDelegation {
                                         task,
                                         target_agent_id,
                                         origin_node,
+                                    } if origin_node != id => {
+                                        let _ = event_tx.send(ClusterEvent::TaskDelegated {
+                                            task,
+                                            target_agent_id,
+                                            origin_node,
+                                        });
                                     }
-                                        if origin_node != id => {
-                                            let _ = event_tx.send(ClusterEvent::TaskDelegated {
-                                                task,
-                                                target_agent_id,
-                                                origin_node,
-                                            });
-                                        }
                                     ClusterMessage::ProposeKnowledge {
                                         proposal_id,
                                         key,
                                         value,
                                         tags,
                                         origin_node,
+                                    } if origin_node != id => {
+                                        let _ = event_tx.send(ClusterEvent::KnowledgeProposed {
+                                            proposal_id,
+                                            key,
+                                            value,
+                                            tags,
+                                            origin_node,
+                                        });
                                     }
-                                        if origin_node != id => {
-                                            let _ =
-                                                event_tx.send(ClusterEvent::KnowledgeProposed {
-                                                    proposal_id,
-                                                    key,
-                                                    value,
-                                                    tags,
-                                                    origin_node,
-                                                });
-                                        }
                                     ClusterMessage::KnowledgeVote {
                                         proposal_id,
                                         voter_id,
@@ -615,13 +606,13 @@ impl ClusterNode {
                                         });
                                     }
                                     ClusterMessage::ProposeSwarmPlan { plan, origin_node }
-                                        if origin_node != id => {
-                                            let _ =
-                                                event_tx.send(ClusterEvent::SwarmPlanProposed {
-                                                    plan,
-                                                    origin_node,
-                                                });
-                                        }
+                                        if origin_node != id =>
+                                    {
+                                        let _ = event_tx.send(ClusterEvent::SwarmPlanProposed {
+                                            plan,
+                                            origin_node,
+                                        });
+                                    }
                                     ClusterMessage::UpdatePlanTask {
                                         plan_id,
                                         task_id,

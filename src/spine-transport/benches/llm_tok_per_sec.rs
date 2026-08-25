@@ -307,72 +307,86 @@ fn bench_batch_tokens(c: &mut Criterion) {
         let spine_frame = tokens_to_spine_frame(&token_ids);
 
         // ----- HTTP/2 + JSON (OpenAI SSE format) -----
-        group.bench_with_input(BenchmarkId::new("http2_openai_sse", n_tokens), &n_tokens, |b, _| {
-            let rt = Runtime::new().unwrap();
-            let send = rt.block_on(async {
-                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
-                let port = listener.local_addr().unwrap().port();
-                spawn_h2_echo(listener).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                h2_connect(port).await
-            });
-            let body = Bytes::from(json_body.clone());
-            b.to_async(&rt).iter(|| {
-                let send = send.clone();
-                let body = body.clone();
-                async move {
-                    let n = h2_roundtrip(send, body).await;
-                    black_box(n);
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("http2_openai_sse", n_tokens),
+            &n_tokens,
+            |b, _| {
+                let rt = Runtime::new().unwrap();
+                let send = rt.block_on(async {
+                    let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    spawn_h2_echo(listener).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    h2_connect(port).await
+                });
+                let body = Bytes::from(json_body.clone());
+                b.to_async(&rt).iter(|| {
+                    let send = send.clone();
+                    let body = body.clone();
+                    async move {
+                        let n = h2_roundtrip(send, body).await;
+                        black_box(n);
+                    }
+                });
+            },
+        );
 
         // ----- HTTP/2 + binary -----
-        group.bench_with_input(BenchmarkId::new("http2_binary", n_tokens), &n_tokens, |b, _| {
-            let rt = Runtime::new().unwrap();
-            let send = rt.block_on(async {
-                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
-                let port = listener.local_addr().unwrap().port();
-                spawn_h2_echo(listener).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                h2_connect(port).await
-            });
-            let body = Bytes::from(binary_body.clone());
-            b.to_async(&rt).iter(|| {
-                let send = send.clone();
-                let body = body.clone();
-                async move {
-                    let n = h2_roundtrip(send, body).await;
-                    black_box(n);
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("http2_binary", n_tokens),
+            &n_tokens,
+            |b, _| {
+                let rt = Runtime::new().unwrap();
+                let send = rt.block_on(async {
+                    let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    spawn_h2_echo(listener).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    h2_connect(port).await
+                });
+                let body = Bytes::from(binary_body.clone());
+                b.to_async(&rt).iter(|| {
+                    let send = send.clone();
+                    let body = body.clone();
+                    async move {
+                        let n = h2_roundtrip(send, body).await;
+                        black_box(n);
+                    }
+                });
+            },
+        );
 
         // ----- SPINE async -----
-        group.bench_with_input(BenchmarkId::new("spine_async", n_tokens), &n_tokens, |b, _| {
-            let rt = Runtime::new().unwrap();
-            let client = rt.block_on(async {
-                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
-                let port = listener.local_addr().unwrap().port();
-                spawn_spine_async_echo(listener).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                Arc::new(AsyncMutex::new(
-                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port)).await.unwrap(),
-                ))
-            });
-            let frame = Arc::new(spine_frame.clone());
-            let expected_recv = frame.len();
-            b.to_async(&rt).iter(|| {
-                let client = Arc::clone(&client);
-                let frame = Arc::clone(&frame);
-                async move {
-                    let mut c = client.lock().await;
-                    c.send_bytes(&frame).await.unwrap();
-                    let resp = c.recv_bytes(expected_recv).await.unwrap();
-                    black_box(resp);
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("spine_async", n_tokens),
+            &n_tokens,
+            |b, _| {
+                let rt = Runtime::new().unwrap();
+                let client = rt.block_on(async {
+                    let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    spawn_spine_async_echo(listener).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Arc::new(AsyncMutex::new(
+                        AsyncSpineClient::connect(&format!("127.0.0.1:{}", port))
+                            .await
+                            .unwrap(),
+                    ))
+                });
+                let frame = Arc::new(spine_frame.clone());
+                let expected_recv = frame.len();
+                b.to_async(&rt).iter(|| {
+                    let client = Arc::clone(&client);
+                    let frame = Arc::clone(&frame);
+                    async move {
+                        let mut c = client.lock().await;
+                        c.send_bytes(&frame).await.unwrap();
+                        let resp = c.recv_bytes(expected_recv).await.unwrap();
+                        black_box(resp);
+                    }
+                });
+            },
+        );
     }
 
     group.finish();
@@ -427,51 +441,61 @@ fn bench_streaming_tokens(c: &mut Criterion) {
         }
 
         // ----- HTTP/2 + JSON SSE streaming -----
-        group.bench_with_input(BenchmarkId::new("http2_openai_sse", n_tokens), &n_tokens, |b, _| {
-            let rt = Runtime::new().unwrap();
-            let send = rt.block_on(async {
-                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
-                let port = listener.local_addr().unwrap().port();
-                spawn_h2_echo(listener).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                h2_connect(port).await
-            });
-            let body = Bytes::from(json_body.clone());
-            b.to_async(&rt).iter(|| {
-                let send = send.clone();
-                let body = body.clone();
-                async move {
-                    let n = h2_roundtrip(send, body).await;
-                    black_box(n);
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("http2_openai_sse", n_tokens),
+            &n_tokens,
+            |b, _| {
+                let rt = Runtime::new().unwrap();
+                let send = rt.block_on(async {
+                    let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    spawn_h2_echo(listener).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    h2_connect(port).await
+                });
+                let body = Bytes::from(json_body.clone());
+                b.to_async(&rt).iter(|| {
+                    let send = send.clone();
+                    let body = body.clone();
+                    async move {
+                        let n = h2_roundtrip(send, body).await;
+                        black_box(n);
+                    }
+                });
+            },
+        );
 
         // ----- SPINE async, per-token frames -----
-        group.bench_with_input(BenchmarkId::new("spine_per_token", n_tokens), &n_tokens, |b, _| {
-            let rt = Runtime::new().unwrap();
-            let client = rt.block_on(async {
-                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
-                let port = listener.local_addr().unwrap().port();
-                spawn_spine_async_echo(listener).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                Arc::new(AsyncMutex::new(
-                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port)).await.unwrap(),
-                ))
-            });
-            let req = Arc::new(spine_req.clone());
-            let expected_recv = req.len();
-            b.to_async(&rt).iter(|| {
-                let client = Arc::clone(&client);
-                let req = Arc::clone(&req);
-                async move {
-                    let mut c = client.lock().await;
-                    c.send_bytes(&req).await.unwrap();
-                    let resp = c.recv_bytes(expected_recv).await.unwrap();
-                    black_box(resp);
-                }
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("spine_per_token", n_tokens),
+            &n_tokens,
+            |b, _| {
+                let rt = Runtime::new().unwrap();
+                let client = rt.block_on(async {
+                    let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    spawn_spine_async_echo(listener).await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Arc::new(AsyncMutex::new(
+                        AsyncSpineClient::connect(&format!("127.0.0.1:{}", port))
+                            .await
+                            .unwrap(),
+                    ))
+                });
+                let req = Arc::new(spine_req.clone());
+                let expected_recv = req.len();
+                b.to_async(&rt).iter(|| {
+                    let client = Arc::clone(&client);
+                    let req = Arc::clone(&req);
+                    async move {
+                        let mut c = client.lock().await;
+                        c.send_bytes(&req).await.unwrap();
+                        let resp = c.recv_bytes(expected_recv).await.unwrap();
+                        black_box(resp);
+                    }
+                });
+            },
+        );
     }
 
     group.finish();
@@ -565,7 +589,9 @@ fn bench_single_embedding_async(c: &mut Criterion) {
                 spawn_spine_async_echo(listener).await;
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 Arc::new(AsyncMutex::new(
-                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port)).await.unwrap(),
+                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port))
+                        .await
+                        .unwrap(),
                 ))
             });
             let req = Arc::new(spine_buf.clone());
@@ -635,7 +661,9 @@ fn bench_pipelined_tokens(c: &mut Criterion) {
                 spawn_spine_async_echo(listener).await;
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 Arc::new(AsyncMutex::new(
-                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port)).await.unwrap(),
+                    AsyncSpineClient::connect(&format!("127.0.0.1:{}", port))
+                        .await
+                        .unwrap(),
                 ))
             });
             let req = Arc::new(send_buf.clone());
@@ -671,9 +699,7 @@ fn bench_pipelined_tokens(c: &mut Criterion) {
                     for _ in 0..k {
                         let send = send.clone();
                         let body = body.clone();
-                        tasks.push(tokio::spawn(async move {
-                            h2_roundtrip(send, body).await
-                        }));
+                        tasks.push(tokio::spawn(async move { h2_roundtrip(send, body).await }));
                     }
                     let mut total = 0;
                     for t in tasks {

@@ -33,12 +33,12 @@ use std::time::Duration;
 
 #[repr(C, align(64))] // cacheline-align head & tail to avoid false sharing
 struct RingInner {
-    head: AtomicU64,            // bytes written (producer)
-    _pad0: [u8; 56],            // pad head onto its own cacheline
-    tail: AtomicU64,            // bytes read (consumer)
+    head: AtomicU64, // bytes written (producer)
+    _pad0: [u8; 56], // pad head onto its own cacheline
+    tail: AtomicU64, // bytes read (consumer)
     _pad1: [u8; 56],
-    capacity: usize,            // always power of 2
-    mask: usize,                // capacity - 1
+    capacity: usize, // always power of 2
+    mask: usize,     // capacity - 1
     buf: *mut u8,
 }
 
@@ -65,7 +65,10 @@ impl ShmRing {
             mask: capacity - 1,
             buf: ptr,
         });
-        Self { inner, _backing: backing }
+        Self {
+            inner,
+            _backing: backing,
+        }
     }
 
     pub fn clone_handle(&self) -> Self {
@@ -101,11 +104,7 @@ impl ShmRing {
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), inner.buf.add(off), first);
             if first < n {
-                std::ptr::copy_nonoverlapping(
-                    data.as_ptr().add(first),
-                    inner.buf,
-                    n - first,
-                );
+                std::ptr::copy_nonoverlapping(data.as_ptr().add(first), inner.buf, n - first);
             }
         }
         head += n as u64;
@@ -135,11 +134,7 @@ impl ShmRing {
         unsafe {
             std::ptr::copy_nonoverlapping(inner.buf.add(off), out.as_mut_ptr(), first);
             if first < n {
-                std::ptr::copy_nonoverlapping(
-                    inner.buf,
-                    out.as_mut_ptr().add(first),
-                    n - first,
-                );
+                std::ptr::copy_nonoverlapping(inner.buf, out.as_mut_ptr().add(first), n - first);
             }
         }
         tail += n as u64;
@@ -186,8 +181,7 @@ fn spawn_shm_echo(server: ShmTransport, stop: Arc<AtomicU64>) -> thread::JoinHan
                 return;
             }
             server.req.read_exact(&mut frame[..12]);
-            let length =
-                u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+            let length = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
             let total = 12 + length;
             if total > frame.len() {
                 frame.resize(total, 0);
@@ -250,30 +244,34 @@ fn bench_shm_batch(c: &mut Criterion) {
         // Ring capacity must hold one full frame at minimum; round up to pow2.
         let ring_cap = ((frame_len * 4).next_power_of_two()).max(1 << 16);
 
-        group.bench_with_input(BenchmarkId::new("spine_shm", n_tokens), &n_tokens, |b, _| {
-            let (client, server) = ShmTransport::new_pair(ring_cap);
-            let stop = Arc::new(AtomicU64::new(0));
-            let stop_h = Arc::clone(&stop);
-            let server_handle = spawn_shm_echo(server, stop_h);
-            // Warm-up: do one roundtrip outside the bench to ensure the
-            // server thread is in steady state.
-            client.req.write_all(&spine_frame);
-            let mut tmp = vec![0u8; frame_len];
-            client.resp.read_exact(&mut tmp);
-
-            let mut recv = vec![0u8; frame_len];
-            b.iter(|| {
+        group.bench_with_input(
+            BenchmarkId::new("spine_shm", n_tokens),
+            &n_tokens,
+            |b, _| {
+                let (client, server) = ShmTransport::new_pair(ring_cap);
+                let stop = Arc::new(AtomicU64::new(0));
+                let stop_h = Arc::clone(&stop);
+                let server_handle = spawn_shm_echo(server, stop_h);
+                // Warm-up: do one roundtrip outside the bench to ensure the
+                // server thread is in steady state.
                 client.req.write_all(&spine_frame);
-                client.resp.read_exact(&mut recv);
-                black_box(&recv);
-            });
+                let mut tmp = vec![0u8; frame_len];
+                client.resp.read_exact(&mut tmp);
 
-            // Abandon the server thread; the bench process tear-down ends it.
-            // Storing stop is best-effort; the thread is spinning on a ring
-            // read which we don't drain (would require another roundtrip).
-            stop.store(1, Ordering::Relaxed);
-            std::mem::forget(server_handle);
-        });
+                let mut recv = vec![0u8; frame_len];
+                b.iter(|| {
+                    client.req.write_all(&spine_frame);
+                    client.resp.read_exact(&mut recv);
+                    black_box(&recv);
+                });
+
+                // Abandon the server thread; the bench process tear-down ends it.
+                // Storing stop is best-effort; the thread is spinning on a ring
+                // read which we don't drain (would require another roundtrip).
+                stop.store(1, Ordering::Relaxed);
+                std::mem::forget(server_handle);
+            },
+        );
     }
 
     group.finish();

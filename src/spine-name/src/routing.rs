@@ -311,7 +311,10 @@ mod tests {
             "expected multiple buckets, got {:?}",
             t.bucket_sizes()
         );
-        assert_eq!(t.bucket_sizes().iter().map(|(_, n)| n).sum::<usize>(), t.len());
+        assert_eq!(
+            t.bucket_sizes().iter().map(|(_, n)| n).sum::<usize>(),
+            t.len()
+        );
     }
 
     #[test]

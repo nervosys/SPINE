@@ -200,11 +200,7 @@ impl PluginRegistry {
     }
 
     /// Get a specific version of a plugin.
-    pub fn get_version(
-        &self,
-        name: &str,
-        version: &SemVer,
-    ) -> Option<Box<dyn TransportPlugin>> {
+    pub fn get_version(&self, name: &str, version: &SemVer) -> Option<Box<dyn TransportPlugin>> {
         let entries = self.entries.read().unwrap();
         entries.get(name).and_then(|versions| {
             versions
@@ -253,12 +249,7 @@ impl PluginRegistry {
 
     /// Total number of plugin versions across all names.
     pub fn version_count(&self) -> usize {
-        self.entries
-            .read()
-            .unwrap()
-            .values()
-            .map(|v| v.len())
-            .sum()
+        self.entries.read().unwrap().values().map(|v| v.len()).sum()
     }
 
     /// Remove a plugin by name (all versions).
@@ -363,16 +354,14 @@ mod tests {
     #[test]
     fn test_duplicate_version_rejected() {
         let reg = PluginRegistry::new();
-        reg.register(
-            PluginDescriptor::new("x", SemVer::new(1, 0, 0)),
-            || Box::new(MetricsPlugin::new()),
-        )
+        reg.register(PluginDescriptor::new("x", SemVer::new(1, 0, 0)), || {
+            Box::new(MetricsPlugin::new())
+        })
         .unwrap();
 
-        let result = reg.register(
-            PluginDescriptor::new("x", SemVer::new(1, 0, 0)),
-            || Box::new(MetricsPlugin::new()),
-        );
+        let result = reg.register(PluginDescriptor::new("x", SemVer::new(1, 0, 0)), || {
+            Box::new(MetricsPlugin::new())
+        });
         assert!(result.is_err());
     }
 
@@ -380,8 +369,7 @@ mod tests {
     fn test_search_by_capability() {
         let reg = PluginRegistry::new();
         reg.register(
-            PluginDescriptor::new("metrics", SemVer::new(1, 0, 0))
-                .capability("observability"),
+            PluginDescriptor::new("metrics", SemVer::new(1, 0, 0)).capability("observability"),
             || Box::new(MetricsPlugin::new()),
         )
         .unwrap();
@@ -423,15 +411,13 @@ mod tests {
     #[test]
     fn test_list_all() {
         let reg = PluginRegistry::new();
-        reg.register(
-            PluginDescriptor::new("a", SemVer::new(1, 0, 0)),
-            || Box::new(MetricsPlugin::new()),
-        )
+        reg.register(PluginDescriptor::new("a", SemVer::new(1, 0, 0)), || {
+            Box::new(MetricsPlugin::new())
+        })
         .unwrap();
-        reg.register(
-            PluginDescriptor::new("b", SemVer::new(1, 0, 0)),
-            || Box::new(LoggingPlugin::summary()),
-        )
+        reg.register(PluginDescriptor::new("b", SemVer::new(1, 0, 0)), || {
+            Box::new(LoggingPlugin::summary())
+        })
         .unwrap();
 
         let all = reg.list();
@@ -441,10 +427,9 @@ mod tests {
     #[test]
     fn test_unregister() {
         let reg = PluginRegistry::new();
-        reg.register(
-            PluginDescriptor::new("temp", SemVer::new(1, 0, 0)),
-            || Box::new(MetricsPlugin::new()),
-        )
+        reg.register(PluginDescriptor::new("temp", SemVer::new(1, 0, 0)), || {
+            Box::new(MetricsPlugin::new())
+        })
         .unwrap();
         assert_eq!(reg.plugin_count(), 1);
         assert!(reg.unregister("temp"));

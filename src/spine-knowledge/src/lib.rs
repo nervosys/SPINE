@@ -1355,9 +1355,24 @@ mod tests {
     fn test_collective_query_by_tags() {
         let node = Uuid::new_v4();
         let mem = CollectiveMemory::new(node, CollectiveConfig::default());
-        mem.store("k1", KnowledgeValue::Text("v1".into()), vec!["tag_a".into()], 0.5);
-        mem.store("k2", KnowledgeValue::Text("v2".into()), vec!["tag_b".into()], 0.5);
-        mem.store("k3", KnowledgeValue::Text("v3".into()), vec!["tag_a".into(), "tag_b".into()], 0.5);
+        mem.store(
+            "k1",
+            KnowledgeValue::Text("v1".into()),
+            vec!["tag_a".into()],
+            0.5,
+        );
+        mem.store(
+            "k2",
+            KnowledgeValue::Text("v2".into()),
+            vec!["tag_b".into()],
+            0.5,
+        );
+        mem.store(
+            "k3",
+            KnowledgeValue::Text("v3".into()),
+            vec!["tag_a".into(), "tag_b".into()],
+            0.5,
+        );
         let results = mem.query_by_tags(&["tag_a".into()]);
         assert_eq!(results.len(), 2);
     }

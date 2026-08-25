@@ -56,11 +56,7 @@ impl AgentSpan {
     }
 
     /// Start a child span from a parent context.
-    pub fn child(
-        ctx: &TraceContext,
-        agent_id: AgentId,
-        operation: impl Into<String>,
-    ) -> Self {
+    pub fn child(ctx: &TraceContext, agent_id: AgentId, operation: impl Into<String>) -> Self {
         Self {
             trace_id: ctx.trace_id,
             span_id: Uuid::new_v4(),
@@ -230,10 +226,7 @@ impl TraceCollector {
                 self.traces.remove(&oldest);
             }
         }
-        self.traces
-            .entry(span.trace_id)
-            .or_default()
-            .push(span);
+        self.traces.entry(span.trace_id).or_default().push(span);
     }
 
     /// Get all spans for a trace, ordered by start time.
@@ -250,12 +243,9 @@ impl TraceCollector {
 
     /// Get the root span of a trace.
     pub fn root_span(&self, trace_id: TraceId) -> Option<AgentSpan> {
-        self.traces.get(&trace_id).and_then(|spans| {
-            spans
-                .iter()
-                .find(|s| s.parent_span_id.is_none())
-                .cloned()
-        })
+        self.traces
+            .get(&trace_id)
+            .and_then(|spans| spans.iter().find(|s| s.parent_span_id.is_none()).cloned())
     }
 
     /// Total duration of a trace (root start → last span end).
@@ -378,7 +368,10 @@ mod tests {
         let agent = AgentId::new();
         let mut span = AgentSpan::root(agent, "work");
         span.add_event("checkpoint", HashMap::new());
-        span.add_event("retry", HashMap::from([("attempt".into(), SpanValue::Int(2))]));
+        span.add_event(
+            "retry",
+            HashMap::from([("attempt".into(), SpanValue::Int(2))]),
+        );
         assert_eq!(span.events.len(), 2);
         assert_eq!(span.events[1].name, "retry");
     }

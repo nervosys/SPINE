@@ -14,7 +14,6 @@ use spine_protocol::{Instruction, ProtocolBinOp, ProtocolUnaryOp, SpineBinary};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-
 // =============================================================================
 // SOURCE LOCATION TRACKING
 // =============================================================================
@@ -99,7 +98,10 @@ impl TypeError {
         msg.push_str(&format!("\n{:>3} | {}", line, source_line));
         msg.push_str("\n  |");
         if let (Some(expected), Some(found)) = (&self.expected, &self.found) {
-            msg.push_str(&format!("\n  = expected `{:?}`, found `{:?}`", expected, found));
+            msg.push_str(&format!(
+                "\n  = expected `{:?}`, found `{:?}`",
+                expected, found
+            ));
         }
         msg
     }
@@ -141,7 +143,6 @@ impl TypeErrors {
             .join("\n\n")
     }
 }
-
 
 // =============================================================================
 // COMPILER STATE
@@ -1174,7 +1175,6 @@ impl Compiler {
         Ok(())
     }
 
-
     /// Perform type checking, collecting all errors instead of aborting on first.
     /// Returns a `TypeErrors` collection. If non-empty, compilation should fail.
     #[allow(clippy::only_used_in_recursion)]
@@ -1185,87 +1185,98 @@ impl Compiler {
         errors: &mut TypeErrors,
     ) {
         match stmt {
-            HlsStatement::Let { name, value, type_annotation } => {
-                match Self::infer_expr_type(ctx, value) {
-                    Ok(val_type) => {
-                        let final_type = if let Some(annotated) = type_annotation {
-                            if !Self::types_match(annotated, &val_type) {
-                                errors.push(
-                                    TypeError::new(
-                                        format!("type mismatch for variable '{}'", name),
-                                        Span::default(),
-                                    )
-                                    .with_types(annotated.clone(), val_type.clone()),
-                                );
-                            }
-                            annotated.clone()
-                        } else {
-                            val_type
-                        };
-                        ctx.variables.insert(name.clone(), (final_type, HlsValue::Null));
-                    }
-                    Err(e) => {
-                        errors.push(TypeError::new(e.to_string(), Span::default()));
-                    }
-                }
-            }
-            HlsStatement::State { name, initial, type_annotation } => {
-                match Self::infer_expr_type(ctx, initial) {
-                    Ok(val_type) => {
-                        let final_type = if let Some(annotated) = type_annotation {
-                            if !Self::types_match(annotated, &val_type) {
-                                errors.push(
-                                    TypeError::new(
-                                        format!("type mismatch for state '{}'", name),
-                                        Span::default(),
-                                    )
-                                    .with_types(annotated.clone(), val_type.clone()),
-                                );
-                            }
-                            annotated.clone()
-                        } else {
-                            val_type
-                        };
-                        ctx.variables.insert(name.clone(), (final_type, HlsValue::Null));
-                    }
-                    Err(e) => {
-                        errors.push(TypeError::new(e.to_string(), Span::default()));
-                    }
-                }
-            }
-            HlsStatement::Assign { name, value } => {
-                match Self::infer_expr_type(ctx, value) {
-                    Ok(val_type) => {
-                        if let Some((expected_type, _)) = ctx.variables.get(name) {
-                            if !Self::types_match(expected_type, &val_type) {
-                                errors.push(
-                                    TypeError::new(
-                                        format!("type mismatch in assignment to '{}'", name),
-                                        Span::default(),
-                                    )
-                                    .with_types(expected_type.clone(), val_type),
-                                );
-                            }
-                        } else {
-                            errors.push(TypeError::new(
-                                format!("undefined variable '{}'", name),
-                                Span::default(),
-                            ));
+            HlsStatement::Let {
+                name,
+                value,
+                type_annotation,
+            } => match Self::infer_expr_type(ctx, value) {
+                Ok(val_type) => {
+                    let final_type = if let Some(annotated) = type_annotation {
+                        if !Self::types_match(annotated, &val_type) {
+                            errors.push(
+                                TypeError::new(
+                                    format!("type mismatch for variable '{}'", name),
+                                    Span::default(),
+                                )
+                                .with_types(annotated.clone(), val_type.clone()),
+                            );
                         }
-                    }
-                    Err(e) => {
-                        errors.push(TypeError::new(e.to_string(), Span::default()));
+                        annotated.clone()
+                    } else {
+                        val_type
+                    };
+                    ctx.variables
+                        .insert(name.clone(), (final_type, HlsValue::Null));
+                }
+                Err(e) => {
+                    errors.push(TypeError::new(e.to_string(), Span::default()));
+                }
+            },
+            HlsStatement::State {
+                name,
+                initial,
+                type_annotation,
+            } => match Self::infer_expr_type(ctx, initial) {
+                Ok(val_type) => {
+                    let final_type = if let Some(annotated) = type_annotation {
+                        if !Self::types_match(annotated, &val_type) {
+                            errors.push(
+                                TypeError::new(
+                                    format!("type mismatch for state '{}'", name),
+                                    Span::default(),
+                                )
+                                .with_types(annotated.clone(), val_type.clone()),
+                            );
+                        }
+                        annotated.clone()
+                    } else {
+                        val_type
+                    };
+                    ctx.variables
+                        .insert(name.clone(), (final_type, HlsValue::Null));
+                }
+                Err(e) => {
+                    errors.push(TypeError::new(e.to_string(), Span::default()));
+                }
+            },
+            HlsStatement::Assign { name, value } => match Self::infer_expr_type(ctx, value) {
+                Ok(val_type) => {
+                    if let Some((expected_type, _)) = ctx.variables.get(name) {
+                        if !Self::types_match(expected_type, &val_type) {
+                            errors.push(
+                                TypeError::new(
+                                    format!("type mismatch in assignment to '{}'", name),
+                                    Span::default(),
+                                )
+                                .with_types(expected_type.clone(), val_type),
+                            );
+                        }
+                    } else {
+                        errors.push(TypeError::new(
+                            format!("undefined variable '{}'", name),
+                            Span::default(),
+                        ));
                     }
                 }
-            }
-            HlsStatement::FnDef { name, params, body, return_type } => {
+                Err(e) => {
+                    errors.push(TypeError::new(e.to_string(), Span::default()));
+                }
+            },
+            HlsStatement::FnDef {
+                name,
+                params,
+                body,
+                return_type,
+            } => {
                 let mut fn_ctx = CompilerContext {
                     variables: ctx.variables.clone(),
                     functions: ctx.functions.clone(),
                     ..Default::default()
                 };
                 for (p_name, p_type) in params {
-                    fn_ctx.variables.insert(p_name.clone(), (p_type.clone(), HlsValue::Null));
+                    fn_ctx
+                        .variables
+                        .insert(p_name.clone(), (p_type.clone(), HlsValue::Null));
                 }
                 let r_type = return_type.clone().unwrap_or(HlsType::Any);
 
@@ -1276,10 +1287,7 @@ impl Compiler {
                             if r_type != HlsType::Any && !Self::types_match(&r_type, &ret_type) {
                                 errors.push(
                                     TypeError::new(
-                                        format!(
-                                            "function '{}' return type mismatch",
-                                            name
-                                        ),
+                                        format!("function '{}' return type mismatch", name),
                                         Span::default(),
                                     )
                                     .with_types(r_type.clone(), ret_type),
@@ -1320,10 +1328,7 @@ impl Compiler {
                                 if !Self::types_match(&func.params[i].1, &arg_type) {
                                     errors.push(
                                         TypeError::new(
-                                            format!(
-                                                "argument {} of '{}' type mismatch",
-                                                i, name
-                                            ),
+                                            format!("argument {} of '{}' type mismatch", i, name),
                                             Span::default(),
                                         )
                                         .with_types(func.params[i].1.clone(), arg_type),
@@ -1334,7 +1339,11 @@ impl Compiler {
                     }
                 }
             }
-            HlsStatement::If { condition, then_branch, else_branch } => {
+            HlsStatement::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
                 if let Err(e) = Self::infer_expr_type(ctx, condition) {
                     errors.push(TypeError::new(e.to_string(), Span::default()));
                 }
@@ -1356,7 +1365,8 @@ impl Compiler {
                         HlsType::Any
                     }
                 };
-                ctx.variables.insert(item.clone(), (inner_type, HlsValue::Null));
+                ctx.variables
+                    .insert(item.clone(), (inner_type, HlsValue::Null));
                 for s in body {
                     Self::check_types_collect(ctx, s, source, errors);
                 }
@@ -1393,12 +1403,14 @@ impl Compiler {
 
     /// Public API: Type-check a source string, returning all errors at once.
     pub fn type_check(source: &str) -> Result<(), TypeErrors> {
-        let (_, statements) = parse_program(source)
-            .map_err(|e| {
-                let mut errs = TypeErrors::default();
-                errs.push(TypeError::new(format!("parse error: {}", e), Span::default()));
-                errs
-            })?;
+        let (_, statements) = parse_program(source).map_err(|e| {
+            let mut errs = TypeErrors::default();
+            errs.push(TypeError::new(
+                format!("parse error: {}", e),
+                Span::default(),
+            ));
+            errs
+        })?;
         let mut ctx = CompilerContext::default();
         let mut errors = TypeErrors::default();
         for stmt in &statements {
@@ -1411,8 +1423,7 @@ impl Compiler {
         }
     }
 
-
-        fn optimize(statements: Vec<HlsStatement>) -> Vec<HlsStatement> {
+    fn optimize(statements: Vec<HlsStatement>) -> Vec<HlsStatement> {
         let mut functions = HashMap::new();
         // First pass: collect and optimize functions for inlining
         for stmt in &statements {
@@ -2671,7 +2682,6 @@ mod tests {
             .any(|i| matches!(i, Instruction::Call { .. })));
     }
 
-
     #[test]
     fn test_type_error_span_display() {
         let span = Span::new(10, 25);
@@ -2730,7 +2740,10 @@ mod tests {
         let result = Compiler::type_check(source);
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.errors[0].message.contains("undefined") || errors.errors[0].message.contains("Undefined"));
+        assert!(
+            errors.errors[0].message.contains("undefined")
+                || errors.errors[0].message.contains("Undefined")
+        );
     }
 
     #[test]
@@ -2778,5 +2791,4 @@ mod tests {
         assert_eq!(merged.start, 5);
         assert_eq!(merged.end, 20);
     }
-
 }

@@ -297,7 +297,10 @@ mod tests {
         assert_eq!(plain[3], FORMAT_CBOR, "encode must never auto-compress");
 
         let compressed = encode_compressed(&big).unwrap();
-        assert_eq!(compressed[3], FORMAT_CBOR_ZSTD, "repetitive payload should compress");
+        assert_eq!(
+            compressed[3], FORMAT_CBOR_ZSTD,
+            "repetitive payload should compress"
+        );
         assert!(compressed.len() < plain.len());
 
         // Both decode to an equal value.

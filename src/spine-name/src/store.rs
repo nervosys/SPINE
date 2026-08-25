@@ -306,7 +306,10 @@ mod tests {
     fn a_newer_version_replaces_an_older_one() {
         let mut s = RecordStore::new();
         s.put(record(1, 1, 1_000, &[], 0)).unwrap();
-        assert_eq!(s.put(record(1, 2, 1_000, &[], 0)).unwrap(), PutOutcome::Updated);
+        assert_eq!(
+            s.put(record(1, 2, 1_000, &[], 0)).unwrap(),
+            PutOutcome::Updated
+        );
         assert_eq!(s.len(), 1);
         assert_eq!(s.get(&record(1, 2, 1_000, &[], 0).name).unwrap().seq, 2);
     }
@@ -319,14 +322,20 @@ mod tests {
             s.put(record(1, 2, 1_000, &[], 0)).unwrap(),
             PutOutcome::Superseded
         );
-        assert_eq!(s.get_by_key(&record(1, 5, 1_000, &[], 0).name.key()).unwrap().seq, 5);
+        assert_eq!(
+            s.get_by_key(&record(1, 5, 1_000, &[], 0).name.key())
+                .unwrap()
+                .seq,
+            5
+        );
     }
 
     #[test]
     fn capability_lookup_finds_providers_without_a_directory() {
         let mut s = RecordStore::new();
         s.put(record(1, 1, 1_000, &["web.search"], 1)).unwrap();
-        s.put(record(2, 1, 1_000, &["web.search", "web.crawl"], 2)).unwrap();
+        s.put(record(2, 1, 1_000, &["web.search", "web.crawl"], 2))
+            .unwrap();
         s.put(record(3, 1, 1_000, &["data.analyze"], 1)).unwrap();
 
         let providers = s.providers_of("web.search", 1_000);
@@ -378,7 +387,10 @@ mod tests {
 
         assert!(s.get_fresh(&name, 1_050).is_some());
         assert!(s.get_fresh(&name, 1_060).is_none());
-        assert!(s.get(&name).is_some(), "get() still exposes the stale record");
+        assert!(
+            s.get(&name).is_some(),
+            "get() still exposes the stale record"
+        );
     }
 
     #[test]

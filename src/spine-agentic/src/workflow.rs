@@ -11,8 +11,8 @@
 // =============================================================================
 
 use chrono::{DateTime, Utc};
-use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::algo::toposort;
+use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::Direction;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -53,7 +53,10 @@ pub enum StepKind {
     /// Conditional: choose a branch based on a predicate key in the input.
     Conditional { predicate_key: String },
     /// Custom step with opaque payload.
-    Custom { kind: String, config: serde_json::Value },
+    Custom {
+        kind: String,
+        config: serde_json::Value,
+    },
 }
 
 /// Status of a workflow step.
@@ -181,9 +184,7 @@ impl Workflow {
     /// or an error if the graph has a cycle.
     pub fn execution_order(&self) -> Result<Vec<usize>, WorkflowError> {
         let mut graph = DiGraph::<usize, ()>::new();
-        let nodes: Vec<NodeIndex> = (0..self.steps.len())
-            .map(|i| graph.add_node(i))
-            .collect();
+        let nodes: Vec<NodeIndex> = (0..self.steps.len()).map(|i| graph.add_node(i)).collect();
         for &(from, to) in &self.edges {
             if from >= self.steps.len() || to >= self.steps.len() {
                 return Err(WorkflowError::InvalidEdge { from, to });
@@ -199,9 +200,7 @@ impl Workflow {
     /// all their upstream dependencies are Completed.
     pub fn ready_steps(&self) -> Vec<usize> {
         let mut graph = DiGraph::<usize, ()>::new();
-        let nodes: Vec<NodeIndex> = (0..self.steps.len())
-            .map(|i| graph.add_node(i))
-            .collect();
+        let nodes: Vec<NodeIndex> = (0..self.steps.len()).map(|i| graph.add_node(i)).collect();
         for &(from, to) in &self.edges {
             if from < self.steps.len() && to < self.steps.len() {
                 graph.add_edge(nodes[from], nodes[to], ());
@@ -298,9 +297,7 @@ impl WorkflowBuilder {
 
         // Verify no cycles
         let mut graph = DiGraph::<usize, ()>::new();
-        let nodes: Vec<NodeIndex> = (0..self.steps.len())
-            .map(|i| graph.add_node(i))
-            .collect();
+        let nodes: Vec<NodeIndex> = (0..self.steps.len()).map(|i| graph.add_node(i)).collect();
         for &(from, to) in &self.edges {
             graph.add_edge(nodes[from], nodes[to], ());
         }
@@ -546,10 +543,7 @@ impl WorkflowEngine {
 
         // Find newly ready steps
         let wf = self.workflows.get(workflow_id).unwrap();
-        let newly_ready: Vec<usize> = wf
-            .ready_steps()
-            .into_iter()
-            .collect();
+        let newly_ready: Vec<usize> = wf.ready_steps().into_iter().collect();
 
         // Mark them Ready
         let wf = self.workflows.get_mut(workflow_id).unwrap();
@@ -744,8 +738,13 @@ impl WorkflowTemplates {
             .description("Fetch a URL, extract structured data, and store results");
 
         let fetch = builder.add_step(
-            WorkflowStep::new("fetch", StepKind::Fetch { url: url.to_string() })
-                .with_timeout(30),
+            WorkflowStep::new(
+                "fetch",
+                StepKind::Fetch {
+                    url: url.to_string(),
+                },
+            )
+            .with_timeout(30),
         );
         let extract = builder.add_step(
             WorkflowStep::new(
@@ -783,7 +782,9 @@ impl WorkflowTemplates {
                 builder.add_step(
                     WorkflowStep::new(
                         format!("fetch-{i}"),
-                        StepKind::Fetch { url: url.to_string() },
+                        StepKind::Fetch {
+                            url: url.to_string(),
+                        },
                     )
                     .with_timeout(30),
                 )
@@ -846,10 +847,7 @@ mod tests {
         let b = builder.add_step(WorkflowStep::new("b", StepKind::FanIn));
         builder.add_edge(a, b);
         builder.add_edge(b, a);
-        assert!(matches!(
-            builder.build(),
-            Err(WorkflowError::CycleDetected)
-        ));
+        assert!(matches!(builder.build(), Err(WorkflowError::CycleDetected)));
     }
 
     #[test]
@@ -949,9 +947,24 @@ mod tests {
     fn test_engine_full_workflow_lifecycle() {
         let mut engine = WorkflowEngine::new();
         let mut builder = WorkflowBuilder::new("full");
-        let a = builder.add_step(WorkflowStep::new("fetch", StepKind::Fetch { url: "https://example.com".into() }));
-        let b = builder.add_step(WorkflowStep::new("extract", StepKind::Extract { schema_name: "product".into() }));
-        let c = builder.add_step(WorkflowStep::new("store", StepKind::Store { namespace: "products".into() }));
+        let a = builder.add_step(WorkflowStep::new(
+            "fetch",
+            StepKind::Fetch {
+                url: "https://example.com".into(),
+            },
+        ));
+        let b = builder.add_step(WorkflowStep::new(
+            "extract",
+            StepKind::Extract {
+                schema_name: "product".into(),
+            },
+        ));
+        let c = builder.add_step(WorkflowStep::new(
+            "store",
+            StepKind::Store {
+                namespace: "products".into(),
+            },
+        ));
         builder.add_edge(a, b);
         builder.add_edge(b, c);
         let wf = builder.build().unwrap();
@@ -963,15 +976,21 @@ mod tests {
 
         // Execute step a
         engine.start_step(&id, 0, None).unwrap();
-        engine.complete_step(&id, 0, serde_json::json!({"html": "..."})).unwrap();
+        engine
+            .complete_step(&id, 0, serde_json::json!({"html": "..."}))
+            .unwrap();
 
         // Execute step b
         engine.start_step(&id, 1, None).unwrap();
-        engine.complete_step(&id, 1, serde_json::json!({"data": {"title": "Widget"}})).unwrap();
+        engine
+            .complete_step(&id, 1, serde_json::json!({"data": {"title": "Widget"}}))
+            .unwrap();
 
         // Execute step c
         engine.start_step(&id, 2, None).unwrap();
-        engine.complete_step(&id, 2, serde_json::json!({"stored": true})).unwrap();
+        engine
+            .complete_step(&id, 2, serde_json::json!({"stored": true}))
+            .unwrap();
 
         // Workflow should be complete
         let wf = engine.get(&id).unwrap();
@@ -1151,9 +1170,12 @@ mod tests {
 
     #[test]
     fn test_template_parallel_fetch_merge() {
-        let wf =
-            WorkflowTemplates::parallel_fetch_merge(&["https://a.com", "https://b.com", "https://c.com"])
-                .unwrap();
+        let wf = WorkflowTemplates::parallel_fetch_merge(&[
+            "https://a.com",
+            "https://b.com",
+            "https://c.com",
+        ])
+        .unwrap();
         assert_eq!(wf.steps.len(), 4); // 3 fetches + 1 merge
         assert_eq!(wf.edges.len(), 3);
     }
@@ -1172,8 +1194,18 @@ mod tests {
     #[test]
     fn test_workflow_serde_roundtrip() {
         let mut builder = WorkflowBuilder::new("serde");
-        let a = builder.add_step(WorkflowStep::new("a", StepKind::Fetch { url: "https://x.com".into() }));
-        let b = builder.add_step(WorkflowStep::new("b", StepKind::Extract { schema_name: "s".into() }));
+        let a = builder.add_step(WorkflowStep::new(
+            "a",
+            StepKind::Fetch {
+                url: "https://x.com".into(),
+            },
+        ));
+        let b = builder.add_step(WorkflowStep::new(
+            "b",
+            StepKind::Extract {
+                schema_name: "s".into(),
+            },
+        ));
         builder.add_edge(a, b);
         let wf = builder.build().unwrap();
         let json = serde_json::to_string(&wf).unwrap();
@@ -1186,15 +1218,28 @@ mod tests {
     fn test_step_kind_variants() {
         let kinds = vec![
             StepKind::Fetch { url: "u".into() },
-            StepKind::Extract { schema_name: "s".into() },
-            StepKind::Transform { transformer: "t".into() },
-            StepKind::Store { namespace: "n".into() },
-            StepKind::AgentCall { capability: "c".into() },
+            StepKind::Extract {
+                schema_name: "s".into(),
+            },
+            StepKind::Transform {
+                transformer: "t".into(),
+            },
+            StepKind::Store {
+                namespace: "n".into(),
+            },
+            StepKind::AgentCall {
+                capability: "c".into(),
+            },
             StepKind::Script { source: "x".into() },
             StepKind::FanOut { branches: 3 },
             StepKind::FanIn,
-            StepKind::Conditional { predicate_key: "k".into() },
-            StepKind::Custom { kind: "k".into(), config: serde_json::json!(null) },
+            StepKind::Conditional {
+                predicate_key: "k".into(),
+            },
+            StepKind::Custom {
+                kind: "k".into(),
+                config: serde_json::json!(null),
+            },
         ];
         for kind in kinds {
             let json = serde_json::to_string(&kind).unwrap();

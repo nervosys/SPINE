@@ -37,9 +37,7 @@ use spine_name::{NameKey, NameRecord, NodeInfo, SpineUri};
 
 use crate::identity::PublicIdentity;
 use crate::mesh::{MeshEnvelope, MeshNode, MeshPayload};
-use crate::naming::{
-    KeyspacePeer, LookupOutcome, NameService, ResolveQuery, ResolveResponse, K,
-};
+use crate::naming::{KeyspacePeer, LookupOutcome, NameService, ResolveQuery, ResolveResponse, K};
 use crate::AgentId;
 
 /// Default time a lookup waits before giving up.
@@ -403,9 +401,9 @@ impl MeshNameResolver {
             return report;
         }
 
-        let greetings = seeds.iter().map(|endpoint| async move {
-            (endpoint.clone(), self.greet(endpoint).await)
-        });
+        let greetings = seeds
+            .iter()
+            .map(|endpoint| async move { (endpoint.clone(), self.greet(endpoint).await) });
 
         for (endpoint, result) in futures::future::join_all(greetings).await {
             match result {
@@ -1363,8 +1361,14 @@ mod tests {
         h.introduce(0, 1).await;
         h.introduce(0, 2).await;
 
-        h.nodes[1].publish_local(record(1, &["web.search"])).await.unwrap();
-        h.nodes[2].publish_local(record(2, &["web.search"])).await.unwrap();
+        h.nodes[1]
+            .publish_local(record(1, &["web.search"]))
+            .await
+            .unwrap();
+        h.nodes[2]
+            .publish_local(record(2, &["web.search"]))
+            .await
+            .unwrap();
 
         let seeker = h.nodes[0].clone();
         let lookup = tokio::spawn(async move { seeker.find_providers("web.search").await });
@@ -1404,7 +1408,11 @@ mod tests {
         );
         assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
 
-        assert_eq!(h.nodes[1].record_count().await, 0, "nothing forged is stored");
+        assert_eq!(
+            h.nodes[1].record_count().await,
+            0,
+            "nothing forged is stored"
+        );
         assert_eq!(h.nodes[1].metrics().await.announcements_rejected, 1);
     }
 
@@ -1582,8 +1590,15 @@ mod tests {
 
         assert!(!report.is_durable());
         assert_eq!(report.replicas(), 0);
-        assert!(report.broadcast, "it still warms whatever caches are listening");
-        assert_eq!(h.nodes[0].record_count().await, 1, "held locally regardless");
+        assert!(
+            report.broadcast,
+            "it still warms whatever caches are listening"
+        );
+        assert_eq!(
+            h.nodes[0].record_count().await,
+            1,
+            "held locally regardless"
+        );
     }
 
     /// Churn insurance. A record published while the node was alone belongs on
@@ -1597,7 +1612,8 @@ mod tests {
         h.introduce(0, 1).await;
 
         let node = h.nodes[0].clone();
-        let run = tokio::spawn(async move { node.maintain(NOW, MaintenancePolicy::default()).await });
+        let run =
+            tokio::spawn(async move { node.maintain(NOW, MaintenancePolicy::default()).await });
         h.pump_until(16).await;
         let report = run.await.unwrap();
 
@@ -1615,7 +1631,9 @@ mod tests {
         let h = Harness::new(1);
         h.nodes[0].publish(record(1, &[])).await.unwrap();
 
-        let report = h.nodes[0].maintain(NOW + 7200, MaintenancePolicy::default()).await;
+        let report = h.nodes[0]
+            .maintain(NOW + 7200, MaintenancePolicy::default())
+            .await;
         assert_eq!(report.expired, 1);
         assert_eq!(h.nodes[0].record_count().await, 0);
         assert_eq!(report.refreshed, 0, "nothing left to refresh");

@@ -343,8 +343,7 @@ impl SpineUri {
         if reference.is_empty() {
             return Ok(self.clone());
         }
-        if reference.len() >= SCHEME.len()
-            && reference[..SCHEME.len()].eq_ignore_ascii_case(SCHEME)
+        if reference.len() >= SCHEME.len() && reference[..SCHEME.len()].eq_ignore_ascii_case(SCHEME)
         {
             return SpineUri::parse(reference);
         }
@@ -421,7 +420,13 @@ fn normalize_path(raw: &str) -> String {
 
 impl fmt::Display for SpineUri {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}{}{}", SCHEME, self.authority.as_canonical(), self.path)?;
+        write!(
+            f,
+            "{}{}{}",
+            SCHEME,
+            self.authority.as_canonical(),
+            self.path
+        )?;
         if !self.query.is_empty() {
             f.write_str("?")?;
             for (i, (k, v)) in self.query.iter().enumerate() {
@@ -486,7 +491,10 @@ mod tests {
         let uri = SpineUri::blob_of(b"hello agents");
         assert!(uri.is_immutable());
         assert!(uri.is_self_certifying());
-        assert_eq!(uri.content_hash(), Some(&crate::content_hash(b"hello agents")));
+        assert_eq!(
+            uri.content_hash(),
+            Some(&crate::content_hash(b"hello agents"))
+        );
         // The same bytes always mint the same name — the basis for dedup.
         assert_eq!(SpineUri::blob_of(b"hello agents"), uri);
         assert_ne!(SpineUri::blob_of(b"other bytes"), uri);
@@ -576,8 +584,7 @@ mod tests {
     fn query_and_fragment_do_not_change_the_routing_key() {
         let base = base32::encode(&[3u8; 32]);
         let plain = SpineUri::parse(&format!("spine://did:{base}/doc")).unwrap();
-        let decorated =
-            SpineUri::parse(&format!("spine://did:{base}/doc?q=1#section")).unwrap();
+        let decorated = SpineUri::parse(&format!("spine://did:{base}/doc?q=1#section")).unwrap();
         assert_eq!(plain.key(), decorated.key());
         assert_ne!(plain, decorated);
     }
@@ -619,7 +626,9 @@ mod tests {
 
     #[test]
     fn serde_roundtrips_through_json_as_a_string() {
-        let uri = SpineUri::did([6u8; 32]).with_path("/x").with_query("k", "v");
+        let uri = SpineUri::did([6u8; 32])
+            .with_path("/x")
+            .with_query("k", "v");
         let json = serde_json::to_string(&uri).unwrap();
         assert!(json.starts_with("\"spine://did:"));
         assert_eq!(serde_json::from_str::<SpineUri>(&json).unwrap(), uri);

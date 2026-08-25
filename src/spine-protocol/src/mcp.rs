@@ -21,9 +21,7 @@
 //! alongside the gateway's OpenAI-compatible `/v1/*` routes. Speaking MCP means
 //! every MCP-capable host is a SPINE client for free.
 
-use crate::{
-    Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult,
-};
+use crate::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -51,7 +49,11 @@ pub struct McpTool {
     pub input_schema: Value,
     /// Optional JSON Schema for the result — maps to
     /// [`Capability::output_schema`]. MCP added `outputSchema` in 2025-06-18.
-    #[serde(rename = "outputSchema", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "outputSchema",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub output_schema: Option<Value>,
 }
 
@@ -358,9 +360,7 @@ where
                 }
                 Err(e) => JsonRpcResponse::err(id, INVALID_PARAMS, e.to_string()),
             },
-            other => {
-                JsonRpcResponse::err(id, METHOD_NOT_FOUND, format!("unknown method: {other}"))
-            }
+            other => JsonRpcResponse::err(id, METHOD_NOT_FOUND, format!("unknown method: {other}")),
         };
         Some(resp)
     }
@@ -497,7 +497,10 @@ mod tests {
         };
         let mcp = tool_result_to_call_result(&result);
         assert!(mcp.is_error);
-        assert_eq!(mcp.content, vec![McpContent::text("timeout: took too long")]);
+        assert_eq!(
+            mcp.content,
+            vec![McpContent::text("timeout: took too long")]
+        );
     }
 
     #[test]
@@ -562,7 +565,9 @@ mod tests {
     fn unknown_method_is_method_not_found() {
         let mut server = McpServer::new(sample_ad(), |c: ToolCall| ToolResult {
             id: c.id,
-            outcome: ToolOutcome::Ok { content: Value::Null },
+            outcome: ToolOutcome::Ok {
+                content: Value::Null,
+            },
             trace: None,
         });
         let req = JsonRpcRequest {
@@ -619,14 +624,19 @@ mod tests {
 
         let call: Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(call["id"], json!(3));
-        assert_eq!(call["result"]["structuredContent"], json!({"echoed": {"url": "u"}}));
+        assert_eq!(
+            call["result"]["structuredContent"],
+            json!({"echoed": {"url": "u"}})
+        );
     }
 
     #[test]
     fn notification_without_id_is_not_answered() {
         let mut server = McpServer::new(sample_ad(), |c: ToolCall| ToolResult {
             id: c.id,
-            outcome: ToolOutcome::Ok { content: Value::Null },
+            outcome: ToolOutcome::Ok {
+                content: Value::Null,
+            },
             trace: None,
         });
         let note = JsonRpcRequest {

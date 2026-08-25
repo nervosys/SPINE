@@ -172,17 +172,16 @@ impl HlbToWatCompiler {
 
         for instruction in &binary.instructions {
             match instruction {
-                Instruction::DefineElement { tag, .. }
-                    if !string_offsets.contains_key(tag) => {
-                        let len = tag.len() as u32;
-                        string_offsets.insert(tag.clone(), (data_offset, len));
-                        data_section.push_str(&format!(
-                            "  (data (i32.const {}) \"{}\")\n",
-                            data_offset,
-                            escape_wat_string(tag)
-                        ));
-                        data_offset += len + 1; // +1 for null terminator space
-                    }
+                Instruction::DefineElement { tag, .. } if !string_offsets.contains_key(tag) => {
+                    let len = tag.len() as u32;
+                    string_offsets.insert(tag.clone(), (data_offset, len));
+                    data_section.push_str(&format!(
+                        "  (data (i32.const {}) \"{}\")\n",
+                        data_offset,
+                        escape_wat_string(tag)
+                    ));
+                    data_offset += len + 1; // +1 for null terminator space
+                }
                 Instruction::SetAttribute { key, value, .. } => {
                     for s in [key, value] {
                         if !string_offsets.contains_key(s) {
@@ -262,61 +261,62 @@ impl HlbToWatCompiler {
                     }
                 }
                 Instruction::Load(name) | Instruction::Store(name)
-                    if !string_offsets.contains_key(name) => {
-                        let len = name.len() as u32;
-                        string_offsets.insert(name.clone(), (data_offset, len));
-                        data_section.push_str(&format!(
-                            "  (data (i32.const {}) \"{}\")\n",
-                            data_offset,
-                            escape_wat_string(name)
-                        ));
-                        data_offset += len + 1;
-                    }
-                Instruction::Call { name, .. }
-                    if !string_offsets.contains_key(name) => {
-                        let len = name.len() as u32;
-                        string_offsets.insert(name.clone(), (data_offset, len));
-                        data_section.push_str(&format!(
-                            "  (data (i32.const {}) \"{}\")\n",
-                            data_offset,
-                            escape_wat_string(name)
-                        ));
-                        data_offset += len + 1;
-                    }
+                    if !string_offsets.contains_key(name) =>
+                {
+                    let len = name.len() as u32;
+                    string_offsets.insert(name.clone(), (data_offset, len));
+                    data_section.push_str(&format!(
+                        "  (data (i32.const {}) \"{}\")\n",
+                        data_offset,
+                        escape_wat_string(name)
+                    ));
+                    data_offset += len + 1;
+                }
+                Instruction::Call { name, .. } if !string_offsets.contains_key(name) => {
+                    let len = name.len() as u32;
+                    string_offsets.insert(name.clone(), (data_offset, len));
+                    data_section.push_str(&format!(
+                        "  (data (i32.const {}) \"{}\")\n",
+                        data_offset,
+                        escape_wat_string(name)
+                    ));
+                    data_offset += len + 1;
+                }
                 Instruction::SetAttributeFromStack { key, .. }
-                    if !string_offsets.contains_key(key) => {
-                        let len = key.len() as u32;
-                        string_offsets.insert(key.clone(), (data_offset, len));
-                        data_section.push_str(&format!(
-                            "  (data (i32.const {}) \"{}\")\n",
-                            data_offset,
-                            escape_wat_string(key)
-                        ));
-                        data_offset += len + 1;
-                    }
-                Instruction::EmitEventFromStack { name }
-                    if !string_offsets.contains_key(name) => {
-                        let len = name.len() as u32;
-                        string_offsets.insert(name.clone(), (data_offset, len));
-                        data_section.push_str(&format!(
-                            "  (data (i32.const {}) \"{}\")\n",
-                            data_offset,
-                            escape_wat_string(name)
-                        ));
-                        data_offset += len + 1;
-                    }
+                    if !string_offsets.contains_key(key) =>
+                {
+                    let len = key.len() as u32;
+                    string_offsets.insert(key.clone(), (data_offset, len));
+                    data_section.push_str(&format!(
+                        "  (data (i32.const {}) \"{}\")\n",
+                        data_offset,
+                        escape_wat_string(key)
+                    ));
+                    data_offset += len + 1;
+                }
+                Instruction::EmitEventFromStack { name } if !string_offsets.contains_key(name) => {
+                    let len = name.len() as u32;
+                    string_offsets.insert(name.clone(), (data_offset, len));
+                    data_section.push_str(&format!(
+                        "  (data (i32.const {}) \"{}\")\n",
+                        data_offset,
+                        escape_wat_string(name)
+                    ));
+                    data_offset += len + 1;
+                }
                 Instruction::DeclareStateFromStack { name }
                 | Instruction::UpdateStateFromStack { name }
-                    if !string_offsets.contains_key(name) => {
-                        let len = name.len() as u32;
-                        string_offsets.insert(name.clone(), (data_offset, len));
-                        data_section.push_str(&format!(
-                            "  (data (i32.const {}) \"{}\")\n",
-                            data_offset,
-                            escape_wat_string(name)
-                        ));
-                        data_offset += len + 1;
-                    }
+                    if !string_offsets.contains_key(name) =>
+                {
+                    let len = name.len() as u32;
+                    string_offsets.insert(name.clone(), (data_offset, len));
+                    data_section.push_str(&format!(
+                        "  (data (i32.const {}) \"{}\")\n",
+                        data_offset,
+                        escape_wat_string(name)
+                    ));
+                    data_offset += len + 1;
+                }
                 _ => {}
             }
         }
@@ -1319,10 +1319,7 @@ impl WasmRuntime {
                         let n = match arg {
                             serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
                             serde_json::Value::String(s) => s.parse().unwrap_or(0.0),
-                            serde_json::Value::Bool(b)
-                                if b => {
-                                    1.0
-                                }
+                            serde_json::Value::Bool(b) if b => 1.0,
                             _ => 0.0,
                         };
                         serde_json::json!(n)

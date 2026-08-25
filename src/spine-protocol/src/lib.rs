@@ -5202,7 +5202,6 @@ mod tests {
         }
     }
 
-
     /// The derivation has to be a function of the secret alone, or two peers
     /// sharing a secret would key their encoders differently and never agree.
     #[test]

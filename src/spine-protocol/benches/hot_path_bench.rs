@@ -158,22 +158,14 @@ fn bench_latent_vector(c: &mut Criterion) {
         let msg = Message::LatentMessage(vec);
 
         group.throughput(Throughput::Bytes((dim * 4) as u64));
-        group.bench_with_input(
-            BenchmarkId::new("serialize", dim),
-            &msg,
-            |b, msg| {
-                b.iter(|| serde_json::to_vec(black_box(msg)).unwrap());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("serialize", dim), &msg, |b, msg| {
+            b.iter(|| serde_json::to_vec(black_box(msg)).unwrap());
+        });
 
         let bytes = serde_json::to_vec(&msg).unwrap();
-        group.bench_with_input(
-            BenchmarkId::new("deserialize", dim),
-            &bytes,
-            |b, bytes| {
-                b.iter(|| serde_json::from_slice::<Message>(black_box(bytes)).unwrap());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("deserialize", dim), &bytes, |b, bytes| {
+            b.iter(|| serde_json::from_slice::<Message>(black_box(bytes)).unwrap());
+        });
     }
 
     group.finish();
@@ -188,11 +180,11 @@ fn bench_latent_vector(c: &mut Criterion) {
 /// `examples/wire_sizes.rs` with *speed* numbers.
 fn bench_wire_codec(c: &mut Criterion) {
     use spine_protocol::wire;
-    use spine_protocol::{
-        DType, EncodedFrame, EncodedMetadata, Message, Modality, ToolCall,
-    };
+    use spine_protocol::{DType, EncodedFrame, EncodedMetadata, Message, Modality, ToolCall};
 
-    let embedding: Vec<u8> = (0..1024u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+    let embedding: Vec<u8> = (0..1024u32)
+        .map(|i| (i.wrapping_mul(31) % 251) as u8)
+        .collect();
     let frame = Message::Encoded(EncodedFrame {
         codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
         variant: Some("layer=11".into()),

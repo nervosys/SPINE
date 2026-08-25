@@ -20,9 +20,9 @@ use tracing::{debug, error, info, instrument, span, warn, Level};
 use uuid::Uuid;
 
 mod config;
-mod namespace;
 #[allow(dead_code)]
 mod ct;
+mod namespace;
 mod telemetry;
 #[allow(dead_code)]
 mod tls;

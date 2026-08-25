@@ -94,8 +94,12 @@ impl SweArtifact {
     /// Verify the signature against a public key. `false` if unsigned or invalid.
     pub fn verify(&self, vk: &ed25519_dalek::VerifyingKey) -> bool {
         use ed25519_dalek::Verifier;
-        let Some(sig_bytes) = &self.signature else { return false };
-        let Ok(sig) = ed25519_dalek::Signature::from_slice(sig_bytes) else { return false };
+        let Some(sig_bytes) = &self.signature else {
+            return false;
+        };
+        let Ok(sig) = ed25519_dalek::Signature::from_slice(sig_bytes) else {
+            return false;
+        };
         vk.verify(self.content_hash.as_bytes(), &sig).is_ok()
     }
 }
@@ -212,16 +216,33 @@ impl WorkGraph {
         required_capabilities: Vec<AgentCapability>,
     ) -> Uuid {
         let id = Uuid::new_v4();
-        let status = if self.deps_satisfied(&deps) { TaskStatus::Ready } else { TaskStatus::Blocked };
+        let status = if self.deps_satisfied(&deps) {
+            TaskStatus::Ready
+        } else {
+            TaskStatus::Blocked
+        };
         self.tasks.insert(
             id,
-            WorkTask { id, name: name.into(), deps, required_capabilities, status, assignee: None, artifact: None },
+            WorkTask {
+                id,
+                name: name.into(),
+                deps,
+                required_capabilities,
+                status,
+                assignee: None,
+                artifact: None,
+            },
         );
         id
     }
 
     fn deps_satisfied(&self, deps: &[Uuid]) -> bool {
-        deps.iter().all(|d| self.tasks.get(d).map(|t| t.status == TaskStatus::Done).unwrap_or(false))
+        deps.iter().all(|d| {
+            self.tasks
+                .get(d)
+                .map(|t| t.status == TaskStatus::Done)
+                .unwrap_or(false)
+        })
     }
 
     /// Tasks currently ready to claim (deterministic order by id).
@@ -291,7 +312,11 @@ impl WorkGraph {
                 }
             }
         }
-        let mut queue: Vec<Uuid> = indegree.iter().filter(|(_, &d)| d == 0).map(|(&id, _)| id).collect();
+        let mut queue: Vec<Uuid> = indegree
+            .iter()
+            .filter(|(_, &d)| d == 0)
+            .map(|(&id, _)| id)
+            .collect();
         queue.sort();
         let mut order = Vec::new();
         while let Some(id) = queue.pop() {

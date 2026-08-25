@@ -462,7 +462,9 @@ impl IbVerbsRdma {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = remote;
-            Err(RdmaError::HardwareUnavailable("verbs not built for this OS"))
+            Err(RdmaError::HardwareUnavailable(
+                "verbs not built for this OS",
+            ))
         }
     }
 
@@ -480,7 +482,9 @@ impl IbVerbsRdma {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            Err(RdmaError::HardwareUnavailable("verbs not built for this OS"))
+            Err(RdmaError::HardwareUnavailable(
+                "verbs not built for this OS",
+            ))
         }
     }
 
@@ -555,7 +559,9 @@ impl RdmaTransport for IbVerbsRdma {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = size;
-            Err(RdmaError::HardwareUnavailable("verbs not built for this OS"))
+            Err(RdmaError::HardwareUnavailable(
+                "verbs not built for this OS",
+            ))
         }
     }
 
@@ -586,7 +592,9 @@ impl RdmaTransport for IbVerbsRdma {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (local, local_off, remote_addr, rkey, len, wr_id);
-            Err(RdmaError::HardwareUnavailable("verbs not built for this OS"))
+            Err(RdmaError::HardwareUnavailable(
+                "verbs not built for this OS",
+            ))
         }
     }
 
@@ -617,7 +625,9 @@ impl RdmaTransport for IbVerbsRdma {
         #[cfg(not(target_os = "linux"))]
         {
             let _ = (local, local_off, remote_addr, rkey, len, wr_id);
-            Err(RdmaError::HardwareUnavailable("verbs not built for this OS"))
+            Err(RdmaError::HardwareUnavailable(
+                "verbs not built for this OS",
+            ))
         }
     }
 
@@ -633,7 +643,9 @@ impl RdmaTransport for IbVerbsRdma {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            Err(RdmaError::HardwareUnavailable("verbs not built for this OS"))
+            Err(RdmaError::HardwareUnavailable(
+                "verbs not built for this OS",
+            ))
         }
     }
 }
@@ -689,11 +701,7 @@ pub mod linux_verbs {
             }
         }
 
-        pub fn modify_qp_to_rtr(
-            &self,
-            _remote: &QpInfo,
-            _mtu: u32,
-        ) -> Result<(), RdmaError> {
+        pub fn modify_qp_to_rtr(&self, _remote: &QpInfo, _mtu: u32) -> Result<(), RdmaError> {
             // ibv_qp_attr { qp_state: RTR, path_mtu: mtu, dest_qp_num,
             //               rq_psn, max_dest_rd_atomic, min_rnr_timer,
             //               ah_attr: { dlid/dgid, sl, src_path_bits, port_num } }
@@ -716,10 +724,7 @@ pub mod linux_verbs {
             ))
         }
 
-        pub fn register(
-            &self,
-            _size: usize,
-        ) -> Result<(MrHandle, u64, u32, u32), RdmaError> {
+        pub fn register(&self, _size: usize) -> Result<(MrHandle, u64, u32, u32), RdmaError> {
             // 1. Allocate a page-aligned host buffer (mmap with MAP_HUGETLB on
             //    modern systems).
             // 2. mr = ibv_reg_mr(pd, addr, size,
@@ -860,10 +865,7 @@ impl GpuDirectRdma {
     ///                 IBV_ACCESS_REMOTE_WRITE)             // peer-mem hook
     /// IbVerbsBuffer { mr, addr: dptr, len: size, lkey, rkey }
     /// ```
-    pub fn register_device_buffer(
-        &self,
-        _size: usize,
-    ) -> Result<Arc<IbVerbsBuffer>, RdmaError>
+    pub fn register_device_buffer(&self, _size: usize) -> Result<Arc<IbVerbsBuffer>, RdmaError>
     where
         Self: Sized,
     {

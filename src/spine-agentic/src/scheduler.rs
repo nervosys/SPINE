@@ -11,8 +11,8 @@
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -174,16 +174,15 @@ impl PartialOrd for PrioritizedTask {
 impl Ord for PrioritizedTask {
     fn cmp(&self, other: &Self) -> Ordering {
         // Higher priority first
-        self.task.priority.cmp(&other.task.priority)
-            .then_with(|| {
-                // Earlier deadline first (reversed so earlier = greater)
-                match (self.task.deadline, other.task.deadline) {
-                    (Some(a), Some(b)) => b.cmp(&a), // earlier deadline = higher priority
-                    (Some(_), None) => Ordering::Greater,
-                    (None, Some(_)) => Ordering::Less,
-                    (None, None) => self.task.created_at.cmp(&other.task.created_at).reverse(),
-                }
-            })
+        self.task.priority.cmp(&other.task.priority).then_with(|| {
+            // Earlier deadline first (reversed so earlier = greater)
+            match (self.task.deadline, other.task.deadline) {
+                (Some(a), Some(b)) => b.cmp(&a), // earlier deadline = higher priority
+                (Some(_), None) => Ordering::Greater,
+                (None, Some(_)) => Ordering::Less,
+                (None, None) => self.task.created_at.cmp(&other.task.created_at).reverse(),
+            }
+        })
     }
 }
 
@@ -393,9 +392,11 @@ impl TaskScheduler {
 
     /// Fail a task. If retries remain, re-enqueue it; otherwise mark as failed.
     pub async fn fail(&self, task_id: TaskId, error: String) {
-        let should_retry = self.tasks.get(&task_id).map(|t| {
-            t.attempt < t.max_retries
-        }).unwrap_or(false);
+        let should_retry = self
+            .tasks
+            .get(&task_id)
+            .map(|t| t.attempt < t.max_retries)
+            .unwrap_or(false);
 
         if should_retry {
             if let Some(mut task) = self.tasks.get_mut(&task_id) {
@@ -560,8 +561,11 @@ mod tests {
         let mut queue = WorkQueue::new();
 
         queue.push(Task::new("low", serde_json::json!(null)).with_priority(TaskPriority::Low));
-        queue.push(Task::new("critical", serde_json::json!(null)).with_priority(TaskPriority::Critical));
-        queue.push(Task::new("normal", serde_json::json!(null)).with_priority(TaskPriority::Normal));
+        queue.push(
+            Task::new("critical", serde_json::json!(null)).with_priority(TaskPriority::Critical),
+        );
+        queue
+            .push(Task::new("normal", serde_json::json!(null)).with_priority(TaskPriority::Normal));
 
         assert_eq!(queue.pop().unwrap().name, "critical");
         assert_eq!(queue.pop().unwrap().name, "normal");
@@ -596,15 +600,22 @@ mod tests {
 
         let dequeued = scheduler.dequeue().await.unwrap();
         assert_eq!(dequeued.id, task_id);
-        assert_eq!(scheduler.get_task(&task_id).unwrap().status, TaskStatus::Running);
+        assert_eq!(
+            scheduler.get_task(&task_id).unwrap().status,
+            TaskStatus::Running
+        );
     }
 
     #[tokio::test]
     async fn test_scheduler_complete() {
         let scheduler = TaskScheduler::new(Uuid::new_v4(), SchedulerConfig::default());
-        let task_id = scheduler.submit(Task::new("t", serde_json::json!(null))).await;
+        let task_id = scheduler
+            .submit(Task::new("t", serde_json::json!(null)))
+            .await;
         scheduler.dequeue().await;
-        scheduler.complete(task_id, Some(serde_json::json!({"result": "ok"}))).await;
+        scheduler
+            .complete(task_id, Some(serde_json::json!({"result": "ok"})))
+            .await;
 
         let result = scheduler.get_result(&task_id).unwrap();
         assert_eq!(result.status, TaskStatus::Completed);
@@ -623,14 +634,20 @@ mod tests {
         scheduler.fail(task_id, "oops".to_string()).await;
 
         // Should be re-enqueued
-        assert_eq!(scheduler.get_task(&task_id).unwrap().status, TaskStatus::Queued);
+        assert_eq!(
+            scheduler.get_task(&task_id).unwrap().status,
+            TaskStatus::Queued
+        );
 
         // Second attempt
         scheduler.dequeue().await;
         scheduler.fail(task_id, "again".to_string()).await;
 
         // Should now be permanently failed (2 attempts = max_retries)
-        assert_eq!(scheduler.get_task(&task_id).unwrap().status, TaskStatus::Failed);
+        assert_eq!(
+            scheduler.get_task(&task_id).unwrap().status,
+            TaskStatus::Failed
+        );
     }
 
     #[tokio::test]
@@ -641,8 +658,8 @@ mod tests {
         let dep_id = dep_task.id;
         scheduler.submit(dep_task).await;
 
-        let dependent = Task::new("dependent", serde_json::json!(null))
-            .with_dependencies(vec![dep_id]);
+        let dependent =
+            Task::new("dependent", serde_json::json!(null)).with_dependencies(vec![dep_id]);
         let dependent_id = scheduler.submit(dependent).await;
 
         // Should get the dependency first
@@ -670,7 +687,9 @@ mod tests {
 
         // Load up node A
         for i in 0..5 {
-            scheduler_a.submit(Task::new(format!("task-{}", i), serde_json::json!(null))).await;
+            scheduler_a
+                .submit(Task::new(format!("task-{}", i), serde_json::json!(null)))
+                .await;
         }
 
         // Steal from A
@@ -686,16 +705,25 @@ mod tests {
     #[tokio::test]
     async fn test_scheduler_cancel() {
         let scheduler = TaskScheduler::new(Uuid::new_v4(), SchedulerConfig::default());
-        let task_id = scheduler.submit(Task::new("cancel-me", serde_json::json!(null))).await;
+        let task_id = scheduler
+            .submit(Task::new("cancel-me", serde_json::json!(null)))
+            .await;
         assert!(scheduler.cancel(task_id).await);
-        assert_eq!(scheduler.get_task(&task_id).unwrap().status, TaskStatus::Cancelled);
+        assert_eq!(
+            scheduler.get_task(&task_id).unwrap().status,
+            TaskStatus::Cancelled
+        );
     }
 
     #[tokio::test]
     async fn test_scheduler_stats() {
         let scheduler = TaskScheduler::new(Uuid::new_v4(), SchedulerConfig::default());
-        scheduler.submit(Task::new("a", serde_json::json!(null))).await;
-        scheduler.submit(Task::new("b", serde_json::json!(null))).await;
+        scheduler
+            .submit(Task::new("a", serde_json::json!(null)))
+            .await;
+        scheduler
+            .submit(Task::new("b", serde_json::json!(null)))
+            .await;
 
         let stats = scheduler.stats().await;
         assert_eq!(stats.queue_depth, 2);

@@ -96,7 +96,11 @@ mod tests {
         for len in 0..=16usize {
             let input: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(37)).collect();
             let encoded = encode(&input);
-            assert_eq!(decode(&encoded).as_deref(), Some(input.as_slice()), "len {len}");
+            assert_eq!(
+                decode(&encoded).as_deref(),
+                Some(input.as_slice()),
+                "len {len}"
+            );
         }
     }
 

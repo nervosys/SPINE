@@ -48,7 +48,10 @@ pub enum FaultType {
     /// Partition a set of agents from the rest of the mesh
     NetworkPartition { isolated: Vec<AgentId> },
     /// Exhaust memory budget for an agent
-    ResourceExhaustion { agent_id: AgentId, memory_bytes: u64 },
+    ResourceExhaustion {
+        agent_id: AgentId,
+        memory_bytes: u64,
+    },
     /// Inject clock skew (milliseconds ahead/behind)
     ClockSkew { agent_id: AgentId, skew_ms: i64 },
     /// Duplicate messages (replay attack simulation)
@@ -243,7 +246,13 @@ impl ChaosScenario {
             "Multiple simultaneous faults to test compound resilience",
         );
         s.add_step(FaultType::MessageDelay { delay_ms: 500 }, 2000, true);
-        s.add_step(FaultType::MessageCorruption { corruption_rate: 0.1 }, 2000, true);
+        s.add_step(
+            FaultType::MessageCorruption {
+                corruption_rate: 0.1,
+            },
+            2000,
+            true,
+        );
         s.add_step(
             FaultType::AgentHang {
                 agent_id: target,
@@ -308,7 +317,13 @@ impl FaultInjector {
     }
 
     /// Activate a fault for the given duration.
-    pub fn inject(&mut self, fault: FaultType, duration_ms: u64, scenario_id: Uuid, step_index: usize) {
+    pub fn inject(
+        &mut self,
+        fault: FaultType,
+        duration_ms: u64,
+        scenario_id: Uuid,
+        step_index: usize,
+    ) {
         let now = Utc::now();
         let expires = now + chrono::Duration::milliseconds(duration_ms as i64);
         self.active_faults.push(ActiveFault {
@@ -389,12 +404,16 @@ impl FaultInjector {
 
     /// Check whether the given agent is crashed.
     pub fn is_agent_crashed(&self, agent: &AgentId) -> bool {
-        self.active_faults.iter().any(|af| matches!(&af.fault, FaultType::AgentCrash { agent_id } if agent_id == agent))
+        self.active_faults
+            .iter()
+            .any(|af| matches!(&af.fault, FaultType::AgentCrash { agent_id } if agent_id == agent))
     }
 
     /// Check whether the given agent is hanging.
     pub fn is_agent_hanging(&self, agent: &AgentId) -> bool {
-        self.active_faults.iter().any(|af| matches!(&af.fault, FaultType::AgentHang { agent_id, .. } if agent_id == agent))
+        self.active_faults.iter().any(
+            |af| matches!(&af.fault, FaultType::AgentHang { agent_id, .. } if agent_id == agent),
+        )
     }
 
     /// Check whether the given agent is in an isolated partition.
@@ -599,11 +618,7 @@ impl CampaignRunner {
             return StepVerdict::Pass;
         }
 
-        let expected: HashSet<&str> = step
-            .expected_anomalies
-            .iter()
-            .map(String::as_str)
-            .collect();
+        let expected: HashSet<&str> = step.expected_anomalies.iter().map(String::as_str).collect();
         let found: HashSet<&str> = detected.iter().map(String::as_str).collect();
 
         let missing: Vec<&&str> = expected.difference(&found).collect();
@@ -660,7 +675,10 @@ mod tests {
             "message_drop"
         );
         assert_eq!(
-            FaultType::AgentCrash { agent_id: test_agent(1) }.category(),
+            FaultType::AgentCrash {
+                agent_id: test_agent(1)
+            }
+            .category(),
             "agent_crash"
         );
         assert_eq!(
@@ -774,12 +792,7 @@ mod tests {
         let other = test_agent(2);
         let sid = Uuid::new_v4();
 
-        injector.inject(
-            FaultType::AgentCrash { agent_id: agent },
-            60_000,
-            sid,
-            0,
-        );
+        injector.inject(FaultType::AgentCrash { agent_id: agent }, 60_000, sid, 0);
         assert!(injector.is_agent_crashed(&agent));
         assert!(!injector.is_agent_crashed(&other));
         assert!(!injector.is_agent_hanging(&agent));
@@ -911,7 +924,9 @@ mod tests {
     fn test_step_with_anomalies() {
         let mut scenario = ChaosScenario::new("annotated", "Annotated scenario");
         scenario.add_step_with_anomalies(
-            FaultType::AgentCrash { agent_id: test_agent(1) },
+            FaultType::AgentCrash {
+                agent_id: test_agent(1),
+            },
             1000,
             true,
             vec!["spike".to_string(), "drift".to_string()],

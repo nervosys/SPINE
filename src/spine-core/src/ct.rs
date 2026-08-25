@@ -28,12 +28,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Production callers should fetch this list periodically, verify its
 /// signature against Google's public key, cache the result, and pass the
 /// raw JSON bytes to [`CtPolicy::add_logs_from_json_v3`].
-pub const OFFICIAL_LOG_LIST_URL: &str =
-    "https://www.gstatic.com/ct/log_list/v3/log_list.json";
+pub const OFFICIAL_LOG_LIST_URL: &str = "https://www.gstatic.com/ct/log_list/v3/log_list.json";
 
 /// Apple-published mirror of the same list (CT v3 schema).
-pub const APPLE_LOG_LIST_URL: &str =
-    "https://valid.apple.com/ct/log_list/current_log_list.json";
+pub const APPLE_LOG_LIST_URL: &str = "https://valid.apple.com/ct/log_list/current_log_list.json";
 
 /// CT enforcement policy
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -546,7 +544,12 @@ mod tests {
     #[test]
     fn test_add_custom_log() {
         let mut policy = CtPolicy::default();
-        let log = CtLog::new("Custom Log", "SPINE Test", &[0x42; 27], "https://ct.example.com/");
+        let log = CtLog::new(
+            "Custom Log",
+            "SPINE Test",
+            &[0x42; 27],
+            "https://ct.example.com/",
+        );
         let log_id = log.log_id;
         policy.add_log(log);
         assert!(policy.trusted_logs.contains_key(&log_id));

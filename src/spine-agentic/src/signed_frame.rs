@@ -163,7 +163,10 @@ mod tests {
         let kp = Ed25519Keypair::from_seed([4u8; 32]);
         let mut frame = sign_frame(&kp, &Message::Ping { timestamp: 1 }).unwrap();
         frame[0] = b'X';
-        assert!(matches!(verify_frame(&frame), Err(SignedFrameError::BadMagic)));
+        assert!(matches!(
+            verify_frame(&frame),
+            Err(SignedFrameError::BadMagic)
+        ));
     }
 
     #[test]

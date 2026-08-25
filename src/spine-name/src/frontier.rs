@@ -257,7 +257,10 @@ mod tests {
         assert!(!f.seed(uri("/a/b").with_fragment("section")));
         assert_eq!(f.seen_count(), 1);
         assert_eq!(
-            f.skipped().iter().filter(|(_, s)| *s == Skipped::Duplicate).count(),
+            f.skipped()
+                .iter()
+                .filter(|(_, s)| *s == Skipped::Duplicate)
+                .count(),
             2
         );
     }
@@ -346,9 +349,8 @@ mod tests {
 
     #[test]
     fn relation_filter_restricts_which_edges_are_followed() {
-        let mut f = CrawlFrontier::new(
-            CrawlBudget::default().following(vec![Rel::Child, Rel::Requires]),
-        );
+        let mut f =
+            CrawlFrontier::new(CrawlBudget::default().following(vec![Rel::Child, Rel::Requires]));
         f.seed(uri("/root"));
         let root = f.next_visit().unwrap();
         let accepted = f.expand(
@@ -375,7 +377,10 @@ mod tests {
         // taken as-is; a same-authority sibling resolves relative to the source.
         f.expand(
             &source,
-            &[Link::new(Rel::Peer, SpineUri::did([2u8; 32]).with_path("/tools/index"))],
+            &[Link::new(
+                Rel::Peer,
+                SpineUri::did([2u8; 32]).with_path("/tools/index"),
+            )],
             0,
         );
         let v = f.next_visit().unwrap();

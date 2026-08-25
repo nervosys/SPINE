@@ -113,11 +113,7 @@ impl EmbeddedMessage {
 
     /// Encode this message into a frame header for wire transmission.
     pub fn to_frame_header(&self) -> FrameHeader {
-        FrameHeader::new(
-            self.payload_len as u32,
-            self.msg_type,
-            self.sequence,
-        )
+        FrameHeader::new(self.payload_len as u32, self.msg_type, self.sequence)
     }
 
     /// Encode header bytes into a buffer. Returns 12 (header size).
@@ -373,10 +369,7 @@ impl<const D: usize> SensorBridge<D> {
     }
 
     /// Compare two sensor snapshots using cosine similarity.
-    pub fn similarity(
-        a: &LatentVectorFixed<D>,
-        b: &LatentVectorFixed<D>,
-    ) -> i16 {
+    pub fn similarity(a: &LatentVectorFixed<D>, b: &LatentVectorFixed<D>) -> i16 {
         cosine_similarity_fixed(a.as_slice(), b.as_slice())
     }
 
@@ -586,18 +579,12 @@ impl<const INBOX: usize, const OUTBOX: usize, const ROUTES: usize>
     }
 
     /// Compare two latent vectors using fixed-point cosine similarity.
-    pub fn latent_similarity(
-        a: &LatentVectorFixed<16>,
-        b: &LatentVectorFixed<16>,
-    ) -> i16 {
+    pub fn latent_similarity(a: &LatentVectorFixed<16>, b: &LatentVectorFixed<16>) -> i16 {
         cosine_similarity_fixed(a.as_slice(), b.as_slice())
     }
 
     /// Compute dot product of two latent vectors.
-    pub fn latent_dot(
-        a: &LatentVectorFixed<16>,
-        b: &LatentVectorFixed<16>,
-    ) -> i32 {
+    pub fn latent_dot(a: &LatentVectorFixed<16>, b: &LatentVectorFixed<16>) -> i32 {
         dot_product_fixed(a.as_slice(), b.as_slice())
     }
 

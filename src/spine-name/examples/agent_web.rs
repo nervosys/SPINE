@@ -67,7 +67,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- 1. Find a tool by what it does, not where it lives ---------------
     println!("1. Capability lookup — `web.search`:");
     for provider in resolver.find_providers("web.search").await? {
-        let title = provider.meta.get("title").map(String::as_str).unwrap_or("-");
+        let title = provider
+            .meta
+            .get("title")
+            .map(String::as_str)
+            .unwrap_or("-");
         println!(
             "   {title:<12} {} endpoint(s)  {}",
             provider.endpoints.len(),
@@ -105,7 +109,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(visit) = frontier.next_visit() {
         match resolver.resolve(&visit.uri).await {
             Ok(res) => {
-                let title = res.record.meta.get("title").map(String::as_str).unwrap_or("-");
+                let title = res
+                    .record
+                    .meta
+                    .get("title")
+                    .map(String::as_str)
+                    .unwrap_or("-");
                 let via = visit.via.map(|r| r.as_str().to_string());
                 println!(
                     "   depth {}  via {:<9} {title:<12} caps={:?}",
@@ -127,9 +136,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- 5. Content addressing --------------------------------------------
     let payload = b"an artifact an agent produced";
     let blob = SpineUri::blob_of(payload);
-    println!("5. Content-addressed name for a {}-byte artifact:", payload.len());
+    println!(
+        "5. Content-addressed name for a {}-byte artifact:",
+        payload.len()
+    );
     println!("   {blob}");
-    println!("   immutable: {} — cacheable forever, never revalidated", blob.is_immutable());
+    println!(
+        "   immutable: {} — cacheable forever, never revalidated",
+        blob.is_immutable()
+    );
 
     let stats = resolver.cache_stats();
     println!("\nCache: {} hits, {} misses", stats.hits, stats.misses);

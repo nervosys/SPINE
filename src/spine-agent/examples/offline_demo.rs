@@ -93,7 +93,10 @@ fn demo_compiler() {
     println!("  Instructions: {}", binary.instructions.len());
     println!("  Data bytes:   {}", binary.data.len());
     println!("  Functions:    {}", binary.exported_functions.len());
-    println!("  Compiled in:  {:.1}µs", elapsed.as_nanos() as f64 / 1000.0);
+    println!(
+        "  Compiled in:  {:.1}µs",
+        elapsed.as_nanos() as f64 / 1000.0
+    );
     println!();
 }
 
@@ -104,18 +107,29 @@ fn demo_protocol() {
 
     // Demonstrate message construction and serialization
     let messages = vec![
-        ("Navigate", Message::Request(spine_protocol::Request {
-            id: "demo-1".into(),
-            command: spine_protocol::BrowserCommand::Navigate {
-                url: "https://example.com".into(),
+        (
+            "Navigate",
+            Message::Request(spine_protocol::Request {
+                id: "demo-1".into(),
+                command: spine_protocol::BrowserCommand::Navigate {
+                    url: "https://example.com".into(),
+                },
+            }),
+        ),
+        (
+            "Ping",
+            Message::Ping {
+                timestamp: 1234567890,
             },
-        })),
-        ("Ping", Message::Ping { timestamp: 1234567890 }),
-        ("LatentVector", Message::LatentMessage(LatentVector {
-            components: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-            dim_hint: 8,
-            epoch: 1,
-        })),
+        ),
+        (
+            "LatentVector",
+            Message::LatentMessage(LatentVector {
+                components: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+                dim_hint: 8,
+                epoch: 1,
+            }),
+        ),
         ("MorphRequest", Message::MorphRequest { seed: 0xDEADBEEF }),
     ];
 
@@ -123,7 +137,12 @@ fn demo_protocol() {
         let start = Instant::now();
         let bytes = serde_json::to_vec(msg).unwrap();
         let elapsed = start.elapsed();
-        println!("  {:<14} → {} bytes ({:.0}ns)", name, bytes.len(), elapsed.as_nanos());
+        println!(
+            "  {:<14} → {} bytes ({:.0}ns)",
+            name,
+            bytes.len(),
+            elapsed.as_nanos()
+        );
     }
     println!();
 }
@@ -208,7 +227,11 @@ fn demo_fixed_point() {
     println!("  v1: {:?}", v1.data);
     println!("  v2: {:?}", v2.data);
     println!("  Dot product (Q16.16): {}", dot);
-    println!("  Cosine similarity (Q8.8): {} ({:.3} float)", sim, sim as f64 / 256.0);
+    println!(
+        "  Cosine similarity (Q8.8): {} ({:.3} float)",
+        sim,
+        sim as f64 / 256.0
+    );
 
     // Frame header codec
     let header = FrameHeader::new(4096, 0x01, 42);
@@ -217,16 +240,31 @@ fn demo_fixed_point() {
     let decoded = decode_frame_header(&buf).unwrap();
 
     println!("\n  Frame header roundtrip:");
-    println!("    payload_len: {} → {}", header.payload_len, decoded.payload_len);
-    println!("    frame_type:  {} → {}", header.frame_type, decoded.frame_type);
-    println!("    sequence:    {} → {}", header.sequence, decoded.sequence);
-    println!("    checksum:    {} → {} ✓", header.checksum, decoded.checksum);
+    println!(
+        "    payload_len: {} → {}",
+        header.payload_len, decoded.payload_len
+    );
+    println!(
+        "    frame_type:  {} → {}",
+        header.frame_type, decoded.frame_type
+    );
+    println!(
+        "    sequence:    {} → {}",
+        header.sequence, decoded.sequence
+    );
+    println!(
+        "    checksum:    {} → {} ✓",
+        header.checksum, decoded.checksum
+    );
 
     // FNV hashing
     let data = b"SPINE agentic web stack";
     let h32 = fnv1a_32(data);
     let h64 = fnv1a_64(data);
-    println!("\n  FNV-1a hash of {:?}:", std::str::from_utf8(data).unwrap());
+    println!(
+        "\n  FNV-1a hash of {:?}:",
+        std::str::from_utf8(data).unwrap()
+    );
     println!("    32-bit: 0x{:08X}", h32);
     println!("    64-bit: 0x{:016X}", h64);
     println!();
@@ -268,7 +306,10 @@ fn demo_embedded_agent() {
 
     // Drain outbox
     if let Some(outgoing) = agent.drain_outbox() {
-        println!("  Forwarded message type: 0x{:02X}, TTL: {}", outgoing.msg_type, outgoing.ttl);
+        println!(
+            "  Forwarded message type: 0x{:02X}, TTL: {}",
+            outgoing.msg_type, outgoing.ttl
+        );
     }
 
     // Stats

@@ -102,55 +102,53 @@ async fn h2_roundtrip(send: h2::client::SendRequest<Bytes>, body: Bytes) -> usiz
 // =============================================================================
 
 fn spawn_spine_echo_on(listener: StdListener) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        loop {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            stream.set_nodelay(true).unwrap();
-            let mut write_stream = stream.try_clone().unwrap();
-            let mut buf = vec![0u8; 512 * 1024];
-            let mut filled: usize = 0;
+    thread::spawn(move || loop {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        stream.set_nodelay(true).unwrap();
+        let mut write_stream = stream.try_clone().unwrap();
+        let mut buf = vec![0u8; 512 * 1024];
+        let mut filled: usize = 0;
 
-            'conn: loop {
-                while filled < 12 {
-                    if filled == buf.len() {
-                        buf.resize(buf.len() * 2, 0);
-                    }
-                    match stream.read(&mut buf[filled..]) {
-                        Ok(0) => break 'conn,
-                        Ok(n) => filled += n,
-                        Err(_) => break 'conn,
-                    }
+        'conn: loop {
+            while filled < 12 {
+                if filled == buf.len() {
+                    buf.resize(buf.len() * 2, 0);
                 }
-                let length = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-                let total = 12 + length;
-                if total > buf.len() {
-                    buf.resize(total.max(buf.len() * 2), 0);
+                match stream.read(&mut buf[filled..]) {
+                    Ok(0) => break 'conn,
+                    Ok(n) => filled += n,
+                    Err(_) => break 'conn,
                 }
-                while filled < total {
-                    match stream.read(&mut buf[filled..]) {
-                        Ok(0) => break 'conn,
-                        Ok(n) => filled += n,
-                        Err(_) => break 'conn,
-                    }
-                }
-                let hdr = FrameHeader {
-                    length: length as u32,
-                    flags: FrameFlags::empty(),
-                    sequence: 1,
-                    stream_id: 1,
-                    _reserved: 0,
-                };
-                if Frame::write_parts_to_sync(&hdr, &buf[12..total], &mut write_stream).is_err() {
-                    break 'conn;
-                }
-                let tail = filled - total;
-                if tail > 0 {
-                    buf.copy_within(total..filled, 0);
-                }
-                filled = tail;
             }
+            let length = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+            let total = 12 + length;
+            if total > buf.len() {
+                buf.resize(total.max(buf.len() * 2), 0);
+            }
+            while filled < total {
+                match stream.read(&mut buf[filled..]) {
+                    Ok(0) => break 'conn,
+                    Ok(n) => filled += n,
+                    Err(_) => break 'conn,
+                }
+            }
+            let hdr = FrameHeader {
+                length: length as u32,
+                flags: FrameFlags::empty(),
+                sequence: 1,
+                stream_id: 1,
+                _reserved: 0,
+            };
+            if Frame::write_parts_to_sync(&hdr, &buf[12..total], &mut write_stream).is_err() {
+                break 'conn;
+            }
+            let tail = filled - total;
+            if tail > 0 {
+                buf.copy_within(total..filled, 0);
+            }
+            filled = tail;
         }
     })
 }
@@ -370,8 +368,7 @@ fn bench_concurrent(c: &mut Criterion) {
                             break;
                         }
                         let h = &buf[head..head + 12];
-                        let length =
-                            u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
+                        let length = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
                         let total = 12 + length;
                         if avail < total {
                             break;
@@ -381,10 +378,9 @@ fn bench_concurrent(c: &mut Criterion) {
                         out.extend_from_slice(&buf[head..head + total]);
                         head += total;
                     }
-                    if !out.is_empty()
-                        && write_stream.write_all(&out).is_err() {
-                            break 'c;
-                        }
+                    if !out.is_empty() && write_stream.write_all(&out).is_err() {
+                        break 'c;
+                    }
                     // Compact if head has advanced a lot.
                     if head > 0 && tail - head < buf.len() / 4 {
                         buf.copy_within(head..tail, 0);

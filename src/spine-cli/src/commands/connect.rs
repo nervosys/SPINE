@@ -45,13 +45,8 @@ pub async fn run(
                 "⚠".yellow().bold()
             );
         }
-        let mut client =
-            AgentClient::connect_tls(&addr, domain_str, ca_path, client_auth).await?;
-        let mode = if client_auth.is_some() {
-            "mTLS"
-        } else {
-            "TLS"
-        };
+        let mut client = AgentClient::connect_tls(&addr, domain_str, ca_path, client_auth).await?;
+        let mode = if client_auth.is_some() { "mTLS" } else { "TLS" };
         let latency = client.ping().await?;
         eprintln!(
             "{} Connected via {} ({}ms latency)",

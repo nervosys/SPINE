@@ -453,7 +453,6 @@ pub async fn crawl_names(
 mod tests {
     use super::*;
 
-
     /// The cap is the whole reason `put` is not just `push`. The origin limits
     /// its own sessions, so a gateway that hoarded idle connections would be
     /// spending the origin's budget on connects it may never make.

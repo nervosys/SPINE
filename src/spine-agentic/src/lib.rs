@@ -179,7 +179,11 @@ pub struct KnowledgeEdge {
 }
 
 impl KnowledgeGraph {
-    pub fn new() -> Self { Self { nodes: HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            nodes: HashMap::new(),
+        }
+    }
     pub fn get_node(&self, id: &str) -> Option<&KnowledgeNode> {
         self.nodes.get(id)
     }
@@ -190,9 +194,13 @@ impl KnowledgeGraph {
         // Edges stored externally (kept for API compatibility)
     }
     pub fn query_similar(&self, embedding: &[f32], top_k: usize) -> Vec<(String, f32)> {
-        let mut results: Vec<(String, f32)> = self.nodes.values()
+        let mut results: Vec<(String, f32)> = self
+            .nodes
+            .values()
             .filter_map(|n| {
-                n.embedding.as_ref().map(|e| (n.id.clone(), cosine_similarity(embedding, e)))
+                n.embedding
+                    .as_ref()
+                    .map(|e| (n.id.clone(), cosine_similarity(embedding, e)))
             })
             .collect();
         results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -205,10 +213,16 @@ impl KnowledgeGraph {
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let (mut dot, mut na, mut nb) = (0.0f32, 0.0f32, 0.0f32);
     for i in 0..a.len().min(b.len()) {
-        dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i];
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
     }
     let denom = na.sqrt() * nb.sqrt();
-    if denom < 1e-12 { 0.0 } else { dot / denom }
+    if denom < 1e-12 {
+        0.0
+    } else {
+        dot / denom
+    }
 }
 
 // =============================================================================
@@ -1263,7 +1277,8 @@ pub enum SideEffect {
 /// error on compile/exec failure — never a fake success.
 #[cfg(feature = "wasm-exec")]
 fn execute_sandboxed(command: &str, args: serde_json::Value) -> Result<serde_json::Value, String> {
-    let bin = spine_compiler::Compiler::compile(command).map_err(|e| format!("compile failed: {e}"))?;
+    let bin =
+        spine_compiler::Compiler::compile(command).map_err(|e| format!("compile failed: {e}"))?;
     let res = spine_wasm::WasmRuntime::default()
         .execute(&bin)
         .map_err(|e| format!("sandboxed execution failed: {e}"))?;
@@ -3909,20 +3924,18 @@ impl TemporalReasoner {
             }
 
             match constraint.constraint_type {
-                ConstraintType::Before
-                    if involved[0].1 >= involved[1].1 => {
-                        violations.push(format!(
-                            "Event {} must happen before {}",
-                            involved[0].0, involved[1].0
-                        ));
-                    }
-                ConstraintType::After
-                    if involved[0].1 <= involved[1].1 => {
-                        violations.push(format!(
-                            "Event {} must happen after {}",
-                            involved[0].0, involved[1].0
-                        ));
-                    }
+                ConstraintType::Before if involved[0].1 >= involved[1].1 => {
+                    violations.push(format!(
+                        "Event {} must happen before {}",
+                        involved[0].0, involved[1].0
+                    ));
+                }
+                ConstraintType::After if involved[0].1 <= involved[1].1 => {
+                    violations.push(format!(
+                        "Event {} must happen after {}",
+                        involved[0].0, involved[1].0
+                    ));
+                }
                 _ => {} // Other constraints would be checked similarly
             }
         }
@@ -6521,7 +6534,6 @@ pub enum OntologyVisibility {
     Private,
 }
 
-
 /// A single term in an ontology — a concept, capability, or relation type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OntologyTerm {
@@ -6574,13 +6586,8 @@ impl OntologyTerm {
     /// Compute SHA-256 cryptographic hash of this term's canonical form.
     /// Used for HashOnly visibility — verifiable but not reversible.
     pub fn crypto_hash(&self) -> [u8; 32] {
-        use sha2::{Sha256, Digest};
-        let canonical = format!(
-            "{}|{}|{}",
-            self.uri,
-            self.label,
-            self.parents.join(",")
-        );
+        use sha2::{Digest, Sha256};
+        let canonical = format!("{}|{}|{}", self.uri, self.label, self.parents.join(","));
         let mut hasher = Sha256::new();
         hasher.update(canonical.as_bytes());
         let result = hasher.finalize();
@@ -6596,11 +6603,15 @@ impl OntologyTerm {
         // Deterministic embedding derived from term content via hashing.
         // This is a lightweight locality-sensitive hash; in production this would
         // be replaced by a learned encoder (VAE / sentence-transformer).
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut embedding = vec![0.0f32; dim];
-        let text = format!("{} {} {}", self.uri, self.label,
-            self.description.as_deref().unwrap_or(""));
+        let text = format!(
+            "{} {} {}",
+            self.uri,
+            self.label,
+            self.description.as_deref().unwrap_or("")
+        );
 
         // Generate dim floats from successive SHA-256 rounds.
         // Map each 4-byte chunk to a float in [-1, 1] to avoid NaN/Inf.
@@ -6667,7 +6678,9 @@ impl AgentOntology {
 
     /// Add a term; uses the ontology's default visibility if the term has Public
     pub fn add_term(&mut self, mut term: OntologyTerm) {
-        if term.visibility == OntologyVisibility::Public && self.default_visibility != OntologyVisibility::Public {
+        if term.visibility == OntologyVisibility::Public
+            && self.default_visibility != OntologyVisibility::Public
+        {
             term.visibility = self.default_visibility;
         }
         self.terms.push(term);
@@ -6675,7 +6688,7 @@ impl AgentOntology {
     }
 
     fn recompute_hash(&mut self) {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(self.namespace.as_bytes());
         hasher.update(self.version.as_bytes());
@@ -6711,15 +6724,19 @@ impl AgentOntology {
                 OntologyVisibility::HashOnly => {
                     hashed_terms.push(HashedTerm {
                         hash: term.crypto_hash(),
-                        parents_hash: term.parents.iter().map(|p| {
-                            use sha2::{Sha256, Digest};
-                            let mut h = Sha256::new();
-                            h.update(p.as_bytes());
-                            let r = h.finalize();
-                            let mut out = [0u8; 32];
-                            out.copy_from_slice(&r);
-                            out
-                        }).collect(),
+                        parents_hash: term
+                            .parents
+                            .iter()
+                            .map(|p| {
+                                use sha2::{Digest, Sha256};
+                                let mut h = Sha256::new();
+                                h.update(p.as_bytes());
+                                let r = h.finalize();
+                                let mut out = [0u8; 32];
+                                out.copy_from_slice(&r);
+                                out
+                            })
+                            .collect(),
                     });
                 }
                 OntologyVisibility::NeuralHash => {
@@ -6746,7 +6763,10 @@ impl AgentOntology {
 
     /// Find terms matching a URI prefix
     pub fn find_terms(&self, prefix: &str) -> Vec<&OntologyTerm> {
-        self.terms.iter().filter(|t| t.uri.starts_with(prefix)).collect()
+        self.terms
+            .iter()
+            .filter(|t| t.uri.starts_with(prefix))
+            .collect()
     }
 
     /// Check if this ontology contains a specific term URI
@@ -6821,7 +6841,11 @@ impl DisclosedOntology {
             let dot: f32 = nt.embedding.iter().zip(query).map(|(a, b)| a * b).sum();
             let na: f32 = nt.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
             let nb: f32 = query.iter().map(|x| x * x).sum::<f32>().sqrt();
-            let sim = if na > 1e-10 && nb > 1e-10 { dot / (na * nb) } else { 0.0 };
+            let sim = if na > 1e-10 && nb > 1e-10 {
+                dot / (na * nb)
+            } else {
+                0.0
+            };
             if sim > best_sim {
                 best_sim = sim;
                 best_idx = i;
@@ -6908,21 +6932,26 @@ impl OntologyAccessControl {
         let mut neural_terms = Vec::new();
 
         for term in &ontology.terms {
-            let vis = self.effective_visibility(requester_id, &term.uri, ontology.default_visibility);
+            let vis =
+                self.effective_visibility(requester_id, &term.uri, ontology.default_visibility);
             match vis {
                 OntologyVisibility::Public => public_terms.push(term.clone()),
                 OntologyVisibility::HashOnly => {
                     hashed_terms.push(HashedTerm {
                         hash: term.crypto_hash(),
-                        parents_hash: term.parents.iter().map(|p| {
-                            use sha2::{Sha256, Digest};
-                            let mut h = Sha256::new();
-                            h.update(p.as_bytes());
-                            let r = h.finalize();
-                            let mut out = [0u8; 32];
-                            out.copy_from_slice(&r);
-                            out
-                        }).collect(),
+                        parents_hash: term
+                            .parents
+                            .iter()
+                            .map(|p| {
+                                use sha2::{Digest, Sha256};
+                                let mut h = Sha256::new();
+                                h.update(p.as_bytes());
+                                let r = h.finalize();
+                                let mut out = [0u8; 32];
+                                out.copy_from_slice(&r);
+                                out
+                            })
+                            .collect(),
                     });
                 }
                 OntologyVisibility::NeuralHash => {
@@ -6971,7 +7000,10 @@ impl OntologyRegistry {
     pub fn register(&self, agent_id: AgentId, disclosed: DisclosedOntology) {
         // Index public terms
         for term in &disclosed.public_terms {
-            self.by_term.entry(term.uri.clone()).or_default().push(agent_id);
+            self.by_term
+                .entry(term.uri.clone())
+                .or_default()
+                .push(agent_id);
         }
         // Index hashed terms
         for ht in &disclosed.hashed_terms {
@@ -6998,13 +7030,19 @@ impl OntologyRegistry {
 
     /// Find agents that publicly declare a specific term URI.
     pub fn find_by_term(&self, term_uri: &str) -> Vec<AgentId> {
-        self.by_term.get(term_uri).map(|v| v.clone()).unwrap_or_default()
+        self.by_term
+            .get(term_uri)
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// Find agents that have a hashed term matching the given hash.
     /// Useful for verifying if a known term exists without disclosing it.
     pub fn find_by_hash(&self, hash: &[u8; 32]) -> Vec<AgentId> {
-        self.by_hash.get(hash).map(|v| v.clone()).unwrap_or_default()
+        self.by_hash
+            .get(hash)
+            .map(|v| v.clone())
+            .unwrap_or_default()
     }
 
     /// Find agents whose neural-hashed terms are semantically similar to a query embedding.
@@ -7069,7 +7107,11 @@ impl OntologyRegistry {
         let intersection = uris_a.intersection(&uris_b).count();
         let union = uris_a.union(&uris_b).count();
 
-        if union == 0 { 0.0 } else { intersection as f64 / union as f64 }
+        if union == 0 {
+            0.0
+        } else {
+            intersection as f64 / union as f64
+        }
     }
 }
 
@@ -7078,7 +7120,6 @@ impl Default for OntologyRegistry {
         Self::new()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -7134,8 +7175,7 @@ mod tests {
 
     #[test]
     fn test_ontology_crypto_hash_deterministic() {
-        let term = OntologyTerm::new("spine:cap/nav", "Navigation")
-            .with_parent("spine:cap/base");
+        let term = OntologyTerm::new("spine:cap/nav", "Navigation").with_parent("spine:cap/base");
         let h1 = term.crypto_hash();
         let h2 = term.crypto_hash();
         assert_eq!(h1, h2);
@@ -7157,19 +7197,26 @@ mod tests {
         let h2 = t2.neural_hash(16);
         assert_eq!(h1.len(), 16);
         let sim: f32 = h1.iter().zip(&h2).map(|(a, b)| a * b).sum();
-        assert!((sim - 1.0).abs() < 0.01, "Same term should have similarity ~1.0");
+        assert!(
+            (sim - 1.0).abs() < 0.01,
+            "Same term should have similarity ~1.0"
+        );
     }
 
     #[test]
     fn test_ontology_disclosed_view_visibility() {
         let mut ont = AgentOntology::new("spine:test", "1.0");
         ont.add_term(OntologyTerm::new("spine:pub", "Public"));
-        ont.add_term(OntologyTerm::new("spine:hash", "Hashed")
-            .with_visibility(OntologyVisibility::HashOnly));
-        ont.add_term(OntologyTerm::new("spine:neural", "Neural")
-            .with_visibility(OntologyVisibility::NeuralHash));
-        ont.add_term(OntologyTerm::new("spine:priv", "Private")
-            .with_visibility(OntologyVisibility::Private));
+        ont.add_term(
+            OntologyTerm::new("spine:hash", "Hashed").with_visibility(OntologyVisibility::HashOnly),
+        );
+        ont.add_term(
+            OntologyTerm::new("spine:neural", "Neural")
+                .with_visibility(OntologyVisibility::NeuralHash),
+        );
+        ont.add_term(
+            OntologyTerm::new("spine:priv", "Private").with_visibility(OntologyVisibility::Private),
+        );
 
         let view = ont.disclosed_view(8);
         assert_eq!(view.public_terms.len(), 1);
@@ -7192,15 +7239,23 @@ mod tests {
     fn test_ontology_access_control() {
         let mut acl = OntologyAccessControl::default();
         acl.grant("agent-trusted", "spine:cap/", OntologyVisibility::Public);
-        acl.grant("agent-untrusted", "spine:cap/", OntologyVisibility::HashOnly);
+        acl.grant(
+            "agent-untrusted",
+            "spine:cap/",
+            OntologyVisibility::HashOnly,
+        );
 
         let vis_trusted = acl.effective_visibility(
-            "agent-trusted", "spine:cap/nav", OntologyVisibility::Private,
+            "agent-trusted",
+            "spine:cap/nav",
+            OntologyVisibility::Private,
         );
         assert_eq!(vis_trusted, OntologyVisibility::Public);
 
         let vis_untrusted = acl.effective_visibility(
-            "agent-untrusted", "spine:cap/nav", OntologyVisibility::Private,
+            "agent-untrusted",
+            "spine:cap/nav",
+            OntologyVisibility::Private,
         );
         assert_eq!(vis_untrusted, OntologyVisibility::HashOnly);
     }
@@ -7251,7 +7306,11 @@ mod tests {
 
         // Compatibility: they share 1/3 terms = ~0.33
         let compat = registry.compatibility(&id1, &id2);
-        assert!(compat > 0.3 && compat < 0.4, "Expected ~0.33, got {}", compat);
+        assert!(
+            compat > 0.3 && compat < 0.4,
+            "Expected ~0.33, got {}",
+            compat
+        );
     }
 
     #[test]
@@ -7349,8 +7408,7 @@ mod tests {
         assert!(!view.verify_hash(&wrong));
     }
 
-
-        #[test]
+    #[test]
     fn test_resource_locator() {
         let loc = ResourceLocator::semantic("weather")
             .with_constraint("location:london")
@@ -8267,8 +8325,6 @@ pub struct TrustStats {
     pub agents_with_reputation: usize,
 }
 
-
-
 // =============================================================================
 // NEURAL PROTOCOL STUBS (retained for spine-agent / spine-core / spine-browser)
 // =============================================================================
@@ -8308,11 +8364,22 @@ pub struct TransmissionResult {
 /// FIPA speech act types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SpeechAct {
-    Inform { content: String },
-    Request { action: String, parameters: serde_json::Value },
-    Confirm { proposition: String },
-    Refuse { reason: String },
-    Query { question: String },
+    Inform {
+        content: String,
+    },
+    Request {
+        action: String,
+        parameters: serde_json::Value,
+    },
+    Confirm {
+        proposition: String,
+    },
+    Refuse {
+        reason: String,
+    },
+    Query {
+        question: String,
+    },
 }
 
 /// FIPA performative for agent communication display.
@@ -8338,22 +8405,33 @@ impl NeuralProtocol {
     pub fn new(bandwidth: f64, latency: f64) -> Self {
         Self { bandwidth, latency }
     }
-    pub fn bandwidth(&self) -> f64 { self.bandwidth }
-    pub fn latency(&self) -> f64 { self.latency }
+    pub fn bandwidth(&self) -> f64 {
+        self.bandwidth
+    }
+    pub fn latency(&self) -> f64 {
+        self.latency
+    }
 
     /// Transmit data through the neural protocol (stub).
-    pub async fn transmit(&mut self, data: &[u8], domain: ProtocolDomain) -> Result<TransmissionResult, String> {
+    pub async fn transmit(
+        &mut self,
+        data: &[u8],
+        domain: ProtocolDomain,
+    ) -> Result<TransmissionResult, String> {
         let start = std::time::Instant::now();
         let duration = start.elapsed();
         Ok(TransmissionResult {
             bytes_sent: data.len(),
             latency_us: duration.as_micros() as u64,
             domain: format!("{:?}", domain),
-            throughput_mbps: if duration.as_secs_f64() > 0.0 { (data.len() as f64 * 8.0) / (duration.as_secs_f64() * 1_000_000.0) } else { 0.0 },
+            throughput_mbps: if duration.as_secs_f64() > 0.0 {
+                (data.len() as f64 * 8.0) / (duration.as_secs_f64() * 1_000_000.0)
+            } else {
+                0.0
+            },
             compression_ratio: 1.0,
             spike_count: data.len() / 64,
             duration,
         })
     }
 }
-

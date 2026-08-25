@@ -597,7 +597,10 @@ impl MeshNode {
 
     /// List all known peers.
     pub fn list_peers(&self) -> Vec<PeerInfo> {
-        self.peers.iter().map(|entry| entry.value().clone()).collect()
+        self.peers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
     }
 
     /// Get a snapshot of the routing table.
@@ -761,8 +764,7 @@ impl MeshNode {
 
         // 3. Verify signature (if we know the sender's key)
         if let Some(key) = self.trusted_keys.get(&envelope.from) {
-            let sig_data =
-                Self::signature_data(&envelope.id, &envelope.from, &envelope.payload);
+            let sig_data = Self::signature_data(&envelope.id, &envelope.from, &envelope.payload);
             if !crate::identity::Ed25519Keypair::verify(&key, &sig_data, &envelope.signature) {
                 self.stats.messages_dropped.fetch_add(1, Ordering::Relaxed);
                 return Ok(MeshAction::Drop("invalid signature".into()));
@@ -774,12 +776,7 @@ impl MeshNode {
             let mut routing = self.routing.write().await;
             // The first hop tells us how to reach the sender
             let next_hop = envelope.hops.last().cloned().unwrap_or(envelope.from);
-            routing.update(
-                envelope.from,
-                next_hop,
-                envelope.hops.len() as u8,
-                0,
-            );
+            routing.update(envelope.from, next_hop, envelope.hops.len() as u8, 0);
         }
 
         // 5. Determine if this is for us
@@ -890,9 +887,8 @@ impl MeshNode {
         let timeout = self.config.peer_timeout_secs;
 
         // Remove stale peers (keep banned ones)
-        self.peers.retain(|_, peer| {
-            !peer.is_stale(timeout) || peer.state == PeerState::Banned
-        });
+        self.peers
+            .retain(|_, peer| !peer.is_stale(timeout) || peer.state == PeerState::Banned);
 
         // Prune routing table
         let mut routing = self.routing.write().await;
@@ -1000,7 +996,10 @@ mod tests {
         let peer_id = AgentId::new();
 
         node.add_peer(peer_id, "10.0.0.1:9000".parse().unwrap());
-        assert_eq!(node.get_peer(&peer_id).unwrap().state, PeerState::Discovered);
+        assert_eq!(
+            node.get_peer(&peer_id).unwrap().state,
+            PeerState::Discovered
+        );
 
         node.mark_connected(&peer_id);
         assert_eq!(node.get_peer(&peer_id).unwrap().state, PeerState::Connected);
@@ -1023,10 +1022,7 @@ mod tests {
         let node = MeshNode::new(id, test_config());
         let target = AgentId::new();
 
-        let envelope = node.create_envelope(
-            MeshTarget::Agent(target),
-            MeshPayload::Ping(12345),
-        );
+        let envelope = node.create_envelope(MeshTarget::Agent(target), MeshPayload::Ping(12345));
 
         assert_eq!(envelope.from, *node.agent_id());
         assert_eq!(envelope.to, MeshTarget::Agent(target));
@@ -1044,10 +1040,8 @@ mod tests {
         // Create envelope addressed to this node
         let sender_id = test_identity("sender");
         let sender_node = MeshNode::new(sender_id, test_config());
-        let envelope = sender_node.create_envelope(
-            MeshTarget::Agent(receiver_id),
-            MeshPayload::Ping(999),
-        );
+        let envelope =
+            sender_node.create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(999));
 
         let action = node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Deliver(_)));
@@ -1128,18 +1122,14 @@ mod tests {
         receiver_node.trust_key(sender.agent_id, sender.public_key().to_vec());
 
         // Valid envelope
-        let envelope = sender_node.create_envelope(
-            MeshTarget::Agent(receiver_id),
-            MeshPayload::Ping(77),
-        );
+        let envelope =
+            sender_node.create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77));
         let action = receiver_node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Deliver(_)));
 
         // Tampered envelope — change the payload after signing
-        let mut bad_envelope = sender_node.create_envelope(
-            MeshTarget::Agent(receiver_id),
-            MeshPayload::Ping(77),
-        );
+        let mut bad_envelope =
+            sender_node.create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77));
         bad_envelope.payload = MeshPayload::Ping(99); // tamper
         let action = receiver_node.process_envelope(bad_envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Drop(_)));
@@ -1359,8 +1349,7 @@ mod tests {
 
         let sender = test_identity("broadcaster");
         let sender_node = MeshNode::new(sender, test_config());
-        let envelope =
-            sender_node.create_envelope(MeshTarget::Broadcast, MeshPayload::Ping(0));
+        let envelope = sender_node.create_envelope(MeshTarget::Broadcast, MeshPayload::Ping(0));
 
         let action = node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::DeliverAndForward(_)));

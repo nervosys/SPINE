@@ -207,9 +207,7 @@ impl QuicNameTransport {
         // the point the resolver had given up on it.
         let connection = tokio::time::timeout(CONNECT_TIMEOUT, connecting)
             .await
-            .map_err(|_| {
-                NameMeshError::Transport(format!("quic handshake to {addr} timed out"))
-            })?
+            .map_err(|_| NameMeshError::Transport(format!("quic handshake to {addr} timed out")))?
             .map_err(|e| NameMeshError::Transport(format!("quic handshake {addr}: {e}")))?;
 
         // Authenticate the connection once, on its first stream.
@@ -222,8 +220,7 @@ impl QuicNameTransport {
             let expected = self.identities.get(agent).map(|e| *e.value());
             // The derived session keys are dropped: QUIC already encrypts, and
             // this exchange exists only to prove who is on the far end.
-            let _session =
-                client_handshake(&mut stream, signing, expected.as_ref()).await?;
+            let _session = client_handshake(&mut stream, signing, expected.as_ref()).await?;
         }
 
         self.connections.insert(*agent, connection.clone());
@@ -317,7 +314,8 @@ impl QuicNameTransport {
             let _session = client_handshake(&mut stream, signing, None).await?;
         }
 
-        self.bootstrap.insert(endpoint.to_string(), connection.clone());
+        self.bootstrap
+            .insert(endpoint.to_string(), connection.clone());
         Ok(connection)
     }
 

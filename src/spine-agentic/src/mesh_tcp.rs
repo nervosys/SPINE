@@ -67,8 +67,8 @@ pub async fn write_envelope<W>(w: &mut W, envelope: &MeshEnvelope) -> Result<(),
 where
     W: AsyncWriteExt + Unpin,
 {
-    let body =
-        serde_json::to_vec(envelope).map_err(|e| NameMeshError::Transport(format!("encode: {e}")))?;
+    let body = serde_json::to_vec(envelope)
+        .map_err(|e| NameMeshError::Transport(format!("encode: {e}")))?;
     if body.len() > MAX_FRAME_BYTES {
         return Err(NameMeshError::Transport(format!(
             "envelope of {} bytes exceeds the {MAX_FRAME_BYTES}-byte limit",
@@ -325,7 +325,8 @@ struct SecureWriter {
 
 impl std::fmt::Debug for SecureSocketTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecureSocketTransport").finish_non_exhaustive()
+        f.debug_struct("SecureSocketTransport")
+            .finish_non_exhaustive()
     }
 }
 
@@ -883,7 +884,10 @@ mod tests {
         assert_eq!(back.id, envelope.id);
         match &back.payload {
             MeshPayload::NameAnnounce(a) => {
-                assert!(a.record.verify().is_ok(), "a signature must survive the wire")
+                assert!(
+                    a.record.verify().is_ok(),
+                    "a signature must survive the wire"
+                )
             }
             other => panic!("expected NameAnnounce, got {other:?}"),
         }
@@ -1003,10 +1007,7 @@ mod tests {
         assert_eq!(newcomer.resolver.peer_count().await, 0);
         assert_eq!(newcomer.transport.known_addresses(), 0);
 
-        let report = newcomer
-            .resolver
-            .bootstrap(&[seed.addr.to_string()])
-            .await;
+        let report = newcomer.resolver.bootstrap(&[seed.addr.to_string()]).await;
 
         assert!(report.is_connected(), "bootstrap failed: {report:?}");
         assert_eq!(report.reached[0].key, seed.resolver.local_key());
@@ -1226,7 +1227,11 @@ mod tests {
         assert_eq!(seeker.transport.pooled_connections(), 0);
 
         let again = seeker.resolver.resolve(&record(1, &[]).name).await.unwrap();
-        assert_eq!(again, record(1, &[]), "re-dialed without the caller noticing");
+        assert_eq!(
+            again,
+            record(1, &[]),
+            "re-dialed without the caller noticing"
+        );
         assert_eq!(seeker.transport.pooled_connections(), 1);
     }
 
@@ -1349,8 +1354,7 @@ mod secure_tests {
         // The handshake key and the mesh identity are the same Ed25519 key.
         let signing = SigningKey::from_bytes(&[50 + seed; 32]);
         let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
-        let (transport, inbound) =
-            TcpNameTransport::encrypted(signing.clone());
+        let (transport, inbound) = TcpNameTransport::encrypted(signing.clone());
         let resolver = Arc::new(
             MeshNameResolver::new(mesh.clone(), transport.clone())
                 .with_clock(|| NOW)
@@ -1395,7 +1399,10 @@ mod secure_tests {
         holder.resolver.publish_local(rec.clone()).await.unwrap();
 
         let found = seeker.resolver.resolve(&rec.name).await.unwrap();
-        assert_eq!(found, rec, "resolved over an authenticated, encrypted socket");
+        assert_eq!(
+            found, rec,
+            "resolved over an authenticated, encrypted socket"
+        );
         assert!(found.verify().is_ok());
     }
 
@@ -1484,10 +1491,16 @@ mod secure_tests {
         let mut stream = TcpStream::connect(holder.addr).await.unwrap();
 
         // Expect somebody else's key at that address.
-        let wrong = SigningKey::from_bytes(&[200u8; 32]).verifying_key().to_bytes();
-        let err = client_handshake(&mut stream, &SigningKey::from_bytes(&[9u8; 32]), Some(&wrong))
-            .await
-            .unwrap_err();
+        let wrong = SigningKey::from_bytes(&[200u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let err = client_handshake(
+            &mut stream,
+            &SigningKey::from_bytes(&[9u8; 32]),
+            Some(&wrong),
+        )
+        .await
+        .unwrap_err();
         assert!(
             err.to_string().contains("not the expected"),
             "a mismatched identity must abort the connection: {err}"
@@ -1520,9 +1533,9 @@ mod secure_tests {
         )
         .await;
         let unanswered = match got {
-            Err(_) => true,                       // timed out
-            Ok(Ok(None)) => true,                 // clean close
-            Ok(Err(_)) => true,                   // reset
+            Err(_) => true,       // timed out
+            Ok(Ok(None)) => true, // clean close
+            Ok(Err(_)) => true,   // reset
             Ok(Ok(Some(_))) => false,
         };
         assert!(unanswered, "an unauthenticated peer must not be served");

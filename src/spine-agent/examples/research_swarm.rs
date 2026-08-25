@@ -23,18 +23,15 @@ use tokio::net::TcpStream;
 const SERVER_ADDR: &str = "127.0.0.1:8080";
 
 /// A research agent that scrapes a URL and stores findings.
-async fn research_agent(
-    agent_id: usize,
-    url: &str,
-    topic: &str,
-) -> Result<serde_json::Value> {
+async fn research_agent(agent_id: usize, url: &str, topic: &str) -> Result<serde_json::Value> {
     let mut client = AgentClient::<TcpStream>::connect(SERVER_ADDR).await?;
 
     // Enable Chameleon Protocol for stealth browsing
-    let secret: [u8; 32] = [0x53, 0x50, 0x49, 0x4E, 0x45, 0x2D, 0x52, 0x65,
-                             0x73, 0x65, 0x61, 0x72, 0x63, 0x68, 0x2D, 0x44,
-                             0x65, 0x6D, 0x6F, 0x2D, 0x53, 0x65, 0x63, 0x72,
-                             0x65, 0x74, 0x4B, 0x65, 0x79, 0x21, 0x21, 0x21];
+    let secret: [u8; 32] = [
+        0x53, 0x50, 0x49, 0x4E, 0x45, 0x2D, 0x52, 0x65, 0x73, 0x65, 0x61, 0x72, 0x63, 0x68, 0x2D,
+        0x44, 0x65, 0x6D, 0x6F, 0x2D, 0x53, 0x65, 0x63, 0x72, 0x65, 0x74, 0x4B, 0x65, 0x79, 0x21,
+        0x21, 0x21,
+    ];
     client.handler.enable_chameleon_aead(secret);
     client.handler.enable_speculation(true, true);
 
@@ -66,7 +63,11 @@ async fn research_agent(
         .store_knowledge(
             &key,
             findings.clone(),
-            vec![topic.into(), "research".into(), format!("agent-{}", agent_id)],
+            vec![
+                topic.into(),
+                "research".into(),
+                format!("agent-{}", agent_id),
+            ],
         )
         .await?;
 
@@ -86,7 +87,10 @@ async fn research_agent(
 async fn aggregator_agent(topic: &str, expected_results: usize) -> Result<()> {
     let mut client = AgentClient::<TcpStream>::connect(SERVER_ADDR).await?;
 
-    println!("\n  [Aggregator] Querying knowledge base for topic: {}", topic);
+    println!(
+        "\n  [Aggregator] Querying knowledge base for topic: {}",
+        topic
+    );
     let results = client
         .query_knowledge(topic, vec!["research".into()], expected_results)
         .await?;
@@ -152,7 +156,8 @@ async fn main() -> Result<()> {
     let urls = [
         "https://example.com",
         "https://httpbin.org/html",
-        "https://www.rust-lang.org"];
+        "https://www.rust-lang.org",
+    ];
 
     println!("\n[2/4] Deploying {} research agents...", urls.len());
     let start = Instant::now();
@@ -188,8 +193,14 @@ async fn main() -> Result<()> {
     println!("\n╔══════════════════════════════════════════════════════════════╗");
     println!("║   Demo Complete                                              ║");
     println!("╠══════════════════════════════════════════════════════════════╣");
-    println!("║   Research agents: {}                                        ║", urls.len());
-    println!("║   Total time: {:.1}s                                         ║", elapsed.as_secs_f64());
+    println!(
+        "║   Research agents: {}                                        ║",
+        urls.len()
+    );
+    println!(
+        "║   Total time: {:.1}s                                         ║",
+        elapsed.as_secs_f64()
+    );
     println!("║   Protocol: Chameleon AEAD + Speculative Decoding            ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
 

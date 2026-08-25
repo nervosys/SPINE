@@ -380,13 +380,12 @@ impl CodecRegistry {
     }
 
     /// Build a [`CodecAdvertisement`] for everything currently registered.
-    pub fn advertise(&self, agent_id: impl Into<String>, ad_id: impl Into<String>) -> CodecAdvertisement {
-        let codecs = self
-            .codecs
-            .read()
-            .values()
-            .map(|c| c.describe())
-            .collect();
+    pub fn advertise(
+        &self,
+        agent_id: impl Into<String>,
+        ad_id: impl Into<String>,
+    ) -> CodecAdvertisement {
+        let codecs = self.codecs.read().values().map(|c| c.describe()).collect();
         CodecAdvertisement {
             id: ad_id.into(),
             agent_id: agent_id.into(),
@@ -828,7 +827,10 @@ mod tests {
             "spine:codec/echo/v1".into(),
             "spine:codec/titans/v1".into(),
         ];
-        assert_eq!(reg.pick_first(&offered).as_deref(), Some("spine:codec/echo/v1"));
+        assert_eq!(
+            reg.pick_first(&offered).as_deref(),
+            Some("spine:codec/echo/v1")
+        );
         let no_match = reg.pick_first(&["unrelated".into()]);
         assert_eq!(no_match, None);
     }

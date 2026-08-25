@@ -86,7 +86,10 @@ pub enum PolicyCondition {
     /// Minimum trust level required.
     MinTrust(FederationTrust),
     /// Only during specific time windows.
-    TimeWindow { start: DateTime<Utc>, end: DateTime<Utc> },
+    TimeWindow {
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    },
     /// Maximum concurrent delegated tasks.
     MaxConcurrentTasks(usize),
     /// Required capability on the requesting side.
@@ -184,7 +187,11 @@ impl FederationManager {
     }
 
     /// Update a swarm's trust level.
-    pub fn set_trust(&self, swarm_id: SwarmId, trust: FederationTrust) -> Result<(), FederationError> {
+    pub fn set_trust(
+        &self,
+        swarm_id: SwarmId,
+        trust: FederationTrust,
+    ) -> Result<(), FederationError> {
         let mut swarm = self
             .swarms
             .get_mut(&swarm_id)
@@ -236,8 +243,7 @@ impl FederationManager {
                     return Err(FederationError::InsufficientTrust);
                 }
             }
-            FederationPermission::JoinConsensus
-            | FederationPermission::SharedKnowledge => {
+            FederationPermission::JoinConsensus | FederationPermission::SharedKnowledge => {
                 if source.trust_level < FederationTrust::Ally {
                     return Err(FederationError::InsufficientTrust);
                 }
@@ -285,12 +291,11 @@ impl FederationManager {
 
             // Check conditions
             let conditions_met = pol.conditions.iter().all(|c| match c {
-                PolicyCondition::MinTrust(min) => {
-                    self.swarms
-                        .get(&from_swarm)
-                        .map(|s| s.trust_level >= *min)
-                        .unwrap_or(false)
-                }
+                PolicyCondition::MinTrust(min) => self
+                    .swarms
+                    .get(&from_swarm)
+                    .map(|s| s.trust_level >= *min)
+                    .unwrap_or(false),
                 PolicyCondition::TimeWindow { start, end } => now >= *start && now <= *end,
                 PolicyCondition::MaxConcurrentTasks(max) => {
                     let active = self
@@ -303,12 +308,11 @@ impl FederationManager {
                         .count();
                     active < *max
                 }
-                PolicyCondition::RequiresCapability(cap) => {
-                    self.swarms
-                        .get(&from_swarm)
-                        .map(|s| s.capabilities_offered.contains(cap))
-                        .unwrap_or(false)
-                }
+                PolicyCondition::RequiresCapability(cap) => self
+                    .swarms
+                    .get(&from_swarm)
+                    .map(|s| s.capabilities_offered.contains(cap))
+                    .unwrap_or(false),
                 PolicyCondition::RateLimit(max_per_min) => {
                     self.check_rate(from_swarm, *max_per_min)
                 }
@@ -433,7 +437,9 @@ impl FederationManager {
 
     /// Remove a swarm from the federation.
     pub fn remove_swarm(&self, id: SwarmId) -> Result<(), FederationError> {
-        self.swarms.remove(&id).ok_or(FederationError::SwarmNotFound)?;
+        self.swarms
+            .remove(&id)
+            .ok_or(FederationError::SwarmNotFound)?;
         // Clean up policies
         let to_remove: Vec<Uuid> = self
             .policies
@@ -623,8 +629,12 @@ mod tests {
     #[test]
     fn test_discover_capabilities() {
         let fm = FederationManager::new(Uuid::new_v4());
-        fm.register_swarm(make_swarm("a", FederationTrust::Participant, &["search", "crawl"]))
-            .unwrap();
+        fm.register_swarm(make_swarm(
+            "a",
+            FederationTrust::Participant,
+            &["search", "crawl"],
+        ))
+        .unwrap();
         fm.register_swarm(make_swarm("b", FederationTrust::Ally, &["analyze"]))
             .unwrap();
         fm.register_swarm(make_swarm("c", FederationTrust::Untrusted, &["secret"]))
@@ -639,8 +649,12 @@ mod tests {
         let fm = FederationManager::new(Uuid::new_v4());
         fm.register_swarm(make_swarm("a", FederationTrust::Participant, &["search"]))
             .unwrap();
-        fm.register_swarm(make_swarm("b", FederationTrust::Participant, &["search", "analyze"]))
-            .unwrap();
+        fm.register_swarm(make_swarm(
+            "b",
+            FederationTrust::Participant,
+            &["search", "analyze"],
+        ))
+        .unwrap();
         fm.register_swarm(make_swarm("c", FederationTrust::Observer, &["search"]))
             .unwrap();
 
@@ -695,7 +709,10 @@ mod tests {
         fm.register_swarm(s).unwrap();
 
         fm.set_trust(sid, FederationTrust::Ally).unwrap();
-        assert_eq!(fm.get_swarm(sid).unwrap().trust_level, FederationTrust::Ally);
+        assert_eq!(
+            fm.get_swarm(sid).unwrap().trust_level,
+            FederationTrust::Ally
+        );
     }
 
     #[test]

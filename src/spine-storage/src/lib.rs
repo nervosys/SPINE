@@ -859,7 +859,9 @@ mod tests {
         let store = TypedStorage::new(backend, "typed");
 
         #[derive(Serialize, Deserialize, Debug, PartialEq)]
-        struct Item { value: i32 }
+        struct Item {
+            value: i32,
+        }
 
         store.put("a", &Item { value: 1 }).unwrap();
         store.put("b", &Item { value: 2 }).unwrap();

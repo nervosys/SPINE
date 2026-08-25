@@ -104,10 +104,7 @@ pub enum ObligationType {
         required_capabilities: Vec<String>,
     },
     /// Provide data/knowledge.
-    DataDelivery {
-        data_type: String,
-        min_quality: f64,
-    },
+    DataDelivery { data_type: String, min_quality: f64 },
     /// Provide ongoing service for a duration.
     ServiceProvision {
         service_type: String,
@@ -118,7 +115,10 @@ pub enum ObligationType {
     /// Share knowledge or capabilities.
     KnowledgeSharing { topics: Vec<String> },
     /// Custom obligation.
-    Custom { key: String, value: serde_json::Value },
+    Custom {
+        key: String,
+        value: serde_json::Value,
+    },
 }
 
 // =============================================================================
@@ -727,7 +727,10 @@ mod tests {
         );
 
         mgr.reject(contract.id).unwrap();
-        assert_eq!(mgr.get(&contract.id).unwrap().status, ContractStatus::Cancelled);
+        assert_eq!(
+            mgr.get(&contract.id).unwrap().status,
+            ContractStatus::Cancelled
+        );
     }
 
     #[test]
@@ -787,7 +790,10 @@ mod tests {
             .unwrap();
 
         // Now it should settle
-        assert_eq!(mgr.try_settle(contract.id).unwrap(), ContractStatus::Fulfilled);
+        assert_eq!(
+            mgr.try_settle(contract.id).unwrap(),
+            ContractStatus::Fulfilled
+        );
     }
 
     #[test]
@@ -917,8 +923,22 @@ mod tests {
         let agent_b = AgentId::new();
         let mgr = ContractManager::new(agent_a);
 
-        let c1 = mgr.propose("A", vec![agent_b], vec![], vec![], ContractSla::default(), ResourceBudget::default());
-        let _c2 = mgr.propose("B", vec![agent_b], vec![], vec![], ContractSla::default(), ResourceBudget::default());
+        let c1 = mgr.propose(
+            "A",
+            vec![agent_b],
+            vec![],
+            vec![],
+            ContractSla::default(),
+            ResourceBudget::default(),
+        );
+        let _c2 = mgr.propose(
+            "B",
+            vec![agent_b],
+            vec![],
+            vec![],
+            ContractSla::default(),
+            ResourceBudget::default(),
+        );
 
         mgr.accept(c1.id, agent_b).unwrap();
 
@@ -932,7 +952,14 @@ mod tests {
         let agent_b = AgentId::new();
         let mgr = ContractManager::new(agent_a);
 
-        let contract = mgr.propose("Test", vec![agent_b], vec![], vec![], ContractSla::default(), ResourceBudget::default());
+        let contract = mgr.propose(
+            "Test",
+            vec![agent_b],
+            vec![],
+            vec![],
+            ContractSla::default(),
+            ResourceBudget::default(),
+        );
         mgr.accept(contract.id, agent_b).unwrap();
 
         let result = mgr.accept(contract.id, agent_b);
@@ -946,7 +973,14 @@ mod tests {
         let agent_c = AgentId::new();
         let mgr = ContractManager::new(agent_a);
 
-        let contract = mgr.propose("Test", vec![agent_b], vec![], vec![], ContractSla::default(), ResourceBudget::default());
+        let contract = mgr.propose(
+            "Test",
+            vec![agent_b],
+            vec![],
+            vec![],
+            ContractSla::default(),
+            ResourceBudget::default(),
+        );
         let result = mgr.accept(contract.id, agent_c);
         assert!(matches!(result, Err(ContractError::NotAParty(_))));
     }

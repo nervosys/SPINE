@@ -509,8 +509,7 @@ enum RuleMatch {
 
 /// Common role definitions for typical agent deployments.
 pub fn admin_role() -> Role {
-    Role::new("admin", "Full access to all resources")
-        .allow("*", "*")
+    Role::new("admin", "Full access to all resources").allow("*", "*")
 }
 
 pub fn reader_role() -> Role {
@@ -730,7 +729,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "r", "x", &high_ctx).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "r", "x", &high_ctx)
+                .decision,
             PolicyEffect::Allow
         );
     }
@@ -758,11 +759,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "file:doc.txt", "read", &ctx).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "file:doc.txt", "read", &ctx)
+                .decision,
             PolicyEffect::Allow
         );
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "network:api", "read", &ctx).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "network:api", "read", &ctx)
+                .decision,
             PolicyEffect::Deny
         );
     }
@@ -791,7 +796,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "r", "read", &ctx_with_tag).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "r", "read", &ctx_with_tag)
+                .decision,
             PolicyEffect::Allow
         );
         let ctx_no_tag = EvaluationContext {
@@ -799,7 +806,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "r", "read", &ctx_no_tag).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "r", "read", &ctx_no_tag)
+                .decision,
             PolicyEffect::Deny
         );
     }
@@ -935,10 +944,16 @@ mod tests {
         };
         // First 3 pass
         for _ in 0..3 {
-            assert_eq!(engine.evaluate(agent, "r", "x", &ctx).decision, PolicyEffect::Allow);
+            assert_eq!(
+                engine.evaluate(agent, "r", "x", &ctx).decision,
+                PolicyEffect::Allow
+            );
         }
         // 4th blocked (condition fails → no match → default deny)
-        assert_eq!(engine.evaluate(agent, "r", "x", &ctx).decision, PolicyEffect::Deny);
+        assert_eq!(
+            engine.evaluate(agent, "r", "x", &ctx).decision,
+            PolicyEffect::Deny
+        );
     }
 
     #[test]
@@ -964,14 +979,20 @@ mod tests {
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(Uuid::new_v4(), "r", "x", &ok_ctx).decision, PolicyEffect::Allow);
+        assert_eq!(
+            engine.evaluate(Uuid::new_v4(), "r", "x", &ok_ctx).decision,
+            PolicyEffect::Allow
+        );
 
         let bad_ctx = EvaluationContext {
             ip_address: Some("192.168.1.1".into()),
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(Uuid::new_v4(), "r", "x", &bad_ctx).decision, PolicyEffect::Deny);
+        assert_eq!(
+            engine.evaluate(Uuid::new_v4(), "r", "x", &bad_ctx).decision,
+            PolicyEffect::Deny
+        );
     }
 
     #[test]
@@ -1002,10 +1023,18 @@ mod tests {
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(agent, "anything", "delete", &ctx).decision, PolicyEffect::Allow);
+        assert_eq!(
+            engine.evaluate(agent, "anything", "delete", &ctx).decision,
+            PolicyEffect::Allow
+        );
 
         let non_admin = Uuid::new_v4();
-        assert_eq!(engine.evaluate(non_admin, "anything", "delete", &ctx).decision, PolicyEffect::Deny);
+        assert_eq!(
+            engine
+                .evaluate(non_admin, "anything", "delete", &ctx)
+                .decision,
+            PolicyEffect::Deny
+        );
     }
 
     #[test]
@@ -1033,8 +1062,16 @@ mod tests {
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(agent, "task", "execute", &ctx).decision, PolicyEffect::Allow);
-        assert_eq!(engine.evaluate(Uuid::new_v4(), "task", "execute", &ctx).decision, PolicyEffect::Deny);
+        assert_eq!(
+            engine.evaluate(agent, "task", "execute", &ctx).decision,
+            PolicyEffect::Allow
+        );
+        assert_eq!(
+            engine
+                .evaluate(Uuid::new_v4(), "task", "execute", &ctx)
+                .decision,
+            PolicyEffect::Deny
+        );
     }
 
     #[test]
@@ -1061,14 +1098,20 @@ mod tests {
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(Uuid::new_v4(), "r", "x", &low).decision, PolicyEffect::Deny);
+        assert_eq!(
+            engine.evaluate(Uuid::new_v4(), "r", "x", &low).decision,
+            PolicyEffect::Deny
+        );
 
         let high = EvaluationContext {
             trust_level: TrustLevel::HighlyTrusted,
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(Uuid::new_v4(), "r", "x", &high).decision, PolicyEffect::Allow);
+        assert_eq!(
+            engine.evaluate(Uuid::new_v4(), "r", "x", &high).decision,
+            PolicyEffect::Allow
+        );
     }
 
     #[test]
@@ -1146,7 +1189,10 @@ mod tests {
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(agent, "r", "x", &ctx1).decision, PolicyEffect::Deny);
+        assert_eq!(
+            engine.evaluate(agent, "r", "x", &ctx1).decision,
+            PolicyEffect::Deny
+        );
 
         // Has role and correct IP
         let ctx2 = EvaluationContext {
@@ -1154,7 +1200,10 @@ mod tests {
             timestamp: Utc::now(),
             ..Default::default()
         };
-        assert_eq!(engine.evaluate(agent, "r", "x", &ctx2).decision, PolicyEffect::Allow);
+        assert_eq!(
+            engine.evaluate(agent, "r", "x", &ctx2).decision,
+            PolicyEffect::Allow
+        );
     }
 
     #[test]
@@ -1180,7 +1229,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "r", "anything", &ctx).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "r", "anything", &ctx)
+                .decision,
             PolicyEffect::Allow
         );
     }
@@ -1209,7 +1260,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "page", "navigate", &ctx_with).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "page", "navigate", &ctx_with)
+                .decision,
             PolicyEffect::Allow
         );
         let ctx_without = EvaluationContext {
@@ -1217,7 +1270,9 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            engine.evaluate(Uuid::new_v4(), "page", "navigate", &ctx_without).decision,
+            engine
+                .evaluate(Uuid::new_v4(), "page", "navigate", &ctx_without)
+                .decision,
             PolicyEffect::Deny
         );
     }

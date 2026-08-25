@@ -143,7 +143,9 @@ impl UringBackend {
 
         conn.pending_ops += 1;
         conn.bytes_sent += data.len() as u64;
-        self.stats.total_ops_submitted.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .total_ops_submitted
+            .fetch_add(1, Ordering::Relaxed);
         self.stats
             .total_bytes_sent
             .fetch_add(data.len() as u64, Ordering::Relaxed);
@@ -164,7 +166,9 @@ impl UringBackend {
         self.ring.submit(op)?;
 
         conn.pending_ops += 1;
-        self.stats.total_ops_submitted.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .total_ops_submitted
+            .fetch_add(1, Ordering::Relaxed);
 
         Ok(user_data)
     }
@@ -310,7 +314,10 @@ mod tests {
     #[test]
     fn test_stats_initial() {
         let backend = UringBackend::new(UringConfig::default()).unwrap();
-        assert_eq!(backend.stats().connections_accepted.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            backend.stats().connections_accepted.load(Ordering::Relaxed),
+            0
+        );
         assert_eq!(backend.stats().total_bytes_sent.load(Ordering::Relaxed), 0);
     }
 }

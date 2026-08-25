@@ -29,15 +29,9 @@ pub struct ReplayEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ReplayEntryKind {
     /// Agent received a message.
-    MessageReceived {
-        from: AgentId,
-        payload: String,
-    },
+    MessageReceived { from: AgentId, payload: String },
     /// Agent sent a message.
-    MessageSent {
-        to: AgentId,
-        payload: String,
-    },
+    MessageSent { to: AgentId, payload: String },
     /// Agent made a decision.
     Decision {
         input: String,
@@ -56,15 +50,9 @@ pub enum ReplayEntryKind {
         result: Option<String>,
     },
     /// External event observed.
-    ExternalEvent {
-        source: String,
-        event: String,
-    },
+    ExternalEvent { source: String, event: String },
     /// Error encountered.
-    Error {
-        message: String,
-        recoverable: bool,
-    },
+    Error { message: String, recoverable: bool },
 }
 
 /// Complete recording of an agent's execution for replay.
@@ -393,9 +381,29 @@ mod tests {
     #[test]
     fn test_entry_counts() {
         let mut log = ReplayLog::new(AgentId::new());
-        log.record(ReplayEntryKind::Decision { input: "a".into(), output: "b".into(), rationale: None }, state_hash(1));
-        log.record(ReplayEntryKind::Decision { input: "c".into(), output: "d".into(), rationale: None }, state_hash(2));
-        log.record(ReplayEntryKind::Error { message: "fail".into(), recoverable: true }, state_hash(3));
+        log.record(
+            ReplayEntryKind::Decision {
+                input: "a".into(),
+                output: "b".into(),
+                rationale: None,
+            },
+            state_hash(1),
+        );
+        log.record(
+            ReplayEntryKind::Decision {
+                input: "c".into(),
+                output: "d".into(),
+                rationale: None,
+            },
+            state_hash(2),
+        );
+        log.record(
+            ReplayEntryKind::Error {
+                message: "fail".into(),
+                recoverable: true,
+            },
+            state_hash(3),
+        );
 
         let counts = log.entry_counts();
         assert_eq!(counts.get("decision"), Some(&2));
@@ -405,8 +413,20 @@ mod tests {
     #[test]
     fn test_debugger_step() {
         let mut log = ReplayLog::new(AgentId::new());
-        log.record(ReplayEntryKind::StateTransition { from_state: "a".into(), to_state: "b".into() }, state_hash(1));
-        log.record(ReplayEntryKind::StateTransition { from_state: "b".into(), to_state: "c".into() }, state_hash(2));
+        log.record(
+            ReplayEntryKind::StateTransition {
+                from_state: "a".into(),
+                to_state: "b".into(),
+            },
+            state_hash(1),
+        );
+        log.record(
+            ReplayEntryKind::StateTransition {
+                from_state: "b".into(),
+                to_state: "c".into(),
+            },
+            state_hash(2),
+        );
         log.finalize();
 
         let mut dbg = ReplayDebugger::new(log);
@@ -424,7 +444,14 @@ mod tests {
     fn test_debugger_breakpoints() {
         let mut log = ReplayLog::new(AgentId::new());
         for i in 0..5 {
-            log.record(ReplayEntryKind::Decision { input: format!("q{i}"), output: format!("r{i}"), rationale: None }, state_hash(i));
+            log.record(
+                ReplayEntryKind::Decision {
+                    input: format!("q{i}"),
+                    output: format!("r{i}"),
+                    rationale: None,
+                },
+                state_hash(i),
+            );
         }
         log.finalize();
 
@@ -444,11 +471,32 @@ mod tests {
         let mut log2 = ReplayLog::new(agent);
 
         for i in 0..5 {
-            log1.record(ReplayEntryKind::Decision { input: "q".into(), output: "r".into(), rationale: None }, state_hash(i));
+            log1.record(
+                ReplayEntryKind::Decision {
+                    input: "q".into(),
+                    output: "r".into(),
+                    rationale: None,
+                },
+                state_hash(i),
+            );
             if i < 3 {
-                log2.record(ReplayEntryKind::Decision { input: "q".into(), output: "r".into(), rationale: None }, state_hash(i));
+                log2.record(
+                    ReplayEntryKind::Decision {
+                        input: "q".into(),
+                        output: "r".into(),
+                        rationale: None,
+                    },
+                    state_hash(i),
+                );
             } else {
-                log2.record(ReplayEntryKind::Decision { input: "q".into(), output: "r".into(), rationale: None }, state_hash(i + 10));
+                log2.record(
+                    ReplayEntryKind::Decision {
+                        input: "q".into(),
+                        output: "r".into(),
+                        rationale: None,
+                    },
+                    state_hash(i + 10),
+                );
             }
         }
 
@@ -459,7 +507,14 @@ mod tests {
     #[test]
     fn test_debugger_reset() {
         let mut log = ReplayLog::new(AgentId::new());
-        log.record(ReplayEntryKind::Decision { input: "a".into(), output: "b".into(), rationale: None }, state_hash(1));
+        log.record(
+            ReplayEntryKind::Decision {
+                input: "a".into(),
+                output: "b".into(),
+                rationale: None,
+            },
+            state_hash(1),
+        );
         log.finalize();
 
         let mut dbg = ReplayDebugger::new(log);
@@ -472,8 +527,22 @@ mod tests {
     #[test]
     fn test_state_verifier_callback() {
         let mut log = ReplayLog::new(AgentId::new());
-        log.record(ReplayEntryKind::Decision { input: "a".into(), output: "b".into(), rationale: None }, state_hash(1));
-        log.record(ReplayEntryKind::Decision { input: "c".into(), output: "d".into(), rationale: None }, state_hash(99));
+        log.record(
+            ReplayEntryKind::Decision {
+                input: "a".into(),
+                output: "b".into(),
+                rationale: None,
+            },
+            state_hash(1),
+        );
+        log.record(
+            ReplayEntryKind::Decision {
+                input: "c".into(),
+                output: "d".into(),
+                rationale: None,
+            },
+            state_hash(99),
+        );
         log.finalize();
 
         let mut dbg = ReplayDebugger::new(log);

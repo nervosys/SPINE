@@ -39,17 +39,28 @@ pub struct ClusterMetrics {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TopologyEvent {
     /// Cluster split due to overload or latency.
-    Partition { source: Uuid, new_clusters: Vec<Uuid> },
+    Partition {
+        source: Uuid,
+        new_clusters: Vec<Uuid>,
+    },
     /// Clusters merged due to underutilization.
     Merge { sources: Vec<Uuid>, result: Uuid },
     /// Agent moved between clusters.
-    Migration { agent: AgentId, from: Uuid, to: Uuid },
+    Migration {
+        agent: AgentId,
+        from: Uuid,
+        to: Uuid,
+    },
     /// New cluster formed.
     Created { cluster: Uuid },
     /// Cluster dissolved.
     Dissolved { cluster: Uuid },
     /// Leader changed within a cluster.
-    LeaderChange { cluster: Uuid, old: Option<AgentId>, new: AgentId },
+    LeaderChange {
+        cluster: Uuid,
+        old: Option<AgentId>,
+        new: AgentId,
+    },
 }
 
 /// Configuration for topology adaptation.
@@ -328,12 +339,7 @@ impl TopologyManager {
         let leader = cluster
             .members
             .iter()
-            .max_by_key(|a| {
-                self.agent_capabilities
-                    .get(a)
-                    .map(|c| c.len())
-                    .unwrap_or(0)
-            })
+            .max_by_key(|a| self.agent_capabilities.get(a).map(|c| c.len()).unwrap_or(0))
             .copied()
             .ok_or(TopologyError::EmptyCluster)?;
 
@@ -386,7 +392,10 @@ impl TopologyManager {
 
     /// Get event log.
     pub fn events(&self) -> Vec<(DateTime<Utc>, TopologyEvent)> {
-        self.events.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     fn record_event(&self, event: TopologyEvent) {
@@ -487,8 +496,7 @@ mod tests {
 
         assert!(tm.get_cluster(cid).is_none(), "old cluster should be gone");
         assert_eq!(
-            tm.get_cluster(a).unwrap().members.len()
-                + tm.get_cluster(b).unwrap().members.len(),
+            tm.get_cluster(a).unwrap().members.len() + tm.get_cluster(b).unwrap().members.len(),
             10
         );
     }
@@ -554,7 +562,10 @@ mod tests {
         let agents = make_agents(3);
 
         tm.register_agent(agents[0], HashSet::from(["a".into()]));
-        tm.register_agent(agents[1], HashSet::from(["a".into(), "b".into(), "c".into()]));
+        tm.register_agent(
+            agents[1],
+            HashSet::from(["a".into(), "b".into(), "c".into()]),
+        );
         tm.register_agent(agents[2], HashSet::from(["a".into(), "b".into()]));
 
         let cid = tm.create_cluster(agents.clone());
@@ -577,7 +588,9 @@ mod tests {
 
         let cid = tm.create_cluster(agents);
         let actions = tm.evaluate();
-        assert!(actions.iter().any(|a| matches!(a, TopologyEvent::Partition { source, .. } if *source == cid)));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, TopologyEvent::Partition { source, .. } if *source == cid)));
     }
 
     #[test]
@@ -599,7 +612,9 @@ mod tests {
         tm.create_cluster(a2);
 
         let actions = tm.evaluate();
-        assert!(actions.iter().any(|a| matches!(a, TopologyEvent::Merge { .. })));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, TopologyEvent::Merge { .. })));
     }
 
     #[test]

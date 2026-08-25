@@ -638,7 +638,8 @@ mod tests {
 
     #[test]
     fn test_transpile_with_form() {
-        let html = r#"<body><form><input type="text" name="q"><button>Search</button></form></body>"#;
+        let html =
+            r#"<body><form><input type="text" name="q"><button>Search</button></form></body>"#;
         let result = HumanTranspiler::transpile(html, "", "");
         assert!(result.is_ok());
     }
@@ -663,9 +664,7 @@ mod tests {
     #[test]
     fn test_reasoning_engine_login_actions() {
         let engine = ReasoningEngine::new();
-        let ur = spine_parser::parse_html(
-            r#"<body><a href="/login">Sign In</a></body>"#,
-        ).unwrap();
+        let ur = spine_parser::parse_html(r#"<body><a href="/login">Sign In</a></body>"#).unwrap();
         let actions = engine.suggest_actions(&ur);
         assert!(actions.iter().any(|a| a.action_type == "Authenticate"));
     }
@@ -693,9 +692,7 @@ mod tests {
     #[test]
     fn test_create_plan_login_goal() {
         let engine = ReasoningEngine::new();
-        let ur = spine_parser::parse_html(
-            r#"<body><button>Login</button></body>"#,
-        ).unwrap();
+        let ur = spine_parser::parse_html(r#"<body><button>Login</button></body>"#).unwrap();
         let plan = engine.create_plan("login to site", &ur);
         assert!(!plan.steps.is_empty());
     }

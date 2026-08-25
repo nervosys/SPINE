@@ -7,7 +7,9 @@
 //! Run: cargo run -p spine-mechgen --example collab_swe
 
 use chrono::{Duration, Utc};
-use spine_agentic::consensus::{ConsensusManager, ProposalKind, ProposalOption, QuorumRule, VoteChoice};
+use spine_agentic::consensus::{
+    ConsensusManager, ProposalKind, ProposalOption, QuorumRule, VoteChoice,
+};
 use spine_agentic::swe::{SweArtifact, SweArtifactKind, SweArtifactStore, TaskStatus, WorkGraph};
 use spine_agentic::{AgentCapability, AgentId, AgentProfile, TrustLevel};
 use std::collections::HashMap;
@@ -23,12 +25,18 @@ fn main() {
 
     // 1. Agents — profiles + capabilities.
     let builder = AgentProfile::new("Builder")
-        .with_capabilities(vec![AgentCapability::CodeExecution, AgentCapability::AgentCommunication])
+        .with_capabilities(vec![
+            AgentCapability::CodeExecution,
+            AgentCapability::AgentCommunication,
+        ])
         .with_trust(TrustLevel::Trusted);
     let reviewers: Vec<AgentProfile> = (0..3)
         .map(|i| {
             AgentProfile::new(format!("Reviewer{i}"))
-                .with_capabilities(vec![AgentCapability::ContentExtraction, AgentCapability::AgentCommunication])
+                .with_capabilities(vec![
+                    AgentCapability::ContentExtraction,
+                    AgentCapability::AgentCommunication,
+                ])
                 .with_trust(TrustLevel::Verified)
         })
         .collect();
@@ -37,11 +45,22 @@ fn main() {
     // 2. Decompose the work into a dependency DAG: build → review → merge.
     let mut wg = WorkGraph::new();
     let t_build = wg.add_task("build", vec![], vec![AgentCapability::CodeExecution]);
-    let t_review = wg.add_task("review", vec![t_build], vec![AgentCapability::ContentExtraction]);
-    let t_merge = wg.add_task("merge", vec![t_review], vec![AgentCapability::CodeExecution]);
+    let t_review = wg.add_task(
+        "review",
+        vec![t_build],
+        vec![AgentCapability::ContentExtraction],
+    );
+    let t_merge = wg.add_task(
+        "merge",
+        vec![t_review],
+        vec![AgentCapability::CodeExecution],
+    );
     assert_eq!(wg.ready(), vec![t_build], "only build is initially ready");
     let topo = wg.topological_order().expect("DAG must be acyclic");
-    println!("2. work-DAG: build→review→merge, acyclic (topo order len {})", topo.len());
+    println!(
+        "2. work-DAG: build→review→merge, acyclic (topo order len {})",
+        topo.len()
+    );
 
     // 3. Builder claims + completes the build, producing a SIGNED, content-
     //    addressed artifact; completing it unblocks review.
@@ -52,9 +71,13 @@ fn main() {
     let art_hash = artifact.content_hash.clone();
     let sig_ok = artifact.verify(&key.verifying_key());
     store.insert(artifact);
-    wg.complete(t_build, art_hash.clone()).expect("build complete");
+    wg.complete(t_build, art_hash.clone())
+        .expect("build complete");
     assert_eq!(wg.ready(), vec![t_review], "review unblocked by build");
-    println!("3. build: artifact {}… signed+verified={sig_ok}", &art_hash[..16]);
+    println!(
+        "3. build: artifact {}… signed+verified={sig_ok}",
+        &art_hash[..16]
+    );
 
     // 4. Capability gating: a reviewer cannot perform an op it lacks.
     let deploy = AgentCapability::Custom("deploy".into());
@@ -67,7 +90,11 @@ fn main() {
     for r in &reviewers {
         cm.register_voter(r.id, 1.0);
     }
-    let opt = |id, label: &str| ProposalOption { id, label: label.into(), metadata: HashMap::new() };
+    let opt = |id, label: &str| ProposalOption {
+        id,
+        label: label.into(),
+        metadata: HashMap::new(),
+    };
     let pid = cm
         .propose(
             builder.id,
@@ -80,9 +107,12 @@ fn main() {
         .expect("proposal created");
     // 3 accept, 1 reject → 75% ≥ 67% supermajority → decided accept.
     cm.vote(builder.id, pid, VoteChoice::Single(0)).unwrap();
-    cm.vote(reviewers[0].id, pid, VoteChoice::Single(0)).unwrap();
-    cm.vote(reviewers[1].id, pid, VoteChoice::Single(0)).unwrap();
-    cm.vote(reviewers[2].id, pid, VoteChoice::Single(1)).unwrap();
+    cm.vote(reviewers[0].id, pid, VoteChoice::Single(0))
+        .unwrap();
+    cm.vote(reviewers[1].id, pid, VoteChoice::Single(0))
+        .unwrap();
+    cm.vote(reviewers[2].id, pid, VoteChoice::Single(1))
+        .unwrap();
     let tally = cm.tally(pid).expect("tally");
     println!(
         "5. consensus: decided={} winner={:?} participating_weight={:.1}/{:.1}",
@@ -99,9 +129,16 @@ fn main() {
     }
     let done = [t_build, t_review, t_merge]
         .iter()
-        .filter(|&&t| wg.task(t).map(|x| x.status == TaskStatus::Done).unwrap_or(false))
+        .filter(|&&t| {
+            wg.task(t)
+                .map(|x| x.status == TaskStatus::Done)
+                .unwrap_or(false)
+        })
         .count();
-    println!("6. merge: accepted={accepted}; tasks done {done}/3; complete={}", wg.is_complete());
+    println!(
+        "6. merge: accepted={accepted}; tasks done {done}/3; complete={}",
+        wg.is_complete()
+    );
 
     // 7. Determinism — rebuilding the same input yields the same content hash.
     let rebuilt = build_signed(b"net{ fc: Linear(4, 2) }", builder.id, &key);

@@ -463,9 +463,7 @@ impl ConsensusManager {
                 }
             }
             QuorumRule::Unanimous => {
-                participation_ratio >= 1.0
-                    && winner.is_some()
-                    && scores.len() == 1
+                participation_ratio >= 1.0 && winner.is_some() && scores.len() == 1
             }
             QuorumRule::Threshold(t) => {
                 if let Some(w) = winner {
@@ -756,9 +754,12 @@ mod tests {
             )
             .unwrap();
 
-        cm.vote(agents[0], pid, VoteChoice::Ranked(vec![1, 0, 2])).unwrap();
-        cm.vote(agents[1], pid, VoteChoice::Ranked(vec![1, 2, 0])).unwrap();
-        cm.vote(agents[2], pid, VoteChoice::Ranked(vec![0, 1, 2])).unwrap();
+        cm.vote(agents[0], pid, VoteChoice::Ranked(vec![1, 0, 2]))
+            .unwrap();
+        cm.vote(agents[1], pid, VoteChoice::Ranked(vec![1, 2, 0]))
+            .unwrap();
+        cm.vote(agents[2], pid, VoteChoice::Ranked(vec![0, 1, 2]))
+            .unwrap();
 
         let result = cm.tally(pid).unwrap();
         // Safety (1) should win with highest Borda score

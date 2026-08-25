@@ -484,7 +484,10 @@ impl Default for SandboxRegistry {
 impl SandboxRegistry {
     pub fn new() -> Self {
         let mut policies = HashMap::new();
-        policies.insert("untrusted".to_string(), SandboxPolicy::untrusted("untrusted"));
+        policies.insert(
+            "untrusted".to_string(),
+            SandboxPolicy::untrusted("untrusted"),
+        );
         policies.insert("trusted".to_string(), SandboxPolicy::trusted("trusted"));
         Self {
             policies,
@@ -593,7 +596,9 @@ mod tests {
         let mut sandbox = SandboxInstance::new(agent_id, policy);
 
         assert!(sandbox.check_capability(WasmCapability::DomRead).is_ok());
-        assert!(sandbox.check_capability(WasmCapability::FileSystem).is_err());
+        assert!(sandbox
+            .check_capability(WasmCapability::FileSystem)
+            .is_err());
         assert!(sandbox.has_violations());
         assert_eq!(sandbox.violations.len(), 1);
     }

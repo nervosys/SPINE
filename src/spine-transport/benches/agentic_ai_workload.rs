@@ -324,29 +324,25 @@ fn bench_batch_embeddings(c: &mut Criterion) {
         let bincode_bytes = bincode::serialize(&batch).unwrap();
         let raw_bytes = batch_to_raw_bytes(&batch);
 
-        group.bench_with_input(
-            BenchmarkId::new("http2_json", batch_n),
-            &batch_n,
-            |b, _| {
-                let rt = Runtime::new().unwrap();
-                let (send, _drive) = rt.block_on(async {
-                    let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
-                    let port = listener.local_addr().unwrap().port();
-                    let _server = spawn_h2_echo_on(listener).await;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    h2_connect(port).await
-                });
-                let body = Bytes::from(json_bytes.clone());
-                b.to_async(&rt).iter(|| {
-                    let send = send.clone();
-                    let body = body.clone();
-                    async move {
-                        let n = h2_roundtrip(send, body).await;
-                        black_box(n);
-                    }
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("http2_json", batch_n), &batch_n, |b, _| {
+            let rt = Runtime::new().unwrap();
+            let (send, _drive) = rt.block_on(async {
+                let listener = TcpListener::bind(("127.0.0.1", 0u16)).await.unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let _server = spawn_h2_echo_on(listener).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                h2_connect(port).await
+            });
+            let body = Bytes::from(json_bytes.clone());
+            b.to_async(&rt).iter(|| {
+                let send = send.clone();
+                let body = body.clone();
+                async move {
+                    let n = h2_roundtrip(send, body).await;
+                    black_box(n);
+                }
+            });
+        });
 
         group.bench_with_input(
             BenchmarkId::new("http2_bincode", batch_n),

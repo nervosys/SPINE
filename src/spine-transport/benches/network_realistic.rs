@@ -276,8 +276,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
                 // sees one peer in this bench, but spawning per-connection is
                 // realistic and keeps the test deterministic).
                 let ports: Vec<u16> = (0..count).map(|_| get_port()).collect();
-                let _servers: Vec<_> =
-                    ports.iter().map(|&p| spawn_standard_server(p)).collect();
+                let _servers: Vec<_> = ports.iter().map(|&p| spawn_standard_server(p)).collect();
                 thread::sleep(Duration::from_millis(200));
 
                 // Pre-establish N persistent connections; reuse them across

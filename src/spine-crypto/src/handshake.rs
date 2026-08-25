@@ -279,10 +279,9 @@ impl Initiator {
         signed.extend_from_slice(identity);
         check_signature(&vk, &signed, sig)?;
 
-        let dk_encoded = <Encoded<DecapsulationKey<MlKem768Params>>>::try_from(
-            self.dk_bytes.as_slice(),
-        )
-        .map_err(|_| HandshakeError::KemFailure)?;
+        let dk_encoded =
+            <Encoded<DecapsulationKey<MlKem768Params>>>::try_from(self.dk_bytes.as_slice())
+                .map_err(|_| HandshakeError::KemFailure)?;
         let dk = DecapsulationKey::<MlKem768Params>::from_bytes(&dk_encoded);
         let ct_typed =
             <ml_kem::Ciphertext<MlKem768>>::try_from(ct).map_err(|_| HandshakeError::Malformed)?;
@@ -431,13 +430,7 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    fn derive(
-        shared: &[u8; 32],
-        msg1: &[u8],
-        msg2: &[u8],
-        peer: [u8; 32],
-        role: Role,
-    ) -> Self {
+    fn derive(shared: &[u8; 32], msg1: &[u8], msg2: &[u8], peer: [u8; 32], role: Role) -> Self {
         // Salting with the full transcript means any disagreement about what was
         // exchanged produces different keys, and the connection simply fails to
         // decrypt rather than proceeding on a mismatched view.
@@ -615,7 +608,11 @@ mod tests {
         let (mut client, _server) = establish();
         let a = client.seal(b"same");
         let b = client.seal(b"same");
-        assert_ne!(a[8..], b[8..], "a counter-based nonce must randomize output");
+        assert_ne!(
+            a[8..],
+            b[8..],
+            "a counter-based nonce must randomize output"
+        );
     }
 
     #[test]

@@ -452,11 +452,10 @@ pub async fn embeddings(
     let codec_id = if registry().get(&req.model).is_some() {
         req.model.clone()
     } else {
-        registry()
-            .ids()
-            .first()
-            .cloned()
-            .ok_or((StatusCode::SERVICE_UNAVAILABLE, "no codecs registered".into()))?
+        registry().ids().first().cloned().ok_or((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no codecs registered".into(),
+        ))?
     };
 
     let codec = registry().get(&codec_id).expect("just resolved");
@@ -642,10 +641,7 @@ mod tests {
             model: "text-embedding-3-large".into(),
         });
         let resp = embeddings(req).await.expect("ok").0;
-        assert!(resp["model"]
-            .as_str()
-            .unwrap()
-            .starts_with("spine:codec/"));
+        assert!(resp["model"].as_str().unwrap().starts_with("spine:codec/"));
     }
 
     #[tokio::test]

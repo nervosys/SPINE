@@ -113,11 +113,7 @@ impl SchemaRegistry {
     }
 
     /// Extract structured data from HTML using the named schema.
-    pub fn extract(
-        &self,
-        html: &str,
-        schema_name: &str,
-    ) -> Result<ExtractedData, ExtractionError> {
+    pub fn extract(&self, html: &str, schema_name: &str) -> Result<ExtractedData, ExtractionError> {
         let schema = self
             .schemas
             .get(schema_name)
@@ -154,16 +150,12 @@ impl SchemaRegistry {
 }
 
 /// Extract a single field from the document.
-fn extract_field(
-    document: &Html,
-    field_def: &FieldDef,
-) -> Result<DataValue, ExtractionError> {
-    let selector = Selector::parse(&field_def.selector).map_err(|_| {
-        ExtractionError::InvalidSelector {
+fn extract_field(document: &Html, field_def: &FieldDef) -> Result<DataValue, ExtractionError> {
+    let selector =
+        Selector::parse(&field_def.selector).map_err(|_| ExtractionError::InvalidSelector {
             selector: field_def.selector.clone(),
             reason: "CSS parse error".to_string(),
-        }
-    })?;
+        })?;
 
     match &field_def.field_type {
         FieldType::List(inner_type) => {
@@ -217,10 +209,7 @@ fn extract_field(
 /// Get text content or attribute value from an element.
 fn raw_text_or_attr(el: &scraper::ElementRef, attr: Option<&str>) -> String {
     if let Some(attr_name) = attr {
-        el.value()
-            .attr(attr_name)
-            .unwrap_or("")
-            .to_string()
+        el.value().attr(attr_name).unwrap_or("").to_string()
     } else {
         el.text().collect::<Vec<_>>().join(" ").trim().to_string()
     }
@@ -354,7 +343,9 @@ mod tests {
         assert_eq!(result.fields.get("price"), Some(&DataValue::Float(49.99)));
         assert_eq!(
             result.fields.get("image_url"),
-            Some(&DataValue::Url("https://example.com/widget.jpg".to_string()))
+            Some(&DataValue::Url(
+                "https://example.com/widget.jpg".to_string()
+            ))
         );
         assert_eq!(
             result.fields.get("in_stock"),
@@ -383,7 +374,9 @@ mod tests {
                 transforms: vec![],
             }],
         });
-        let err = registry.extract("<html><body></body></html>", "test").unwrap_err();
+        let err = registry
+            .extract("<html><body></body></html>", "test")
+            .unwrap_err();
         assert!(matches!(err, ExtractionError::RequiredFieldMissing(_)));
     }
 
@@ -404,10 +397,7 @@ mod tests {
         let result = registry
             .extract("<html><body></body></html>", "test")
             .unwrap();
-        assert_eq!(
-            result.fields.get("optional_field"),
-            Some(&DataValue::Null)
-        );
+        assert_eq!(result.fields.get("optional_field"), Some(&DataValue::Null));
         assert!(!result.warnings.is_empty());
     }
 
@@ -648,10 +638,7 @@ mod tests {
         });
         let html = r#"<html><body><span>no</span></body></html>"#;
         let result = registry.extract(html, "bool").unwrap();
-        assert_eq!(
-            result.fields.get("flag"),
-            Some(&DataValue::Boolean(false))
-        );
+        assert_eq!(result.fields.get("flag"), Some(&DataValue::Boolean(false)));
     }
 
     #[test]
@@ -692,10 +679,7 @@ mod tests {
         });
         let html = "<html><body></body></html>";
         let result = registry.extract(html, "empty_list").unwrap();
-        assert_eq!(
-            result.fields.get("items"),
-            Some(&DataValue::List(vec![]))
-        );
+        assert_eq!(result.fields.get("items"), Some(&DataValue::List(vec![])));
     }
 
     #[test]
@@ -714,9 +698,6 @@ mod tests {
         });
         let html = r#"<html><body><span>Price: $123.45 USD</span></body></html>"#;
         let result = registry.extract(html, "price_test").unwrap();
-        assert_eq!(
-            result.fields.get("amount"),
-            Some(&DataValue::Float(123.45))
-        );
+        assert_eq!(result.fields.get("amount"), Some(&DataValue::Float(123.45)));
     }
 }

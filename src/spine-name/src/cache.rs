@@ -322,7 +322,11 @@ mod tests {
 
         // Far past any TTL, still fresh: a content hash cannot change.
         assert!(c.get(&rec.name, u64::MAX / 2).is_fresh());
-        assert_eq!(c.sweep(u64::MAX / 2), 0, "immutable entries survive a sweep");
+        assert_eq!(
+            c.sweep(u64::MAX / 2),
+            0,
+            "immutable entries survive a sweep"
+        );
     }
 
     #[test]
@@ -370,12 +374,8 @@ mod tests {
     fn eviction_prefers_mutable_entries_over_immutable_ones() {
         let mut c = ResolverCache::new(2);
         let key = SigningKey::from_bytes(&[1u8; 32]);
-        let mut blob = NameRecord::new(
-            SpineUri::did(key.verifying_key().to_bytes()),
-            1,
-            1_000,
-        )
-        .unwrap();
+        let mut blob =
+            NameRecord::new(SpineUri::did(key.verifying_key().to_bytes()), 1, 1_000).unwrap();
         blob.sign(&key).unwrap();
         blob.name = SpineUri::blob_of(b"pinned");
 
@@ -397,7 +397,11 @@ mod tests {
         c.put(record(2, 1_000, 5_000));
         c.put_negative(&SpineUri::did([9u8; 32]), 1_000);
 
-        assert_eq!(c.sweep(1_100), 2, "one expired record + one lapsed negative");
+        assert_eq!(
+            c.sweep(1_100),
+            2,
+            "one expired record + one lapsed negative"
+        );
         assert_eq!(c.len(), 1);
         assert_eq!(c.negative_len(), 0);
     }

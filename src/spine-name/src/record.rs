@@ -384,7 +384,9 @@ mod tests {
         assert!(matches!(hash.verify(), Err(NameError::BadSignature)));
 
         let mut links = base.clone();
-        links.links.push(Link::new(Rel::Child, SpineUri::did([3u8; 32])));
+        links
+            .links
+            .push(Link::new(Rel::Child, SpineUri::did([3u8; 32])));
         assert!(matches!(links.verify(), Err(NameError::BadSignature)));
 
         let mut meta = base.clone();
@@ -430,7 +432,10 @@ mod tests {
         assert!(!a.supersedes(&b));
 
         let (_, c) = signed(1, 2, 2_000);
-        assert!(c.supersedes(&b), "equal seq breaks toward later publication");
+        assert!(
+            c.supersedes(&b),
+            "equal seq breaks toward later publication"
+        );
         assert!(!b.supersedes(&b), "a record does not supersede itself");
     }
 
@@ -463,7 +468,10 @@ mod tests {
         let json = serde_json::to_string(&rec).unwrap();
         let back: NameRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(back, rec);
-        assert!(back.verify().is_ok(), "signature must survive serialization");
+        assert!(
+            back.verify().is_ok(),
+            "signature must survive serialization"
+        );
     }
 
     #[test]

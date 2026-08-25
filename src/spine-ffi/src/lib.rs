@@ -704,7 +704,6 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod integration_tests {
     use super::*;
@@ -715,7 +714,8 @@ mod integration_tests {
 
     #[test]
     fn test_parse_html_roundtrip_complex() {
-        let html = CString::new(r#"<html>
+        let html = CString::new(
+            r#"<html>
             <head><title>Complex Page</title></head>
             <body>
                 <h1>Header</h1>
@@ -724,7 +724,9 @@ mod integration_tests {
                     <p>Paragraph 2</p>
                     <a href="https://example.com">Link</a>
                 </div>
-            </body></html>"#).unwrap();
+            </body></html>"#,
+        )
+        .unwrap();
         let ptr = unsafe { spine_parse_html(html.as_ptr()) };
         assert!(!ptr.is_null(), "parse_html returned null for valid HTML");
         let json_str = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
@@ -735,12 +737,15 @@ mod integration_tests {
 
     #[test]
     fn test_compile_hls_roundtrip_complex() {
-        let source = CString::new(r#"
+        let source = CString::new(
+            r#"
             let x = 10
             let y = 20
             state counter = 0
             fn add(a, b) { a + b }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         let ptr = unsafe { spine_compile_hls(source.as_ptr()) };
         assert!(!ptr.is_null(), "compile_hls returned null for valid HLS");
         let json_str = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
@@ -864,7 +869,10 @@ mod integration_tests {
 
     #[test]
     fn test_parse_html_unicode() {
-        let html = CString::new("<html><head><title>日本語テスト</title></head><body>Ünîcödé</body></html>").unwrap();
+        let html = CString::new(
+            "<html><head><title>日本語テスト</title></head><body>Ünîcödé</body></html>",
+        )
+        .unwrap();
         let ptr = unsafe { spine_parse_html(html.as_ptr()) };
         assert!(!ptr.is_null());
         let json = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();

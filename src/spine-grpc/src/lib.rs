@@ -47,9 +47,7 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use tonic::{Request, Response, Status};
 
-use spine_protocol::{
-    Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult,
-};
+use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
 
 pub mod model;
 pub use model::{ChatDelta, ChatModel, ChatRequest, EchoModel, OpenAiChatModel};
@@ -63,10 +61,10 @@ pub mod pb {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     tonic::include_file_descriptor_set!("spine_agentic_descriptor");
 
-pub use pb::agent_service_server::{self, AgentService, AgentServiceServer};
 pub use pb::agent_service_client::AgentServiceClient;
+pub use pb::agent_service_server::{self, AgentService, AgentServiceServer};
 pub use pb::{
-    Capability as PbCapability, CallToolRequest, CallToolResponse, ListCapabilitiesRequest,
+    CallToolRequest, CallToolResponse, Capability as PbCapability, ListCapabilitiesRequest,
     ListCapabilitiesResponse, StreamChatRequest, StreamChunk,
 };
 
@@ -480,6 +478,9 @@ mod tests {
         // A lazy stream produced only what was pulled, NOT all 1000 — so a
         // cancelling client really does stop upstream generation.
         let n = produced.load(Ordering::SeqCst);
-        assert!(n <= 5, "expected lazy generation (~3), but produced {n}/1000");
+        assert!(
+            n <= 5,
+            "expected lazy generation (~3), but produced {n}/1000"
+        );
     }
 }

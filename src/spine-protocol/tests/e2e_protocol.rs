@@ -73,7 +73,10 @@ async fn e2e_tcp_request_response() {
             assert_eq!(r.id, "e2e-1");
             assert!(r.error.is_none());
         }
-        other => panic!("Expected Response, got {:?}", std::mem::discriminant(&other)),
+        other => panic!(
+            "Expected Response, got {:?}",
+            std::mem::discriminant(&other)
+        ),
     }
 }
 
@@ -205,7 +208,10 @@ async fn e2e_encrypted_tcp_roundtrip() {
             assert_eq!(r.id, "enc-1");
             assert!(r.error.is_none());
         }
-        other => panic!("Expected encrypted Response, got {:?}", std::mem::discriminant(&other)),
+        other => panic!(
+            "Expected encrypted Response, got {:?}",
+            std::mem::discriminant(&other)
+        ),
     }
 }
 
@@ -415,7 +421,10 @@ fn e2e_embedded_latent_vector_compatibility() {
     assert!(dot > 0, "Dot product should be positive");
 
     let sim = cosine_similarity_fixed(&v1.data, &v2.data);
-    assert!(sim > 0, "Cosine similarity should be positive for aligned vectors");
+    assert!(
+        sim > 0,
+        "Cosine similarity should be positive for aligned vectors"
+    );
 }
 
 // ====== Stress / Reconnect ======
@@ -430,9 +439,7 @@ async fn e2e_rapid_reconnect() {
         let mut handler = ProtocolHandler::new(stream);
 
         handler
-            .send_message_raw(&Message::Ping {
-                timestamp: attempt,
-            })
+            .send_message_raw(&Message::Ping { timestamp: attempt })
             .await
             .unwrap();
         let resp = handler.receive_message().await.unwrap();

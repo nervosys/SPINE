@@ -329,9 +329,9 @@ impl AnomalyDetector {
         }
 
         let tail = &window[window.len() - self.config.deadlock_window..];
-        let all_stuck = tail.iter().all(|s| {
-            s.throughput == 0.0 && s.queue_depth >= self.config.deadlock_queue_threshold
-        });
+        let all_stuck = tail
+            .iter()
+            .all(|s| s.throughput == 0.0 && s.queue_depth >= self.config.deadlock_queue_threshold);
 
         if all_stuck {
             let max_queue = tail.iter().map(|s| s.queue_depth).max().unwrap_or(0);
@@ -369,7 +369,13 @@ impl AnomalyDetector {
 mod tests {
     use super::*;
 
-    fn sample(agent_id: AgentId, latency: f64, throughput: f64, progress: f64, queue: u64) -> MetricSample {
+    fn sample(
+        agent_id: AgentId,
+        latency: f64,
+        throughput: f64,
+        progress: f64,
+        queue: u64,
+    ) -> MetricSample {
         MetricSample {
             agent_id,
             timestamp: Utc::now(),
@@ -408,7 +414,10 @@ mod tests {
 
         // Slight variation — no spike
         let anomalies = det.ingest(sample(agent, 7.0, 100.0, 1.0, 0));
-        let spikes: Vec<_> = anomalies.iter().filter(|a| a.anomaly_type == AnomalyType::Spike).collect();
+        let spikes: Vec<_> = anomalies
+            .iter()
+            .filter(|a| a.anomaly_type == AnomalyType::Spike)
+            .collect();
         assert!(spikes.is_empty());
     }
 
@@ -430,7 +439,10 @@ mod tests {
             last_anomalies = det.ingest(sample(agent, 5.0, 100.0 - i as f64 * 5.0, 1.0, 0));
         }
 
-        let drifts: Vec<_> = last_anomalies.iter().filter(|a| a.anomaly_type == AnomalyType::Drift).collect();
+        let drifts: Vec<_> = last_anomalies
+            .iter()
+            .filter(|a| a.anomaly_type == AnomalyType::Drift)
+            .collect();
         assert!(!drifts.is_empty());
     }
 
@@ -452,7 +464,10 @@ mod tests {
             last = det.ingest(sample(agent, 5.0, 50.0, 0.001, 0));
         }
 
-        let livelocks: Vec<_> = last.iter().filter(|a| a.anomaly_type == AnomalyType::Livelock).collect();
+        let livelocks: Vec<_> = last
+            .iter()
+            .filter(|a| a.anomaly_type == AnomalyType::Livelock)
+            .collect();
         assert!(!livelocks.is_empty());
     }
 
@@ -474,7 +489,10 @@ mod tests {
             last = det.ingest(sample(agent, 5.0, 0.0, 0.0, 20));
         }
 
-        let deadlocks: Vec<_> = last.iter().filter(|a| a.anomaly_type == AnomalyType::Deadlock).collect();
+        let deadlocks: Vec<_> = last
+            .iter()
+            .filter(|a| a.anomaly_type == AnomalyType::Deadlock)
+            .collect();
         assert!(!deadlocks.is_empty());
         assert_eq!(deadlocks[0].severity, Severity::Critical);
     }
@@ -497,7 +515,10 @@ mod tests {
             last = det.ingest(sample(agent, 5.0, 10.0, 1.0, 20));
         }
 
-        let deadlocks: Vec<_> = last.iter().filter(|a| a.anomaly_type == AnomalyType::Deadlock).collect();
+        let deadlocks: Vec<_> = last
+            .iter()
+            .filter(|a| a.anomaly_type == AnomalyType::Deadlock)
+            .collect();
         assert!(deadlocks.is_empty());
     }
 

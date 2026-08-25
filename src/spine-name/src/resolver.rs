@@ -359,7 +359,9 @@ mod tests {
 
         // Same name, freshly published locally.
         let key = SigningKey::from_bytes(&[1u8; 32]);
-        let mut fresh = NameRecord::new(stale.name.clone(), 2, 2_000).unwrap().with_ttl(100);
+        let mut fresh = NameRecord::new(stale.name.clone(), 2, 2_000)
+            .unwrap()
+            .with_ttl(100);
         fresh.sign(&key).unwrap();
         r.publish(fresh.clone()).unwrap();
 
@@ -373,10 +375,7 @@ mod tests {
         let r = LocalResolver::at_time(1_000);
         let uri = SpineUri::did([9u8; 32]);
         r.cache_negative(&uri);
-        assert!(matches!(
-            r.resolve(&uri).await,
-            Err(NameError::NotFound(_))
-        ));
+        assert!(matches!(r.resolve(&uri).await, Err(NameError::NotFound(_))));
         assert_eq!(r.cache_stats().negative_hits, 1);
     }
 
@@ -396,9 +395,12 @@ mod tests {
     #[tokio::test]
     async fn capability_lookup_ranks_providers() {
         let r = LocalResolver::at_time(1_000);
-        r.publish(signed(1, 1_000, 100, &["web.search"], 1)).unwrap();
-        r.publish(signed(2, 1_000, 100, &["web.search"], 3)).unwrap();
-        r.publish(signed(3, 1_000, 100, &["data.analyze"], 1)).unwrap();
+        r.publish(signed(1, 1_000, 100, &["web.search"], 1))
+            .unwrap();
+        r.publish(signed(2, 1_000, 100, &["web.search"], 3))
+            .unwrap();
+        r.publish(signed(3, 1_000, 100, &["data.analyze"], 1))
+            .unwrap();
 
         let found = r.find_providers("web.search").await.unwrap();
         assert_eq!(found.len(), 2);

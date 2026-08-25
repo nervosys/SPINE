@@ -272,7 +272,10 @@ impl OpenAiChatModel {
 
 impl ChatModel for OpenAiChatModel {
     fn stream(&self, req: ChatRequest) -> ChatStream {
-        let url = format!("{}/v1/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/v1/chat/completions",
+            self.base_url.trim_end_matches('/')
+        );
         let api_key = self.api_key.clone();
         let client = self.client.clone();
         let body = serde_json::json!({
@@ -318,7 +321,10 @@ mod tests {
     fn debug_never_prints_the_api_key() {
         let m = OpenAiChatModel::new("https://api.example.com").with_api_key("sk-SECRET-token-123");
         let dbg = format!("{m:?}");
-        assert!(!dbg.contains("sk-SECRET-token-123"), "api key leaked in Debug: {dbg}");
+        assert!(
+            !dbg.contains("sk-SECRET-token-123"),
+            "api key leaked in Debug: {dbg}"
+        );
         assert!(dbg.contains("<set>"), "Debug should note a key is present");
         assert!(m.has_api_key());
         // No key configured -> Debug shows None, still no secret.
@@ -330,7 +336,10 @@ mod tests {
     #[tokio::test]
     async fn echo_model_streams_words_then_done() {
         let deltas: Vec<ChatDelta> = EchoModel
-            .stream(ChatRequest { model: "m".into(), prompt: "alpha beta".into() })
+            .stream(ChatRequest {
+                model: "m".into(),
+                prompt: "alpha beta".into(),
+            })
             .map(|r| r.unwrap())
             .collect()
             .await;
@@ -368,8 +377,12 @@ mod tests {
     async fn deltas_from_byte_stream_decodes_canned_sse() {
         // Bytes deliberately split mid-token to exercise buffering.
         let chunks: Vec<Result<Bytes, ChatError>> = vec![
-            Ok(Bytes::from("data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n")),
-            Ok(Bytes::from("data: {\"choices\":[{\"delta\":{\"content\":\" the")),
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n",
+            )),
+            Ok(Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\" the",
+            )),
             Ok(Bytes::from("re\"}}]}\n")),
             Ok(Bytes::from("data: [DONE]\n")),
         ];
@@ -395,8 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn transport_error_propagates() {
-        let chunks: Vec<Result<Bytes, ChatError>> =
-            vec![Err(ChatError::Transport("boom".into()))];
+        let chunks: Vec<Result<Bytes, ChatError>> = vec![Err(ChatError::Transport("boom".into()))];
         let results: Vec<Result<ChatDelta, ChatError>> =
             deltas_from_byte_stream(futures_util::stream::iter(chunks))
                 .collect()

@@ -39,20 +39,22 @@ use rand::prelude::*;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use zeroize::{Zeroize, ZeroizeOnDrop};
 use spine_neural::{
     Activation, DenseLayer, MirasNeuralEncoder, MirasVariant, MultiHeadAttention,
     NeuralEncoderConfig, TitansMemory,
 };
 use std::collections::VecDeque;
 use subtle::ConstantTimeEq;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // ML-KEM (FIPS 203) post-quantum KEM
 pub mod handshake;
 
-use ml_kem::kem::{Decapsulate, Encapsulate, EncapsulationKey, DecapsulationKey};
-use ml_kem::{MlKem512, MlKem768, MlKem1024, KemCore, EncodedSizeUser, Encoded,
-    MlKem512Params, MlKem768Params, MlKem1024Params};
+use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey};
+use ml_kem::{
+    Encoded, EncodedSizeUser, KemCore, MlKem1024, MlKem1024Params, MlKem512, MlKem512Params,
+    MlKem768, MlKem768Params,
+};
 
 // AES-256-GCM for authenticated encryption (replaces XOR)
 use aes_gcm::aead::Aead;
@@ -1031,8 +1033,8 @@ pub enum KemAlgorithm {
 /// because it's free to do so and keeps the Drop impl uniform.
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 struct MlKemKeyPair {
-    dk_bytes: Vec<u8>,  // Decapsulation key (private)
-    ek_bytes: Vec<u8>,  // Encapsulation key (public)
+    dk_bytes: Vec<u8>, // Decapsulation key (private)
+    ek_bytes: Vec<u8>, // Encapsulation key (public)
     #[zeroize(skip)]
     algorithm: KemAlgorithm,
 }
@@ -1268,7 +1270,9 @@ impl QuantumKeyEvolution {
         if self.algorithm != KemAlgorithm::Rlwe {
             self.mlkem_keypair = match self.algorithm {
                 KemAlgorithm::MlKem512 => Some(mlkem_ops::generate_512(&mut new_rng)),
-                KemAlgorithm::MlKem768 | KemAlgorithm::Hybrid => Some(mlkem_ops::generate_768(&mut new_rng)),
+                KemAlgorithm::MlKem768 | KemAlgorithm::Hybrid => {
+                    Some(mlkem_ops::generate_768(&mut new_rng))
+                }
                 KemAlgorithm::MlKem1024 => Some(mlkem_ops::generate_1024(&mut new_rng)),
                 KemAlgorithm::Rlwe => None,
             };
@@ -1292,7 +1296,10 @@ impl QuantumKeyEvolution {
 
     /// Encapsulate using ML-KEM (FIPS 203)
     fn encapsulate_mlkem(&mut self, alg: KemAlgorithm) -> (Vec<u8>, [u8; 32]) {
-        let kp = self.mlkem_keypair.as_ref().expect("ML-KEM keypair required");
+        let kp = self
+            .mlkem_keypair
+            .as_ref()
+            .expect("ML-KEM keypair required");
         let result = match alg {
             KemAlgorithm::MlKem512 => mlkem_ops::encapsulate_512(&kp.ek_bytes, &mut self.rng),
             KemAlgorithm::MlKem768 => mlkem_ops::encapsulate_768(&kp.ek_bytes, &mut self.rng),
@@ -1317,7 +1324,8 @@ impl QuantumKeyEvolution {
         combined_ikm[32..].copy_from_slice(&mlkem_ss);
         let hk = Hkdf::<Sha256>::new(None, &combined_ikm);
         let mut hybrid_ss = [0u8; 32];
-        hk.expand(b"spine-hybrid-kem", &mut hybrid_ss).expect("HKDF expand");
+        hk.expand(b"spine-hybrid-kem", &mut hybrid_ss)
+            .expect("HKDF expand");
 
         // Concatenate ciphertexts with length prefix for RLWE part
         let rlwe_len = (rlwe_ct.len() as u32).to_le_bytes();
@@ -1406,12 +1414,16 @@ impl QuantumKeyEvolution {
 
     /// Decapsulate using hybrid RLWE + ML-KEM-768
     fn decapsulate_hybrid(&self, ciphertext: &[u8]) -> Option<[u8; 32]> {
-        if ciphertext.len() < 4 { return None; }
+        if ciphertext.len() < 4 {
+            return None;
+        }
         let rlwe_len = u32::from_le_bytes(ciphertext[..4].try_into().ok()?) as usize;
-        if ciphertext.len() < 4 + rlwe_len { return None; }
+        if ciphertext.len() < 4 + rlwe_len {
+            return None;
+        }
 
-        let rlwe_ct = &ciphertext[4..4+rlwe_len];
-        let mlkem_ct = &ciphertext[4+rlwe_len..];
+        let rlwe_ct = &ciphertext[4..4 + rlwe_len];
+        let mlkem_ct = &ciphertext[4 + rlwe_len..];
 
         let rlwe_ss = self.decapsulate_rlwe(rlwe_ct)?;
         let mlkem_ss = self.decapsulate_mlkem(mlkem_ct, KemAlgorithm::MlKem768)?;
@@ -1421,7 +1433,8 @@ impl QuantumKeyEvolution {
         combined_ikm[32..].copy_from_slice(&mlkem_ss);
         let hk = Hkdf::<Sha256>::new(None, &combined_ikm);
         let mut hybrid_ss = [0u8; 32];
-        hk.expand(b"spine-hybrid-kem", &mut hybrid_ss).expect("HKDF expand");
+        hk.expand(b"spine-hybrid-kem", &mut hybrid_ss)
+            .expect("HKDF expand");
 
         Some(hybrid_ss)
     }
@@ -2646,7 +2659,10 @@ mod tests {
         let (_, ss2) = mlkem_ops::encapsulate_768(&kp2.ek_bytes, &mut rng).unwrap();
 
         // Overwhelmingly likely to differ (2^-256 collision probability)
-        assert_ne!(ss1, ss2, "Different keypairs should yield different secrets");
+        assert_ne!(
+            ss1, ss2,
+            "Different keypairs should yield different secrets"
+        );
     }
 
     #[test]
@@ -2682,7 +2698,10 @@ mod tests {
         // Encapsulate/decapsulate should work with ML-KEM
         let (ct, ss_enc) = ke.encapsulate();
         let ss_dec = ke.decapsulate(&ct).unwrap();
-        assert_eq!(ss_enc, ss_dec, "ML-KEM encaps/decaps via QuantumKeyEvolution");
+        assert_eq!(
+            ss_enc, ss_dec,
+            "ML-KEM encaps/decaps via QuantumKeyEvolution"
+        );
         assert!(!ct.is_empty());
     }
 
@@ -2718,7 +2737,11 @@ mod tests {
             ke.evolve();
             let (ct, ss_enc) = ke.encapsulate();
             let ss_dec = ke.decapsulate(&ct).unwrap();
-            assert_eq!(ss_enc, ss_dec, "ML-KEM must work after evolution step {}", i);
+            assert_eq!(
+                ss_enc, ss_dec,
+                "ML-KEM must work after evolution step {}",
+                i
+            );
         }
     }
 
@@ -2766,9 +2789,21 @@ mod tests {
         let (ct768, _) = mlkem_ops::encapsulate_768(&kp768.ek_bytes, &mut rng).unwrap();
         let (ct1024, _) = mlkem_ops::encapsulate_1024(&kp1024.ek_bytes, &mut rng).unwrap();
 
-        assert_eq!(ct512.len(), 768, "ML-KEM-512 ciphertext should be 768 bytes");
-        assert_eq!(ct768.len(), 1088, "ML-KEM-768 ciphertext should be 1088 bytes");
-        assert_eq!(ct1024.len(), 1568, "ML-KEM-1024 ciphertext should be 1568 bytes");
+        assert_eq!(
+            ct512.len(),
+            768,
+            "ML-KEM-512 ciphertext should be 768 bytes"
+        );
+        assert_eq!(
+            ct768.len(),
+            1088,
+            "ML-KEM-768 ciphertext should be 1088 bytes"
+        );
+        assert_eq!(
+            ct1024.len(),
+            1568,
+            "ML-KEM-1024 ciphertext should be 1568 bytes"
+        );
 
         // Monotonically increasing with security level
         assert!(ct512.len() < ct768.len());

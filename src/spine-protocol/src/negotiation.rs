@@ -183,8 +183,6 @@ pub fn evaluate_offer(
 
     let compatible = offer.major >= 1;
 
-
-
     if !compatible {
         return Err(NegotiationError::IncompatibleVersion {
             offered_major: offer.major,
@@ -241,14 +239,16 @@ pub fn validate_response(
 
     if !response.accepted {
         return Err(NegotiationError::Rejected(
-            response.reason.clone().unwrap_or_else(|| "unknown reason".into()),
+            response
+                .reason
+                .clone()
+                .unwrap_or_else(|| "unknown reason".into()),
         ));
     }
 
     // Verify negotiated version is within our acceptable range
     if response.major < original_offer.min_major
-        || (response.major == original_offer.min_major
-            && response.minor < original_offer.min_minor)
+        || (response.major == original_offer.min_major && response.minor < original_offer.min_minor)
     {
         return Err(NegotiationError::IncompatibleVersion {
             offered_major: response.major,
@@ -277,8 +277,8 @@ pub fn validate_response(
 
 /// Serialize a version offer to bytes (length-prefixed JSON).
 pub fn serialize_offer(offer: &VersionOffer) -> Result<Vec<u8>, NegotiationError> {
-    let json = serde_json::to_vec(offer)
-        .map_err(|e| NegotiationError::Serialization(e.to_string()))?;
+    let json =
+        serde_json::to_vec(offer).map_err(|e| NegotiationError::Serialization(e.to_string()))?;
     let len = (json.len() as u32).to_be_bytes();
     let mut buf = Vec::with_capacity(4 + json.len());
     buf.extend_from_slice(&len);
@@ -288,8 +288,8 @@ pub fn serialize_offer(offer: &VersionOffer) -> Result<Vec<u8>, NegotiationError
 
 /// Serialize a version response to bytes (length-prefixed JSON).
 pub fn serialize_response(response: &VersionResponse) -> Result<Vec<u8>, NegotiationError> {
-    let json = serde_json::to_vec(response)
-        .map_err(|e| NegotiationError::Serialization(e.to_string()))?;
+    let json =
+        serde_json::to_vec(response).map_err(|e| NegotiationError::Serialization(e.to_string()))?;
     let len = (json.len() as u32).to_be_bytes();
     let mut buf = Vec::with_capacity(4 + json.len());
     buf.extend_from_slice(&len);

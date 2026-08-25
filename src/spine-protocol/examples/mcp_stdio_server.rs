@@ -26,9 +26,7 @@
 
 use serde_json::json;
 use spine_protocol::mcp::{serve_stdio, McpServer};
-use spine_protocol::{
-    Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult,
-};
+use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
 use std::io::{self, BufReader};
 
 fn demo_advertisement() -> CapabilityAdvertisement {

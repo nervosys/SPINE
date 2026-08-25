@@ -160,10 +160,9 @@ async fn ws_concurrent_clients() {
     let mut handles = Vec::new();
     for client_id in 0u32..5 {
         let handle = tokio::spawn(async move {
-            let mut client =
-                WebSocketBridge::connect(&format!("ws://127.0.0.1:{}", port))
-                    .await
-                    .unwrap();
+            let mut client = WebSocketBridge::connect(&format!("ws://127.0.0.1:{}", port))
+                .await
+                .unwrap();
 
             for i in 0u32..5 {
                 let msg = format!("client-{}-msg-{}", client_id, i);

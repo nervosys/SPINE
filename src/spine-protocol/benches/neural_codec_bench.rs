@@ -55,7 +55,10 @@ fn bench_agentic_path(c: &mut Criterion) {
 
     // One-time on-wire size report — the encoding efficiency an agent pays per
     // latent versus sending the same self-describing frame as JSON.
-    eprintln!("\nneural-codec EncodedFrame size (input {} B):", input.len());
+    eprintln!(
+        "\nneural-codec EncodedFrame size (input {} B):",
+        input.len()
+    );
     eprintln!("  dim   json B   wire B   saved");
     for &dim in DIMS {
         let codec = TitansLatentCodec::new(dim);

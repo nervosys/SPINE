@@ -160,11 +160,7 @@ impl BearerConfig {
 /// Axum middleware. Skips auth on a small allowlist of unauthenticated
 /// paths (health probes, OpenAPI docs) and otherwise requires
 /// `Authorization: Bearer <token>`.
-pub async fn require_bearer(
-    cfg: BearerConfig,
-    req: Request,
-    next: Next,
-) -> Response<Body> {
+pub async fn require_bearer(cfg: BearerConfig, req: Request, next: Next) -> Response<Body> {
     // Routes that must remain reachable without credentials so
     // kube probes, load balancers, and humans browsing the docs
     // can still function. Everything else requires the bearer.

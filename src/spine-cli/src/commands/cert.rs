@@ -25,13 +25,17 @@ async fn generate(output: PathBuf) -> Result<()> {
 
     eprintln!("{} Generated certificates:", "✓".green().bold());
     eprintln!("  CA:     {}/ca_cert.pem", output.display());
-    eprintln!("  Server: {}/server_cert.pem + server_key.pem", output.display());
-    eprintln!("  Client: {}/client_cert.pem + client_key.pem", output.display());
+    eprintln!(
+        "  Server: {}/server_cert.pem + server_key.pem",
+        output.display()
+    );
+    eprintln!(
+        "  Client: {}/client_cert.pem + client_key.pem",
+        output.display()
+    );
     eprintln!();
     eprintln!("{}", "Usage:".bold());
-    eprintln!(
-        "  Server: spine deploy --config spine.toml  (set tls.cert_path/key_path/ca_path)"
-    );
+    eprintln!("  Server: spine deploy --config spine.toml  (set tls.cert_path/key_path/ca_path)");
     eprintln!(
         "  Client: spine connect <addr> --tls --ca {}/ca_cert.pem --client-cert {}/client_cert.pem --client-key {}/client_key.pem",
         output.display(), output.display(), output.display()
@@ -45,7 +49,11 @@ async fn info(path: PathBuf) -> Result<()> {
     let certs: Vec<_> = rustls_pemfile::certs(&mut &pem_data[..]).collect();
 
     if certs.is_empty() {
-        eprintln!("{} No certificates found in {}", "✗".red().bold(), path.display());
+        eprintln!(
+            "{} No certificates found in {}",
+            "✗".red().bold(),
+            path.display()
+        );
         return Ok(());
     }
 

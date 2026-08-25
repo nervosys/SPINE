@@ -140,7 +140,9 @@ impl StigmergyEnvironment {
         let mut entry = self.trails.entry(location).or_default();
         // Reinforce if same agent+kind already present at this location
         if let Some(existing) = entry.iter_mut().find(|p| {
-            p.depositor == depositor && p.kind == kind && !p.is_expired(self.config.evaporation_threshold)
+            p.depositor == depositor
+                && p.kind == kind
+                && !p.is_expired(self.config.evaporation_threshold)
         }) {
             existing.intensity =
                 (existing.intensity + intensity * self.config.reinforcement_factor).min(10.0);
@@ -188,11 +190,7 @@ impl StigmergyEnvironment {
     }
 
     /// Aggregate intensity at a location for a given pheromone kind.
-    pub fn intensity_at(
-        &self,
-        location: &PheromoneLocation,
-        kind: &PheromoneKind,
-    ) -> f64 {
+    pub fn intensity_at(&self, location: &PheromoneLocation, kind: &PheromoneKind) -> f64 {
         self.sense(location, Some(kind))
             .iter()
             .map(|p| p.current_intensity())
@@ -285,7 +283,13 @@ mod tests {
         let agent = AgentId::new();
         let location = loc("web", "example.com");
 
-        env.deposit(agent, PheromoneKind::Trail, location.clone(), 1.0, HashMap::new());
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            location.clone(),
+            1.0,
+            HashMap::new(),
+        );
 
         let sensed = env.sense(&location, None);
         assert_eq!(sensed.len(), 1);
@@ -330,13 +334,28 @@ mod tests {
         let agent = AgentId::new();
         let location = loc("web", "example.com");
 
-        env.deposit(agent, PheromoneKind::Trail, location.clone(), 1.0, HashMap::new());
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            location.clone(),
+            1.0,
+            HashMap::new(),
+        );
         // Same agent, same kind → reinforce
-        env.deposit(agent, PheromoneKind::Trail, location.clone(), 1.0, HashMap::new());
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            location.clone(),
+            1.0,
+            HashMap::new(),
+        );
 
         let sensed = env.sense(&location, Some(&PheromoneKind::Trail));
         assert_eq!(sensed.len(), 1);
-        assert!(sensed[0].current_intensity() > 2.0, "reinforced intensity should be >2.0");
+        assert!(
+            sensed[0].current_intensity() > 2.0,
+            "reinforced intensity should be >2.0"
+        );
     }
 
     #[test]
@@ -345,8 +364,20 @@ mod tests {
         let agent = AgentId::new();
         let location = loc("web", "page1");
 
-        env.deposit(agent, PheromoneKind::Trail, location.clone(), 1.0, HashMap::new());
-        env.deposit(agent, PheromoneKind::Warning, location.clone(), 1.0, HashMap::new());
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            location.clone(),
+            1.0,
+            HashMap::new(),
+        );
+        env.deposit(
+            agent,
+            PheromoneKind::Warning,
+            location.clone(),
+            1.0,
+            HashMap::new(),
+        );
 
         assert_eq!(env.sense(&location, Some(&PheromoneKind::Trail)).len(), 1);
         assert_eq!(env.sense(&location, Some(&PheromoneKind::Warning)).len(), 1);
@@ -362,9 +393,27 @@ mod tests {
         let loc_b = loc("web", "b");
         let loc_c = loc("web", "c");
 
-        env.deposit(agent, PheromoneKind::Trail, loc_a.clone(), 1.0, HashMap::new());
-        env.deposit(agent, PheromoneKind::Trail, loc_b.clone(), 3.0, HashMap::new());
-        env.deposit(agent, PheromoneKind::Trail, loc_c.clone(), 0.5, HashMap::new());
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            loc_a.clone(),
+            1.0,
+            HashMap::new(),
+        );
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            loc_b.clone(),
+            3.0,
+            HashMap::new(),
+        );
+        env.deposit(
+            agent,
+            PheromoneKind::Trail,
+            loc_c.clone(),
+            0.5,
+            HashMap::new(),
+        );
 
         let (best, intensity) = env
             .strongest_signal(&[loc_a, loc_b.clone(), loc_c], &PheromoneKind::Trail)
@@ -385,16 +434,19 @@ mod tests {
         let location = loc("test", "gc");
 
         // Manually insert an already-expired pheromone
-        env.trails.entry(location.clone()).or_default().push(Pheromone {
-            id: Uuid::new_v4(),
-            depositor: agent,
-            kind: PheromoneKind::Explored,
-            location: location.clone(),
-            intensity: 0.001,
-            metadata: HashMap::new(),
-            deposited_at: Utc::now() - chrono::Duration::seconds(3600),
-            half_life_secs: 1.0,
-        });
+        env.trails
+            .entry(location.clone())
+            .or_default()
+            .push(Pheromone {
+                id: Uuid::new_v4(),
+                depositor: agent,
+                kind: PheromoneKind::Explored,
+                location: location.clone(),
+                intensity: 0.001,
+                metadata: HashMap::new(),
+                deposited_at: Utc::now() - chrono::Duration::seconds(3600),
+                half_life_secs: 1.0,
+            });
 
         assert_eq!(env.evaporate(), 1);
         assert_eq!(env.active_count(), 0);
@@ -408,7 +460,13 @@ mod tests {
 
         env.deposit(a1, PheromoneKind::Trail, loc("x", "1"), 1.0, HashMap::new());
         env.deposit(a2, PheromoneKind::Trail, loc("x", "2"), 1.0, HashMap::new());
-        env.deposit(a1, PheromoneKind::Warning, loc("x", "1"), 1.0, HashMap::new());
+        env.deposit(
+            a1,
+            PheromoneKind::Warning,
+            loc("x", "1"),
+            1.0,
+            HashMap::new(),
+        );
 
         let s = env.summary();
         assert_eq!(s.get(&PheromoneKind::Trail), Some(&2));
@@ -444,10 +502,25 @@ mod tests {
         let env = StigmergyEnvironment::new(StigmergyConfig::default());
         let location = loc("sum", "test");
 
-        env.deposit(AgentId::new(), PheromoneKind::Trail, location.clone(), 2.0, HashMap::new());
-        env.deposit(AgentId::new(), PheromoneKind::Trail, location.clone(), 3.0, HashMap::new());
+        env.deposit(
+            AgentId::new(),
+            PheromoneKind::Trail,
+            location.clone(),
+            2.0,
+            HashMap::new(),
+        );
+        env.deposit(
+            AgentId::new(),
+            PheromoneKind::Trail,
+            location.clone(),
+            3.0,
+            HashMap::new(),
+        );
 
         let total = env.intensity_at(&location, &PheromoneKind::Trail);
-        assert!(total > 4.5, "aggregate intensity should be ~5.0, got {total}");
+        assert!(
+            total > 4.5,
+            "aggregate intensity should be ~5.0, got {total}"
+        );
     }
 }

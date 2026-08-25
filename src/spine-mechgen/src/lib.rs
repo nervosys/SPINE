@@ -74,7 +74,9 @@ impl AblSwarmEnvelope {
         SwarmTask {
             id: Uuid::new_v4(),
             description: self.description,
-            goal: Box::new(Goal::FindAgents { capabilities: self.required_capabilities.clone() }),
+            goal: Box::new(Goal::FindAgents {
+                capabilities: self.required_capabilities.clone(),
+            }),
             min_members: self.min_members,
             max_members: self.max_members,
             required_capabilities: self.required_capabilities,
@@ -132,13 +134,24 @@ impl AblArtifactFrame {
         }
         let bytes = from_hex(&self.payload_hex)?;
         if bytes.len() != self.byte_len {
-            return Err(format!("byte_len {} != decoded {}", self.byte_len, bytes.len()));
+            return Err(format!(
+                "byte_len {} != decoded {}",
+                self.byte_len,
+                bytes.len()
+            ));
         }
         let got = format!("{:016x}", fnv1a64(&bytes));
         if got != self.content_digest {
-            return Err(format!("digest mismatch: frame={} computed={}", self.content_digest, got));
+            return Err(format!(
+                "digest mismatch: frame={} computed={}",
+                self.content_digest, got
+            ));
         }
-        Ok(SweArtifact::new(&bytes, SweArtifactKind::Other("abl-artifact".into()), producer))
+        Ok(SweArtifact::new(
+            &bytes,
+            SweArtifactKind::Other("abl-artifact".into()),
+            producer,
+        ))
     }
 }
 
@@ -157,14 +170,19 @@ mod tests {
         let profile = env.into_profile();
         assert_eq!(profile.name, "Builder");
         assert_eq!(profile.trust_level, TrustLevel::Verified);
-        assert!(profile.capabilities.contains(&AgentCapability::SwarmParticipation));
+        assert!(profile
+            .capabilities
+            .contains(&AgentCapability::SwarmParticipation));
     }
 
     #[test]
     fn custom_capability_round_trips_through_the_enum() {
         let json = r#"{"name":"Reviewer","capabilities":[{"Custom":"review_pr"}]}"#;
         let env = AblAgentEnvelope::from_json(json).expect("parse");
-        assert_eq!(env.capabilities, vec![AgentCapability::Custom("review_pr".into())]);
+        assert_eq!(
+            env.capabilities,
+            vec![AgentCapability::Custom("review_pr".into())]
+        );
     }
 
     #[test]
@@ -175,7 +193,10 @@ mod tests {
         assert_eq!(task.description, "Reviewers");
         assert_eq!(task.min_members, 5);
         assert!(matches!(*task.goal, Goal::FindAgents { .. }));
-        assert_eq!(task.required_capabilities, vec![AgentCapability::Custom("Reviewer".into())]);
+        assert_eq!(
+            task.required_capabilities,
+            vec![AgentCapability::Custom("Reviewer".into())]
+        );
     }
 
     #[test]
@@ -186,18 +207,26 @@ mod tests {
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         let json = format!(
             r#"{{"kind":"abl-artifact","byte_len":{},"content_digest":"{}","exec":false,"signed":false,"payload_hex":"{}"}}"#,
-            bytes.len(), digest, hex
+            bytes.len(),
+            digest,
+            hex
         );
         let frame = AblArtifactFrame::from_json(&json).expect("parse");
         let art = frame.into_artifact(AgentId::new()).expect("valid frame");
         assert_eq!(art.size, bytes.len());
-        assert!(!art.content_hash.is_empty(), "sha-256 content address assigned");
+        assert!(
+            !art.content_hash.is_empty(),
+            "sha-256 content address assigned"
+        );
     }
 
     #[test]
     fn frame_rejects_digest_mismatch() {
         let json = r#"{"kind":"abl-artifact","byte_len":3,"content_digest":"deadbeefdeadbeef","exec":false,"signed":false,"payload_hex":"414243"}"#;
         let frame = AblArtifactFrame::from_json(json).unwrap();
-        assert!(frame.into_artifact(AgentId::new()).is_err(), "tampered digest must be rejected");
+        assert!(
+            frame.into_artifact(AgentId::new()).is_err(),
+            "tampered digest must be rejected"
+        );
     }
 }

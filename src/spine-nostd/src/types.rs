@@ -162,8 +162,8 @@ impl FrameHeader {
 #[cfg(test)]
 mod tests {
     extern crate std;
-    use std::format;
     use super::*;
+    use std::format;
 
     #[test]
     fn test_agent_id_zero() {
@@ -180,8 +180,10 @@ mod tests {
 
     #[test]
     fn test_agent_id_display() {
-        let bytes = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                     0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10];
+        let bytes = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10,
+        ];
         let id = AgentIdBytes::from_bytes(bytes);
         let s = format!("{id}");
         assert_eq!(s, "01020304-0506-0708-090a-0b0c0d0e0f10");

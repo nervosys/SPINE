@@ -68,7 +68,9 @@ fn main() {
         }),
     );
 
-    let embedding: Vec<u8> = (0..1024u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+    let embedding: Vec<u8> = (0..1024u32)
+        .map(|i| (i.wrapping_mul(31) % 251) as u8)
+        .collect();
     row(
         "EncodedFrame/emb",
         &Message::Encoded(EncodedFrame {
@@ -107,13 +109,24 @@ fn main() {
             id: "q-9921".into(),
             agent_id: "did:spine:ed25519:7Hk9...4Qm".into(),
             capabilities: vec![
-                cap("agent.web/fetch_url", "Fetch a URL and return the response body."),
-                cap("agent.web/post_json", "POST a JSON document to an endpoint."),
+                cap(
+                    "agent.web/fetch_url",
+                    "Fetch a URL and return the response body.",
+                ),
+                cap(
+                    "agent.web/post_json",
+                    "POST a JSON document to an endpoint.",
+                ),
             ],
         }),
     );
 
-    row("Ping", &Message::Ping { timestamp: 1_700_000_000 });
+    row(
+        "Ping",
+        &Message::Ping {
+            timestamp: 1_700_000_000,
+        },
+    );
 
     println!(
         "\nNote: sizes include the 8-byte SpineWireHeader. 'cbor' is the hot-path\n\
