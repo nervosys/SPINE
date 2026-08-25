@@ -534,8 +534,10 @@ been pinned at across thirteen tags.
       `e652b76`, and the branch still exists locally and on `origin`. Delete both
       when you are satisfied nothing else is wanted from it.
 - [ ] **Push the `v2.0.2` tag and cut its Release** — the one step left for
-      binaries. The tag is *created locally* on the container-removal commit and
-      has never been pushed; the agent session that made it could not push tags.
+      binaries. The tag is *created locally* on `262f943` and has never been
+      pushed; the agent session that made it could not push tags. `262f943` is
+      the first commit here with a successful CI run — fourteen jobs green,
+      nothing failed or cancelled, including all three release builds.
 
       `v2.0.1` cannot produce binaries and no amount of green on `master` changes
       that: the `release` job checks out the **tag**, and `v2.0.1` is `3f62981`,
