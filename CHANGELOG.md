@@ -44,6 +44,27 @@ failures were in things the local script did not run.
   500 MHz–10 GHz counter; on Apple Silicon `rdtsc` reads `cntvct_el0`, a fixed
   24 MHz timer unrelated to the core clock. Bounds are per-architecture now.
 
+### Security
+
+- **Nine of the eleven open advisories are closed** by a `cargo update` inside
+  existing semver ranges — no manifest changes were needed:
+  `crossbeam-epoch` 0.9.18→0.9.20 (RUSTSEC-2026-0204), `quick-xml`
+  0.39.4→0.41.0 (2026-0194, 2026-0195), `quinn-proto` 0.11.14→0.11.17
+  (2026-0185, unbounded out-of-order buffering), `wasmtime` 36.0.10→36.0.14
+  (2026-0222), `memmap2` 0.9.10→0.9.11 (2026-0186), `anyhow` 1.0.102→1.0.104
+  (2026-0190), `event-listener` 5.4.1→5.4.2 (2026-0221), `webbrowser`
+  1.2.1→1.2.4 (2026-0257), and `h2` 0.4.14→0.4.19 (2026-0258).
+- `deny.toml` now also ignores the `backoff` and `ttf-parser` unmaintained
+  notices, which had been left out of a list that already carried eight others.
+
+**Still open: RUSTSEC-2026-0258 on the `h2` 0.3 line.** 0.3.27 is the newest
+0.3.x — there is no patched release — so this can only be closed by dropping
+the `hyper` 0.14 chain that pulls it. Two workspace declarations feed it:
+`spine-core`'s `axum = "0.6"` (while `spine-gateway` is already on 0.7, so the
+workspace carries two axum majors) and the workspace `opentelemetry-otlp =
+"0.14"` → `tonic` 0.9.2. Both are breaking migrations and are not attempted
+here.
+
 ### Removed
 
 - **Containers, entirely.** `Dockerfile`, `docker-compose.yml`, the Helm chart
