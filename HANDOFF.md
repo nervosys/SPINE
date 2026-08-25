@@ -1,16 +1,21 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete, verified, merged, and released as **2.0.1**. 1,418 tests
-passing, 0 failures, 0 Clippy warnings, across 68 suites. `master` and
-`origin/master` agree; `phase-38-namespace` was fast-forwarded in and can be
-deleted.
+**Status:** complete, verified, merged, released as **2.0.1**, and **published to
+crates.io** — all 29 crates, 2026-08-24. 1,418 tests passing, 0 failures,
+0 Clippy warnings, across 68 suites. `master` and `origin/master` agree;
+`phase-38-namespace` was fast-forwarded in and can be deleted.
 
 **Verify with `scripts/verify.sh 1418`** rather than by hand — it also checks
 that the run finished, which a bare test tally cannot (see item 8).
 
 Phases 39 (bootstrap), 40 (replication), 41 (HTTP interop), 42 (handshake
-randomness), and 43 (maintenance cost) followed on the same branch and have their
-own sections near the end of this file.
+randomness), 43 (maintenance cost), and 44-48 (the security findings) followed on
+the same branch and have their own sections near the end of this file. The
+release itself is recorded under *The 2.0.1 release — shipped*.
+
+**If you are picking this up cold, read three things:** *Known limits* below,
+*The 2.0.1 release — shipped* for what is and is not done, and
+`SECURITY_AUDIT.md` for the four cryptographic defects found and fixed.
 
 ---
 
@@ -242,7 +247,7 @@ one-call "give me the bytes at this name".
 
 ---
 
-## Phase 39 — bootstrap (done, on branch `phase-38-namespace`)
+## Phase 39 — bootstrap (done, on `master`)
 
 Step 1 below turned out to be larger than "a seed list", because the DHT had a
 second defect hiding behind the first: **referrals carried no mesh identity**, so
@@ -274,7 +279,7 @@ Fixed in `peers_for_newcomer`.
 
 ---
 
-## Phase 40 — replication (done, on branch `phase-38-namespace`)
+## Phase 40 — replication (done, on `master`)
 
 Step 2 below. The gap was not only that nothing replicated, but that nothing
 *could*: publishing broadcast to whatever peers the publisher was connected to,
@@ -315,7 +320,7 @@ races the delivery. The TCP test polls rather than sleeping a fixed interval.
 
 ---
 
-## Phase 41 — HTTP interop (done, on branch `phase-38-namespace`)
+## Phase 41 — HTTP interop (done, on `master`)
 
 Step 4 below: the namespace over plain HTTP, which was the cheapest interop win
 available. `/v1/names/{resolve,providers,publish,endpoints,crawl}` on
@@ -348,7 +353,7 @@ worth revisiting if these become hot.
 
 ---
 
-## Phase 42 — the handshake's randomness (done, on branch `phase-38-namespace`)
+## Phase 42 — the handshake's randomness (done, on `master`)
 
 Step 3 below was "get the handshake reviewed", which I cannot do. Preparing the
 package that makes it possible found a defect first.
@@ -387,7 +392,7 @@ that assert something adjacent to the property they name.
 
 ---
 
-## Phase 43 — bounding what maintenance costs (done, on branch `phase-38-namespace`)
+## Phase 43 — bounding what maintenance costs (done, on `master`)
 
 A defect in my own Phase 40 work. `maintain` iterated every record in the store
 and called `replicate` on each, and `replicate` runs a full keyspace walk. So a
@@ -480,106 +485,149 @@ struck through, so the order the work was actually taken in stays legible.
    count, optional expected total, cargo's own exit status) so a short run
    announces itself instead of passing for a small green one. Use it in place
    of an ad-hoc `grep | awk` when verifying.
-9. **Publish `spine-cli` to crates.io.** Never attempted in this session. The
-   old publish run hit a 429 rate limit at the last crate in the order and one
-   re-run finishes it. Left alone deliberately: publishing is irreversible —
-   versions can be yanked, never withdrawn — so it wants an explicit decision
-   rather than an inferred one.
+9. ~~**Publish `spine-cli` to crates.io.**~~ Done — it went up with the other
+   28 in the 2.0.1 run. It was left alone until then deliberately: publishing is
+   irreversible — versions can be yanked, never withdrawn — so it wanted an
+   explicit decision rather than an inferred one, and it got one.
 ---
 
-## Completing the 2.0.1 release
+## The 2.0.1 release — shipped
 
-Where it stands: `master` is at `3f62981`, tree clean, version 2.0.1, 1,418
-tests green. Everything that can be done inside the repo is done. What is left
-needs a credential or a person, and is ordered so that each step is checkable
-before the next becomes irreversible.
+**Done on 2026-08-24.** All 29 workspace crates are on crates.io at **2.0.1**,
+except `spine-embedded`, which is on its own version line at **0.2.0** (see
+below). `scripts/publish.sh` reported `29 published, 0 already there (29/29)`
+and exited 0, with no `ERROR` line.
 
-**A note on order.** Step 3 is the only irreversible one. Steps 1-2 exist to
-make sure that what goes to crates.io is exactly what the tag says, because
-after step 3 a mistake can only be yanked, never withdrawn.
+Refs at the time of publish:
 
-### 1. Settle the refs — *you, then verify*
+| | |
+|---|---|
+| `master` = `origin/master` | `4a8b8c5` |
+| `v2.0.1` | `3f62981`, the release commit, contained in `master` |
+| `v2.0.0` | `fe43b23`, left in place as a historical marker |
+| Working tree | clean; workspace version `2.0.1` |
+| Tests | 1,418 passed / 0 failed / 5 ignored, 68 suites; Clippy silent |
 
-The branch moved mid-session: `docs/ironstack-manifest` was created and
-committed to while the release was being prepared, and the release commit
-initially landed there. It has been cherry-picked onto `master`; the ironstack
-work is untouched on its own branch.
+Spot-checked on the registry after the run: `spine-web`, `spine-nostd`, and
+`spine-core` all report `max_version = 2.0.1`, up from the stale `1.0.0` they had
+been pinned at across thirteen tags.
 
-- [ ] Confirm no other session is moving refs in this repo
-- [ ] `git push origin master` — one commit
-- [ ] `git push --force origin v2.0.1` — the remote tag still points at
-      `d99527c`, the copy that went up from the ironstack branch. Force is
-      needed and is cheap now; it stops being cheap once anything is published
-      against the tag.
-- [ ] Decide separately whether `docs/ironstack-manifest` should merge. It is
-      unrelated to this release and was deliberately left off `master`.
+### What is left
 
-**Gate:** `master` *contains* the tagged commit, and the tag is the release
-commit:
-
-```bash
-r=$(git ls-remote origin 'refs/tags/v2.0.1^{}' | awk '{print $1}')
-git merge-base --is-ancestor "$r" master && git log -1 --oneline "$r"
-```
-
-Not "the tag equals `master`" — that was the first wording here and it is
-wrong the moment anything lands after the release, which it did within the
-hour. A tag marks a point; a branch keeps moving.
-
-### 2. Authenticate to crates.io — *you*
-
-Both stored credentials return 403. Do this in your own terminal, not through
-an agent session: a publish-scoped token pasted into a transcript is a live
-credential in a log.
-
-- [ ] Generate a token at crates.io/settings/tokens with **publish-new** and
-      **publish-update** scopes
-- [ ] `cargo login`
-- [ ] Check `CARGO_REGISTRY_TOKEN` in your environment — it **overrides**
-      `credentials.toml`, so a stale value there makes `cargo login` appear to
-      work while publishing still 403s. Unset it or update it to match.
-
-**Gate:** `scripts/publish.sh --dry-run` reaches the summary without an
-`AUTH FAILED` line.
-
-### 3. Publish — *either of us*
-
-- [ ] `scripts/publish.sh`
-
-The script computes its order from the dependency graph, skips crates already
-published, resumes after a rate limit, and stops on the first real error rather
-than leaving a half-published set. Expect it to pause: crates.io rate-limits
-new crates, and 29 is well past the threshold. Re-running is the intended
-response, not a workaround.
-
-**Gate:** the run reports `n/29` with no `ERROR` line. Spot-check two crate
-pages for the README and the correct version.
-
-### 4. Commission the handshake review — *you*
-
-- [ ] Send `HANDSHAKE-REVIEW.md` to a cryptographer
-
-It is written for someone who has never seen this codebase: threat model,
-message flow, key schedule, claimed properties, the concessions, and the
-specific questions worth answering. The argument for paying for it is that
-writing it turned up a real defect, and three more followed.
-
-### Not blocking, worth doing
-
-- [ ] Cut a GitHub Release from `v2.0.1` if you want binaries built and
-      uploaded — CI fires on `release: [created]`, not on a tag push, and the
-      `version-guard` job runs first.
+- [ ] **Revoke the publish token.** A publish-scoped crates.io token was pasted
+      into the session transcript to unblock this run. It is a live credential in
+      a log until it is revoked at crates.io/settings/tokens. Nothing else needs
+      it — the release is done.
+- [ ] **Commission the handshake review.** `HANDSHAKE-REVIEW.md` is written for
+      someone who has never seen this codebase: threat model, message flow, key
+      schedule, claimed properties, the concessions, and the specific questions
+      worth answering. The argument for paying for it is that *writing* it turned
+      up a real defect, and three more followed. This is the one item here that
+      cannot be done from inside the repo.
+- [x] ~~**Cut a GitHub Release from `v2.0.1`.**~~ Done 2026-08-25:
+      <https://github.com/nervosys/SPINE/releases/tag/v2.0.1>, marked latest, the
+      first Release on the repo — the thirteen earlier tags never had one. It
+      fired the `release: [created]` CI run as expected. **Whether that run
+      produces binaries is a separate question — see *CI is red on `master`*
+      below.**
+- [x] ~~**Decide whether `docs/ironstack-manifest` merges.**~~ It merged, in
+      `e652b76`, and the branch still exists locally and on `origin`. Delete both
+      when you are satisfied nothing else is wanted from it.
 - [ ] Item 8 above: the unreproduced test failure, closed as environmental on
       sixteen clean runs but never positively diagnosed.
+- [ ] **Re-run `scripts/verify.sh 1418` on a quiet machine.** The 2026-08-25 run
+      reported `suites=68 passed=1418 failed=0 ignored=5` — tests exactly as
+      recorded — but then `FAIL: Clippy is not silent`, with `could not compile`
+      against `spine-agent`, `spine-mechgen` and `spine-agentic`. Do not read that
+      as a regression yet: a `rustup` update was replacing the `stable` toolchain
+      *while the run was in flight* (the binaries under
+      `~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/` are stamped 08:20–08:21,
+      mid-run), and `cargo` was left unusable straight afterwards — `the 'cargo.exe'
+      binary ... is not applicable to the 'stable-x86_64-pc-windows-msvc' toolchain`
+      — so the Clippy step could not be re-run to confirm. Repair the toolchain
+      (`rustup toolchain install stable --force`) and re-run before believing
+      either answer.
+
+**A concurrent session was writing to this working tree and to `origin/master`
+during the above** — commit `133101e` landed and was pushed mid-session, and
+`rustup`, `cargo` and `rustc` processes were running that were not this
+session's. That is the condition the original release plan's first gate asked
+you to rule out (*“Confirm no other session is moving refs in this repo”*), and
+it is the most likely explanation for the Clippy result. Verify on a quiet
+machine.
+
+### CI is red on `master`, and has been for months
+
+Found on 2026-08-25 while cutting the Release. Nothing above mentions it because
+every verification in this file is a *local* one, and the local tree really is
+green — `scripts/verify.sh 1418` passes. CI fails on things `verify.sh` does not
+run.
+
+Of the last 100 `CI` runs on `master`, **85 failed, 7 were cancelled, and none
+passed.** The oldest listed is 2025-12-21, so this predates the namespace work
+entirely; it was not introduced by Phases 38-48.
+
+Four independent causes, none of them a failing test:
+
+| Job | Cause |
+|---|---|
+| `lint` | `cargo fmt --check` diffs — starting in `src/spine-agent/examples/`. Formatting was never run in CI's configuration. |
+| `test` (ubuntu), `docs` | `protoc` is not installed on the runner. `prost-build` cannot find it, so the build dies before a single test runs. |
+| `deny` | `cargo-deny` rejects the dependency set on **license requirements**; `deny.toml`'s allowlist has fallen behind the tree. |
+| `audit` | 20 open RUSTSEC advisories (`RUSTSEC-2024-0370` through `RUSTSEC-2026-0258`). |
+
+**What this cost the Release.** The `release` job needs `[build, docker, docs,
+version-guard]`, and `build` needs `[lint, test]`. `version-guard` passed — the
+manifest version matches the tag — but `lint` failed in 18s, so `build` never
+ran and `softprops/action-gh-release` never uploaded anything. **The v2.0.1
+Release page exists and is correct, but carries no binaries.** Fixing `lint`
+and installing `protoc` is enough to get them; `deny` and `audit` are separate
+jobs and do not gate `release`.
+
+Suggested order, cheapest first: `cargo fmt --all` and commit; add
+`apt-get install -y protobuf-compiler` (or `arduino/setup-protoc`) to the `test`
+and `docs` jobs; then re-cut or re-run the release workflow. `deny` and `audit`
+are real work and a judgement call — triage the 20 advisories before widening
+the allowlist to make a job go quiet.
+
+### Notes for the next release
+
+**`spine-embedded` is on its own version line.** It sits at 0.2.0, not 2.0.1,
+because the repo copy and the published copy had diverged under a single version
+number and bumping it was the only honest way to correct that. Do not "fix" it
+by dragging it back onto the workspace version — that would republish different
+code under a number someone may already have vendored.
+
+**A stale `CARGO_REGISTRY_TOKEN` in the environment overrides
+`credentials.toml`.** This cost four failed publish attempts and a confident
+wrong diagnosis: `cargo login` appears to succeed while every publish returns
+`403 authentication failed`, because the env var wins silently. Check it first.
+The fix that worked was passing the token as a single-invocation env var —
+`CARGO_REGISTRY_TOKEN=… bash scripts/publish.sh` — which also keeps it out of
+`credentials.toml` and shell history.
+
+**Cheapest auth check before a publish run:** `cargo owner --list spine-protocol`.
+It hits the same endpoint, takes seconds, and tells you whether the credential is
+good before you commit to a 30-minute irreversible run. `--dry-run` does *not*
+test auth.
+
+**The publish script's order comes from `cargo metadata`, not a hand-kept list.**
+An earlier hand-kept list omitted `spine-name` and would have failed at crate 7,
+after six permanent publishes. If you add a crate, add nothing — it is derived.
+
+**Expect a full run to take ~30 minutes** for 29 crates, most of it in
+verification builds. The script skips what is already published, resumes after a
+rate limit, and stops on the first real error rather than leaving a half-published
+set, so re-running is the intended response to a pause, not a workaround.
 
 ---
 
 ## Housekeeping
 
-- **Phases 38-40 are committed on `phase-38-namespace`**, which is not merged into
-  `master`. Each phase is a coherent group of dependency-ordered commits.
-- **`spine-cli` is still unpublished** to crates.io — the old publish run hit a 429
-  rate limit at the last crate in the order. One re-run finishes it.
+- **Phases 38-48 are on `master`.** `phase-38-namespace` was fast-forwarded in and
+  can be deleted. Each phase is a coherent group of dependency-ordered commits, so
+  the history still reads phase by phase.
+- **All 29 crates are published** at 2.0.1 (`spine-embedded` at 0.2.0).
 - **Docs updated:** README (namespace section, transport table, crate list),
   ROADMAP (Phase 38, header counts, license corrected from Apache 2.0 to
   AGPL-3.0-or-later), PUBLISHING.md (ordering — `spine-name` is tier 0,
@@ -606,7 +654,7 @@ cargo run -p spine-name --example agent_web
 
 `verify.sh` is preferred over running the two cargo commands by hand. It checks
 the same things and additionally refuses to call a truncated run green — see
-item 8 below for why that distinction cost an afternoon.
+item 8 under *Suggested next steps* for why that distinction cost an afternoon.
 
 The network suites bind real OS-assigned ports on `127.0.0.1`, so they need no
 fixtures and no external services, but they will contend with a firewall that
