@@ -139,7 +139,7 @@
 - [x] Python bindings (spine-python): PyO3 classes for PyClient, PyUnifiedRepresentation, PySpineBinary with maturin build
 - [x] TypeScript WASM bindings (spine-js): wasm-bindgen for parseHtml, compileHls with wasm-pack build
 - [x] Documentation site: 18-page mdBook covering architecture, SDK, CLI, gateway, internals, contributing
-- [x] Container images: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway
+- [x] ~~Container images: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway~~ **Removed 2026-08-25.** Containers are gone from this repo: no Dockerfile, no compose file, no chart, and no CI jobs for them. `scripts/deploy.sh` runs a 3-node cluster natively.
 - [x] 329 tests passing (+8 from Phase 8)
 
 ### Phase 9 — GPU & Scale ✅
@@ -313,7 +313,7 @@
 
 ### Phase 25 — Ecosystem Expansion ✅
 
-- [x] **Official Helm chart** (`deploy/kubernetes/spine/`): Production Kubernetes deployment with Chart.yaml, configurable values.yaml, StatefulSet (core), Deployment (gateway), headless + client Services, ConfigMap, ServiceAccount + RBAC, HPA autoscaling, Ingress, PodDisruptionBudget, NetworkPolicy, ServiceMonitor, NOTES.txt
+- [x] ~~**Official Helm chart** (`deploy/kubernetes/spine/`): Production Kubernetes deployment with Chart.yaml, configurable values.yaml, StatefulSet (core), Deployment (gateway), headless + client Services, ConfigMap, ServiceAccount + RBAC, HPA autoscaling, Ingress, PodDisruptionBudget, NetworkPolicy, ServiceMonitor, NOTES.txt~~ **Removed 2026-08-25.** Containers are gone from this repo: no Dockerfile, no compose file, no chart, and no CI jobs for them. `scripts/deploy.sh` runs a 3-node cluster natively.
 - [x] **C FFI crate** (`spine-ffi`): `cdylib`/`staticlib` with 16 exported functions — connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, morph, get_capabilities, store/query_knowledge, parse_html, compile_hls, version, free_string; C header in `include/spine.h`; thread-local error handling
 - [x] **Go bindings** (`spine-go`): cgo-based Go package with `Client` type, `UnifiedRepresentation`/`SpineBinary`/`ExecutionResult` structs, offline `ParseHTML`/`CompileHLS`/`Version` functions, 6 Go tests, README with usage examples
 - [x] 579 tests passing (+18 FFI tests), 0 failures, 0 Clippy warnings

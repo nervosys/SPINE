@@ -31,13 +31,24 @@ failures were in things the local script did not run.
   compiled anywhere: the intrinsic is unstable and takes a const locality where
   a runtime value was passed. Six syscall wrappers had Linux and Windows arms
   and nothing in between, so `lib.rs` could not re-export them.
-- **The Dockerfile's builder image**, pinned at `rust:1.82`, which cannot parse
-  a dependency manifest in the current lock file. It moves to 1.88 with the
-  MSRV. The `docker` job had been skipped behind `lint` for so long that this
-  only surfaced once `lint` passed.
 - **Two tests that encoded an x86 assumption.** `test_calibration` asserted a
   500 MHz–10 GHz counter; on Apple Silicon `rdtsc` reads `cntvct_el0`, a fixed
   24 MHz timer unrelated to the core clock. Bounds are per-architecture now.
+
+### Removed
+
+- **Containers, entirely.** `Dockerfile`, `docker-compose.yml`, the Helm chart
+  under `deploy/kubernetes/`, and the `docker` and `helm` CI jobs are gone, and
+  `release` no longer depends on `docker`. `scripts/deploy.sh` brings up the
+  same 3-node cluster natively and is unaffected. `deploy/grafana` and
+  `deploy/prometheus` stay — they are scrape and dashboard configs, not
+  container assets, and the observability docs reference them.
+
+  What prompted it: the `docker` job had sat behind a failing `lint` for eight
+  months, and the first time it actually ran it failed too — its builder image
+  was pinned at `rust:1.82`, which cannot parse `cranelift-assembler-x64`'s
+  manifest in the current lock file. Rather than carry an image nobody had
+  built successfully since 2025, the container story is withdrawn.
 
 ### Changed
 

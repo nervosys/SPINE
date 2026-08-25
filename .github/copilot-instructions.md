@@ -155,7 +155,7 @@
 - [x] **Python bindings** (spine-python): PyO3 classes for PyClient, PyUnifiedRepresentation, PySpineBinary with maturin build
 - [x] **TypeScript WASM bindings** (spine-js): wasm-bindgen for parseHtml, compileHls with wasm-pack build
 - [x] **Documentation site**: 18-page mdBook covering architecture, SDK, CLI, gateway, internals, contributing
-- [x] **Container images**: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway
+- [x] ~~**Container images**: Multi-stage Dockerfile + docker-compose for 3-node cluster with gateway~~ **Removed 2026-08-25.** Containers are gone from this repo: no Dockerfile, no compose file, no chart, and no CI jobs for them. `scripts/deploy.sh` runs a 3-node cluster natively.
 - [x] **329 tests passing**: +8 tests, 0 failures, 0 clippy warnings
 
 ### Phase 9: GPU & Scale ✅
@@ -323,7 +323,7 @@
 
 ### Phase 25: Ecosystem Expansion ✅
 
-- [x] **Official Helm chart** (`deploy/kubernetes/spine/`): Production K8s deployment with StatefulSet, Deployment, Services, ConfigMap, RBAC, HPA, Ingress, PDB, NetworkPolicy, ServiceMonitor
+- [x] ~~**Official Helm chart** (`deploy/kubernetes/spine/`): Production K8s deployment with StatefulSet, Deployment, Services, ConfigMap, RBAC, HPA, Ingress, PDB, NetworkPolicy, ServiceMonitor~~ **Removed 2026-08-25.** Containers are gone from this repo: no Dockerfile, no compose file, no chart, and no CI jobs for them. `scripts/deploy.sh` runs a 3-node cluster natively.
 - [x] **C FFI crate** (`spine-ffi`): `cdylib`/`staticlib` with 16 exported functions, C header, thread-local error handling
 - [x] **Go bindings** (`spine-go`): cgo-based Go package with Client, UnifiedRepresentation, SpineBinary types, offline ParseHTML/CompileHLS
 - [x] **579 tests passing**: +18 FFI tests, 0 failures, 0 Clippy warnings
