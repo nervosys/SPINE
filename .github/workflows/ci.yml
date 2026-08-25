@@ -300,18 +300,23 @@ jobs:
           cargo bench -p spine-transport --bench transport_bench -- --output-format bencher | tee -a bench_output.txt
           cargo bench -p spine-kernel --bench kernel_bench -- --output-format bencher | tee -a bench_output.txt
 
-      - name: Store benchmark result
-        uses: benchmark-action/github-action-benchmark@v1
+      # The benchmark-history step that stood here never worked. It used
+      # benchmark-action/github-action-benchmark, which fetches a `gh-pages`
+      # branch to compare against -- this repository has no such branch, so the
+      # step failed with "couldn't find remote ref gh-pages" on every run. Its
+      # auto-push condition was also dead: it tested `refs/heads/main` when the
+      # default branch is `master`, so even with the branch present nothing
+      # would ever have been stored.
+      #
+      # The benchmarks themselves are the value and still run above. Restoring
+      # regression tracking means creating a `gh-pages` branch and deciding
+      # whether benchmark history should be publicly served from it -- a
+      # decision, not a fix, so it is not made here.
+      - name: Upload benchmark output
+        uses: actions/upload-artifact@v4
         with:
-          name: SPINE Performance Benchmarks
-          tool: cargo
-          output-file-path: bench_output.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          alert-threshold: '150%'
-          comment-on-alert: true
-          fail-on-alert: false
-          alert-comment-cc-users: '@nervosys'
+          name: benchmark-results
+          path: bench_output.txt
 
   # ── Release ─────────────────────────────────────────────────────────────────
   release:

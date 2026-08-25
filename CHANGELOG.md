@@ -31,6 +31,15 @@ failures were in things the local script did not run.
   compiled anywhere: the intrinsic is unstable and takes a const locality where
   a runtime value was passed. Six syscall wrappers had Linux and Windows arms
   and nothing in between, so `lib.rs` could not re-export them.
+- **`cargo-deny`'s license allow-list**, which rejected the workspace against
+  itself. SPINE relicensed to AGPL-3.0-or-later and the allow-list was not moved
+  with it, so all 30 of its own crates were rejected; a comment in `deny.toml`
+  still claimed Apache-2.0 long after `LICENSE` said otherwise.
+- **The `bench` job's history step**, which had never worked. It fetched a
+  `gh-pages` branch this repository does not have, and its auto-push condition
+  tested `refs/heads/main` when the default branch is `master`, so nothing would
+  ever have been stored even if the branch existed. Benchmarks still run; their
+  output is uploaded as an artifact.
 - **Two tests that encoded an x86 assumption.** `test_calibration` asserted a
   500 MHz–10 GHz counter; on Apple Silicon `rdtsc` reads `cntvct_el0`, a fixed
   24 MHz timer unrelated to the core clock. Bounds are per-architecture now.
