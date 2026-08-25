@@ -1505,10 +1505,17 @@ async fn main() -> Result<()> {
             }
         };
         info!("Health & metrics server on http://{}", addr);
-        if let Err(e) = axum::Server::bind(&addr)
-            .serve(metrics_app.into_make_service())
-            .await
-        {
+        // axum 0.7 dropped `Server` in favour of binding the listener yourself
+        // and handing it to `axum::serve`, so bind failures are now reported
+        // separately from serve failures instead of being folded together.
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("Metrics server bind error: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = axum::serve(listener, metrics_app).await {
             error!("Metrics server error: {}", e);
         }
     });

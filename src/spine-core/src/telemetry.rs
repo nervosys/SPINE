@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
-use opentelemetry::global;
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry::{global, trace::TracerProvider as _};
+use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+use opentelemetry_sdk::{propagation::TraceContextPropagator, trace::SdkTracerProvider, Resource};
 use prometheus::{
     register_counter, register_histogram, register_int_gauge, Counter, Histogram, HistogramOpts,
     IntGauge, Opts, Registry as PromRegistry,
@@ -37,20 +37,26 @@ pub fn init_telemetry(service_name: &str) -> anyhow::Result<()> {
     // Configure OpenTelemetry
     global::set_text_map_propagator(TraceContextPropagator::new());
 
-    let tracer = opentelemetry_otlp::new_pipeline()
-        .tracing()
-        .with_exporter(
-            opentelemetry_otlp::new_exporter()
-                .tonic()
-                .with_endpoint("http://localhost:4317"),
+    // OpenTelemetry 0.31 replaced the `new_pipeline().install_batch()` builder
+    // with an explicit exporter and provider. The provider has to be handed to
+    // `global` as well as used for the tracer: dropping it would shut the batch
+    // processor down and silently stop exporting.
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint("http://localhost:4317")
+        .build()?;
+
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name(service_name.to_string())
+                .build(),
         )
-        .with_trace_config(opentelemetry_sdk::trace::config().with_resource(
-            opentelemetry_sdk::Resource::new(vec![opentelemetry::KeyValue::new(
-                "service.name",
-                service_name.to_string(),
-            )]),
-        ))
-        .install_batch(opentelemetry_sdk::runtime::Tokio)?;
+        .build();
+
+    let tracer = provider.tracer("spine-core");
+    global::set_tracer_provider(provider);
 
     let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
     let filter = EnvFilter::from_default_env().add_directive("spine_core=debug".parse()?);

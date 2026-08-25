@@ -57,13 +57,21 @@ failures were in things the local script did not run.
 - `deny.toml` now also ignores the `backoff` and `ttf-parser` unmaintained
   notices, which had been left out of a list that already carried eight others.
 
-**Still open: RUSTSEC-2026-0258 on the `h2` 0.3 line.** 0.3.27 is the newest
-0.3.x — there is no patched release — so this can only be closed by dropping
-the `hyper` 0.14 chain that pulls it. Two workspace declarations feed it:
-`spine-core`'s `axum = "0.6"` (while `spine-gateway` is already on 0.7, so the
-workspace carries two axum majors) and the workspace `opentelemetry-otlp =
-"0.14"` → `tonic` 0.9.2. Both are breaking migrations and are not attempted
-here.
+- **RUSTSEC-2026-0258 is closed on the `h2` 0.3 line too**, which no update
+  could do: 0.3.27 is the newest 0.3.x published, so the chain pulling it had
+  to go. Two workspace declarations fed it, and both are migrated:
+
+  - `spine-core` moves from **axum 0.6 to 0.7**, matching `spine-gateway` — the
+    workspace had been carrying two axum majors at once. axum 0.7 dropped
+    `Server` in favour of binding a listener and passing it to `axum::serve`,
+    so bind failures are now reported separately from serve failures.
+  - **OpenTelemetry 0.21 → 0.31** (`opentelemetry`, `opentelemetry_sdk`,
+    `opentelemetry-otlp`, and `tracing-opentelemetry` 0.22 → 0.32). The
+    `new_pipeline().install_batch()` builder is gone; the exporter and provider
+    are constructed explicitly. The provider must outlive the tracer — dropping
+    it shuts the batch processor down and silently stops exporting.
+
+  `hyper` 0.14 and `h2` 0.3 are now absent from the lock file entirely.
 
 ### Removed
 
