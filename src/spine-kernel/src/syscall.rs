@@ -612,6 +612,43 @@ mod tests {
         }
     }
 
+    // Every function in this module that cannot be implemented off Linux and
+    // Windows reports `Unsupported` rather than quietly succeeding. That is a
+    // contract callers can branch on, so it is asserted rather than assumed --
+    // a no-op returning `Ok(())` would pass every other test in this file.
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn unsupported_targets_report_unsupported() {
+        use std::io::ErrorKind;
+
+        for kind in [
+            set_cpu_affinity(0).unwrap_err().kind(),
+            set_thread_priority(Priority::Normal).unwrap_err().kind(),
+            unsafe { munmap(std::ptr::null_mut(), 0) }
+                .unwrap_err()
+                .kind(),
+        ] {
+            assert_eq!(kind, ErrorKind::Unsupported);
+        }
+
+        let mapped = unsafe {
+            mmap(
+                None,
+                4096,
+                MemProt::READ_WRITE,
+                MemFlags::PRIVATE | MemFlags::ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_eq!(mapped.unwrap_err().kind(), ErrorKind::Unsupported);
+
+        // The two queries answer instead of failing, because they have
+        // defensible answers -- see their doc comments.
+        assert_eq!(get_cpu(), 0);
+        assert_eq!(numa_info().unwrap().num_nodes, 1);
+    }
+
     // `mmap` here is implemented for Linux and Windows only -- see the arms in
     // this module -- so on every other target the call correctly reports
     // `Unsupported` and there is nothing to map.

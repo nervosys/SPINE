@@ -2,18 +2,22 @@
 # https://embarkstudios.github.io/cargo-deny/
 
 [advisories]
-# Ignore specific advisories by RUSTSEC ID
+# Ignore specific advisories by RUSTSEC ID.
+#
+# Every entry here is `informational = "unmaintained"` -- a crate with no
+# maintained successor to move to, which is not a fix anyone can apply. No
+# actual vulnerability is suppressed, and none should be: if one reappears
+# through a dependency, this job must fail rather than stay quiet.
+#
+# It did not always read that way. Until 2026-08-25 this list also carried five
+# real vulnerabilities -- integer overflow in `bytes`, stack-recursion DoS in
+# `protobuf`, stack exhaustion in `serde_json`, and two in `wasmtime` -- each
+# with a rationale for why it was tolerable. A `cargo update` that day moved the
+# tree past all five, and cargo-deny then reported every one of them as
+# "advisory was not encountered: no crate matched advisory criteria". They were
+# suppressing nothing, so they are gone. Check for that warning before assuming
+# an entry here is still doing work.
 ignore = [
-    # bytes: integer overflow in BytesMut::reserve — transitive via tokio
-    "RUSTSEC-2026-0007",
-    # protobuf: stack recursion DoS — transitive via wasmtime
-    "RUSTSEC-2024-0437",
-    # serde_json: stack exhaustion DoS — transitive
-    "RUSTSEC-2026-0009",
-    # wasmtime: fd_renumber host panic — we don't expose WASIp1
-    "RUSTSEC-2025-0046",
-    # wasmtime: shared linear memory unsoundness — we don't use shared memory
-    "RUSTSEC-2025-0118",
     # bincode unmaintained — pinned to v1.x, stable API
     "RUSTSEC-2025-0141",
     # derivative unmaintained — transitive
