@@ -7,6 +7,14 @@
 
 use std::io::{Error, Result};
 
+/// Message carried by every `Unsupported` error this module returns.
+///
+/// Gated the same way its users are: on Linux and Windows every function here
+/// has a real implementation, so an ungated const would be dead code and the
+/// lint job runs with `-D warnings`.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+const UNSUPPORTED: &str = "spine-kernel: not implemented for this target OS";
+
 // =============================================================================
 // MEMORY MAPPING
 // =============================================================================
@@ -115,6 +123,30 @@ pub unsafe fn mmap(
     }
 }
 
+/// Memory map a region (every other target)
+///
+/// macOS is POSIX and does have `mmap`, but this module's `MemFlags` constants
+/// are Linux's numeric values -- `ANONYMOUS` is `0x20` here and `0x1000` on
+/// Darwin -- so mapping through them would quietly request the wrong thing.
+/// Reporting `Unsupported` until the flags are derived from `libc` per target
+/// rather than hardcoded.
+///
+/// # Safety
+///
+/// Nothing is mapped and no pointer is returned, so there are no obligations
+/// beyond those of the platform arms this stands in for.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub unsafe fn mmap(
+    _addr: Option<*mut u8>,
+    _len: usize,
+    _prot: MemProt,
+    _flags: MemFlags,
+    _fd: i32,
+    _offset: i64,
+) -> Result<*mut u8> {
+    Err(Error::new(std::io::ErrorKind::Unsupported, UNSUPPORTED))
+}
+
 /// Unmap a memory region (Linux)
 ///
 /// # Safety
@@ -146,6 +178,18 @@ pub unsafe fn munmap(addr: *mut u8, _len: usize) -> Result<()> {
     } else {
         Err(Error::last_os_error())
     }
+}
+/// Unmap a memory region (every other target)
+///
+/// The counterpart to the `mmap` above: nothing on this target can have
+/// produced a pointer to unmap.
+///
+/// # Safety
+///
+/// Performs no operation.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub unsafe fn munmap(_addr: *mut u8, _len: usize) -> Result<()> {
+    Err(Error::new(std::io::ErrorKind::Unsupported, UNSUPPORTED))
 }
 
 // =============================================================================
@@ -268,6 +312,13 @@ pub unsafe fn mlock(addr: *const u8, len: usize) -> Result<()> {
 }
 
 /// Advise the kernel about memory usage patterns (Linux only)
+///
+/// # Safety
+///
+/// - `addr` must be page-aligned and name a mapping owned by this process
+/// - `addr..addr + len` must lie within that mapping
+/// - `MadviseAdvice::DONTNEED` discards the pages: anonymous memory reads back
+///   as zeroes afterwards, so no live data may be held there
 #[cfg(target_os = "linux")]
 pub unsafe fn madvise(addr: *mut u8, len: usize, advice: MadviseAdvice) -> Result<()> {
     if libc::madvise(addr as *mut libc::c_void, len, advice.0) == 0 {
@@ -330,6 +381,17 @@ pub fn set_cpu_affinity(cpu: usize) -> Result<()> {
         }
     }
 }
+/// Set CPU affinity for the current thread (every other target)
+///
+/// macOS has no thread-affinity API at all -- only an affinity *hint* the
+/// scheduler is free to ignore -- so there is nothing honest to implement here.
+/// This returns `Unsupported` rather than `Ok(())`: a caller that pins a thread
+/// is doing it for a reason, and silently not pinning would leave it believing
+/// something about its own placement that is not true.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn set_cpu_affinity(_cpu: usize) -> Result<()> {
+    Err(Error::new(std::io::ErrorKind::Unsupported, UNSUPPORTED))
+}
 
 /// Get the current CPU number (Linux)
 #[cfg(target_os = "linux")]
@@ -341,6 +403,14 @@ pub fn get_cpu() -> usize {
 #[cfg(target_os = "windows")]
 pub fn get_cpu() -> usize {
     // Simplified: return 0 as GetCurrentProcessorNumber requires additional features
+    0
+}
+/// Get the current CPU number (every other target)
+///
+/// A query with a defensible default, unlike the two setters below, so it
+/// answers 0 the way the Windows arm above does rather than failing.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn get_cpu() -> usize {
     0
 }
 
@@ -385,12 +455,29 @@ pub fn numa_info() -> Result<NumaInfo> {
         current_node: 0,
     })
 }
+/// Get NUMA information (every other target)
+///
+/// Apple Silicon is uniform-memory, so a single node is the right answer here
+/// and not a placeholder.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn numa_info() -> Result<NumaInfo> {
+    Ok(NumaInfo {
+        num_nodes: 1,
+        current_node: 0,
+    })
+}
 
 // =============================================================================
 // HUGE PAGES
 // =============================================================================
 
 /// Allocate huge pages (2MB or 1GB) - Linux
+///
+/// # Safety
+///
+/// - `size` must be non-zero and a multiple of the huge page size selected
+/// - the system must have huge pages reserved, or the mapping fails
+/// - the returned pointer must be released with `munmap` and the same `size`
 #[cfg(target_os = "linux")]
 pub unsafe fn alloc_huge_pages(size: usize, huge_1gb: bool) -> Result<*mut u8> {
     let flags = if huge_1gb {
@@ -493,6 +580,15 @@ pub fn set_thread_priority(priority: Priority) -> Result<()> {
             Err(Error::last_os_error())
         }
     }
+}
+/// Set thread priority (every other target)
+///
+/// Reporting `Unsupported` for the same reason as `set_cpu_affinity`: a caller
+/// asking for realtime priority and getting `Ok(())` from a no-op is worse off
+/// than one told plainly that it did not happen.
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn set_thread_priority(_priority: Priority) -> Result<()> {
+    Err(Error::new(std::io::ErrorKind::Unsupported, UNSUPPORTED))
 }
 
 // =============================================================================

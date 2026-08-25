@@ -119,19 +119,16 @@ pub fn prefetch_read<T>(ptr: *const T, locality: Locality) {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        // ARM prefetch
-        std::arch::aarch64::_prefetch(
-            ptr as *const i8,
-            std::arch::aarch64::_PREFETCH_READ,
-            locality as i32,
-        );
-    }
+    // aarch64 had an arm here calling `std::arch::aarch64::_prefetch`. It could
+    // never have compiled: the intrinsic is behind the unstable
+    // `stdarch_aarch64_prefetch` feature, and it takes its locality as a const
+    // generic, which `locality as i32` is not. This crate builds on stable, so
+    // there is no aarch64 prefetch to reach for -- it falls through to the
+    // no-op below with every other architecture until the intrinsic stabilises.
 
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "x86_64"))]
     {
-        let _ = (ptr, locality); // No-op on other architectures
+        let _ = (ptr, locality); // No-op where there is no stable prefetch
     }
 }
 
@@ -157,16 +154,14 @@ pub fn prefetch_write<T>(ptr: *mut T, locality: Locality) {
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
-    unsafe {
-        std::arch::aarch64::_prefetch(
-            ptr as *const i8,
-            std::arch::aarch64::_PREFETCH_WRITE,
-            locality as i32,
-        );
-    }
+    // aarch64 had an arm here calling `std::arch::aarch64::_prefetch`. It could
+    // never have compiled: the intrinsic is behind the unstable
+    // `stdarch_aarch64_prefetch` feature, and it takes its locality as a const
+    // generic, which `locality as i32` is not. This crate builds on stable, so
+    // there is no aarch64 prefetch to reach for -- it falls through to the
+    // no-op below with every other architecture until the intrinsic stabilises.
 
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = (ptr, locality);
     }
