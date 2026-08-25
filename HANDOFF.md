@@ -533,6 +533,24 @@ been pinned at across thirteen tags.
 - [x] ~~**Decide whether `docs/ironstack-manifest` merges.**~~ It merged, in
       `e652b76`, and the branch still exists locally and on `origin`. Delete both
       when you are satisfied nothing else is wanted from it.
+- [ ] **Push the `v2.0.2` tag and cut its Release** — the one step left for
+      binaries. The tag is *created locally* on the container-removal commit and
+      has never been pushed; the agent session that made it could not push tags.
+
+      `v2.0.1` cannot produce binaries and no amount of green on `master` changes
+      that: the `release` job checks out the **tag**, and `v2.0.1` is `3f62981`,
+      which predates every CI fix. `version-guard` requires the tag name to match
+      `[workspace.package].version`, so there is no way to point a new tag at
+      working code while still calling it 2.0.1. Hence 2.0.2.
+
+      ```bash
+      git push origin v2.0.2
+      gh release create v2.0.2 --title "v2.0.2 — The release that builds"           --notes-file <notes> --latest
+      ```
+
+      **2.0.2 is deliberately not on crates.io.** The 29 crates stay at 2.0.1
+      (`spine-embedded` at 0.2.0). The tag exists so the release workflow has
+      something it can build; publishing is a separate, irreversible decision.
 - [ ] Item 8 above: the unreproduced test failure, closed as environmental on
       sixteen clean runs but never positively diagnosed.
 - [ ] **Re-run `scripts/verify.sh 1418` on a quiet machine.** The 2026-08-25 run
@@ -556,7 +574,13 @@ you to rule out (*“Confirm no other session is moving refs in this repo”*), 
 it is the most likely explanation for the Clippy result. Verify on a quiet
 machine.
 
-### CI is red on `master`, and has been for months
+### CI was red on `master` for eight months — fixed 2026-08-25
+
+**Resolved.** Everything below is kept as the diagnosis, because the *shape* of
+it matters more than the fixes: four unrelated faults had been stacked behind
+one another, and each only became visible once the one in front of it was
+cleared. See *What green cost* at the end of this section for what was actually
+done.
 
 Found on 2026-08-25 while cutting the Release. Nothing above mentions it because
 every verification in this file is a *local* one, and the local tree really is
@@ -584,11 +608,42 @@ Release page exists and is correct, but carries no binaries.** Fixing `lint`
 and installing `protoc` is enough to get them; `deny` and `audit` are separate
 jobs and do not gate `release`.
 
-Suggested order, cheapest first: `cargo fmt --all` and commit; add
-`apt-get install -y protobuf-compiler` (or `arduino/setup-protoc`) to the `test`
-and `docs` jobs; then re-cut or re-run the release workflow. `deny` and `audit`
-are real work and a judgement call — triage the 20 advisories before widening
-the allowlist to make a job go quiet.
+**What green cost.** In order, because the order is the finding — each fault was
+invisible until the one ahead of it was gone:
+
+1. `cargo fmt --all` — 85 files, 20 crates. `lint` is first in the graph, so
+   this alone was stopping every job downstream.
+2. `arduino/setup-protoc` in all seven compiling jobs. `spine-grpc` uses
+   `tonic-build`, which shells out to `protoc`; no runner ships one.
+3. With `lint` finally reaching Clippy, `spine-kernel` turned out never to have
+   compiled for **aarch64** — it went to crates.io at 2.0.1 that way. Its
+   `_prefetch` call could not have built anywhere: unstable intrinsic, const
+   argument given a runtime value.
+4. With `lint` and `test` green, `docker` ran for the first time in eight months
+   and failed on a `rust:1.82` base image. Containers were then removed from the
+   repo entirely — Dockerfile, compose, Helm chart, both CI jobs.
+5. `msrv` was failing on the lock file, not the code: `Cargo.lock` is v4, which
+   cargo could not parse before 1.78. Past that sat ten call sites needing 1.82
+   or 1.87, and past *those*, `time@0.3.47` requiring **1.88** — the real floor.
+   The declared 1.75 had never been true and that job had never once passed.
+6. `deny` was rejecting the workspace against itself: SPINE relicensed to
+   AGPL-3.0-or-later and `deny.toml`'s allow-list never moved with it.
+7. `bench`'s history step had never worked either — it fetched a `gh-pages`
+   branch that does not exist, and its auto-push tested `refs/heads/main` on a
+   repo whose default branch is `master`.
+8. `audit`: `cargo update` closed nine advisories inside existing semver ranges,
+   which means the tree had simply never been refreshed. The tenth,
+   RUSTSEC-2026-0258 on `h2` 0.3, had no patched release — 0.3.27 is the newest
+   0.3.x — so the chain feeding it was removed instead: `spine-core` axum
+   0.6→0.7 (the workspace had been carrying two axum majors) and OpenTelemetry
+   0.21→0.31. `hyper` 0.14 and `h2` 0.3 are now absent from the lock entirely.
+
+**The lesson worth carrying:** every verification recorded in this file was a
+local one, and the local tree genuinely was green throughout. `verify.sh` runs
+tests and Clippy. It does not run `rustfmt`, does not build on macOS or in a
+container, does not resolve at the MSRV, and does not read an advisory database.
+Eight months of red hid behind a script that was honest about what it checked
+and silent about what it did not.
 
 ### Notes for the next release
 
