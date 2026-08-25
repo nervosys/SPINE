@@ -1,0 +1,18 @@
+# The workspace's minimum supported Rust version.
+#
+# Clippy needs telling. Without it it assumes the toolchain it is running on --
+# stable, on the runners -- and suggests APIs the MSRV job cannot compile:
+# `chunks_exact(N)` fired in three crates wanting `as_chunks::<N>()`, stable
+# only since 1.88. With an MSRV set, Clippy suppresses those itself instead of
+# each site carrying an `#[allow]` that has to be found again when the floor
+# moves.
+#
+# 1.87 rather than the 1.75 claimed everywhere until 2026-08-25. That figure was
+# never true and the MSRV job had never once passed: `Cargo.lock` is lockfile v4,
+# which cargo could not parse before 1.78, so the job died before compiling
+# anything -- and behind it sat ten call sites needing 1.82 or 1.87. Setting this
+# is what surfaced them, via `clippy::incompatible_msrv`.
+#
+# Raise this and the `msrv` job's toolchain together, and the README badge,
+# docs/src/getting-started/installation.md and ROADMAP.md with them.
+msrv = "1.87"

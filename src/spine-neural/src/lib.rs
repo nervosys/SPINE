@@ -42,10 +42,6 @@ use std::collections::VecDeque;
 // =============================================================================
 
 /// SIMD-friendly dot product with auto-vectorization hints
-// `as_chunks` is what Clippy wants here and it would read better, but it did not
-// stabilise until 1.88 and this workspace's MSRV is 1.75 -- see the `msrv` CI job.
-// Revisit when the MSRV moves.
-#[allow(clippy::chunks_exact_to_as_chunks)]
 #[inline(always)]
 fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len());

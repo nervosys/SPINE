@@ -228,7 +228,7 @@
 - [x] **spine-agent tests**: 11 unit tests covering SDK API, protocol types, connection handling, compiler re-exports
 - [x] **CI coverage job**: cargo-llvm-cov + Codecov upload with LLVM instrumentation
 - [x] **CI cargo-deny job**: License allow-list, advisory database, ban/source rules via deny.toml
-- [x] **CI MSRV check**: Rust 1.75.0 minimum supported version verification
+- [x] **CI MSRV check**: Rust 1.87.0 minimum supported version verification
 - [x] **Dependabot config**: Weekly updates for Cargo dependencies and GitHub Actions
 - [x] **Cargo.lock committed**: Removed from .gitignore for reproducible builds
 - [x] **415 tests passing**: +13 tests (+11 spine-agent + 2 doc tests), 0 failures, 0 Clippy warnings

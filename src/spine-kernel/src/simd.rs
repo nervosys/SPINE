@@ -291,10 +291,6 @@ mod neon {
 
 mod portable {
     /// Portable dot product (auto-vectorized by LLVM)
-    // `as_chunks::<8>()` is Clippy's suggestion and is not reachable from an
-    // MSRV of 1.75 -- it stabilised in 1.88. Same call as spine-neural's
-    // `dot_product`; revisit both when the MSRV moves.
-    #[allow(clippy::chunks_exact_to_as_chunks)]
     #[inline]
     pub fn dot_product_portable(a: &[f32], b: &[f32]) -> f32 {
         let len = a.len().min(b.len());

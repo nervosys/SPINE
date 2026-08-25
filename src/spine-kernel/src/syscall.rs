@@ -612,6 +612,10 @@ mod tests {
         }
     }
 
+    // `mmap` here is implemented for Linux and Windows only -- see the arms in
+    // this module -- so on every other target the call correctly reports
+    // `Unsupported` and there is nothing to map.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn test_mmap() {
         unsafe {

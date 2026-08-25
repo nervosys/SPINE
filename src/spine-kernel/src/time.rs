@@ -72,7 +72,13 @@ pub struct TscCalibration {
     pub cycles_per_ns: f64,
     /// Nanoseconds per cycle
     pub ns_per_cycle: f64,
-    /// Estimated CPU frequency in MHz
+    /// Frequency of whatever counter `rdtsc` reads, in MHz
+    ///
+    /// On x86_64 that is the TSC, which runs at roughly the CPU's base clock,
+    /// so this reads as a CPU frequency. On aarch64 it is `cntvct_el0`, the
+    /// architectural timer, which is a fixed low-frequency counter unrelated to
+    /// the core clock -- 24 MHz on Apple Silicon. Both are what you want for
+    /// timing; only the x86 one is a CPU frequency.
     pub freq_mhz: u64,
 }
 
@@ -434,9 +440,19 @@ mod tests {
         let cal = calibrate_tsc();
         println!("TSC calibration: {:?}", cal);
 
-        // Sanity check: should be somewhere between 1 and 10 GHz
-        assert!(cal.freq_mhz > 500);
-        assert!(cal.freq_mhz < 10_000);
+        // The bounds are per-architecture because the counter is. The old range
+        // -- 500 MHz to 10 GHz -- assumed the x86 TSC tracks the core clock,
+        // and failed on aarch64-apple-darwin reporting 24 MHz, which is correct
+        // for `cntvct_el0` and not a CPU frequency at all.
+        #[cfg(target_arch = "x86_64")]
+        let (lo, hi) = (500u64, 10_000u64);
+        #[cfg(target_arch = "aarch64")]
+        let (lo, hi) = (1u64, 1_000u64);
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let (lo, hi) = (1u64, 100_000u64);
+
+        assert!(cal.freq_mhz > lo, "counter too slow: {} MHz", cal.freq_mhz);
+        assert!(cal.freq_mhz < hi, "counter too fast: {} MHz", cal.freq_mhz);
     }
 
     #[test]
