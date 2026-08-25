@@ -50,8 +50,10 @@ fn dot_product(a: &[f32], b: &[f32]) -> f32 {
     let (b_chunks, b_rem) = b.split_at(b.len() - b.len() % 8);
 
     let sum: f32 = a_chunks
-        .chunks_exact(8)
-        .zip(b_chunks.chunks_exact(8))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(b_chunks.as_chunks::<8>().0)
         .map(|(ac, bc)| {
             ac[0] * bc[0]
                 + ac[1] * bc[1]

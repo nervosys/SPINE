@@ -298,8 +298,10 @@ mod portable {
         let (b_chunks, b_rem) = b[..len].split_at(len - len % 8);
 
         let sum: f32 = a_chunks
-            .chunks_exact(8)
-            .zip(b_chunks.chunks_exact(8))
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .zip(b_chunks.as_chunks::<8>().0)
             .map(|(ac, bc)| {
                 ac[0] * bc[0]
                     + ac[1] * bc[1]

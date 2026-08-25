@@ -489,8 +489,8 @@ pub async fn embeddings(
         // Project f32 LE bytes back into a JSON array of numbers so the
         // OpenAI SDK reads `data[i].embedding` natively.
         let mut floats = Vec::with_capacity(frame.data.len() / 4);
-        for chunk in frame.data.chunks_exact(4) {
-            floats.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        for chunk in frame.data.as_chunks::<4>().0 {
+            floats.push(f32::from_le_bytes(*chunk));
         }
         data.push(json!({
             "object": "embedding",

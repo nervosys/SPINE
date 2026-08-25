@@ -153,7 +153,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@1.87.0
+      - uses: dtolnay/rust-toolchain@1.88.0
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3

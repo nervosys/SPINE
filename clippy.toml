@@ -1,18 +1,25 @@
 # The workspace's minimum supported Rust version.
 #
-# Clippy needs telling. Without it it assumes the toolchain it is running on --
-# stable, on the runners -- and suggests APIs the MSRV job cannot compile:
-# `chunks_exact(N)` fired in three crates wanting `as_chunks::<N>()`, stable
-# only since 1.88. With an MSRV set, Clippy suppresses those itself instead of
-# each site carrying an `#[allow]` that has to be found again when the floor
-# moves.
+# Clippy needs telling. Without an MSRV it assumes whatever toolchain it is
+# running on -- stable, on the runners -- and both under- and over-reports:
+# it suggests APIs the floor cannot compile, and `clippy::incompatible_msrv`
+# stays silent because it has no floor to compare against.
 #
-# 1.87 rather than the 1.75 claimed everywhere until 2026-08-25. That figure was
-# never true and the MSRV job had never once passed: `Cargo.lock` is lockfile v4,
-# which cargo could not parse before 1.78, so the job died before compiling
-# anything -- and behind it sat ten call sites needing 1.82 or 1.87. Setting this
-# is what surfaced them, via `clippy::incompatible_msrv`.
+# 1.88, not the 1.75 claimed everywhere until 2026-08-25. That figure was never
+# true and the `msrv` job had never once passed. Two layers were hiding under
+# each other:
+#
+#   1. `Cargo.lock` is lockfile v4, which cargo could not parse before 1.78, so
+#      the job died on the lock file before compiling anything.
+#   2. Past that, ten of our own call sites needed 1.82 or 1.87 -- surfaced by
+#      setting this key, which is what lets `incompatible_msrv` fire at all.
+#   3. Past those, `time@0.3.47` and `time-core@0.1.8` require 1.88, which is
+#      the binding constraint and the reason this reads 1.88 rather than 1.87.
+#
+# Only the third was measured rather than inferred, and only because the first
+# two were cleared first.
 #
 # Raise this and the `msrv` job's toolchain together, and the README badge,
-# docs/src/getting-started/installation.md and ROADMAP.md with them.
-msrv = "1.87"
+# docs/src/getting-started/installation.md, ROADMAP.md and
+# .github/copilot-instructions.md with them.
+msrv = "1.88"
