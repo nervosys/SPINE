@@ -16,12 +16,12 @@ name = "spine-gateway"
 path = "src/main.rs"
 
 [dependencies]
-spine-agent = { path = "../spine-agent", version = "2.0.1" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.1" }
-spine-parser = { path = "../spine-parser", version = "2.0.1" }
-spine-compiler = { path = "../spine-compiler", version = "2.0.1" }
-spine-core = { path = "../spine-core", version = "2.0.1" }
-spine-transport = { path = "../spine-transport", version = "2.0.1" }
+spine-agent = { path = "../spine-agent", version = "2.0.2" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
+spine-parser = { path = "../spine-parser", version = "2.0.2" }
+spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
+spine-core = { path = "../spine-core", version = "2.0.2" }
+spine-transport = { path = "../spine-transport", version = "2.0.2" }
 
 tokio = { workspace = true }
 serde = { workspace = true }

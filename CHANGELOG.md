@@ -6,6 +6,61 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.2] — 2026-08-25 — The release that builds
+
+No library code changed behaviour on Linux or Windows. This release exists
+because 2.0.1 could not be built by its own CI, and a tag that cannot be built
+cannot produce binaries.
+
+CI had never been green on `master` — of the 100 runs before today, 85 failed,
+7 were cancelled and none passed, going back to 2025-12-21. Every verification
+recorded in the repo was a local one, and the local tree really was green; the
+failures were in things the local script did not run.
+
+### Fixed
+
+- **`cargo fmt --all`** across 85 files in 20 crates. The `lint` job is first in
+  the dependency graph, so a formatting diff was stopping every job downstream
+  of it — including the one that uploads release binaries.
+- **`protoc` is now installed in CI.** `spine-grpc` builds its service
+  definitions with `tonic-build`, which shells out to `protoc`; no runner ships
+  one, so `prost-build` failed before compiling anything. Added to all seven
+  compiling jobs and to the Dockerfile builder, which had the same hole.
+- **`spine-kernel` compiles on aarch64**, which it never has — it was published
+  to crates.io at 2.0.1 in that state. Its `_prefetch` call could not have
+  compiled anywhere: the intrinsic is unstable and takes a const locality where
+  a runtime value was passed. Six syscall wrappers had Linux and Windows arms
+  and nothing in between, so `lib.rs` could not re-export them.
+- **The Dockerfile's builder image**, pinned at `rust:1.82`, which cannot parse
+  a dependency manifest in the current lock file. It moves to 1.88 with the
+  MSRV. The `docker` job had been skipped behind `lint` for so long that this
+  only surfaced once `lint` passed.
+- **Two tests that encoded an x86 assumption.** `test_calibration` asserted a
+  500 MHz–10 GHz counter; on Apple Silicon `rdtsc` reads `cntvct_el0`, a fixed
+  24 MHz timer unrelated to the core clock. Bounds are per-architecture now.
+
+### Changed
+
+- **MSRV is 1.88, not 1.75.** The 1.75 figure was never true and the `msrv` job
+  had never once passed. `Cargo.lock` is lockfile v4, which cargo could not
+  parse before 1.78, so the job died on the lock file; behind that sat ten call
+  sites needing 1.82 or 1.87; behind those, `time@0.3.47` requires 1.88, which
+  is the binding constraint. The README badge, installation docs and ROADMAP
+  are corrected to match.
+- **`clippy.toml` added** carrying that MSRV. Without it Clippy assumes the
+  runner's toolchain and `clippy::incompatible_msrv` cannot fire at all.
+- `chunks_exact(N)` → `as_chunks::<N>()` at four sites, which 1.88 makes
+  available. Two of them drop a manual `[c[0], c[1], c[2], c[3]]`
+  reconstruction.
+
+### Notes
+
+- **Not published to crates.io.** The 29 crates remain at 2.0.1 (`spine-embedded`
+  at 0.2.0). This tag exists so the release workflow has something it can build.
+- `deny` and `audit` are still red — a `cargo-deny` license allowlist that has
+  fallen behind the tree, and 20 open RUSTSEC advisories. Neither gates the
+  release job.
+
 ## [2.0.1] — 2026-08-19 — The release that ships
 
 Same code as 2.0.0 plus the packaging it needed. 2.0.0 was tagged before the

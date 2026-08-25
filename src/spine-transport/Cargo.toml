@@ -96,7 +96,7 @@ crossbeam-queue = "0.3"                              # Lock-free queues
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 # Internal dependencies
-spine-protocol = { path = "../spine-protocol", version = "2.0.1" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

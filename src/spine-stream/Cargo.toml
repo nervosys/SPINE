@@ -4,7 +4,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-version = "2.0.1"
+version = "2.0.2"
 readme = "README.md"
 edition = "2021"
 description = "High-performance streaming layer for SPINE bioinspired agentic web stack"
@@ -42,8 +42,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 quanta = "0.12"
 
 # Internal dependencies
-spine-transport = { path = "../spine-transport", version = "2.0.1" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.1" }
+spine-transport = { path = "../spine-transport", version = "2.0.2" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 
 [dev-dependencies]
 tokio-test = "0.4"

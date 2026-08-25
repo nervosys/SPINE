@@ -6630,7 +6630,7 @@ dependencies = [
 
 [[package]]
 name = "spine-agent"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "env_logger",
@@ -6659,7 +6659,7 @@ dependencies = [
 
 [[package]]
 name = "spine-agentic"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -6695,7 +6695,7 @@ dependencies = [
 
 [[package]]
 name = "spine-browser"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "eframe",
@@ -6716,7 +6716,7 @@ dependencies = [
 
 [[package]]
 name = "spine-cache"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "log",
@@ -6726,7 +6726,7 @@ dependencies = [
 
 [[package]]
 name = "spine-cli"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -6753,7 +6753,7 @@ dependencies = [
 
 [[package]]
 name = "spine-cluster"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6772,7 +6772,7 @@ dependencies = [
 
 [[package]]
 name = "spine-compiler"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6787,7 +6787,7 @@ dependencies = [
 
 [[package]]
 name = "spine-core"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "axum 0.6.20",
@@ -6831,7 +6831,7 @@ dependencies = [
 
 [[package]]
 name = "spine-crypto"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -6859,7 +6859,7 @@ dependencies = [
 
 [[package]]
 name = "spine-ffi"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "libc",
  "serde_json",
@@ -6871,7 +6871,7 @@ dependencies = [
 
 [[package]]
 name = "spine-gateway"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "axum 0.7.9",
@@ -6902,7 +6902,7 @@ dependencies = [
 
 [[package]]
 name = "spine-gpu"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -6915,7 +6915,7 @@ dependencies = [
 
 [[package]]
 name = "spine-grpc"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "async-stream",
  "bytes",
@@ -6936,7 +6936,7 @@ dependencies = [
 
 [[package]]
 name = "spine-human"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "cssparser",
@@ -6953,7 +6953,7 @@ dependencies = [
 
 [[package]]
 name = "spine-k8s"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "k8s-openapi",
@@ -6967,7 +6967,7 @@ dependencies = [
 
 [[package]]
 name = "spine-kernel"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "atomic",
  "bytemuck",
@@ -6985,7 +6985,7 @@ dependencies = [
 
 [[package]]
 name = "spine-knowledge"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7003,7 +7003,7 @@ dependencies = [
 
 [[package]]
 name = "spine-mechgen"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -7015,7 +7015,7 @@ dependencies = [
 
 [[package]]
 name = "spine-name"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "async-trait",
  "ed25519-dalek",
@@ -7030,7 +7030,7 @@ dependencies = [
 
 [[package]]
 name = "spine-neural"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "log",
@@ -7043,11 +7043,11 @@ dependencies = [
 
 [[package]]
 name = "spine-nostd"
-version = "2.0.1"
+version = "2.0.2"
 
 [[package]]
 name = "spine-parser"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "ego-tree",
@@ -7063,7 +7063,7 @@ dependencies = [
 
 [[package]]
 name = "spine-protocol"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7102,7 +7102,7 @@ dependencies = [
 
 [[package]]
 name = "spine-recursive"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -7125,7 +7125,7 @@ dependencies = [
 
 [[package]]
 name = "spine-storage"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "log",
@@ -7138,7 +7138,7 @@ dependencies = [
 
 [[package]]
 name = "spine-stream"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "async-stream",
  "bincode",
@@ -7167,7 +7167,7 @@ dependencies = [
 
 [[package]]
 name = "spine-transport"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -7212,7 +7212,7 @@ dependencies = [
 
 [[package]]
 name = "spine-wasm"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "log",
@@ -7227,7 +7227,7 @@ dependencies = [
 
 [[package]]
 name = "spine-web"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "spine-agent",
  "spine-agentic",
