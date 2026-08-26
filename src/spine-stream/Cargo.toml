@@ -47,7 +47,7 @@ spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 
 [dev-dependencies]
 tokio-test = "0.4"
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 
 [[bench]]
 name = "stream_bench"

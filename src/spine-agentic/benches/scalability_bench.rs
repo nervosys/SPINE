@@ -4,7 +4,8 @@
 //! - 1000+ agent swarms
 //! - 100M+ character contexts
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 
 // We'll use simplified tests here and the actual implementations from the crate
 

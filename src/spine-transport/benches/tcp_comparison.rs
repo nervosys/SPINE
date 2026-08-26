@@ -10,7 +10,8 @@
 //! `network_realistic.rs` (both sides use real TCP) and `spine_vs_www.rs`
 //! (both sides use real-protocol wire format).
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU16, Ordering};

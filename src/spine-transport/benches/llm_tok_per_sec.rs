@@ -20,8 +20,9 @@
 //! (vLLM, TGI, llama.cpp) use internally before detokenizing for the wire.
 
 use bytes::Bytes;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use spine_transport::{Frame, FrameFlags, FrameHeader};
+use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

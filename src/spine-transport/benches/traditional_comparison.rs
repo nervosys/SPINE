@@ -16,8 +16,9 @@
 //! comparisons see `spine_vs_www.rs` (real HTTP/1.1 wire format, real
 //! `aes-gcm`) and `network_realistic.rs` (real TCP loopback on both sides).
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::collections::HashMap;
+use std::hint::black_box;
 use std::time::Duration;
 
 /// Simulate JSON serialization overhead (what Express.js does)

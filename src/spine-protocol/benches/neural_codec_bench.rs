@@ -17,8 +17,9 @@
 //!
 //! Run: `cargo bench -p spine-protocol --bench neural_codec_bench`
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use spine_protocol::{wire, CodecRegistry, Message, NeuralCodec, TitansLatentCodec};
+use std::hint::black_box;
 use std::sync::Arc;
 
 /// Embedding widths an agent stack commonly negotiates.

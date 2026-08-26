@@ -2,8 +2,9 @@
 //!
 //! Benchmarks for ultra-low-level operations.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use spine_kernel::*;
+use std::hint::black_box;
 
 fn bench_simd_dot_product(c: &mut Criterion) {
     let mut group = c.benchmark_group("simd_dot_product");

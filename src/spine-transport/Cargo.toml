@@ -99,7 +99,7 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["async_tokio"] }
+criterion = { version = "0.8", features = ["async_tokio"] }
 tokio-test = "0.4"
 rand = "0.8"
 proptest = "1.4"

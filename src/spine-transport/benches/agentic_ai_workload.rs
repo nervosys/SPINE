@@ -32,9 +32,10 @@
 //!   crypto cost is excluded from both sides equally.
 
 use bytes::Bytes;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use serde::{Deserialize, Serialize};
 use spine_transport::{Frame, FrameFlags, FrameHeader};
+use std::hint::black_box;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener as StdListener, TcpStream as StdStream};
 use std::thread;
