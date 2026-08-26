@@ -31,7 +31,7 @@ lz4_flex = "0.11"
 crc32fast = "1.4"
 
 # Concurrency
-dashmap = "5.5"
+dashmap.workspace = true
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 

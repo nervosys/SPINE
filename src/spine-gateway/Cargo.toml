@@ -38,7 +38,7 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 utoipa = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7", features = ["axum"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-dashmap = "5"
+dashmap.workspace = true
 futures = "0.3"
 base64 = "0.22"
 subtle = "2.5"

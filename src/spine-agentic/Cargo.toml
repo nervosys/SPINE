@@ -41,7 +41,7 @@ spine-wasm = { path = "../spine-wasm", version = "2.0.2", optional = true }
 # Agent-specific
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-dashmap = "5.5"
+dashmap.workspace = true
 petgraph = "0.6"
 url = { version = "2", features = ["serde"] }
 regex = "1.10"

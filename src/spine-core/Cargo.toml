@@ -30,7 +30,7 @@ anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true
 reqwest.workspace = true
-dashmap = { version = "6", features = ["serde"] }
+dashmap.workspace = true
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 tracing.workspace = true

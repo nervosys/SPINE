@@ -82,6 +82,12 @@ rand = "0.8"
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 tracing = "0.1"
+# Consolidated here on 2026-08-25. Eight crates had been declaring this
+# independently as "5", "5.5" and "6", so the lock carried 5.5.3 and 6.2.1
+# at once and every binary linked two concurrent hash maps. That is the same
+# shape as the axum 0.6/0.7 split that kept hyper 0.14 -- and h2 0.3 with it --
+# alive until the same day. One declaration cannot drift apart.
+dashmap = { version = "6", features = ["serde"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-opentelemetry = "0.32"
 opentelemetry = "0.31"
