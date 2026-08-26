@@ -143,7 +143,7 @@ impl TransportBackend for WebSocketBridge {
         buf.extend_from_slice(&frame.payload);
 
         self.inner
-            .send(WsMessage::Binary(buf))
+            .send(WsMessage::Binary(buf.into()))
             .await
             .map_err(|e| TransportError::Protocol(format!("WebSocket send: {}", e)))?;
 
@@ -271,7 +271,7 @@ impl TransportBackend for WebSocketServerBridge {
         buf.extend_from_slice(&frame.payload);
 
         self.inner
-            .send(WsMessage::Binary(buf))
+            .send(WsMessage::Binary(buf.into()))
             .await
             .map_err(|e| TransportError::Protocol(format!("WebSocket send: {}", e)))?;
 
@@ -435,7 +435,7 @@ impl AsyncWrite for WebSocketStream {
         use futures::SinkExt;
         use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-        let msg = WsMessage::Binary(buf.to_vec());
+        let msg = WsMessage::Binary(buf.to_vec().into());
         let inner = &mut self.bridge.inner;
 
         match inner.poll_ready_unpin(cx) {
@@ -568,7 +568,7 @@ impl AsyncWrite for WebSocketClientStream {
         use futures::SinkExt;
         use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-        let msg = WsMessage::Binary(buf.to_vec());
+        let msg = WsMessage::Binary(buf.to_vec().into());
         let inner = &mut self.bridge.inner;
 
         match inner.poll_ready_unpin(cx) {
