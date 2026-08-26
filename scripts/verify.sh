@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
 #
-# Verify the workspace: tests green, Clippy silent, and the run actually
-# complete.
+# Verify the workspace: tests green, Clippy silent, rustfmt clean, and the run
+# actually complete.
+#
+# WHAT THIS DOES NOT CHECK — read this before trusting a green run.
+#
+# On 2026-08-25 CI was found to have been red on `master` for eight months,
+# across a hundred runs, while this script passed the whole time. It was not
+# lying; it was answering a narrower question than anyone was asking of it.
+# rustfmt is checked here now because that was the first of the failures and it
+# blocked every job behind it. These are still outside its reach:
+#
+#   * other platforms — spine-kernel had never compiled for aarch64 at all
+#   * the MSRV — resolution at the floor, not on your toolchain
+#   * `cargo deny check` and `cargo audit` — advisories and licences
+#
+# A clean run here means the tests pass and the code compiles and formats on
+# *this* machine, with *this* toolchain. It does not mean CI will be green, and
+# on that day it was true and CI was not for eight months.
 #
 # The last of those is why this script exists. The obvious way to check a
 # workspace run is to sum the "test result:" lines and look for failures — and
@@ -101,7 +117,22 @@ if [ -n "$clippy_out" ]; then
     ok=1
 fi
 
+# rustfmt. Cheap, and it was the first domino: `lint` runs `cargo fmt --all --
+# --check` before Clippy and is first in CI's dependency graph, so 85
+# unformatted files were stopping every job downstream of it — including the one
+# that uploads release binaries. Nothing local was looking.
+echo "running cargo fmt --all -- --check ..."
+fmt_out=$(cargo fmt --all -- --check 2>&1 | grep -E '^Diff in ' || true)
+if [ -n "$fmt_out" ]; then
+    fmt_files=$(echo "$fmt_out" | sed 's/^Diff in //; s/:[0-9]*:$//' | sort -u)
+    echo "FAIL: rustfmt is not clean — $(echo "$fmt_files" | wc -l) file(s)"
+    echo "$fmt_files" | head -20
+    echo "      fix with: cargo fmt --all"
+    ok=1
+fi
+
 if [ "$ok" -eq 0 ]; then
-    echo "OK: $passed passed, 0 failed, $ignored ignored, across $results suites; Clippy silent"
+    echo "OK: $passed passed, 0 failed, $ignored ignored, across $results suites; Clippy silent; rustfmt clean"
+    echo "    (not checked here: other platforms, the MSRV, advisories, licences — see the header)"
 fi
 exit "$ok"
