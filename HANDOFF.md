@@ -565,18 +565,28 @@ been pinned at across thirteen tags.
       decision that nobody has taken.
 - [ ] Item 8 above: the unreproduced test failure, closed as environmental on
       sixteen clean runs but never positively diagnosed.
-- [ ] **Re-run `scripts/verify.sh 1418` on a quiet machine.** The 2026-08-25 run
-      reported `suites=68 passed=1418 failed=0 ignored=5` — tests exactly as
-      recorded — but then `FAIL: Clippy is not silent`, with `could not compile`
-      against `spine-agent`, `spine-mechgen` and `spine-agentic`. Do not read that
-      as a regression yet: a `rustup` update was replacing the `stable` toolchain
-      *while the run was in flight* (the binaries under
-      `~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/` are stamped 08:20–08:21,
-      mid-run), and `cargo` was left unusable straight afterwards — `the 'cargo.exe'
-      binary ... is not applicable to the 'stable-x86_64-pc-windows-msvc' toolchain`
-      — so the Clippy step could not be re-run to confirm. Repair the toolchain
-      (`rustup toolchain install stable --force`) and re-run before believing
-      either answer.
+- [x] ~~**Re-run `scripts/verify.sh 1418` on a quiet machine.**~~ Answered, and
+      it was the toolchain, not the code. The first run that day reported
+      `FAIL: Clippy is not silent` with `could not compile` against
+      `spine-agent`, `spine-mechgen` and `spine-agentic` — but a `rustup` update
+      was replacing the `stable` toolchain *while the run was in flight*, and
+      left it unusable straight afterwards (`the 'cargo.exe' binary ... is not
+      applicable to the 'stable-x86_64-pc-windows-msvc' toolchain`). Every
+      `cargo` call then re-triggered the failed install and rolled it back
+      again, roughly two minutes a time.
+
+      **Installing 1.98.0 explicitly and pinning to it** — `rustup run 1.98.0` —
+      sidestepped the loop without touching the broken `stable`, which mattered
+      because another session's `cargo`/`rustc` processes were holding the files
+      that the rollback could not delete. Three subsequent runs were identical:
+      `OK: 1418 passed, 0 failed, 5 ignored, across 68 suites; Clippy silent`,
+      exit 0. Repair `stable` with `rustup toolchain install stable --force`
+      when nothing else is building.
+
+      A trap worth naming: `bash scripts/verify.sh 1418 | tail -40` reports the
+      *pipe's* exit status, not the script's, so a genuine failure comes back as
+      0. The script's own header warns about exactly this and it still caught me
+      out. Run it unpiped.
 
 **A concurrent session was writing to this working tree and to `origin/master`
 during the above** — commit `133101e` landed and was pushed mid-session, and
