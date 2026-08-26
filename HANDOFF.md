@@ -1,9 +1,17 @@
 # Handoff — Phase 38: The Namespace
 
-**Status:** complete, verified, merged, released as **2.0.1**, and **published to
-crates.io** — all 29 crates, 2026-08-24. 1,418 tests passing, 0 failures,
-0 Clippy warnings, across 68 suites. `master` and `origin/master` agree;
-`phase-38-namespace` was fast-forwarded in and can be deleted.
+**Status:** complete, verified, merged, **published to crates.io** at 2.0.1 —
+all 29 crates, 2026-08-24 — and **released with binaries** at
+[**2.0.2**](https://github.com/nervosys/SPINE/releases/tag/v2.0.2) on
+2026-08-25, the project's first platform binaries. 1,418 tests passing, 0
+failures, 0 Clippy warnings, across 68 suites. `master` and `origin/master`
+agree; `phase-38-namespace` was fast-forwarded in and can be deleted.
+
+**The two version lines are intentional and not a mistake to tidy up.**
+crates.io is at 2.0.1; the git tag and GitHub Release are at 2.0.2. 2.0.1's
+code could not be built by its own CI, and the release job checks out the tag,
+so a buildable tag had to carry a different number. Nothing has been published
+from 2.0.2.
 
 **Verify with `scripts/verify.sh 1418`** rather than by hand — it also checks
 that the run finished, which a bare test tally cannot (see item 8).
@@ -525,34 +533,36 @@ been pinned at across thirteen tags.
       up a real defect, and three more followed. This is the one item here that
       cannot be done from inside the repo.
 - [x] ~~**Cut a GitHub Release from `v2.0.1`.**~~ Done 2026-08-25:
-      <https://github.com/nervosys/SPINE/releases/tag/v2.0.1>, marked latest, the
-      first Release on the repo — the thirteen earlier tags never had one. It
-      fired the `release: [created]` CI run as expected. **Whether that run
-      produces binaries is a separate question — see *CI is red on `master`*
-      below.**
+      <https://github.com/nervosys/SPINE/releases/tag/v2.0.1>, the first Release
+      on the repo — the thirteen earlier tags never had one. It fired the
+      `release: [created]` CI run as expected, and that run died at `lint` in 18
+      seconds, so **the v2.0.1 page carries no binaries and never will**; the
+      code at that tag cannot be built by this CI. `v2.0.2` supersedes it and is
+      marked latest. Left in place rather than deleted, because it is the
+      version actually on crates.io.
 - [x] ~~**Decide whether `docs/ironstack-manifest` merges.**~~ It merged, in
       `e652b76`, and the branch still exists locally and on `origin`. Delete both
       when you are satisfied nothing else is wanted from it.
-- [ ] **Push the `v2.0.2` tag and cut its Release** — the one step left for
-      binaries. The tag is *created locally* on `262f943` and has never been
-      pushed; the agent session that made it could not push tags. `262f943` is
-      the first commit here with a successful CI run — fourteen jobs green,
-      nothing failed or cancelled, including all three release builds.
+- [x] ~~**Push the `v2.0.2` tag and cut its Release.**~~ Done 2026-08-25:
+      <https://github.com/nervosys/SPINE/releases/tag/v2.0.2>, tagged on
+      `d8b105a`. **This is the first time the project has published platform
+      binaries** — `spine-linux-x64.tar.gz` (18.7 MB),
+      `spine-macos-arm64.tar.gz` (15.8 MB), `spine-windows-x64.zip` (17.6 MB).
+      The release run concluded `success`: every job, `version-guard` in 6s,
+      all three builds, and `release` uploading in 11s.
 
-      `v2.0.1` cannot produce binaries and no amount of green on `master` changes
-      that: the `release` job checks out the **tag**, and `v2.0.1` is `3f62981`,
-      which predates every CI fix. `version-guard` requires the tag name to match
-      `[workspace.package].version`, so there is no way to point a new tag at
-      working code while still calling it 2.0.1. Hence 2.0.2.
-
-      ```bash
-      git push origin v2.0.2
-      gh release create v2.0.2 --title "v2.0.2 — The release that builds"           --notes-file <notes> --latest
-      ```
+      Why 2.0.2 existed at all, since it is the sort of thing that looks like
+      churn a year later: `v2.0.1` could not produce binaries and no amount of
+      green on `master` could change that. The `release` job checks out the
+      **tag**, and `v2.0.1` is `3f62981`, which predates every CI fix made that
+      day. `version-guard` requires the tag name to match
+      `[workspace.package].version`, so there was no way to point a new tag at
+      working code while still calling it 2.0.1.
 
       **2.0.2 is deliberately not on crates.io.** The 29 crates stay at 2.0.1
       (`spine-embedded` at 0.2.0). The tag exists so the release workflow has
-      something it can build; publishing is a separate, irreversible decision.
+      something it can build; publishing remains a separate, irreversible
+      decision that nobody has taken.
 - [ ] Item 8 above: the unreproduced test failure, closed as environmental on
       sixteen clean runs but never positively diagnosed.
 - [ ] **Re-run `scripts/verify.sh 1418` on a quiet machine.** The 2026-08-25 run
