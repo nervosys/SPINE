@@ -7,8 +7,8 @@ use nom::{
     character::complete::{char as nom_char, digit1, multispace0, multispace1},
     combinator::{map, opt, recognize, value},
     multi::{many0, separated_list0},
-    sequence::{preceded, terminated, tuple},
-    IResult,
+    sequence::{preceded, terminated},
+    IResult, Parser,
 };
 use spine_protocol::{Instruction, ProtocolBinOp, ProtocolUnaryOp, SpineBinary};
 use std::collections::HashMap;
@@ -1921,7 +1921,7 @@ impl Compiler {
 // =============================================================================
 
 fn parse_program(input: &str) -> IResult<&str, Vec<HlsStatement>> {
-    many0(preceded(multispace0, parse_statement))(input)
+    many0(preceded(multispace0, parse_statement)).parse(input)
 }
 
 fn parse_statement(input: &str) -> IResult<&str, HlsStatement> {
@@ -1944,18 +1944,19 @@ fn parse_statement(input: &str) -> IResult<&str, HlsStatement> {
         parse_return_stmt,
         parse_comment,
         parse_capability_stmt,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn parse_remember_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("remember")(input)?;
+    let (input, _) = tag("remember").parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('(')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
     let (input, key) = parse_expr(input)?;
-    let (input, _) = tuple((multispace0, nom_char(','), multispace0))(input)?;
+    let (input, _) = (multispace0, nom_char(','), multispace0).parse(input)?;
     let (input, value) = parse_expr(input)?;
-    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
     Ok((
         input,
         HlsStatement::Remember {
@@ -1968,11 +1969,11 @@ fn parse_remember_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_query_memory_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("query_memory")(input)?;
+    let (input, _) = tag("query_memory").parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('(')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
     let (input, query) = parse_expr(input)?;
-    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
     Ok((
         input,
         HlsStatement::QueryMemory {
@@ -1985,15 +1986,15 @@ fn parse_query_memory_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_capability_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("capability")(input)?;
+    let (input, _) = tag("capability").parse(input)?;
     let (input, _) = multispace1(input)?;
-    let (input, name) = take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)?;
+    let (input, name) = take_while1(|c: char| c.is_alphanumeric() || c == '_').parse(input)?;
     Ok((input, HlsStatement::Capability(name.to_string())))
 }
 
 fn parse_navigate_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("navigate")(input)?;
+    let (input, _) = tag("navigate").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, url) = parse_expr(input)?;
     Ok((input, HlsStatement::Navigate(url)))
@@ -2001,7 +2002,7 @@ fn parse_navigate_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_search_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("search")(input)?;
+    let (input, _) = tag("search").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, query) = parse_expr(input)?;
     Ok((input, HlsStatement::Search(query)))
@@ -2009,30 +2010,28 @@ fn parse_search_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_return_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("return")(input)?;
-    let (input, expr) = opt(preceded(multispace1, parse_expr))(input)?;
+    let (input, _) = tag("return").parse(input)?;
+    let (input, expr) = opt(preceded(multispace1, parse_expr)).parse(input)?;
     Ok((input, HlsStatement::Return(expr)))
 }
 
 fn parse_fn_def_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("fn")(input)?;
+    let (input, _) = tag("fn").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('(')(input)?;
-    let (input, params) = separated_list0(
-        tuple((multispace0, nom_char(','), multispace0)),
-        parse_param,
-    )(input)?;
-    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
+    let (input, params) =
+        separated_list0((multispace0, nom_char(','), multispace0), parse_param).parse(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, return_type) = opt(preceded(tuple((tag("->"), multispace0)), parse_type))(input)?;
+    let (input, return_type) = opt(preceded((tag("->"), multispace0), parse_type)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('{')(input)?;
-    let (input, body) = many0(preceded(multispace0, parse_statement))(input)?;
+    let (input, _) = nom_char('{').parse(input)?;
+    let (input, body) = many0(preceded(multispace0, parse_statement)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('}')(input)?;
+    let (input, _) = nom_char('}').parse(input)?;
 
     Ok((
         input,
@@ -2048,7 +2047,7 @@ fn parse_fn_def_stmt(input: &str) -> IResult<&str, HlsStatement> {
 fn parse_param(input: &str) -> IResult<&str, (String, HlsType)> {
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, typ) = opt(preceded(tuple((nom_char(':'), multispace0)), parse_type))(input)?;
+    let (input, typ) = opt(preceded((nom_char(':'), multispace0), parse_type)).parse(input)?;
     Ok((input, (name.to_string(), typ.unwrap_or(HlsType::Any))))
 }
 
@@ -2063,13 +2062,14 @@ fn parse_type(input: &str) -> IResult<&str, HlsType> {
             |t| HlsType::List(Box::new(t)),
         ),
         value(HlsType::Any, tag("any")),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn parse_assign_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('=')(input)?;
+    let (input, _) = nom_char('=').parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_expr(input)?;
     Ok((
@@ -2084,10 +2084,10 @@ fn parse_assign_stmt(input: &str) -> IResult<&str, HlsStatement> {
 fn parse_call_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('(')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
     let (input, args) =
-        separated_list0(tuple((multispace0, nom_char(','), multispace0)), parse_expr)(input)?;
-    let (input, _) = nom_char(')')(input)?;
+        separated_list0((multispace0, nom_char(','), multispace0), parse_expr).parse(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
     Ok((
         input,
         HlsStatement::Call {
@@ -2099,18 +2099,18 @@ fn parse_call_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_element_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("element")(input)?;
+    let (input, _) = tag("element").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, tag_name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('{')(input)?;
+    let (input, _) = nom_char('{').parse(input)?;
     let (input, _) = multispace0(input)?;
 
     // Parse children and attributes inside the element
-    let (input, children) = many0(preceded(multispace0, parse_element_child))(input)?;
+    let (input, children) = many0(preceded(multispace0, parse_element_child)).parse(input)?;
 
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('}')(input)?;
+    let (input, _) = nom_char('}').parse(input)?;
 
     Ok((
         input,
@@ -2129,19 +2129,20 @@ fn parse_element_child(input: &str) -> IResult<&str, HlsStatement> {
         parse_text_stmt,
         parse_if_stmt,
         parse_for_stmt,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn parse_let_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("let")(input)?;
+    let (input, _) = tag("let").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
     let (input, type_annotation) =
-        opt(preceded(tuple((nom_char(':'), multispace0)), parse_type))(input)?;
+        opt(preceded((nom_char(':'), multispace0), parse_type)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('=')(input)?;
+    let (input, _) = nom_char('=').parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, value) = parse_expr(input)?;
 
@@ -2157,14 +2158,14 @@ fn parse_let_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_state_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("state")(input)?;
+    let (input, _) = tag("state").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, name) = parse_identifier(input)?;
     let (input, _) = multispace0(input)?;
     let (input, type_annotation) =
-        opt(preceded(tuple((nom_char(':'), multispace0)), parse_type))(input)?;
+        opt(preceded((nom_char(':'), multispace0), parse_type)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('=')(input)?;
+    let (input, _) = nom_char('=').parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, initial) = parse_expr(input)?;
 
@@ -2180,23 +2181,24 @@ fn parse_state_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_if_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("if")(input)?;
+    let (input, _) = tag("if").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, condition) = parse_expr(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('{')(input)?;
-    let (input, then_branch) = many0(preceded(multispace0, parse_statement))(input)?;
+    let (input, _) = nom_char('{').parse(input)?;
+    let (input, then_branch) = many0(preceded(multispace0, parse_statement)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('}')(input)?;
+    let (input, _) = nom_char('}').parse(input)?;
 
     // Optional else branch
     let (input, else_branch) = opt(preceded(
-        tuple((multispace0, tag("else"), multispace0, nom_char('{'))),
+        (multispace0, tag("else"), multispace0, nom_char('{')),
         terminated(
             many0(preceded(multispace0, parse_statement)),
             preceded(multispace0, nom_char('}')),
         ),
-    ))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2210,18 +2212,18 @@ fn parse_if_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_for_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("for")(input)?;
+    let (input, _) = tag("for").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, item) = parse_identifier(input)?;
     let (input, _) = multispace1(input)?;
-    let (input, _) = tag("in")(input)?;
+    let (input, _) = tag("in").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, list) = parse_expr(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('{')(input)?;
-    let (input, body) = many0(preceded(multispace0, parse_statement))(input)?;
+    let (input, _) = nom_char('{').parse(input)?;
+    let (input, body) = many0(preceded(multispace0, parse_statement)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('}')(input)?;
+    let (input, _) = nom_char('}').parse(input)?;
 
     Ok((
         input,
@@ -2235,21 +2237,21 @@ fn parse_for_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_while_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("while")(input)?;
+    let (input, _) = tag("while").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, condition) = parse_expr(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('{')(input)?;
-    let (input, body) = many0(preceded(multispace0, parse_statement))(input)?;
+    let (input, _) = nom_char('{').parse(input)?;
+    let (input, body) = many0(preceded(multispace0, parse_statement)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('}')(input)?;
+    let (input, _) = nom_char('}').parse(input)?;
 
     Ok((input, HlsStatement::While { condition, body }))
 }
 
 fn parse_text_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("text")(input)?;
+    let (input, _) = tag("text").parse(input)?;
     let (input, _) = multispace1(input)?;
     let (input, expr) = parse_expr(input)?;
 
@@ -2258,15 +2260,15 @@ fn parse_text_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_emit_stmt(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("emit")(input)?;
+    let (input, _) = tag("emit").parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('(')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, event) = parse_string_lit(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, payload) = opt(preceded(tuple((nom_char(','), multispace0)), parse_expr))(input)?;
+    let (input, payload) = opt(preceded((nom_char(','), multispace0), parse_expr)).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
 
     Ok((
         input,
@@ -2279,8 +2281,8 @@ fn parse_emit_stmt(input: &str) -> IResult<&str, HlsStatement> {
 
 fn parse_comment(input: &str) -> IResult<&str, HlsStatement> {
     let (input, _) = multispace0(input)?;
-    let (input, _) = tag("//")(input)?;
-    let (input, comment) = take_while1(|c| c != '\n')(input)?;
+    let (input, _) = tag("//").parse(input)?;
+    let (input, comment) = take_while1(|c| c != '\n').parse(input)?;
 
     Ok((input, HlsStatement::Comment(comment.to_string())))
 }
@@ -2293,9 +2295,10 @@ fn parse_expr(input: &str) -> IResult<&str, HlsExpr> {
 fn parse_or_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, left) = parse_and_expr(input)?;
     let (input, rights) = many0(preceded(
-        tuple((multispace0, tag("||"), multispace0)),
+        (multispace0, tag("||"), multispace0),
         parse_and_expr,
-    ))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2310,9 +2313,10 @@ fn parse_or_expr(input: &str) -> IResult<&str, HlsExpr> {
 fn parse_and_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, left) = parse_comparison_expr(input)?;
     let (input, rights) = many0(preceded(
-        tuple((multispace0, tag("&&"), multispace0)),
+        (multispace0, tag("&&"), multispace0),
         parse_comparison_expr,
-    ))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2326,7 +2330,7 @@ fn parse_and_expr(input: &str) -> IResult<&str, HlsExpr> {
 
 fn parse_comparison_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, left) = parse_additive_expr(input)?;
-    let (input, op_right) = opt(tuple((
+    let (input, op_right) = opt((
         multispace0,
         alt((
             value(ProtocolBinOp::Eq, tag("==")),
@@ -2338,7 +2342,8 @@ fn parse_comparison_expr(input: &str) -> IResult<&str, HlsExpr> {
         )),
         multispace0,
         parse_additive_expr,
-    )))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2355,7 +2360,7 @@ fn parse_comparison_expr(input: &str) -> IResult<&str, HlsExpr> {
 
 fn parse_additive_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, left) = parse_multiplicative_expr(input)?;
-    let (input, rights) = many0(tuple((
+    let (input, rights) = many0((
         multispace0,
         alt((
             value(ProtocolBinOp::Add, tag("+")),
@@ -2364,7 +2369,8 @@ fn parse_additive_expr(input: &str) -> IResult<&str, HlsExpr> {
         )),
         multispace0,
         parse_multiplicative_expr,
-    )))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2380,7 +2386,7 @@ fn parse_additive_expr(input: &str) -> IResult<&str, HlsExpr> {
 
 fn parse_multiplicative_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, left) = parse_unary_expr(input)?;
-    let (input, rights) = many0(tuple((
+    let (input, rights) = many0((
         multispace0,
         alt((
             value(ProtocolBinOp::Mul, tag("*")),
@@ -2389,7 +2395,8 @@ fn parse_multiplicative_expr(input: &str) -> IResult<&str, HlsExpr> {
         )),
         multispace0,
         parse_unary_expr,
-    )))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2405,22 +2412,21 @@ fn parse_multiplicative_expr(input: &str) -> IResult<&str, HlsExpr> {
 
 fn parse_unary_expr(input: &str) -> IResult<&str, HlsExpr> {
     alt((
-        map(
-            preceded(tuple((tag("!"), multispace0)), parse_unary_expr),
-            |e| HlsExpr::UnaryOp {
+        map(preceded((tag("!"), multispace0), parse_unary_expr), |e| {
+            HlsExpr::UnaryOp {
                 op: ProtocolUnaryOp::Not,
                 expr: Box::new(e),
-            },
-        ),
-        map(
-            preceded(tuple((tag("-"), multispace0)), parse_unary_expr),
-            |e| HlsExpr::UnaryOp {
+            }
+        }),
+        map(preceded((tag("-"), multispace0), parse_unary_expr), |e| {
+            HlsExpr::UnaryOp {
                 op: ProtocolUnaryOp::Neg,
                 expr: Box::new(e),
-            },
-        ),
+            }
+        }),
         parse_primary_expr,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn parse_primary_expr(input: &str) -> IResult<&str, HlsExpr> {
@@ -2432,15 +2438,16 @@ fn parse_primary_expr(input: &str) -> IResult<&str, HlsExpr> {
         parse_reason_expr,
         parse_var_or_call_expr,
         parse_paren_expr,
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn parse_reason_expr(input: &str) -> IResult<&str, HlsExpr> {
-    let (input, _) = tag("reason")(input)?;
+    let (input, _) = tag("reason").parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char('(')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
     let (input, query) = parse_expr(input)?;
-    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
     Ok((input, HlsExpr::Reason(Box::new(query))))
 }
 
@@ -2450,18 +2457,15 @@ fn parse_string_expr(input: &str) -> IResult<&str, HlsExpr> {
 }
 
 fn parse_string_lit(input: &str) -> IResult<&str, &str> {
-    let (input, _) = nom_char('"')(input)?;
-    let (input, content) = take_while1(|c| c != '"')(input)?;
-    let (input, _) = nom_char('"')(input)?;
+    let (input, _) = nom_char('"').parse(input)?;
+    let (input, content) = take_while1(|c| c != '"').parse(input)?;
+    let (input, _) = nom_char('"').parse(input)?;
     Ok((input, content))
 }
 
 fn parse_number_expr(input: &str) -> IResult<&str, HlsExpr> {
-    let (input, num_str) = recognize(tuple((
-        opt(nom_char('-')),
-        digit1,
-        opt(tuple((nom_char('.'), digit1))),
-    )))(input)?;
+    let (input, num_str) =
+        recognize((opt(nom_char('-')), digit1, opt((nom_char('.'), digit1)))).parse(input)?;
 
     let num: f64 = num_str.parse().unwrap_or(0.0);
     Ok((input, HlsExpr::NumberLit(num)))
@@ -2471,30 +2475,32 @@ fn parse_bool_expr(input: &str) -> IResult<&str, HlsExpr> {
     alt((
         value(HlsExpr::BoolLit(true), tag("true")),
         value(HlsExpr::BoolLit(false), tag("false")),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 fn parse_list_expr(input: &str) -> IResult<&str, HlsExpr> {
-    let (input, _) = nom_char('[')(input)?;
+    let (input, _) = nom_char('[').parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, items) =
-        separated_list0(tuple((multispace0, nom_char(','), multispace0)), parse_expr)(input)?;
+        separated_list0((multispace0, nom_char(','), multispace0), parse_expr).parse(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char(']')(input)?;
+    let (input, _) = nom_char(']').parse(input)?;
 
     Ok((input, HlsExpr::List(items)))
 }
 
 fn parse_var_or_call_expr(input: &str) -> IResult<&str, HlsExpr> {
     let (input, name) = parse_identifier(input)?;
-    let (input, call) = opt(tuple((
+    let (input, call) = opt((
         multispace0,
         nom_char('('),
         multispace0,
-        separated_list0(tuple((multispace0, nom_char(','), multispace0)), parse_expr),
+        separated_list0((multispace0, nom_char(','), multispace0), parse_expr),
         multispace0,
         nom_char(')'),
-    )))(input)?;
+    ))
+    .parse(input)?;
 
     Ok((
         input,
@@ -2509,16 +2515,16 @@ fn parse_var_or_call_expr(input: &str) -> IResult<&str, HlsExpr> {
 }
 
 fn parse_paren_expr(input: &str) -> IResult<&str, HlsExpr> {
-    let (input, _) = nom_char('(')(input)?;
+    let (input, _) = nom_char('(').parse(input)?;
     let (input, _) = multispace0(input)?;
     let (input, expr) = parse_expr(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, _) = nom_char(')')(input)?;
+    let (input, _) = nom_char(')').parse(input)?;
     Ok((input, expr))
 }
 
 fn parse_identifier(input: &str) -> IResult<&str, &str> {
-    take_while1(|c: char| c.is_alphanumeric() || c == '_')(input)
+    take_while1(|c: char| c.is_alphanumeric() || c == '_').parse(input)
 }
 
 // =============================================================================
