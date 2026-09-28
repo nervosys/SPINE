@@ -9,7 +9,11 @@
 //! - [`AnthropicDispatcher`]: Anthropic API (Claude 3)
 //! - [`OfflineDispatcher`]: Fallback for offline operation
 //! - [`AdaptiveDispatcher`]: Graceful degradation wrapper
+//!
+//! The two remote dispatchers can be pointed at IronGate with `IRONGATE_URL`;
+//! see [`crate::gateway_route`]. Unset, they call their providers directly.
 
+use crate::gateway_route::{self, Route};
 use crate::{Result, RlmError, SubLlmDispatcher};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -98,12 +102,20 @@ struct OpenAiUsage {
 pub struct OpenAiDispatcher {
     config: OpenAiConfig,
     client: reqwest::Client,
+    gateway: gateway_route::Settings,
     call_count: AtomicU64,
     total_tokens: AtomicU64,
 }
 
 impl OpenAiDispatcher {
+    /// A dispatcher that routes through IronGate when `IRONGATE_URL` is set.
     pub fn new(config: OpenAiConfig) -> Self {
+        Self::with_gateway(config, gateway_route::Settings::from_env())
+    }
+
+    /// A dispatcher with its gateway settings stated rather than read from the
+    /// environment.
+    pub fn with_gateway(config: OpenAiConfig, gateway: gateway_route::Settings) -> Self {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
@@ -112,6 +124,7 @@ impl OpenAiDispatcher {
         Self {
             config,
             client,
+            gateway,
             call_count: AtomicU64::new(0),
             total_tokens: AtomicU64::new(0),
         }
@@ -176,17 +189,32 @@ impl OpenAiDispatcher {
             temperature: self.config.temperature,
         };
 
+        // The same request either way; only where it goes and whose
+        // credential it carries differ. Through the gateway no provider key is
+        // sent: IronGate holds it.
+        let (endpoint, bearer) = match self
+            .gateway
+            .route(&self.config.base_url, "openai")
+            .map_err(|message| RlmError::ModelError { message })?
+        {
+            Route::Direct => (
+                format!("{}/chat/completions", self.config.base_url),
+                Some(self.config.api_key.clone()),
+            ),
+            Route::Gateway { endpoint, token } => (endpoint, token),
+        };
+
         let mut last_error = None;
 
         for attempt in 0..self.config.max_retries {
-            let response = self
+            let mut builder = self
                 .client
-                .post(format!("{}/chat/completions", self.config.base_url))
-                .header("Authorization", format!("Bearer {}", self.config.api_key))
-                .header("Content-Type", "application/json")
-                .json(&request)
-                .send()
-                .await;
+                .post(&endpoint)
+                .header("Content-Type", "application/json");
+            if let Some(bearer) = &bearer {
+                builder = builder.header("Authorization", format!("Bearer {bearer}"));
+            }
+            let response = builder.json(&request).send().await;
 
             match response {
                 Ok(resp) if resp.status().is_success() => {
@@ -288,6 +316,35 @@ struct AnthropicRequest {
     max_tokens: u32,
 }
 
+/// Anthropic's direct endpoint, which a gateway replaces.
+const ANTHROPIC_MESSAGES: &str = "https://api.anthropic.com/v1/messages";
+
+/// An [`AnthropicRequest`] in IronGate's chat shape: the same model, message
+/// and limit, for the OpenAI-compatible API the gateway serves.
+#[derive(Debug, Serialize)]
+struct GatewayChatRequest {
+    model: String,
+    messages: Vec<OpenAiMessage>,
+    max_tokens: u32,
+}
+
+impl From<&AnthropicRequest> for GatewayChatRequest {
+    fn from(r: &AnthropicRequest) -> Self {
+        GatewayChatRequest {
+            model: r.model.clone(),
+            messages: r
+                .messages
+                .iter()
+                .map(|m| OpenAiMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                })
+                .collect(),
+            max_tokens: r.max_tokens,
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct AnthropicMessage {
     role: String,
@@ -315,12 +372,20 @@ struct AnthropicUsage {
 pub struct AnthropicDispatcher {
     config: AnthropicConfig,
     client: reqwest::Client,
+    gateway: gateway_route::Settings,
     call_count: AtomicU64,
     total_tokens: AtomicU64,
 }
 
 impl AnthropicDispatcher {
+    /// A dispatcher that routes through IronGate when `IRONGATE_URL` is set.
     pub fn new(config: AnthropicConfig) -> Self {
+        Self::with_gateway(config, gateway_route::Settings::from_env())
+    }
+
+    /// A dispatcher with its gateway settings stated rather than read from the
+    /// environment.
+    pub fn with_gateway(config: AnthropicConfig, gateway: gateway_route::Settings) -> Self {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
@@ -329,9 +394,57 @@ impl AnthropicDispatcher {
         Self {
             config,
             client,
+            gateway,
             call_count: AtomicU64::new(0),
             total_tokens: AtomicU64::new(0),
         }
+    }
+
+    /// One call through IronGate's chat API: the request translated, the
+    /// answer and its token count read back from the chat shape.
+    async fn dispatch_via_gateway(
+        &self,
+        request: &AnthropicRequest,
+        endpoint: &str,
+        token: Option<&str>,
+    ) -> Result<String> {
+        let mut builder = self
+            .client
+            .post(endpoint)
+            .header("Content-Type", "application/json");
+        if let Some(token) = token {
+            builder = builder.header("Authorization", format!("Bearer {token}"));
+        }
+        let response = builder
+            .json(&GatewayChatRequest::from(request))
+            .send()
+            .await
+            .map_err(|e| RlmError::SubLlmCallFailed {
+                reason: e.to_string(),
+            })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(RlmError::SubLlmCallFailed {
+                reason: format!("IronGate error {}: {}", status, body),
+            });
+        }
+
+        let body: OpenAiResponse = response.json().await.map_err(|e| RlmError::ModelError {
+            message: format!("Failed to parse IronGate's response: {}", e),
+        })?;
+
+        self.call_count.fetch_add(1, Ordering::Relaxed);
+        let tokens = body.usage.map(|u| u.total_tokens).unwrap_or(0);
+        self.total_tokens
+            .fetch_add(tokens as u64, Ordering::Relaxed);
+
+        Ok(body
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default())
     }
 
     pub fn from_env() -> Result<Self> {
@@ -394,9 +507,22 @@ impl SubLlmDispatcher for AnthropicDispatcher {
             max_tokens: self.config.max_tokens,
         };
 
+        match self
+            .gateway
+            .route(ANTHROPIC_MESSAGES, "anthropic")
+            .map_err(|message| RlmError::ModelError { message })?
+        {
+            Route::Direct => {}
+            Route::Gateway { endpoint, token } => {
+                return self
+                    .dispatch_via_gateway(&request, &endpoint, token.as_deref())
+                    .await;
+            }
+        }
+
         let response = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(ANTHROPIC_MESSAGES)
             .header("x-api-key", &self.config.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")

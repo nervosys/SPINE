@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **An opt-in route through IronGate for the model dispatchers.** With
+  `IRONGATE_URL` set (and `IRONGATE_TOKEN` when the gateway requires one),
+  `OpenAiDispatcher` and `AnthropicDispatcher` send their calls to IronGate's
+  OpenAI-compatible `/v1/chat/completions`, passing the model name through and
+  no provider key -- the Anthropic request translated into the chat shape, with
+  the same message and limit. Unset, calls go direct exactly as before;
+  `SPINE_REQUIRE_GATEWAY=1` refuses a direct call with an error naming both
+  variables; a dispatcher pointed at a loopback model server stays direct. The
+  same contract as Rodeo's and IronBridge's (`spine_recursive::gateway_route`).
+  The manifest declares the edge to `irongate`.
+
 ## [2.0.2] — 2026-08-25 — The release that builds
 
 No library code changed behaviour on Linux or Windows. This release exists

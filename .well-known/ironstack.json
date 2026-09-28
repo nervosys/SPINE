@@ -4,6 +4,9 @@
   "product": "SPINE",
   "layer": "communications",
   "role": "Agentic-first web stack: communication, execution, and coordination framed around tokens, tools, capabilities, traces, and swarms.",
+  "depends_on": [
+    "irongate"
+  ],
   "ontology": {
     "command": "GET /v1/agentic/capabilities",
     "api": "spine-agentic capabilities_json()",

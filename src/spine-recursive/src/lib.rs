@@ -60,6 +60,8 @@
 //! let answer = rlm.query("Find all references to quantum computing").await?;
 //! ```
 
+// The opt-in route through IronGate those dispatchers take when configured.
+pub mod gateway_route;
 // Production LLM dispatchers (OpenAI, Anthropic, etc.)
 pub mod llm_dispatchers;
 
