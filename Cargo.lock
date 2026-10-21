@@ -6649,7 +6649,7 @@ dependencies = [
  "spine-protocol",
  "spine-transport",
  "spine-wasm",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "url",
@@ -6727,7 +6727,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "spine-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "uuid",
@@ -6744,7 +6744,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "zstd 0.12.4",
 ]
 
@@ -6809,7 +6809,7 @@ dependencies = [
  "sha2 0.10.9",
  "spine-neural",
  "subtle",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "zeroize",
 ]
 
@@ -6853,7 +6853,7 @@ dependencies = [
  "spine-protocol",
  "spine-transport",
  "subtle",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tower 0.4.13",
  "tower-http 0.5.2",
@@ -6889,7 +6889,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
  "tonic 0.12.3",
@@ -6924,7 +6924,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
 ]
 
@@ -6987,7 +6987,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
 ]
 
@@ -7001,7 +7001,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smallvec",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7021,7 +7021,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-name",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7053,7 +7053,7 @@ dependencies = [
  "spine-embedded",
  "spine-neural",
  "spine-nostd",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
  "tokio-test",
@@ -7079,7 +7079,7 @@ dependencies = [
  "sha2 0.10.9",
  "spine-crypto",
  "spine-neural",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-test",
  "tracing",
@@ -7096,7 +7096,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -7162,7 +7162,7 @@ dependencies = [
  "serde_json",
  "socket2 0.5.10",
  "spine-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-rustls",
  "tokio-test",
@@ -7183,7 +7183,7 @@ dependencies = [
  "serde_json",
  "spine-compiler",
  "spine-protocol",
- "thiserror 1.0.69",
+ "thiserror 2.0.20",
  "wasmtime",
  "wat",
 ]
