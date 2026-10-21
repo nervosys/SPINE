@@ -239,7 +239,7 @@ jobs:
           Compress-Archive -Path dist/${{ matrix.artifact }} -DestinationPath dist/${{ matrix.artifact }}.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}.*
@@ -267,7 +267,7 @@ jobs:
       - name: Build API docs
         run: cargo doc --workspace --exclude spine-browser --no-deps
 
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: api-documentation
           path: target/doc
@@ -313,7 +313,7 @@ jobs:
       # whether benchmark history should be publicly served from it -- a
       # decision, not a fix, so it is not made here.
       - name: Upload benchmark output
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: bench_output.txt
