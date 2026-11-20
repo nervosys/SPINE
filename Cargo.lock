@@ -6562,10 +6562,10 @@ dependencies = [
  "spine-compiler",
  "spine-crypto",
  "spine-knowledge",
+ "spine-mesh",
  "spine-name",
  "spine-neural",
  "spine-protocol",
- "spine-session",
  "spine-transport",
  "spine-wasm",
  "thiserror 1.0.69",
@@ -6573,7 +6573,6 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -6887,6 +6886,30 @@ dependencies = [
  "serde_json",
  "spine-agentic",
  "uuid",
+]
+
+[[package]]
+name = "spine-mesh"
+version = "2.0.2"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dashmap",
+ "ed25519-dalek",
+ "futures",
+ "rand 0.8.8",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spine-name",
+ "spine-session",
+ "spine-transport",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]

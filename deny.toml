@@ -63,7 +63,7 @@ allow = [
     "OFL-1.1",
     "CDLA-Permissive-2.0",
 
-    # SPINE's own 31 crates. Their absence is why this job failed on every run:
+    # SPINE's own 32 crates. Their absence is why this job failed on every run:
     # the workspace relicensed to AGPL-3.0-or-later and the allow-list was not
     # moved with it, so cargo-deny rejected the workspace against itself. The
     # entry below still said Apache-2.0 long after LICENSE said otherwise.

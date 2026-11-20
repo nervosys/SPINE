@@ -123,16 +123,16 @@ Every file below is new except the four marked *(edited)*.
 | `src/spine-name/src/key.rs` | 162 | XOR metric, bucket index. |
 | `src/spine-name/src/base32.rs` | 136 | RFC 4648 lowercase-unpadded. |
 | `src/spine-name/examples/agent_web.rs` | 120 | Runnable end-to-end demo. |
-| `src/spine-agentic/src/mesh_tcp.rs` | 1300 | Framing, pooling, encryption mode, TCP listener. |
-| `src/spine-agentic/src/naming.rs` | 992 | `Lookup` state machine, `NameService`. |
-| `src/spine-agentic/src/naming_mesh.rs` | 695 | The live driver and the two-routing-space bridge. |
+| `src/spine-mesh/src/mesh_tcp.rs` | 1300 | Framing, pooling, encryption mode, TCP listener. |
+| `src/spine-mesh/src/naming.rs` | 992 | `Lookup` state machine, `NameService`. |
+| `src/spine-mesh/src/naming_mesh.rs` | 695 | The live driver and the two-routing-space bridge. |
 | `src/spine-session/src/handshake.rs` | 715 | ML-KEM + Ed25519 channel. Read the module docs first. |
 | `src/spine-agentic/src/mesh_quic.rs` | 595 | Stream-per-exchange QUIC. |
-| `src/spine-agentic/src/mesh_ws.rs` | 444 | WebSocket establishment. |
+| `src/spine-mesh/src/mesh_ws.rs` | 444 | WebSocket establishment. |
 | `src/spine-parser/src/lib.rs` | *(edited)* | `Element::AgentLink`, `agent_links()`. |
 | `src/spine-protocol/src/lib.rs` | *(edited)* | Namespace commands, `NameResolution`. |
 | `src/spine-core/src/main.rs` | *(edited)* | Handlers; `BrowserState.names`. |
-| `src/spine-agentic/src/mesh.rs` | *(edited)* | Three `MeshPayload` variants, envelope builders. |
+| `src/spine-mesh/src/mesh.rs` | *(edited)* | Three `MeshPayload` variants, envelope builders. |
 
 **Reading order if you are new to it:** `spine-name/src/lib.rs` for the concepts,
 then `examples/agent_web.rs` to see them used, then `naming.rs` for how

@@ -58,7 +58,12 @@ set -uo pipefail
 # spine-session crate, so its unit tests (previously inside spine-crypto's lib
 # suite) now report a "test result:" line of their own. The new crate's doctest
 # target may add one more line; re-measure and tighten this on the next full run.
-EXPECTED_SUITES_MIN=71
+#
+# 71 -> 72: the mesh stack (identity, mesh, naming, naming_mesh, mesh_tcp,
+# mesh_ws) moved out of spine-agentic into its own spine-mesh crate, so its unit
+# tests now report a "test result:" line of their own. Re-measure and tighten
+# this on the next full run.
+EXPECTED_SUITES_MIN=72
 EXPECTED_IGNORED=5
 EXPECTED_TOTAL="${1:-}"
 

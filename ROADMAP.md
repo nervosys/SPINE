@@ -273,8 +273,8 @@ Current local work is tracked in [the completion checklist](COMPLETION_PLAN.md) 
 
 ### Phase 21 — Agent Mesh Networking ✅
 
-- [x] **Ed25519 signing identity** (`src/spine-agentic/src/identity.rs`): `Ed25519Keypair` (generate, from_seed, sign, verify), `SigningIdentity` (agent UUID + keypair), `SignedEnvelope` (signed message wrapper with `open()`/`verify()`), `PublicIdentity` (shareable identity with fingerprint)
-- [x] **Peer-to-peer mesh** (`src/spine-agentic/src/mesh.rs`): `MeshNode` with connection management, peer discovery, multi-hop routing, signed message envelopes
+- [x] **Ed25519 signing identity** (`src/spine-mesh/src/identity.rs`): `Ed25519Keypair` (generate, from_seed, sign, verify), `SigningIdentity` (agent UUID + keypair), `SignedEnvelope` (signed message wrapper with `open()`/`verify()`), `PublicIdentity` (shareable identity with fingerprint)
+- [x] **Peer-to-peer mesh** (`src/spine-mesh/src/mesh.rs`): `MeshNode` with connection management, peer discovery, multi-hop routing, signed message envelopes
 - [x] **Routing table**: `RoutingTable` with shortest-path selection, stale route pruning, route learning from message hops
 - [x] **Gossip protocol**: `PeerAnnouncement` propagation, max_peers enforcement, banned peer filtering, self-announcement
 - [x] **Message deduplication**: `MessageDedup` ring buffer preventing routing loops, TTL-based message expiry

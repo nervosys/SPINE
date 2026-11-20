@@ -64,14 +64,8 @@ pub mod chaos;
 pub mod consensus;
 pub mod contract;
 pub mod federation;
-pub mod identity;
 pub mod lifecycle;
-pub mod mesh;
 pub mod mesh_quic;
-pub mod mesh_tcp;
-pub mod mesh_ws;
-pub mod naming;
-pub mod naming_mesh;
 pub mod ontology_vocab;
 pub mod policy;
 pub mod replay;
@@ -83,6 +77,11 @@ pub mod topology;
 pub mod tracing;
 pub mod visualizer;
 pub mod workflow;
+
+// The production mesh stack lives in `spine-mesh`; re-exported so the existing
+// `spine_agentic::mesh::..` and `spine_agentic::AgentId` paths keep resolving.
+pub use spine_mesh::AgentId;
+pub use spine_mesh::{identity, mesh, mesh_tcp, mesh_ws, naming, naming_mesh};
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -228,33 +227,6 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 // =============================================================================
 // LAYER 1: AGENT IDENTITY & CAPABILITIES
 // =============================================================================
-
-/// Unique identifier for an agent in the agentic web
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AgentId(pub Uuid);
-
-impl AgentId {
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-
-    pub fn new_v4() -> Self {
-        Self(Uuid::new_v4())
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-        hasher.update(bytes);
-        let result = hasher.finalize();
-        Self(Uuid::from_slice(&result[..16]).unwrap_or_else(|_| Uuid::new_v4()))
-    }
-}
-
-impl Default for AgentId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Agent capability declaration
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

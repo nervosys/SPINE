@@ -45,6 +45,7 @@ Then, strictly in this order (each line's deps are all already published):
 ```
  1. spine-parser      # depends on spine-name
  2. spine-session     # no workspace dependencies; before spine-crypto and spine-agentic
+ 2b. spine-mesh      # after spine-name, spine-session, spine-transport; before spine-agentic
  3. spine-crypto
  4. spine-embedded
  5. spine-knowledge
@@ -80,7 +81,7 @@ resolve it, so publish sequentially and let each finish:
 for c in spine-nostd spine-kernel spine-gpu spine-cache spine-k8s \
          spine-storage spine-parser spine-neural \
          spine-session spine-crypto spine-embedded spine-knowledge spine-recursive \
-         spine-protocol spine-transport spine-compiler spine-grpc \
+         spine-protocol spine-transport spine-mesh spine-compiler spine-grpc \
          spine-cluster spine-wasm spine-stream spine-human spine-agentic \
          spine-mechgen spine-agent spine-core spine-web \
          spine-browser spine-gateway spine-cli; do

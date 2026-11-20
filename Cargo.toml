@@ -11,6 +11,7 @@ members = [
     "src/spine-neural",
     "src/spine-crypto",
     "src/spine-session",
+    "src/spine-mesh",
     "src/spine-human",
     "src/spine-browser",
     "src/spine-agentic",

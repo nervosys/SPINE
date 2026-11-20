@@ -334,7 +334,8 @@ SPINE is composed of 28 specialized crates organized into a cohesive bioinspired
 
 - **`spine-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the SPINE stack.
 - **`spine-name`**: The namespace — the `spine://` URI scheme, self-certifying `did:`/`blob:`/`cap:` authorities, signed name records, the 256-bit DHT keyspace, the resolver cache, and the typed link graph with its crawl frontier.
-- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities. Also hosts mesh-backed name resolution — `naming` (Kademlia lookup state machines), `naming_mesh` (the live driver: dispatch, correlation, timeouts, and the `NameTransport` seam), `mesh_tcp` (the mesh's socket layer: framing, pooled bidirectional connections, listener, and the encrypted-transport mode), `mesh_ws` (the same over WebSocket, for proxy traversal and browser-resident agents), and `mesh_quic` (stream-per-exchange multiplexing).
+- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities. Re-exports the `spine-mesh` stack (`naming`, `naming_mesh`, `mesh_tcp`, `mesh_ws`, `identity`, `mesh`) and hosts the parts that still need research-linked crates: `mesh_quic` (stream-per-exchange multiplexing) and `signed_frame`, which stay here because they need `spine-protocol`, which still depends on research crates.
+- **`spine-mesh`**: the production mesh stack — Ed25519 identities, signed mesh envelopes, signed name records with their mesh RPC, and the authenticated TCP and WebSocket transports. Depends only on `spine-name`, `spine-session` and `spine-transport`; `spine-agentic` re-exports it.
 - **`spine-session`**: the `handshake` — the authenticated, forward-secret channel the mesh runs over (ML-KEM-768 + Ed25519). No dependency on any other workspace crate; `spine-crypto` re-exports it as `spine_crypto::handshake`.
 - **`spine-crypto`**: X3DH, RLWE lattice keys, and ML-KEM (FIPS 203) research primitives.
 - **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
@@ -998,7 +999,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (31 Crates)
+### The SPINE Stack (32 Crates)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -1381,7 +1382,7 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 31 crates:
+SPINE includes comprehensive test coverage across all 32 crates:
 
 ```bash
 # Run all tests
@@ -1396,7 +1397,7 @@ cargo test -p spine-crypto
 ### Test Summary (1,418 tests, 0 failures)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,418 passed / 0 failed / 5 ignored** across all 31 crates. The five
+**1,418 passed / 0 failed / 5 ignored** across all 32 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
 hidden failures. The per-crate breakdown below is measured rather than
 estimated — it is produced by running each crate on its own, and the
@@ -1405,7 +1406,8 @@ column sums to the workspace total.
 
 | Crate           | Tests | Description                                                   |
 | --------------- | ----- | ------------------------------------------------------------- |
-| spine-agentic   | 392   | Lifecycle, sandbox, scheduler, contracts, mesh, naming, swarm |
+| spine-agentic   | 258*  | Lifecycle, sandbox, scheduler, contracts, QUIC mesh, swarm    |
+| spine-mesh      | 168*  | Identity, mesh envelope/node, naming, TCP/WebSocket transport |
 | spine-protocol  | 148   | Chameleon protocol, AEAD, chaos, integration, property        |
 | spine-name      | 113   | The `spine://` namespace: URIs, records, keyspace, resolution |
 | spine-transport | 85    | Zero-copy I/O, BBR, connection pooling, property              |
@@ -1436,6 +1438,8 @@ column sums to the workspace total.
 | spine-mechgen   | 5     | Mechanism generation                                          |
 | spine-web       | 0     | Umbrella facade crate (re-exports only)                       |
 | spine-browser   | 0     | Cross-platform GUI browser (egui)                             |
+
+\* `spine-agentic` and `spine-mesh` are counts of `#[test]` / `#[tokio::test]` attributes in the source (258 and 168), not a measured run; the old measured figure for `spine-agentic` was 392 before the split. Re-measure with a per-crate run, after which the column should again sum to the workspace total.
 
 ### Benchmarks
 
