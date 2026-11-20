@@ -157,6 +157,14 @@ pub struct ServerConfig {
     pub persistence_interval_secs: u64,
     /// Graceful shutdown timeout (seconds)
     pub shutdown_timeout_secs: u64,
+    /// Accept native clients from beyond loopback without mutual TLS.
+    ///
+    /// The native server has no per-client authorization: every connected
+    /// client can publish names and resources, call tools, and make this node
+    /// sign mesh calls with its own key. Until delegated authority exists, a
+    /// non-loopback `host` is refused at startup unless `tls.mutual_tls` is on
+    /// or this is set. Setting it states that the network itself is trusted.
+    pub allow_unauthenticated_remote: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,8 +231,19 @@ impl Default for ServerConfig {
             session_retention_secs: 3600,
             persistence_interval_secs: 60,
             shutdown_timeout_secs: 30,
+            allow_unauthenticated_remote: false,
         }
     }
+}
+
+/// Whether a configured listener host is reachable only from this machine.
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl Default for TlsConfig {
@@ -388,6 +407,13 @@ impl SpineConfig {
         anyhow::ensure!(
             self.tls.crl_path.is_empty() || self.tls.mutual_tls,
             "a client revocation list requires mutual TLS"
+        );
+        anyhow::ensure!(
+            is_loopback_host(&self.server.host)
+                || self.tls.mutual_tls
+                || self.server.allow_unauthenticated_remote,
+            "server.host is not loopback: every native client has full control of this node, \
+             so enable tls.mutual_tls or set server.allow_unauthenticated_remote = true"
         );
         for offset in [
             self.server.ws_port_offset,
@@ -593,6 +619,25 @@ seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
 
     /// A `cap:` or `did:` name carries no address, so it must not be mistaken
     /// for one.
+    #[test]
+    fn a_remote_listener_needs_client_authentication_or_an_explicit_override() {
+        let mut config = SpineConfig::default();
+        assert!(config.validate().is_ok(), "loopback default is accepted");
+
+        for host in ["localhost", "127.0.0.1", "::1", "[::1]"] {
+            config.server.host = host.into();
+            assert!(config.validate().is_ok(), "{host}");
+        }
+
+        for host in ["0.0.0.0", "::", "192.0.2.10", "node.example.org"] {
+            config.server.host = host.into();
+            assert!(config.validate().is_err(), "{host}");
+        }
+
+        config.server.allow_unauthenticated_remote = true;
+        assert!(config.validate().is_ok(), "explicit override is accepted");
+    }
+
     #[test]
     fn a_non_host_name_is_not_treated_as_an_address() {
         assert_eq!(host_address("spine://cap:web.search/"), None);

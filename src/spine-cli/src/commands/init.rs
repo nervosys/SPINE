@@ -42,6 +42,10 @@ const DEFAULT_SPINE_TOML_TLS: &str = r#"# SPINE Server Configuration (TLS enable
 [server]
 host = "0.0.0.0"
 port = 8443
+# Every native client has full control of this node. Server-side TLS encrypts
+# the connection but does not identify the client. Prefer `mutual_tls = true`
+# under [tls] with a client CA, then remove this line.
+allow_unauthenticated_remote = true
 ws_port_offset = 1
 quic_port_offset = 2
 metrics_port = 9090

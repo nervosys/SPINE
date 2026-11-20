@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A non-loopback `server.host` is refused at startup** unless `tls.mutual_tls` is enabled or `server.allow_unauthenticated_remote = true` is set. The native server has no per-client authorization, so any client that can connect controls the node. `spine init --tls` now writes the override explicitly with a warning.
+- Name records, agent identities and the mesh handshake use strict Ed25519 verification. Conflicting records with equal sequence and publication time now have one deterministic winner, and the resolver cache no longer replaces a newer record with an older one.
 - **MSRV raised from 1.88 to 1.89.** `rusqlite` 0.43 (bundling a `libsqlite3-sys` without RUSTSEC-2026-0459) requires it. Dependency upgrades also clear the other 33 advisories reported on 2026-11-19: Wasmtime 36.0.23, Rustls 0.23.46, Quinn 0.11.19, Zstd 0.13.5, and the gateway on Axum 0.8 with utoipa 6.
 
 ### Agent-web completion work
