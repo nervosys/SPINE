@@ -1703,7 +1703,11 @@ mod tests {
         let rec = record(4, 1, 1_000, &["web.search"]);
         let target = rec.name.key();
 
-        let mut service = NameService::new(NameKey::of(b"far from that key"));
+        // The local node sits right next to the capability key, and K peers sit
+        // right next to the name key: it is responsible for the former only.
+        let mut local = *capability_key("web.search").as_bytes();
+        local[31] ^= 1;
+        let mut service = NameService::new(NameKey::from_bytes(local));
         for i in 0..K as u8 {
             let mut bytes = *target.as_bytes();
             bytes[31] ^= i;
@@ -1712,6 +1716,7 @@ mod tests {
                 agent(i),
             );
         }
+        assert!(!service.is_responsible_for(&target));
 
         assert_eq!(
             service.accept_announcement(rec.clone()).unwrap(),

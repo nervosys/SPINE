@@ -1984,6 +1984,11 @@ mod tests {
             tokio::task::yield_now().await;
         }
         let report = run.await.unwrap();
+        // `publish` returns once its sends are queued; deliver them.
+        for _ in 0..64 {
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
 
         assert!(
             report.capability_sent > 0,
