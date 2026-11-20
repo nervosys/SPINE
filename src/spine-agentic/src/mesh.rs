@@ -419,6 +419,90 @@ impl MessageDedup {
     }
 }
 
+// ──────────────────────────── Application replay guard ────────────────────────────
+
+/// Largest allowed difference, in seconds, between an application envelope's
+/// signed timestamp and the receiver's clock, in either direction.
+pub const APPLICATION_FRESHNESS_SECS: i64 = 120;
+
+/// Most (sender, envelope id) pairs [`ReplayGuard`] remembers at once.
+pub const REPLAY_GUARD_CAPACITY: usize = 4096;
+
+/// Why [`ReplayGuard::admit`] refused an envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayRefusal {
+    /// The signed timestamp is more than [`APPLICATION_FRESHNESS_SECS`] from
+    /// the local clock.
+    Stale,
+    /// This sender and envelope id were already admitted inside the window.
+    Duplicate,
+    /// The table is full of entries that can still be replayed.
+    Full,
+}
+
+/// Bounded, time-windowed record of recently admitted envelopes.
+///
+/// An envelope is acceptable only while its signed timestamp is within
+/// [`APPLICATION_FRESHNESS_SECS`] of the local clock, so an entry stops
+/// mattering once `timestamp + window` has passed and can be dropped safely.
+/// At most `capacity` entries are held. When full, expired entries are evicted
+/// first; if every entry is still replayable the new envelope is refused
+/// (`Full`) rather than forgetting an entry that could be replayed.
+#[derive(Debug)]
+pub struct ReplayGuard {
+    /// (sender, envelope id) -> last second at which a replay would still pass
+    /// the freshness check.
+    seen: HashMap<(AgentId, Uuid), i64>,
+    capacity: usize,
+}
+
+impl ReplayGuard {
+    /// Create a guard remembering at most `capacity` envelopes.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            seen: HashMap::new(),
+            capacity,
+        }
+    }
+
+    /// Check freshness and uniqueness of an envelope signed at `timestamp`
+    /// (Unix seconds) against `now` (Unix seconds), recording it if admitted.
+    pub fn admit(
+        &mut self,
+        sender: AgentId,
+        id: Uuid,
+        timestamp: i64,
+        now: i64,
+    ) -> Result<(), ReplayRefusal> {
+        if timestamp.abs_diff(now) > APPLICATION_FRESHNESS_SECS as u64 {
+            return Err(ReplayRefusal::Stale);
+        }
+        let key = (sender, id);
+        if self.seen.contains_key(&key) {
+            return Err(ReplayRefusal::Duplicate);
+        }
+        if self.seen.len() >= self.capacity {
+            self.seen.retain(|_, expires| *expires >= now);
+            if self.seen.len() >= self.capacity {
+                return Err(ReplayRefusal::Full);
+            }
+        }
+        self.seen
+            .insert(key, timestamp.saturating_add(APPLICATION_FRESHNESS_SECS));
+        Ok(())
+    }
+
+    /// Number of envelopes currently remembered.
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// Whether nothing is remembered.
+    pub fn is_empty(&self) -> bool {
+        self.seen.is_empty()
+    }
+}
+
 // ──────────────────────────── Mesh Statistics ────────────────────────────
 
 /// Real-time statistics for a mesh node.

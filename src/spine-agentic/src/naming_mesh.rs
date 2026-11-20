@@ -287,6 +287,8 @@ pub struct MeshNameResolver {
     application: Option<Arc<dyn MeshApplication>>,
     rpc_waiters: DashMap<Uuid, RpcWaiter>,
     rpc_slots: tokio::sync::Semaphore,
+    /// Freshness and duplicate check for inbound application requests.
+    rpc_replay: std::sync::Mutex<crate::mesh::ReplayGuard>,
     service: Mutex<NameService>,
     node: Arc<MeshNode>,
     transport: Arc<dyn NameTransport>,
@@ -324,6 +326,9 @@ impl MeshNameResolver {
             application: None,
             rpc_waiters: DashMap::new(),
             rpc_slots: tokio::sync::Semaphore::new(64),
+            rpc_replay: std::sync::Mutex::new(crate::mesh::ReplayGuard::new(
+                crate::mesh::REPLAY_GUARD_CAPACITY,
+            )),
             service: Mutex::new(service),
             node,
             transport,
@@ -978,6 +983,24 @@ impl MeshNameResolver {
                         }
                     }
                 } else {
+                    // Requests only: a response is matched to a waiter above,
+                    // which is removed on first use. The signature is already
+                    // verified, so unsigned traffic cannot fill the table.
+                    let admitted = self
+                        .rpc_replay
+                        .lock()
+                        .map(|mut guard| {
+                            guard.admit(
+                                envelope.from,
+                                envelope.id,
+                                envelope.timestamp.timestamp(),
+                                i64::try_from(now).unwrap_or(i64::MAX),
+                            )
+                        })
+                        .unwrap_or(Err(crate::mesh::ReplayRefusal::Full));
+                    if admitted.is_err() {
+                        return true;
+                    }
                     let mut data = match &self.application {
                         Some(application) => {
                             application
