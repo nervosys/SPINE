@@ -4,6 +4,8 @@ A self-contained description of the `spine-mesh-hs-v1` handshake, written so a
 cryptographer can review it without reading the codebase. Implementation:
 `src/spine-session/src/handshake.rs`.
 
+Corrected 2026-11-20 against the source at 3d58059; file paths updated after the handshake moved to `spine-session` and the mesh to `spine-mesh`. Line numbers are as of 3d58059 and may have shifted.
+
 **What is being asked:** whether the construction below delivers the properties
 claimed in §4, and whether the concessions in §5 are the only ones.
 
@@ -38,7 +40,7 @@ intended to be one fact rather than three.
 | Role | Primitive |
 |---|---|
 | KEM | ML-KEM-768 (FIPS 203), `ml-kem` 0.2 |
-| Signatures | Ed25519, `ed25519-dalek` |
+| Signatures | Ed25519, `ed25519-dalek`; verification uses `verify_strict` (`handshake.rs:165`) |
 | KDF | HKDF-SHA-256 |
 | AEAD | AES-256-GCM |
 | Transcript hash | SHA-256 |
@@ -90,7 +92,9 @@ Both:
 ### Record layer
 
 Each direction has its own key and its own 64-bit counter. Nonce = the 8-byte
-big-endian counter left-padded into the 12-byte GCM nonce. AAD is empty.
+big-endian counter left-padded into the 12-byte GCM nonce. The AAD is the
+8-byte big-endian counter (`handshake.rs:487` in `seal`, `:517` in `open`);
+`open` also requires the counter to equal the next expected value (`:507`).
 Separate keys per direction mean the two counters cannot collide, which is the
 failure mode that makes GCM catastrophic rather than merely broken. `dk` is
 zeroed on drop (`ZeroizeOnDrop`), as are session keys.
@@ -106,20 +110,34 @@ zeroed on drop (`ZeroizeOnDrop`), as are session keys.
    to a freshly generated `ek`, so `msg2` cannot be replayed into another
    session. A dialer that pins `expected_peer` will not complete a handshake
    with any other identity.
-4. **Initiator authentication**: `sig_I` covers `ek ‖ id_I`, so the responder
-   learns which mesh identity opened the connection — used to bind the
-   connection to a keyspace position.
+4. **Initiator authentication (limited)**: `sig_I` covers
+   `LABEL_INITIATOR ‖ ek ‖ id_I` only (`handshake.rs:215-219`). It shows that the
+   holder of `sk_I` signed that ephemeral key at some time; it does not cover
+   the responder's identity or any responder-supplied value, so it is not bound
+   to this responder or this moment. The responder records `id_I` as the peer
+   identity (`Session::peer_identity`), used to bind the connection to a
+   keyspace position. Liveness of the initiator is not demonstrated by the
+   handshake itself (see no key confirmation, §5).
 5. **Domain separation**: distinct labels for each signature and each derived
    key; a signature from one role cannot be replayed into the other.
-6. **Key independence per connection** (see the test
+6. **Strict signature verification**: Ed25519 verification in the handshake
+   (`handshake.rs:165`), name records (`spine-name/src/record.rs:280`) and agent
+   identities (`spine-mesh/src/identity.rs:126`) uses `verify_strict`
+   (commit 3476769). `spine-agentic/src/swe.rs` was switched later the same day; an audit of
+   the workspace found no other Ed25519 verification site and no other
+   signature library.
+7. **Key independence per connection** (see the test
    `separate_connections_derive_independent_keys`, and §6).
 
 ## 5. Known concessions
 
-**`InitiatorHello` is replayable.** A recorded `msg1` can be replayed to a
-responder, which will complete a handshake with it. Judged to gain the attacker
-nothing: without `dk` it cannot derive `k_i2r`/`k_r2i`, so it can neither read
-nor send a frame. Eliminating it needs a third message or a responder-supplied
+**`InitiatorHello` is replayable, and a replay commits responder state.** A
+recorded `msg1` can be replayed to a responder, which will verify it, perform
+ML-KEM encapsulation, sign and return `msg2`, and attach a secure session bound
+to the claimed `id_I` (`mesh_tcp.rs:449-458`, `:1139-1148`; it holds a connection
+permit until the connection closes). The responder never requires any message
+under the session keys to finish. Without `dk` a replayer cannot derive
+`k_i2r`/`k_r2i`, so it can neither read nor send a frame. Eliminating it needs a third message or a responder-supplied
 nonce. **Review question:** is the resulting responder-side work a meaningful
 DoS amplification, given ML-KEM encapsulation plus one Ed25519 verification per
 replayed hello?
@@ -130,19 +148,38 @@ could impersonate a node going forward, but could not decrypt recorded traffic.
 This was a deliberate ordering — recorded traffic is the harvest-now-decrypt-
 later asset — but it is worth confirming.
 
+**No key confirmation.** Neither side sends or checks a message under the
+derived keys to complete the handshake; the responder cannot tell a live
+initiator from a replayer until (and unless) a valid frame arrives.
+
+**No identity hiding.** `msg1` and `msg2` are unencrypted, so `id_I`, `id_R`,
+the ephemeral key, ciphertext and signatures are visible to a passive observer.
+Only the record layer that follows is confidential.
+
+**No rekeying.** The two directional keys are fixed for the life of the
+session; there is no ratchet and no rekey message.
+
 **No downgrade negotiation, by construction.** There is one ciphersuite. The
 protocol label is compared for exact equality, so version skew is a refusal to
 talk rather than a negotiation. **Review question:** does the absence of a
 version field make a future migration harder than the downgrade risk it avoids?
 
-**Unpinned dialing exists.** `expected_peer = None` accepts whoever answers.
-This is used exactly once — dialing a bootstrap seed by address, where
-establishing the identity is the purpose of the exchange. The identity proven is
-then used for every subsequent connection to that peer. **Review question:** is
-"trust the first answer at an address, pin thereafter" adequately bounded here?
+**Unpinned dialing exists, and is the default for DHT traffic.**
+`expected_peer = None` accepts whoever answers. It is used for bootstrap-seed
+dials by address (`mesh_tcp.rs:958`, `provisional`). In addition, pooled dials
+pin only if the pin map has an entry or the caller supplies one
+(`mesh_tcp.rs:888`, `expected_identity` at `:913`). The only writer of the pin map, `set_identity`
+(`mesh_tcp.rs:786`; likewise `mesh_ws.rs:102`, `mesh_quic.rs:160`), has no caller
+outside test modules anywhere in the repository, so every dial made by
+spine-core's namespace transport (`spine-core/src/namespace.rs`) for DHT traffic
+is unpinned. The one pinned path is application RPC, which pins to the signed
+`recipient_key` (`mesh_tcp.rs:926`). Peer identity for DHT traffic is therefore
+established by the handshake signature plus the signed records carried over it,
+not by a prior expectation. **Review question:** is that adequately bounded?
 
-**AAD is empty**, and the record layer carries no explicit length or type field
-beyond what the framing above it provides.
+**The AAD is only the frame counter**, and the record layer carries no explicit
+length, type or direction field beyond what the framing above it provides
+(direction is separated by distinct keys).
 
 **QUIC transport certificates authenticate nothing.** `QuicEndpointBuilder` uses
 self-signed certificates with a permissive verifier; endpoint authentication
