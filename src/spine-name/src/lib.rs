@@ -136,6 +136,9 @@ pub enum NameError {
 
     #[error("resolution failed: {0}")]
     Transport(String),
+
+    #[error("name record too large: {0}")]
+    RecordTooLarge(String),
 }
 
 #[cfg(test)]

@@ -374,6 +374,82 @@ mod sig_bytes {
     }
 }
 
+/// Most endpoints a record accepted from the network may carry.
+pub const MAX_ENDPOINTS: usize = 16;
+/// Most links a record accepted from the network may carry.
+pub const MAX_LINKS: usize = 64;
+/// Most capability terms a record accepted from the network may carry, counting
+/// those attached to its links.
+pub const MAX_CAPABILITIES: usize = 64;
+/// Most metadata entries a record accepted from the network may carry.
+pub const MAX_META_ENTRIES: usize = 64;
+/// Longest any single string in a record may be, in bytes.
+pub const MAX_FIELD_BYTES: usize = 1024;
+
+impl NameRecord {
+    /// Sanity-check the size of a record that came from a peer.
+    ///
+    /// A valid signature proves only who published a record, not that it is
+    /// reasonable to hold: anyone can mint a key and sign an enormous record.
+    /// This bounds every collection and string in it (see [`MAX_ENDPOINTS`],
+    /// [`MAX_LINKS`], [`MAX_CAPABILITIES`], [`MAX_META_ENTRIES`] and
+    /// [`MAX_FIELD_BYTES`]) so that accepting, storing and re-serving it costs a
+    /// bounded amount. Call it before [`NameRecord::verify`] on anything
+    /// received over the network. It does not check the signature.
+    pub fn validate_size(&self) -> Result<(), NameError> {
+        fn too_large(what: &str) -> NameError {
+            NameError::RecordTooLarge(what.to_string())
+        }
+        fn check_str(s: &str, what: &str) -> Result<(), NameError> {
+            if s.len() > MAX_FIELD_BYTES {
+                Err(too_large(what))
+            } else {
+                Ok(())
+            }
+        }
+
+        if self.endpoints.len() > MAX_ENDPOINTS {
+            return Err(too_large("endpoints"));
+        }
+        if self.links.len() > MAX_LINKS {
+            return Err(too_large("links"));
+        }
+        if self.capabilities.len() > MAX_CAPABILITIES {
+            return Err(too_large("capabilities"));
+        }
+        if self.meta.len() > MAX_META_ENTRIES {
+            return Err(too_large("metadata"));
+        }
+        check_str(&self.name.to_string(), "name")?;
+        for endpoint in &self.endpoints {
+            check_str(&endpoint.transport, "endpoint transport")?;
+            check_str(&endpoint.address, "endpoint address")?;
+        }
+        for term in &self.capabilities {
+            check_str(term, "capability")?;
+        }
+        let mut link_capabilities = self.capabilities.len();
+        for link in &self.links {
+            check_str(&link.target.to_string(), "link target")?;
+            if let Some(title) = &link.title {
+                check_str(title, "link title")?;
+            }
+            link_capabilities = link_capabilities.saturating_add(link.capabilities.len());
+            if link_capabilities > MAX_CAPABILITIES {
+                return Err(too_large("capabilities"));
+            }
+            for term in &link.capabilities {
+                check_str(term, "link capability")?;
+            }
+        }
+        for (key, value) in &self.meta {
+            check_str(key, "metadata key")?;
+            check_str(value, "metadata value")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +466,63 @@ mod tests {
         let mut rec = NameRecord::new(name, seq, now).unwrap();
         rec.sign(&key).unwrap();
         (key, rec)
+    }
+
+    #[test]
+    fn an_ordinary_record_passes_the_size_check() {
+        let (_, rec) = signed(1, 1, 1_000);
+        let rec = rec
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:1"))
+            .with_capability("search")
+            .with_meta("title", "x");
+        assert_eq!(rec.validate_size(), Ok(()));
+    }
+
+    #[test]
+    fn an_oversized_record_is_rejected() {
+        let (_, base) = signed(2, 1, 1_000);
+
+        let mut r = base.clone();
+        for i in 0..=MAX_ENDPOINTS {
+            r = r.with_endpoint(Endpoint::new("tcp", format!("h:{i}")));
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let mut r = base.clone();
+        for i in 0..=MAX_CAPABILITIES {
+            r = r.with_capability(format!("cap{i}"));
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let mut r = base.clone();
+        for i in 0..=MAX_META_ENTRIES {
+            r = r.with_meta(format!("k{i}"), "v");
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let mut r = base.clone();
+        for _ in 0..=MAX_LINKS {
+            r = r.with_link(Link::new(Rel::Peer, base.name.clone()));
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let r = base.with_meta("title", "x".repeat(MAX_FIELD_BYTES + 1));
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
     }
 
     #[test]

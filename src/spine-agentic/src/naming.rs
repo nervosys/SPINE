@@ -38,6 +38,13 @@ pub const K: usize = 20;
 /// case converges in O(log n).
 pub const MAX_ROUNDS: usize = 16;
 
+/// Most keyspace-to-mesh identity mappings a [`NameService`] remembers. Like the
+/// transport's contact registries, the budget is fixed so that peers learned
+/// from the network cannot grow it without limit. When it is full, learning a
+/// new peer evicts the one whose mapping was least recently established or
+/// refreshed by this node (and drops it from the routing table too).
+pub const MAX_PEERS: usize = 1024;
+
 /// A signed record as it travels the mesh.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnouncedRecord {
@@ -352,7 +359,10 @@ impl Lookup {
         // A peer that returns someone else's record — or a forgery — must not be
         // able to redirect the lookup.
         if let Some(record) = &response.record {
-            if record.verify().is_ok() && self.matches_query(record) {
+            if record.validate_size().is_ok()
+                && record.verify().is_ok()
+                && self.matches_query(record)
+            {
                 let better = match &self.record {
                     Some(existing) => record.supersedes(existing),
                     None => true,
@@ -363,8 +373,11 @@ impl Lookup {
             }
         }
 
-        for provider in &response.providers {
-            if provider.verify().is_ok()
+        // A response never needs more than K providers, so a longer list is
+        // padding, and each entry costs a signature check.
+        for provider in response.providers.iter().take(K) {
+            if provider.validate_size().is_ok()
+                && provider.verify().is_ok()
                 && self.wants_capability(provider)
                 && !self.providers.iter().any(|p| p.name == provider.name)
             {
@@ -460,6 +473,16 @@ impl Lookup {
     }
 }
 
+/// A remembered mesh identity, stamped with this node's own logical clock.
+#[derive(Debug, Clone, Copy)]
+struct PeerSlot {
+    agent: AgentId,
+    /// Value of `NameService::peer_clock` when last established or refreshed.
+    /// Local and strictly increasing, so eviction order is deterministic and
+    /// cannot be influenced by anything a peer says.
+    touched: u64,
+}
+
 /// A node's naming service: the records it serves, the keyspace peers it knows,
 /// and the lookups it has in flight.
 #[derive(Debug)]
@@ -474,7 +497,11 @@ pub struct NameService {
     /// spaces. Kept beside the routing table rather than in the driver above it
     /// because [`NameService::handle_request`] has to *emit* mesh identities
     /// when it refers a peer onward, not merely consume them.
-    peers: HashMap<NameKey, AgentId>,
+    ///
+    /// Bounded by [`MAX_PEERS`].
+    peers: HashMap<NameKey, PeerSlot>,
+    /// Logical clock ordering `peers` updates, for eviction.
+    peer_clock: u64,
     /// In-flight lookups by request id.
     lookups: HashMap<u64, Lookup>,
     next_request_id: u64,
@@ -490,6 +517,7 @@ impl NameService {
             store: spine_name::RecordStore::with_limits(local_key, spine_name::DEFAULT_CAPACITY),
             routing: RoutingTable::new(local_key),
             peers: HashMap::new(),
+            peer_clock: 0,
             lookups: HashMap::new(),
             next_request_id: 1,
         }
@@ -529,6 +557,8 @@ impl NameService {
         &mut self,
         record: NameRecord,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
+        // Cheapest check first: refuse a record whose size alone disqualifies it.
+        record.validate_size()?;
         // A record is also placed near each capability key it advertises, so a
         // capability walk converges on nodes that hold it. Responsibility for
         // any of those keys suffices; the set is capped, so a record cannot
@@ -552,14 +582,39 @@ impl NameService {
     }
 
     /// Learn about a keyspace peer in both routing spaces at once.
+    ///
+    /// For a peer this node has itself heard from or authenticated, not one
+    /// merely referred by someone else: `node.last_seen` must be the caller's
+    /// local clock, and it refreshes any existing entry. The identity mapping is
+    /// bounded by [`MAX_PEERS`]; see there for the eviction rule.
     pub fn add_peer(&mut self, node: NodeInfo, agent_id: AgentId) -> bool {
-        self.peers.insert(node.id, agent_id);
-        self.routing.insert(node)
+        let now = node.last_seen;
+        self.remember_peer(node.id, agent_id);
+        self.routing.insert_observed(node, now)
+    }
+
+    /// Record `key -> agent`, evicting the least recently touched mapping first
+    /// if a new key would exceed [`MAX_PEERS`].
+    fn remember_peer(&mut self, key: NameKey, agent: AgentId) {
+        self.peer_clock += 1;
+        let touched = self.peer_clock;
+        if !self.peers.contains_key(&key) && self.peers.len() >= MAX_PEERS {
+            let oldest = self
+                .peers
+                .iter()
+                .min_by_key(|(_, slot)| slot.touched)
+                .map(|(k, _)| *k);
+            if let Some(oldest) = oldest {
+                self.peers.remove(&oldest);
+                self.routing.remove(&oldest);
+            }
+        }
+        self.peers.insert(key, PeerSlot { agent, touched });
     }
 
     /// The mesh identity of a keyspace peer, if this node knows it.
     pub fn agent_for(&self, key: &NameKey) -> Option<AgentId> {
-        self.peers.get(key).copied()
+        self.peers.get(key).map(|slot| slot.agent)
     }
 
     /// Keyspace peers that can actually be addressed.
@@ -578,7 +633,7 @@ impl NameService {
             .filter_map(|n| {
                 self.peers
                     .get(&n.id)
-                    .map(|agent| KeyspacePeer::new(n, *agent))
+                    .map(|slot| KeyspacePeer::new(n, slot.agent))
             })
             .collect()
     }
@@ -771,9 +826,15 @@ impl NameService {
         // Learn the keyspace peers the response mentioned, whatever it answered.
         // Both spaces at once: a referral that only reached the routing table
         // would leave the peer un-dialable and the walk would stall on it.
+        //
+        // These are referrals, not first-hand contacts: they may fill free
+        // routing slots but never displace or redirect a contact already known,
+        // and only peers the routing table kept get an identity mapping.
         for peer in &response.closer {
-            self.peers.insert(peer.info.id, peer.agent_id);
-            self.routing.insert(peer.info.clone());
+            let kept = self.routing.insert(peer.info.clone());
+            if kept && !self.peers.contains_key(&peer.info.id) {
+                self.remember_peer(peer.info.id, peer.agent_id);
+            }
         }
         let Some(lookup) = self.lookups.get_mut(&response.request_id) else {
             return Vec::new();
@@ -1674,6 +1735,59 @@ mod tests {
         assert_eq!(keys.len(), MAX_CAPABILITY_KEYS);
         assert_eq!(keys[0], capability_key("cap00"));
         assert_eq!(keys[MAX_CAPABILITY_KEYS - 1], capability_key("cap07"));
+    }
+
+    #[test]
+    fn the_peer_registry_stays_within_its_bound_and_evicts_the_least_recently_seen() {
+        let mut service = NameService::new(NameKey::of(b"registry"));
+        let key = |i: usize| NameKey::of(&(i as u64).to_le_bytes());
+        for i in 0..MAX_PEERS + 50 {
+            service.add_peer(NodeInfo::new(key(i), vec![], 100), AgentId::new());
+            assert!(service.addressable_peers() <= MAX_PEERS);
+        }
+        assert_eq!(service.addressable_peers(), MAX_PEERS);
+        // The oldest were evicted, the newest kept.
+        assert!(service.agent_for(&key(0)).is_none());
+        assert!(service.agent_for(&key(49)).is_none());
+        assert!(service.agent_for(&key(MAX_PEERS + 49)).is_some());
+        // Evicted peers are gone from the routing table too.
+        assert!(service.node_count() <= MAX_PEERS);
+    }
+
+    #[test]
+    fn refreshing_a_peer_protects_it_from_eviction() {
+        let mut service = NameService::new(NameKey::of(b"registry"));
+        let key = |i: usize| NameKey::of(&(i as u64).to_le_bytes());
+        let first = AgentId::new();
+        service.add_peer(NodeInfo::new(key(0), vec![], 100), first);
+        for i in 1..MAX_PEERS {
+            service.add_peer(NodeInfo::new(key(i), vec![], 100), AgentId::new());
+        }
+        // Touch the oldest, then overflow by one: the next-oldest goes instead.
+        service.add_peer(NodeInfo::new(key(0), vec![], 200), first);
+        service.add_peer(NodeInfo::new(key(MAX_PEERS), vec![], 100), AgentId::new());
+        assert_eq!(service.agent_for(&key(0)), Some(first));
+        assert!(service.agent_for(&key(1)).is_none());
+        assert_eq!(service.addressable_peers(), MAX_PEERS);
+    }
+
+    #[test]
+    fn an_oversized_announcement_is_rejected_even_if_it_verifies() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::new(name, 1, 1_000).unwrap();
+        for i in 0..200 {
+            rec = rec.with_capability(format!("cap{i}"));
+        }
+        rec.sign(&key).unwrap();
+        assert!(rec.verify().is_ok());
+
+        let mut service = NameService::new(NameKey::of(b"receiver"));
+        assert!(matches!(
+            service.accept_announcement(rec),
+            Err(spine_name::NameError::RecordTooLarge(_))
+        ));
+        assert_eq!(service.record_count(), 0);
     }
 
     /// An expired record is not something to re-offer; it is something to drop.
