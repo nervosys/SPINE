@@ -1,7 +1,6 @@
 [package]
 name = "spine-transport"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -38,7 +37,6 @@ tokio = { workspace = true, features = [
     "macros",
 ] }
 futures = "0.3"
-async-trait = "0.1"
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -64,7 +62,6 @@ lz4_flex = "0.11" # Very fast compression
 
 # TLS
 rustls.workspace = true
-tokio-rustls.workspace = true
 
 # Networking
 socket2 = "0.5"
@@ -80,16 +77,13 @@ tokio-uring = { version = "0.5", optional = true }
 io-uring = { version = "0.6", optional = true }
 
 # Connection pooling
-dashmap.workspace = true
 
 # Timing and metrics
-quanta = "0.12"  # High-precision timestamps
 metrics = "0.21" # Metrics collection
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 parking_lot = "0.12"                                 # Fast synchronization primitives
-crossbeam-channel = "0.5"                            # Lock-free channels
 crossbeam-queue = "0.3"                              # Lock-free queues
 
 # WebSocket

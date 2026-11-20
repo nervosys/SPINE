@@ -1328,19 +1328,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "console"
-version = "0.15.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
-dependencies = [
- "encode_unicode",
- "libc",
- "once_cell",
- "unicode-width 0.2.2",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,15 +1600,6 @@ checksum = "d8d80a2f4f5b554395e47b5d8305bc3d27813bacb73493eb1001e8f76dae29ea"
 dependencies = [
  "cast",
  "itertools 0.13.0",
-]
-
-[[package]]
-name = "crossbeam-channel"
-version = "0.5.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d85363c37faeca707aef026efa9f3b34d077bce547e48f770770625c6013679e"
-dependencies = [
- "crossbeam-utils",
 ]
 
 [[package]]
@@ -2123,12 +2101,6 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
-
-[[package]]
-name = "encode_unicode"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -3327,19 +3299,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "indicatif"
-version = "0.17.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
-dependencies = [
- "console",
- "number_prefix",
- "portable-atomic",
- "unicode-width 0.2.2",
- "web-time 1.1.0",
-]
-
-[[package]]
 name = "inout"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4338,12 +4297,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "objc"
@@ -5389,21 +5342,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
-name = "quanta"
-version = "0.12.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3ab5a9d756f0d97bdc89019bd2e4ea098cf9cde50ee7564dde6b81ccc8f06c7"
-dependencies = [
- "crossbeam-utils",
- "libc",
- "once_cell",
- "raw-cpuid",
- "wasi",
- "web-sys",
- "winapi",
-]
-
-[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5596,15 +5534,6 @@ name = "range-alloc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
-
-[[package]]
-name = "raw-cpuid"
-version = "11.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
-dependencies = [
- "bitflags 2.13.1",
-]
 
 [[package]]
 name = "raw-window-handle"
@@ -6595,7 +6524,6 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-agentic",
- "spine-cluster",
  "spine-compiler",
  "spine-embedded",
  "spine-human",
@@ -6674,7 +6602,6 @@ name = "spine-cache"
 version = "2.0.2"
 dependencies = [
  "anyhow",
- "log",
  "serde",
  "serde_json",
 ]
@@ -6688,7 +6615,6 @@ dependencies = [
  "colored",
  "ed25519-dalek",
  "env_logger",
- "indicatif",
  "log",
  "rand 0.8.8",
  "reqwest",
@@ -6795,7 +6721,6 @@ name = "spine-crypto"
 version = "2.0.2"
 dependencies = [
  "aes-gcm",
- "anyhow",
  "ed25519-dalek",
  "hkdf",
  "log",
@@ -6803,7 +6728,6 @@ dependencies = [
  "proptest",
  "rand 0.8.8",
  "serde",
- "serde_json",
  "sha2",
  "spine-neural",
  "subtle",
@@ -6856,8 +6780,6 @@ dependencies = [
  "subtle",
  "thiserror 1.0.69",
  "tokio",
- "tower 0.4.13",
- "tower-http 0.5.2",
  "tracing",
  "utoipa",
  "utoipa-swagger-ui",
@@ -6919,14 +6841,10 @@ dependencies = [
 name = "spine-k8s"
 version = "2.0.2"
 dependencies = [
- "anyhow",
  "k8s-openapi",
  "kube",
- "log",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
- "tokio",
 ]
 
 [[package]]
@@ -6937,11 +6855,9 @@ dependencies = [
  "bytemuck",
  "bytes",
  "criterion",
- "crossbeam-queue",
  "crossbeam-utils",
  "io-uring",
  "libc",
- "memmap2",
  "parking_lot",
  "wide",
  "windows-sys 0.52.0",
@@ -6952,7 +6868,6 @@ name = "spine-knowledge"
 version = "2.0.2"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "dashmap",
  "serde",
@@ -6998,13 +6913,10 @@ dependencies = [
 name = "spine-neural"
 version = "2.0.2"
 dependencies = [
- "anyhow",
  "log",
  "rand 0.8.8",
  "serde",
- "serde_json",
  "smallvec",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -7058,7 +6970,6 @@ dependencies = [
  "spine-nostd",
  "thiserror 1.0.69",
  "tokio",
- "tokio-rustls",
  "tokio-test",
  "tracing",
  "uuid",
@@ -7079,9 +6990,6 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
- "spine-crypto",
- "spine-neural",
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
@@ -7094,30 +7002,25 @@ name = "spine-storage"
 version = "2.0.2"
 dependencies = [
  "anyhow",
- "log",
  "rocksdb",
  "rusqlite",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "spine-stream"
 version = "2.0.2"
 dependencies = [
- "async-stream",
  "bincode",
  "bytes",
  "crc32fast",
  "criterion",
- "crossbeam-channel",
  "dashmap",
  "futures",
  "lz4_flex",
  "parking_lot",
  "pin-project-lite",
- "quanta",
  "serde",
  "serde_bytes",
  "spine-protocol",
@@ -7137,14 +7040,11 @@ version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
- "async-trait",
  "bincode",
  "bitflags 2.13.1",
  "bytes",
  "criterion",
- "crossbeam-channel",
  "crossbeam-queue",
- "dashmap",
  "futures",
  "h2",
  "http",
@@ -7155,7 +7055,6 @@ dependencies = [
  "metrics",
  "parking_lot",
  "proptest",
- "quanta",
  "quinn",
  "rand 0.8.8",
  "rcgen 0.12.1",
@@ -7167,7 +7066,6 @@ dependencies = [
  "spine-protocol",
  "thiserror 1.0.69",
  "tokio",
- "tokio-rustls",
  "tokio-test",
  "tokio-tungstenite",
  "tokio-uring",
@@ -7184,7 +7082,6 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "spine-compiler",
  "spine-protocol",
  "thiserror 1.0.69",
  "wasmtime",

@@ -1,7 +1,6 @@
 [package]
 name = "spine-gpu"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true

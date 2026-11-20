@@ -1,7 +1,6 @@
 [package]
 name = "spine-cli"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -33,7 +32,6 @@ env_logger.workspace = true
 log.workspace = true
 toml = "0.8"
 colored = "2"
-indicatif = "0.17"
 uuid = { version = "1", features = ["v4"] }
 reqwest = { workspace = true }
 rustls-pemfile = "2"

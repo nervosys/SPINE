@@ -1,7 +1,6 @@
 [package]
 name = "spine-storage"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -18,9 +17,7 @@ rocksdb-backend = ["rocksdb"]
 
 [dependencies]
 anyhow.workspace = true
-log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
 rusqlite = { version = "0.43", features = ["bundled"], optional = true }
 rocksdb = { version = "0.22", optional = true }

@@ -1,7 +1,6 @@
 [package]
 name = "spine-embedded"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version = "0.2.0"

@@ -1,7 +1,6 @@
 [package]
 name = "spine-wasm"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -13,7 +12,6 @@ description = "WebAssembly runtime for SPINE Binary (HLB) execution"
 
 [dependencies]
 spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
-spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 wasmtime.workspace = true
 wat.workspace = true
 serde.workspace = true

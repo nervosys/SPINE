@@ -1,7 +1,6 @@
 [package]
 name = "spine-neural"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -17,9 +16,6 @@ simd = []    # Enable explicit SIMD optimizations
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
-anyhow.workspace = true
-thiserror.workspace = true
 log.workspace = true
 rand.workspace = true
 smallvec = { version = "1.13", features = ["const_generics", "union", "serde"] }

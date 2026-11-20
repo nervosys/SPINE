@@ -1,7 +1,6 @@
 [package]
 name = "spine-stream"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version = "2.0.2"
@@ -16,7 +15,6 @@ license = "AGPL-3.0-or-later"
 tokio = { version = "1", features = ["full", "sync", "time", "io-util"] }
 tokio-stream = { version = "0.1", features = ["sync", "time"] }
 futures = "0.3"
-async-stream = "0.3"
 pin-project-lite = "0.2"
 
 # Serialization
@@ -33,13 +31,11 @@ crc32fast = "1.4"
 # Concurrency
 dashmap.workspace = true
 parking_lot = "0.12"
-crossbeam-channel = "0.5"
 
 # Utilities
 thiserror = "2.0"
 tracing = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
-quanta = "0.12"
 
 # Internal dependencies
 spine-transport = { path = "../spine-transport", version = "2.0.2" }

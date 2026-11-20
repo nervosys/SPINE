@@ -1,7 +1,6 @@
 [package]
 name = "spine-protocol"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -42,7 +41,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 spine-neural = { path = "../spine-neural", version = "2.0.2" }
 spine-crypto = { path = "../spine-crypto", version = "2.0.2" }
 rustls.workspace = true
-tokio-rustls.workspace = true
 # High-performance binary serialization (5-10x faster than JSON)
 bincode = "1.3"
 bytemuck = { version = "1.14", features = ["derive"] }

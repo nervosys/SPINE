@@ -1,7 +1,6 @@
 [package]
 name = "spine-agent"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -17,7 +16,6 @@ spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 spine-wasm = { path = "../spine-wasm", version = "2.0.2" }
-spine-cluster = { path = "../spine-cluster", version = "2.0.2" }
 spine-human = { path = "../spine-human", version = "2.0.2" }
 spine-agentic = { path = "../spine-agentic", version = "2.0.2" }
 spine-transport = { path = "../spine-transport", version = "2.0.2" }

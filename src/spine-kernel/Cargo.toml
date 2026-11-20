@@ -1,7 +1,6 @@
 [package]
 name = "spine-kernel"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -26,14 +25,12 @@ rdtsc = []
 # Core
 bytes = "1.5"
 crossbeam-utils = "0.8"
-crossbeam-queue = "0.3"
 parking_lot = "0.12"
 
 # Atomics and memory ordering
 atomic = "0.6"
 
 # Memory mapping
-memmap2 = "0.9"
 
 # SIMD (portable)
 wide = "0.7"

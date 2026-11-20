@@ -1,7 +1,6 @@
 [package]
 name = "spine-gateway"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -35,8 +34,6 @@ env_logger = { workspace = true }
 tracing = { workspace = true }
 
 axum = { version = "0.8", features = ["json", "macros"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
 utoipa = { version = "6", features = ["axum_extras", "uuid"] }
 utoipa-swagger-ui = { version = "10", features = ["axum"] }
 uuid = { version = "1", features = ["v4", "serde"] }

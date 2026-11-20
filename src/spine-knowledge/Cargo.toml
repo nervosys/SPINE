@@ -1,7 +1,6 @@
 [package]
 name = "spine-knowledge"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -29,7 +28,6 @@ dashmap.workspace = true
 sha2 = "0.10"
 
 # Semantic similarity and indexing
-async-trait = "0.1"
 
 [dev-dependencies]
 tokio-test = "0.4"
