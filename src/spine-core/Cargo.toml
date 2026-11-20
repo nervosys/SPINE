@@ -51,7 +51,6 @@ base64 = "0.22"
 futures = "0.3"
 async-trait = "0.1"
 tempfile = "3"
-spine-agent = { path = "../spine-agent", version = "2.0.2" }
 ed25519-dalek.workspace = true
 
 [dev-dependencies]
