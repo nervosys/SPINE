@@ -298,11 +298,14 @@ impl NameRecord {
 
     /// Whether this record should replace `other`.
     ///
-    /// Higher `seq` wins; equal `seq` breaks toward the later publication. Both
-    /// are total and require no coordination, so independent replicas converge
-    /// on the same winner regardless of arrival order.
+    /// Higher `seq` wins; equal `seq` breaks toward the later publication; an
+    /// exact tie on both breaks toward the greater signature. The last step
+    /// makes the order total over *distinct* records: without it, two different
+    /// records with the same `seq` and `published_at` each lose to whichever a
+    /// replica saw first, and replicas never converge.
     pub fn supersedes(&self, other: &NameRecord) -> bool {
-        (self.seq, self.published_at) > (other.seq, other.published_at)
+        (self.seq, self.published_at, &self.signature)
+            > (other.seq, other.published_at, &other.signature)
     }
 
     /// Endpoints ordered by preference.
@@ -453,6 +456,24 @@ mod tests {
             "equal seq breaks toward later publication"
         );
         assert!(!b.supersedes(&b), "a record does not supersede itself");
+    }
+
+    #[test]
+    fn distinct_records_with_equal_seq_and_time_have_exactly_one_winner() {
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut a = NameRecord::new(name.clone(), 2, 1_000)
+            .unwrap()
+            .with_ttl(60);
+        a.sign(&key).unwrap();
+        let mut b = NameRecord::new(name, 2, 1_000).unwrap().with_ttl(120);
+        b.sign(&key).unwrap();
+        assert_ne!(a.signature, b.signature);
+        assert_ne!(
+            a.supersedes(&b),
+            b.supersedes(&a),
+            "exactly one of two distinct records must win, whatever the arrival order"
+        );
     }
 
     #[test]

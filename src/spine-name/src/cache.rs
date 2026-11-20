@@ -137,11 +137,21 @@ impl ResolverCache {
     }
 
     /// Cache a resolved record. Clears any negative entry for the same name.
+    ///
+    /// A record never replaces a cached record for the same name that
+    /// supersedes it. Otherwise any peer could roll a name back by answering
+    /// with an older, still validly signed record.
     pub fn put(&mut self, record: NameRecord) {
         let key = record.name.key();
         let immutable = record.name.is_immutable();
         self.negative.remove(&key);
         self.counter += 1;
+        if let Some(existing) = self.entries.get_mut(&key) {
+            if existing.record.name == record.name && existing.record.supersedes(&record) {
+                existing.stamp = self.counter;
+                return;
+            }
+        }
         self.entries.insert(
             key,
             Entry {
@@ -252,6 +262,30 @@ mod tests {
         let mut rec = NameRecord::new(name, 1, now).unwrap().with_ttl(ttl);
         rec.sign(&key).unwrap();
         rec
+    }
+
+    #[test]
+    fn an_older_record_does_not_replace_a_newer_one() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut old = NameRecord::new(name.clone(), 1, 1_000)
+            .unwrap()
+            .with_ttl(100);
+        old.sign(&key).unwrap();
+        let mut new = NameRecord::new(name.clone(), 2, 1_000)
+            .unwrap()
+            .with_ttl(100);
+        new.sign(&key).unwrap();
+
+        let mut c = ResolverCache::new(10);
+        c.put(new.clone());
+        c.put(old.clone());
+        assert_eq!(c.get(&name, 1_050), CacheLookup::Fresh(new.clone()));
+
+        let mut c = ResolverCache::new(10);
+        c.put(old);
+        c.put(new.clone());
+        assert_eq!(c.get(&name, 1_050), CacheLookup::Fresh(new));
     }
 
     #[test]
