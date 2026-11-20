@@ -159,6 +159,7 @@ proptest! {
 
 // ========== CHAMELEON KEY PROPERTIES ==========
 
+#[cfg(feature = "research")]
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(100))]
 

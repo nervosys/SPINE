@@ -57,6 +57,7 @@ fn bench_protocol_message_serde(c: &mut Criterion) {
 
 // ======================== Protocol Roundtrip ========================
 
+#[cfg(feature = "research")]
 fn bench_protocol_roundtrip(c: &mut Criterion) {
     use spine_protocol::{Message, ProtocolHandler};
 
@@ -241,10 +242,21 @@ fn bench_wire_codec(c: &mut Criterion) {
     group.finish();
 }
 
+#[cfg(feature = "research")]
 criterion_group!(
     protocol,
     bench_protocol_message_serde,
     bench_protocol_roundtrip,
+    bench_latent_vector,
+    bench_wire_codec,
+);
+
+// `ProtocolHandler` is research code, so the handler roundtrip bench is only
+// built with the `research` feature.
+#[cfg(not(feature = "research"))]
+criterion_group!(
+    protocol,
+    bench_protocol_message_serde,
     bench_latent_vector,
     bench_wire_codec,
 );

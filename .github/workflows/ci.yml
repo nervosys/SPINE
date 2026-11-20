@@ -47,6 +47,11 @@ jobs:
       - name: Clippy (all targets)
         run: cargo clippy --workspace --exclude spine-browser --all-targets -- -D warnings
 
+      - name: Clippy (spine-protocol without research code)
+        run: |
+          cargo clippy -p spine-protocol --no-default-features --all-targets -- -D warnings
+          cargo clippy -p spine-protocol --no-default-features --features quic --all-targets -- -D warnings
+
   # ── Security Audit ─────────────────────────────────────────────────────────
   audit:
     runs-on: ubuntu-latest

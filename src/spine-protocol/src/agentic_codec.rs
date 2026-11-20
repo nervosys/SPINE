@@ -443,6 +443,7 @@ impl CodecRegistry {
 /// Callers who specifically want context-aware encoding (e.g. a single
 /// long agent session) should construct an isolated codec via
 /// [`Self::stateful`] and use it from one thread.
+#[cfg(feature = "research")]
 pub struct TitansLatentCodec {
     id: String,
     encoder: parking_lot::Mutex<spine_neural::NeuralLatentEncoder>,
@@ -454,6 +455,7 @@ pub struct TitansLatentCodec {
     stateless: bool,
 }
 
+#[cfg(feature = "research")]
 impl TitansLatentCodec {
     /// Build the default Titans codec with the given output dimension.
     /// `input_dim` is the projector's input width — text bytes are
@@ -498,6 +500,7 @@ impl TitansLatentCodec {
     }
 }
 
+#[cfg(feature = "research")]
 impl NeuralCodec for TitansLatentCodec {
     fn id(&self) -> &str {
         &self.id
@@ -853,6 +856,7 @@ mod tests {
     /// output. If this ever flips, request A's content is leaking into
     /// request B's embedding via the moving-target morph.
     #[test]
+    #[cfg(feature = "research")]
     fn titans_stateless_codec_does_not_leak_across_calls() {
         let codec = TitansLatentCodec::new(32);
         let a1 = codec.encode(b"secret-query-A").expect("encode");
@@ -879,6 +883,7 @@ mod tests {
     /// Opt-in stateful codec: history MUST influence subsequent encodes
     /// (otherwise the "context-aware" mode does nothing).
     #[test]
+    #[cfg(feature = "research")]
     fn titans_stateful_codec_is_context_aware() {
         let codec = TitansLatentCodec::stateful(32, 32, 4, 0xABCD);
         let a1 = codec.encode(b"q").expect("encode");
@@ -895,6 +900,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "research")]
     fn titans_codec_encodes_real_input() {
         let codec = TitansLatentCodec::new(32);
         let frame = codec.encode(b"the quick brown fox").expect("encode");

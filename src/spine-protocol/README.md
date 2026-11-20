@@ -13,10 +13,19 @@ what changed in this release.
 
 API documentation: <https://docs.rs/spine-protocol>
 
+## Features
+
+- `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
+- `research` (default): research code that needs `spine-neural` and
+  `spine-crypto`: `ChameleonKey`, the speculative predictor, protocol
+  morphing, `ProtocolHandler`, `SpineConnection`, the protocol evolution
+  framework and `TitansLatentCodec`. Build with `--no-default-features` to get
+  the wire types, the wire codec (`wire`), `Message`, `BrowserCommand` and the
+  task types without either research crate.
+
 ## Workspace dependencies
 
-- `spine-crypto`
-- `spine-neural`
+- `spine-crypto` and `spine-neural`, only with the `research` feature
 
 ## License
 
