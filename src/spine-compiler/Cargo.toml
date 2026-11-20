@@ -19,7 +19,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 log.workspace = true
 nom = "8.0"                                     # For parsing HLS
-zstd = "0.12"                                   # For compression
+zstd = "0.13"                                   # For compression
 aes-gcm = "0.10"                                # For encryption
 
 

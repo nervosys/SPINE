@@ -59,7 +59,7 @@ memmap2 = "0.9"  # Memory-mapped files
 bitflags = "2.4"
 
 # Compression (SIMD-accelerated)
-zstd = "0.12"
+zstd = "0.13"
 lz4_flex = "0.11" # Very fast compression
 
 # TLS

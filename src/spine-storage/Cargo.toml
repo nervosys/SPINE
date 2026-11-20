@@ -22,5 +22,5 @@ log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
 rocksdb = { version = "0.22", optional = true }
