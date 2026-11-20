@@ -6,8 +6,10 @@ use axum::{routing::get, Router};
 use dashmap::DashMap;
 use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
+#[cfg(feature = "research")]
 use spine_neural::NeuralLatentEncoder;
 use spine_parser::parse_html;
 use spine_protocol::{BrowserCommand, Message, PreComputedResponse, ProtocolHandler, Response};
@@ -120,6 +122,7 @@ struct KnowledgeEntry {
     timestamp_ns: u64,
 }
 
+#[cfg(feature = "research")]
 #[derive(Clone)]
 struct KnowledgeProposal {
     key: String,
@@ -129,6 +132,7 @@ struct KnowledgeProposal {
     origin_node: spine_cluster::NodeId,
 }
 
+#[cfg(feature = "research")]
 #[derive(Clone)]
 struct KnowledgeVote {
     voter_id: spine_cluster::NodeId,
@@ -143,18 +147,24 @@ struct BrowserState {
     session_gate: std::sync::Mutex<std::collections::HashSet<String>>,
     snapshot_gate: Mutex<()>,
     knowledge_base: DashMap<String, Vec<KnowledgeEntry>>,
+    #[cfg(feature = "research")]
     proposals: DashMap<Uuid, KnowledgeProposal>,
+    #[cfg(feature = "research")]
     plans: DashMap<Uuid, spine_protocol::SwarmPlan>,
     fetcher: outbound::Fetcher,
     /// RwLock allows concurrent encoder reads (multiple sessions encoding in parallel)
+    #[cfg(feature = "research")]
     encoder: tokio::sync::RwLock<NeuralLatentEncoder>,
+    #[cfg(feature = "research")]
     cluster: Mutex<ClusterNode>,
+    #[cfg(feature = "research")]
     agentic_runtime: Arc<spine_agentic::AgenticWebRuntime>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
     /// Cached WasmRuntime (expensive to create, safe to reuse)
     wasm_runtime: spine_wasm::WasmRuntime,
     /// Cached NeuralProtocol per domain (avoids re-allocating neural weights per request)
+    #[cfg(feature = "research")]
     neural_protocols: DashMap<String, spine_agentic::NeuralProtocol>,
     /// Shared native connection admission, including unfinished handshakes.
     connections: Arc<spine_core::connections::ConnectionBudget>,
@@ -191,6 +201,7 @@ impl BrowserState {
         })
     }
 
+    #[cfg(feature = "research")]
     fn import_session(&self, id: String, mut session: Session) -> bool {
         let _gate = self.session_gate.lock().unwrap();
         if !spine_core::session_store::valid_id(&id)
@@ -936,6 +947,7 @@ async fn handle_command(
                 Ok(html) => {
 
                     // Transpile HTML to HLB for agentic interaction
+                    #[cfg(feature = "research")]
                     let hlb = spine_human::HumanTranspiler::transpile(&html, "", "")
                         .unwrap_or_else(|e| {
                             warn!(error_kind = %std::any::type_name_of_val(&e), "Page transpilation failed");
@@ -947,6 +959,16 @@ async fn handle_command(
                                 capabilities: vec![],
                             }
                         });
+                    // Without the research feature there is no transpiler: the
+                    // session gets the same empty binary a failed transpile yields.
+                    #[cfg(not(feature = "research"))]
+                    let hlb = spine_protocol::SpineBinary {
+                        instructions: vec![],
+                        data: vec![],
+                        render_start: 0,
+                        exported_functions: std::collections::HashMap::new(),
+                        capabilities: vec![],
+                    };
 
                     if let Some(mut session) = state.sessions.get_mut(session_id) {
                         session.current_url = Some(url);
@@ -1115,8 +1137,13 @@ async fn handle_command(
                     }
                     spine_wasm::WasmAction::Search(query) => {
                         info!("WASM requested search");
-                        let cluster = state.cluster.lock().await;
-                        let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                        #[cfg(feature = "research")]
+                        {
+                            let cluster = state.cluster.lock().await;
+                            let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                        }
+                        #[cfg(not(feature = "research"))]
+                        let _ = query;
                     }
                     spine_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
                         info!("WASM requested knowledge storage");
@@ -1138,12 +1165,15 @@ async fn handle_command(
                                 .or_default()
                                 .push(entry);
 
-                            let cluster = state.cluster.lock().await;
-                            let _ = cluster.broadcast_knowledge(
-                                key.clone(),
-                                value.clone(),
-                                tags.clone(),
-                            );
+                            #[cfg(feature = "research")]
+                            {
+                                let cluster = state.cluster.lock().await;
+                                let _ = cluster.broadcast_knowledge(
+                                    key.clone(),
+                                    value.clone(),
+                                    tags.clone(),
+                                );
+                            }
                         }
                     }
                     spine_wasm::WasmAction::QueryKnowledge {
@@ -1155,6 +1185,7 @@ async fn handle_command(
                     }
                     spine_wasm::WasmAction::Reason(query) => {
                         info!("WASM requested reasoning");
+                        #[cfg(feature = "research")]
                         if let Some(mut session) = state.sessions.get_mut(session_id) {
                             if let Some(html) = &session.current_html {
                                 if let Ok(ur) = spine_parser::parse_html(html) {
@@ -1168,6 +1199,8 @@ async fn handle_command(
                                 }
                             }
                         }
+                        #[cfg(not(feature = "research"))]
+                        let _ = query;
                     }
                 }
             }
@@ -1273,6 +1306,7 @@ async fn handle_command(
                 error: None,
             }
         }
+        #[cfg(feature = "research")]
         BrowserCommand::GetLatentUR { dimensions } => {
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(html) = &session.current_html {
@@ -1313,6 +1347,7 @@ async fn handle_command(
                 }
             }
         }
+        #[cfg(feature = "research")]
         BrowserCommand::Morph => {
             info!("Triggering protocol morphing for session {}", session_id);
             let mut encoder = state.encoder.write().await;
@@ -1337,16 +1372,27 @@ async fn handle_command(
                     ]);
 
                     // Broadcast to cluster for distributed search
-                    let cluster = state.cluster.lock().await;
-                    let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                    #[cfg(feature = "research")]
+                    {
+                        let cluster = state.cluster.lock().await;
+                        let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                    }
 
+                    // Without the research feature there is no cluster: the search
+                    // is local only, and says so.
+                    let distributed = cfg!(feature = "research");
+                    let search_status = if distributed {
+                        "searching_cluster"
+                    } else {
+                        "local_only"
+                    };
                     Response {
                         id: request_id,
                         result: Some(serde_json::json!({
                             "query": query,
                             "local_results": local_results,
-                            "distributed": true,
-                            "status": "searching_cluster"
+                            "distributed": distributed,
+                            "status": search_status
                         })),
                         error: None,
                     }
@@ -1365,6 +1411,7 @@ async fn handle_command(
                 }
             }
         }
+        #[cfg(feature = "research")]
         BrowserCommand::TransferSession { target_node_id } => {
             if let Some(session) = state.sessions.get(session_id) {
                 match serde_json::to_vec(&*session) {
@@ -1420,8 +1467,13 @@ async fn handle_command(
                 .push(entry);
 
             // Broadcast to cluster
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.broadcast_knowledge(key, value, tags);
+            #[cfg(feature = "research")]
+            {
+                let cluster = state.cluster.lock().await;
+                let _ = cluster.broadcast_knowledge(key, value, tags);
+            }
+            #[cfg(not(feature = "research"))]
+            let _ = (key, value, tags);
 
             Response {
                 id: request_id,
@@ -1511,6 +1563,7 @@ async fn handle_command(
             result: None,
             error: Some("unsupported_legacy_swarm: use the signed spine.tasks v1 API for bounded read-only work".into()),
         },
+        #[cfg(feature = "research")]
         BrowserCommand::NeuralTransmit { data, domain } => {
             let domain_enum = match domain.as_str() {
                 "RealTime" => spine_agentic::ProtocolDomain::RealTime,
@@ -1537,6 +1590,7 @@ async fn handle_command(
                 },
             }
         }
+        #[cfg(feature = "research")]
         BrowserCommand::GetAgenticState => {
             let runtime = state.agentic_runtime.clone();
             let profile = runtime.profile();
@@ -1553,6 +1607,16 @@ async fn handle_command(
                 error: None,
             }
         }
+        #[cfg(not(feature = "research"))]
+        BrowserCommand::GetLatentUR { .. }
+        | BrowserCommand::Morph
+        | BrowserCommand::TransferSession { .. }
+        | BrowserCommand::NeuralTransmit { .. }
+        | BrowserCommand::GetAgenticState => Response {
+            id: request_id,
+            result: None,
+            error: Some("unsupported_without_research: this daemon was built without the `research` feature".into()),
+        },
         BrowserCommand::SendSpeechAct { .. } => Response {
             id: request_id,
             result: None,
@@ -1575,11 +1639,14 @@ async fn main() -> Result<()> {
     );
 
     let port = config.server.port;
+    #[cfg(feature = "research")]
     let cluster_port = port + config.cluster.port_offset;
+    #[cfg(feature = "research")]
     let cluster_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, cluster_port)
         .parse()
         .context("invalid cluster address")?;
 
+    #[cfg(feature = "research")]
     let capabilities = NodeCapabilities {
         supports_wasm: true,
         supports_chameleon: true,
@@ -1589,9 +1656,12 @@ async fn main() -> Result<()> {
         skills: config.cluster.skills.clone(),
     };
 
+    #[cfg(feature = "research")]
     let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
+    #[cfg(feature = "research")]
     cluster_node.start().await?;
 
+    #[cfg(feature = "research")]
     let profile = spine_agentic::AgentProfile::new("SPINE Core Agent")
         .with_capabilities(vec![
             spine_agentic::AgentCapability::Navigation,
@@ -1601,6 +1671,7 @@ async fn main() -> Result<()> {
             spine_agentic::AgentCapability::SwarmParticipation,
         ])
         .with_trust(spine_agentic::TrustLevel::Core);
+    #[cfg(feature = "research")]
     let agentic_runtime = Arc::new(spine_agentic::AgenticWebRuntime::new(profile));
 
     // Join the namespace before serving, so the first client request already has
@@ -1647,14 +1718,20 @@ async fn main() -> Result<()> {
         session_gate: Default::default(),
         snapshot_gate: Mutex::new(()),
         knowledge_base: DashMap::new(),
+        #[cfg(feature = "research")]
         proposals: DashMap::new(),
+        #[cfg(feature = "research")]
         plans: DashMap::new(),
         fetcher: outbound::Fetcher::new(config.outbound.clone())?,
+        #[cfg(feature = "research")]
         encoder: tokio::sync::RwLock::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)),
+        #[cfg(feature = "research")]
         cluster: Mutex::new(cluster_node),
+        #[cfg(feature = "research")]
         agentic_runtime,
         rate_limits: DashMap::new(),
         wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
+        #[cfg(feature = "research")]
         neural_protocols: DashMap::new(),
         connections: spine_core::connections::ConnectionBudget::new(
             config.server.max_connections,
@@ -1818,12 +1895,15 @@ async fn main() -> Result<()> {
     });
 
     // Start cluster event listener
+    #[cfg(feature = "research")]
     let cluster_state = state.clone();
+    #[cfg(feature = "research")]
     let event_rx = {
         let cluster = state.cluster.lock().await;
         cluster.get_event_receiver()
     };
 
+    #[cfg(feature = "research")]
     tokio::spawn(async move {
         let mut rx = event_rx.lock().await;
         while let Some(event) = rx.recv().await {
@@ -2085,8 +2165,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start autonomous agent loop
+    // Start autonomous agent loop (plans with the research reasoning engine)
+    #[cfg(feature = "research")]
     let agent_state = state.clone();
+    #[cfg(feature = "research")]
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
@@ -2251,6 +2333,7 @@ async fn main() -> Result<()> {
             interval.tick().await;
             let reaped = watchdog_state.reap_sessions();
             if !reaped.is_empty() {
+                #[cfg(feature = "research")]
                 {
                     let cluster = watchdog_state.cluster.lock().await;
                     for id in &reaped {
@@ -2517,11 +2600,14 @@ where
                 if session_lease.is_none() {
                     session_lease = state.create_session();
                     if let Some(lease) = &session_lease {
+                        #[cfg(feature = "research")]
                         state
                             .cluster
                             .lock()
                             .await
                             .register_local_session(lease.id.clone());
+                        #[cfg(not(feature = "research"))]
+                        let _ = lease;
                     } else {
                         let _ = handler
                             .send_message(&Message::Response(Response {

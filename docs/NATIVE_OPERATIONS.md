@@ -14,6 +14,12 @@ Create separate writable node directories. Copy `examples/single-node.toml` to t
 
 Run the gateway with `SPINE_CONFIG_PATH` selecting `examples/gateway.toml`, and a bearer token from your secret manager. Configure the model and IronGate environment variables as described in the [agent-web quickstart](AGENT_WEB_QUICKSTART.md). The gateway binds the configured host. Keep plain HTTP/TCP on loopback or behind an authenticated TLS boundary; the gateway bearer token does not create native session tenancy.
 
+## Build without research features
+
+`spine-core` has a `research` cargo feature, on by default for now. Building with `cargo build -p spine-core --no-default-features` compiles out the cluster swarm node and its event listener, the latent encoder (`GetLatentUR`), the neural protocol (`NeuralTransmit`), the agentic runtime (`GetAgenticState`), session transfer between cluster nodes (`TransferSession`), the autonomous reasoning loop, and the human HTML-to-HLB transpile on `Navigate`. The WASM execution layer is not part of this feature. The `[cluster]` configuration section is still parsed and is ignored without the feature.
+
+Without the feature, `GetLatentUR`, `Morph` (as handled by the command dispatcher), `TransferSession`, `NeuralTransmit`, and `GetAgenticState` return an error response beginning `unsupported_without_research`, the same way retired swarm commands answer `unsupported_legacy_swarm`. `Navigate` still fetches and stores the page but stores an empty HLB binary, as it does when transpilation fails. `Search` and `StoreKnowledge` stay local; `Search` reports `"distributed": false` and `"status": "local_only"`.
+
 ## Connection and TLS policy
 
 `server.max_connections` defaults to 256 and bounds active native TCP, WebSocket, and optional QUIC connections together, including unfinished handshakes. `max_connections_per_ip` defaults to 50. Excess connections are refused immediately. Admission is released on disconnect or task cancellation, and empty IP entries are removed. Native TLS and WebSocket upgrades have ten-second deadlines. `idle_timeout_secs` is a complete-message receive deadline, including time waiting for the first header; it defaults to 300 seconds. The SDK bounds TCP connection and TLS handshake setup at ten seconds each. Core and SDK choose the Ring TLS provider explicitly, independent of dependency feature unification. Native writes have a 30-second deadline and close the stream after an incomplete write. Dispose of a native SDK client after cancelling an in-flight request.
