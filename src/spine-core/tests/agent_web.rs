@@ -522,7 +522,14 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
             std::fs::read_to_string(second_dir.path().join("server.log")).unwrap()
         );
         assert_eq!(
-            agent.fetch_resource(&name.to_string()).await.unwrap().data,
+            agent
+                .fetch_resource_with(
+                    &name.to_string(),
+                    spine_agent::resources::FetchPolicy::allow_private(),
+                )
+                .await
+                .unwrap()
+                .data,
             bytes
         );
         eprintln!("resource acceptance: remote resource fetched; restarting publisher");
@@ -554,7 +561,14 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
         };
         assert_eq!(restored["seq"], 2);
         assert_eq!(
-            agent.fetch_resource(&name.to_string()).await.unwrap().data,
+            agent
+                .fetch_resource_with(
+                    &name.to_string(),
+                    spine_agent::resources::FetchPolicy::allow_private(),
+                )
+                .await
+                .unwrap()
+                .data,
             bytes
         );
         let unrelated = NameRecord::new(

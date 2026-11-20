@@ -68,13 +68,13 @@ spine name --addr 127.0.0.1:8180 providers example.documents
 
 ```sh
 spine name --addr 127.0.0.1:8180 resolve NAME
-spine name --addr 127.0.0.1:8180 fetch NAME --output downloaded.txt
+spine name --addr 127.0.0.1:8180 fetch NAME --output downloaded.txt --allow-private
 spine name --addr 127.0.0.1:8080 renew record.json --key owner.key --output renewed.json --ttl 3600
 ```
 
 Renewal signs a higher sequence with the same owner key and saves the record before sending it, so failed delivery leaves a recoverable publication. Preserve the latest record. A lower sequence cannot replace a newer stored record. Reusing a name with different bytes requires a new signed record with a higher sequence and an updated content hash.
 
-Resource limits are 8 MiB per representation, 64 KiB per download chunk, and 256 MiB of serialized storage per origin. Reads verify the content hash, chunk bounds, progress, and final size. The SDK's `fetch_resource` resolves a name and tries TCP endpoints in priority order, with connection and transfer deadlines. Retries apply only to these immutable reads. `FetchName` continues to return endpoints without transferring bytes.
+Resource limits are 8 MiB per representation, 64 KiB per download chunk, and 256 MiB of serialized storage per origin. Reads verify the content hash, chunk bounds, progress, and final size. The SDK's `fetch_resource` resolves a name and tries TCP endpoints in priority order, with connection and transfer deadlines. Endpoints that resolve to loopback, link-local, private, unspecified, multicast or broadcast addresses are refused unless the caller opts in (`FetchPolicy::allow_private()`, or `--allow-private` in the CLI; the commands above run on 127.0.0.1 and need it). Retries apply only to these immutable reads. `FetchName` continues to return endpoints without transferring bytes.
 
 Locally published records and resource bytes persist in SQLite. Learned resolution caches, peer contacts, and remote replicas are ephemeral and revalidated through the mesh after restart. Publication responses report local persistence, directed sends, failures, broadcast fallback, and mesh errors. `replicas` is a legacy alias for directed sends; `replication_acknowledged` is zero and `durable` is false because remote storage has no acknowledgement contract. Periodic maintenance reoffers live records; it cannot promise remote disk durability.
 

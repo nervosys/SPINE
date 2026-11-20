@@ -159,7 +159,7 @@ def main():
         command("name", "--addr", address_a, "upload", "record.json", "example.txt", cwd=a)
         providers = json.loads(command("name", "--addr", address_b, "providers", "candidate.resource", cwd=b))
         assert providers["count"] > 0 and providers["providers"], "remote capability discovery returned no result"
-        command("name", "--addr", address_b, "fetch", name, "--output", "downloaded.txt", cwd=b)
+        command("name", "--addr", address_b, "fetch", name, "--output", "downloaded.txt", "--allow-private", cwd=b)
         assert (b / "downloaded.txt").read_bytes() == payload
         identity = json.loads(command("name", "--addr", address_a, "status"))
         stop(first, True)
@@ -169,7 +169,7 @@ def main():
         wait_http(f"http://127.0.0.1:{metrics[0]}/ready", first)
         restored = json.loads(command("name", "--addr", address_a, "status"))
         assert identity["public_key"] == restored["public_key"]
-        command("name", "--addr", address_a, "fetch", name, "--output", "restored.txt", cwd=a)
+        command("name", "--addr", address_a, "fetch", name, "--output", "restored.txt", "--allow-private", cwd=a)
         assert (a / "restored.txt").read_bytes() == payload
         command("name", "--addr", address_a, "renew", "record.json", "--key", "owner.key",
                 "--output", "renewed.json", cwd=a)

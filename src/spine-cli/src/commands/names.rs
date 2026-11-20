@@ -60,6 +60,9 @@ pub enum NameAction {
         name: String,
         #[arg(long)]
         output: PathBuf,
+        /// Permit loopback and private-network origins from the signed record.
+        #[arg(long)]
+        allow_private: bool,
     },
 }
 
@@ -184,9 +187,16 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
                 )
                 .await?
         }
-        NameAction::Fetch { name, output } => {
+        NameAction::Fetch {
+            name,
+            output,
+            allow_private,
+        } => {
             ensure!(!output.exists(), "output already exists");
-            let resource = client.fetch_resource(&name).await?;
+            let policy = spine_agent::resources::FetchPolicy {
+                allow_private_destinations: allow_private,
+            };
+            let resource = client.fetch_resource_with(&name, policy).await?;
             create_file(&output, &resource.data, false)?;
             serde_json::json!({"name":name,"bytes":resource.data.len(),"content_type":resource.content_type})
         }

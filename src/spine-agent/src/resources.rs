@@ -6,9 +6,58 @@ use spine_protocol::{
     resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK},
     BrowserCommand, NameResolution,
 };
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
+
+/// Destination policy for `fetch_resource`. Endpoints come from a record the
+/// publisher signed, so by default the client refuses to dial loopback,
+/// link-local, private, unspecified, multicast and broadcast addresses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FetchPolicy {
+    /// Explicit opt-in for callers that really need local or private origins.
+    pub allow_private_destinations: bool,
+}
+
+impl FetchPolicy {
+    /// Permit loopback and private-network origins (tests, local deployments).
+    pub fn allow_private() -> Self {
+        Self {
+            allow_private_destinations: true,
+        }
+    }
+
+    fn permits(&self, ip: IpAddr) -> bool {
+        self.allow_private_destinations || !is_restricted_destination(ip)
+    }
+}
+
+/// True for addresses a remote publisher must not steer a client toward.
+pub fn is_restricted_destination(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_restricted_destination(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct RetrievedResource {
@@ -122,7 +171,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
     /// Discover an origin and retrieve a verified representation. TCP is the
     /// portable bootstrap transport here; callers needing transport secrecy use
     /// `connect_tls` and `read_resource` with the same resolved record.
+    /// Endpoints in loopback, link-local, private and other non-public ranges
+    /// are refused; use `fetch_resource_with` and `FetchPolicy::allow_private`
+    /// to opt in.
     pub async fn fetch_resource(&mut self, name: &str) -> Result<RetrievedResource> {
+        self.fetch_resource_with(name, FetchPolicy::default()).await
+    }
+
+    /// `fetch_resource` with an explicit destination policy.
+    pub async fn fetch_resource_with(
+        &mut self,
+        name: &str,
+        policy: FetchPolicy,
+    ) -> Result<RetrievedResource> {
         let resolution = self
             .resolve_name(name, None)
             .await
@@ -141,20 +202,96 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             if endpoint.transport != "tcp" {
                 continue;
             }
-            let origin = tokio::time::timeout(
+            let resolved = tokio::time::timeout(
                 Duration::from_secs(10),
-                AgentClient::<TcpStream>::connect(&endpoint.address),
+                tokio::net::lookup_host(endpoint.address.as_str()),
             )
             .await;
-            match origin {
-                Ok(Ok(mut origin)) => match origin.read_resource(record.clone()).await {
-                    Ok(resource) => return Ok(resource),
-                    Err(error) => failures.push(error.to_string()),
-                },
-                Ok(Err(_)) => failures.push("origin connection failed".into()),
-                Err(_) => failures.push("origin connection timed out".into()),
+            let addrs: Vec<SocketAddr> = match resolved {
+                Ok(Ok(addrs)) => addrs.collect(),
+                Ok(Err(_)) => {
+                    failures.push("origin address did not resolve".into());
+                    continue;
+                }
+                Err(_) => {
+                    failures.push("origin address resolution timed out".into());
+                    continue;
+                }
+            };
+            // Dial only the checked socket addresses, never the hostname.
+            let allowed: Vec<SocketAddr> = addrs
+                .into_iter()
+                .filter(|a| policy.permits(a.ip()))
+                .collect();
+            if allowed.is_empty() {
+                failures.push("origin address refused by destination policy".into());
+                continue;
+            }
+            for addr in allowed {
+                let origin = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    AgentClient::<TcpStream>::connect(&addr.to_string()),
+                )
+                .await;
+                match origin {
+                    Ok(Ok(mut origin)) => match origin.read_resource(record.clone()).await {
+                        Ok(resource) => return Ok(resource),
+                        Err(error) => failures.push(error.to_string()),
+                    },
+                    Ok(Err(_)) => failures.push("origin connection failed".into()),
+                    Err(_) => failures.push("origin connection timed out".into()),
+                }
             }
         }
         anyhow::bail!("no TCP origin completed transfer: {}", failures.join("; "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restricted(s: &str) -> bool {
+        is_restricted_destination(s.parse().unwrap())
+    }
+
+    #[test]
+    fn refuses_non_public_destinations() {
+        for ip in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "::ffff:169.254.1.1",
+        ] {
+            assert!(restricted(ip), "{ip} should be refused");
+        }
+    }
+
+    #[test]
+    fn accepts_public_destinations_and_opt_in() {
+        for ip in [
+            "93.184.216.34",
+            "8.8.8.8",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+        ] {
+            assert!(!restricted(ip), "{ip} should be allowed");
+        }
+        let local: IpAddr = "127.0.0.1".parse().unwrap();
+        assert!(!FetchPolicy::default().permits(local));
+        assert!(FetchPolicy::allow_private().permits(local));
     }
 }
