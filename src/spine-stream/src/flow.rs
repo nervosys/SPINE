@@ -267,12 +267,20 @@ impl FlowController {
 
     /// Free receive buffer space and optionally generate update
     pub fn free_recv(&self, bytes: u32) -> Option<u32> {
-        let prev_window = self
-            .recv_window
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
-                Some(w.saturating_add(bytes))
-            })
-            .unwrap_or_else(|w| w);
+        // A compare-exchange loop rather than `fetch_update`, which newer
+        // toolchains deprecate; this form compiles on the MSRV and on stable.
+        let mut prev_window = self.recv_window.load(Ordering::Relaxed);
+        loop {
+            match self.recv_window.compare_exchange_weak(
+                prev_window,
+                prev_window.saturating_add(bytes),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => prev_window = actual,
+            }
+        }
         let new_window = prev_window.saturating_add(bytes);
 
         // Send update if significant space available
