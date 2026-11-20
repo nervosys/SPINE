@@ -59,8 +59,8 @@ impl Drop for RpcGuard<'_> {
     }
 }
 use crate::naming::{
-    capability_placement_keys, KeyspacePeer, LookupOutcome, NameService, ResolveQuery,
-    ResolveResponse, K,
+    bound_endpoints, bound_referrals, capability_placement_keys, KeyspacePeer, LookupOutcome,
+    NameService, ResolveQuery, ResolveResponse, K,
 };
 use crate::AgentId;
 
@@ -934,8 +934,10 @@ impl MeshNameResolver {
         }
 
         // Nothing was delivered and nothing else to try: settle now rather than
-        // leaving the caller to wait out the full timeout.
-        if delivered == 0 {
+        // leaving the caller to wait out the full timeout. Not while earlier
+        // requests are still outstanding, though: their answers (a name lookup
+        // keeps waiting for its quorum) can still arrive and finish the lookup.
+        if delivered == 0 && self.service.lock().await.lookup_in_flight(request_id) == 0 {
             self.settle(request_id).await;
         }
     }
@@ -1083,7 +1085,7 @@ impl MeshNameResolver {
             }
 
             MeshPayload::NameResolveResponse(response) => {
-                self.absorb_response(response).await;
+                self.absorb_response(envelope.from, response).await;
                 true
             }
 
@@ -1097,7 +1099,7 @@ impl MeshNameResolver {
                 }
 
                 let key = NameKey::from_bytes(hello.public_key);
-                self.adopt_peer(key, envelope.from, hello.endpoints.clone(), now)
+                self.adopt_peer(key, envelope.from, bound_endpoints(&hello.endpoints), now)
                     .await;
                 // Answer with *the newcomer's* neighbours, not ours: those are
                 // the contacts that belong in its own buckets.
@@ -1128,11 +1130,14 @@ impl MeshNameResolver {
                 }
 
                 let key = NameKey::from_bytes(ack.public_key);
-                self.adopt_peer(key, envelope.from, ack.endpoints.clone(), now)
+                // Endpoints and referrals are peer-controlled: bound them here.
+                let ack_endpoints = bound_endpoints(&ack.endpoints);
+                let referrals = bound_referrals(&ack.closer);
+                self.adopt_peer(key, envelope.from, ack_endpoints.clone(), now)
                     .await;
                 // The referrals are as useful as the seed itself: they are what
                 // turns one reachable address into a routing table.
-                for peer in &ack.closer {
+                for peer in &referrals {
                     self.adopt_peer(
                         peer.info.id,
                         peer.agent_id,
@@ -1148,8 +1153,7 @@ impl MeshNameResolver {
                 // in flight when a seed advertises an address that differs from
                 // the one we reached it on (NAT, or a seed listing its public
                 // name while we dialed it on a LAN address).
-                let waiter = ack
-                    .endpoints
+                let waiter = ack_endpoints
                     .iter()
                     .find_map(|e| self.greetings.remove(e))
                     .or_else(|| {
@@ -1165,8 +1169,8 @@ impl MeshNameResolver {
                     let _ = tx.send(BootstrapPeer {
                         agent_id: envelope.from,
                         key,
-                        endpoints: ack.endpoints.clone(),
-                        referrals: ack.closer.len(),
+                        endpoints: ack_endpoints,
+                        referrals: referrals.len(),
                     });
                 }
                 true
@@ -1177,25 +1181,29 @@ impl MeshNameResolver {
     }
 
     /// Feed a response into its lookup and continue or finish it.
-    async fn absorb_response(&self, response: &ResolveResponse) {
+    async fn absorb_response(&self, from: AgentId, response: &ResolveResponse) {
         let request_id = response.request_id;
+
+        let (next_wave, done) = {
+            let mut service = self.service.lock().await;
+            // A response from a peer that was not asked, or that already
+            // answered, is dropped: it must not count toward the quorum.
+            let Some(wave) = service.on_response_from(from, response) else {
+                return;
+            };
+            let done = service.lookup_outcome(request_id).is_some();
+            (wave, done)
+        };
 
         // Teach the transport how to reach everyone this response referred us
         // to, before the next wave tries to dial them. Without this the walk
         // would stop at the peers we were manually introduced to, which is no
-        // walk at all.
-        for peer in &response.closer {
+        // walk at all. Bounded like the routing table's copy.
+        for peer in bound_referrals(&response.closer) {
             self.transport
                 .learn(peer.agent_id, &peer.info.endpoints)
                 .await;
         }
-
-        let (next_wave, done) = {
-            let mut service = self.service.lock().await;
-            let wave = service.on_response(response);
-            let done = service.lookup_outcome(request_id).is_some();
-            (wave, done)
-        };
 
         if done {
             self.settle(request_id).await;
@@ -2198,5 +2206,65 @@ mod tests {
             1,
             "still valid, just not for long"
         );
+    }
+    fn record_versioned(seed: u8, seq: u64) -> NameRecord {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::new(name, seq, NOW)
+            .unwrap()
+            .with_ttl(3600)
+            .with_endpoint(Endpoint::new("tcp", format!("10.0.0.{seed}:9440")));
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    /// The rollback this guards against: a peer holding an old, validly signed
+    /// record answers first, and the lookup used to stop right there.
+    #[tokio::test]
+    async fn an_old_record_answering_first_does_not_roll_a_name_back() {
+        let h = Harness::new(3);
+        h.introduce(0, 1).await;
+        h.introduce(0, 2).await;
+        h.nodes[1]
+            .publish_local(record_versioned(1, 1))
+            .await
+            .unwrap();
+        h.nodes[2]
+            .publish_local(record_versioned(1, 2))
+            .await
+            .unwrap();
+
+        let seeker = h.nodes[0].clone();
+        let name = record_versioned(1, 1).name;
+        let lookup = tokio::spawn(async move { seeker.resolve(&name).await });
+        for _ in 0..16 {
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
+
+        let found = lookup.await.unwrap().unwrap();
+        assert_eq!(found.seq, 2, "the superseding record must win");
+    }
+
+    #[tokio::test]
+    async fn a_hello_cannot_plant_unbounded_endpoints() {
+        let h = Harness::new(2);
+        let mut endpoints: Vec<String> = (0..32).map(|i| format!("peer{i}:9440")).collect();
+        endpoints.push("z".repeat(1000));
+        let hello = h.nodes[0].node.name_hello(endpoints).unwrap();
+        assert!(h.nodes[1].handle_envelope(&hello, NOW).await);
+
+        let key = h.nodes[0].local_key();
+        let known = h.nodes[1].service.lock().await.closest_peers(&key, 1);
+        assert_eq!(known.len(), 1);
+        assert_eq!(
+            known[0].info.endpoints.len(),
+            crate::naming::MAX_NODE_ENDPOINTS
+        );
+        assert!(known[0]
+            .info
+            .endpoints
+            .iter()
+            .all(|e| e.len() <= crate::naming::MAX_ENDPOINT_BYTES));
     }
 }

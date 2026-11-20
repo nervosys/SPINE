@@ -45,6 +45,50 @@ pub const MAX_ROUNDS: usize = 16;
 /// refreshed by this node (and drops it from the routing table too).
 pub const MAX_PEERS: usize = 1024;
 
+/// Distinct peers that must have answered a name lookup before it may settle on
+/// the best record seen. One peer holding an old, validly signed record must not
+/// be able to win the race and roll a name back, so the first answer is never
+/// final. The effective target is `min(QUORUM, peers that can still answer)`, so
+/// a small mesh settles as soon as everyone reachable has been heard.
+pub const QUORUM: usize = 3;
+
+/// Most endpoints kept per referred or announced node; the rest are dropped.
+pub const MAX_NODE_ENDPOINTS: usize = 8;
+
+/// Longest endpoint string kept, in bytes; a longer one is dropped.
+pub const MAX_ENDPOINT_BYTES: usize = 256;
+
+/// Bound an endpoint list received from a peer: over-long entries are dropped
+/// and at most [`MAX_NODE_ENDPOINTS`] survive. Excess is discarded rather than
+/// failing the message that carried it.
+pub fn bound_endpoints(endpoints: &[String]) -> Vec<String> {
+    endpoints
+        .iter()
+        .filter(|e| e.len() <= MAX_ENDPOINT_BYTES)
+        .take(MAX_NODE_ENDPOINTS)
+        .cloned()
+        .collect()
+}
+
+/// Bound a referral list received from a peer: at most [`K`] nodes, each with
+/// its endpoints bounded by [`bound_endpoints`].
+pub fn bound_referrals(closer: &[KeyspacePeer]) -> Vec<KeyspacePeer> {
+    closer
+        .iter()
+        .take(K)
+        .map(|p| {
+            KeyspacePeer::new(
+                NodeInfo::new(
+                    p.info.id,
+                    bound_endpoints(&p.info.endpoints),
+                    p.info.last_seen,
+                ),
+                p.agent_id,
+            )
+        })
+        .collect()
+}
+
 /// A signed record as it travels the mesh.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnouncedRecord {
@@ -68,8 +112,8 @@ pub enum ResolveQuery {
     ///
     /// Kademlia's FIND_NODE, and storing a record is what needs it: to put a
     /// record at the K closest nodes you first have to know which nodes those
-    /// are, and a name lookup cannot tell you. A name lookup stops the moment
-    /// any node hands back the record — usually long before the walk has
+    /// are, and a name lookup cannot tell you. A name lookup settles once a
+    /// quorum has answered with a record — usually long before the walk has
     /// converged on the neighbourhood the record belongs in.
     Node(NameKey),
 }
@@ -271,6 +315,12 @@ pub struct Lookup {
     /// Set once no unqueried candidate remains, nothing is in flight, or the
     /// round cap is hit.
     exhausted: bool,
+    /// The caller's clock, for rejecting records already expired at lookup time.
+    /// Zero (the default) means no clock was supplied, so nothing is stale.
+    now: u64,
+    /// Queried peers that have neither answered nor timed out. Lets an
+    /// identity-checked response count once, and only if it was asked.
+    awaiting: HashSet<NameKey>,
 }
 
 impl Lookup {
@@ -288,9 +338,44 @@ impl Lookup {
             in_flight: 0,
             answered: 0,
             exhausted: false,
+            now: 0,
+            awaiting: HashSet::new(),
         };
         lookup.absorb_nodes(seeds);
         lookup
+    }
+
+    /// Supply the caller's clock. A record expired at `now` is never accepted as
+    /// an answer (it still counts as its peer having answered); `blob:` names
+    /// are immutable and never expire.
+    pub fn set_clock(&mut self, now: u64) {
+        self.now = now;
+    }
+
+    /// Whether a record is stale at the lookup's clock.
+    fn is_stale(&self, record: &NameRecord) -> bool {
+        !record.name.is_immutable() && record.is_expired(self.now)
+    }
+
+    /// Candidates not yet queried.
+    fn unqueried(&self) -> usize {
+        self.shortlist
+            .iter()
+            .filter(|n| !self.queried.contains(&n.id))
+            .count()
+    }
+
+    /// A name lookup's settling rule: some record has been accepted, and at
+    /// least `min(QUORUM, answered + in flight + unqueried)` peers have answered.
+    /// Peers still in flight or not yet asked count as able to answer, so the
+    /// walk keeps going while the quorum is attainable and stops as soon as it
+    /// is met or no one else can be heard.
+    fn name_settled(&self) -> bool {
+        if self.record.is_none() {
+            return false;
+        }
+        let reachable = self.answered + self.in_flight + self.unqueried();
+        self.answered >= QUORUM.min(reachable)
     }
 
     /// The keyspace point being sought.
@@ -344,6 +429,7 @@ impl Lookup {
 
         for node in &wave {
             self.queried.insert(node.id);
+            self.awaiting.insert(node.id);
         }
         self.in_flight += wave.len();
         self.rounds += 1;
@@ -351,15 +437,41 @@ impl Lookup {
     }
 
     /// Absorb a peer's response.
+    ///
+    /// Counts one answer without knowing who sent it, so it trusts the caller to
+    /// deliver each peer's response once. Anything reading responses off the
+    /// wire should use [`Lookup::on_response_from`].
     pub fn on_response(&mut self, response: &ResolveResponse) {
         self.in_flight = self.in_flight.saturating_sub(1);
         self.answered += 1;
+        self.absorb(response);
+    }
 
-        // A record only counts if it verifies and actually answers *this* query.
-        // A peer that returns someone else's record — or a forgery — must not be
-        // able to redirect the lookup.
+    /// Absorb a response from a known sender. `from` are the keyspace positions
+    /// the sender may occupy; the response counts only if one of them was asked
+    /// and has not yet answered, and then counts exactly once. Returns whether
+    /// it was accepted. This is what makes "distinct peers answered" true: a
+    /// peer cannot meet the quorum by answering repeatedly, and an unsolicited
+    /// response cannot count at all.
+    pub fn on_response_from(&mut self, from: &[NameKey], response: &ResolveResponse) -> bool {
+        let Some(key) = from.iter().find(|k| self.awaiting.contains(*k)).copied() else {
+            return false;
+        };
+        self.awaiting.remove(&key);
+        self.in_flight = self.in_flight.saturating_sub(1);
+        self.answered += 1;
+        self.absorb(response);
+        true
+    }
+
+    fn absorb(&mut self, response: &ResolveResponse) {
+        // A record only counts if it verifies, actually answers *this* query and
+        // is not already expired. A peer that returns someone else's record, a
+        // forgery or a lapsed one must not be able to redirect the lookup; the
+        // peer still counts as having answered.
         if let Some(record) = &response.record {
             if record.validate_size().is_ok()
+                && !self.is_stale(record)
                 && record.verify().is_ok()
                 && self.matches_query(record)
             {
@@ -377,6 +489,7 @@ impl Lookup {
         // padding, and each entry costs a signature check.
         for provider in response.providers.iter().take(K) {
             if provider.validate_size().is_ok()
+                && !self.is_stale(provider)
                 && provider.verify().is_ok()
                 && self.wants_capability(provider)
                 && !self.providers.iter().any(|p| p.name == provider.name)
@@ -385,12 +498,17 @@ impl Lookup {
             }
         }
 
-        self.absorb_nodes(response.closer.iter().map(|p| p.info.clone()).collect());
+        self.absorb_nodes(
+            bound_referrals(&response.closer)
+                .into_iter()
+                .map(|p| p.info)
+                .collect(),
+        );
     }
 
     /// Mark a node as unreachable so the lookup stops waiting on it.
     pub fn on_timeout(&mut self, node: &NameKey) {
-        if self.queried.contains(node) {
+        if self.awaiting.remove(node) {
             self.in_flight = self.in_flight.saturating_sub(1);
         }
         self.queried.insert(*node);
@@ -413,8 +531,10 @@ impl Lookup {
             return true;
         }
         match &self.query {
-            // A name resolves to exactly one record; the first valid one ends it.
-            ResolveQuery::Name(_) => self.record.is_some(),
+            // A name resolves to exactly one record, but the first answer is
+            // not trusted to be the newest: settle on the best record seen once
+            // the quorum has answered (see `name_settled`).
+            ResolveQuery::Name(_) => self.name_settled(),
             // A capability query wants breadth, so it keeps going until the
             // keyspace is exhausted or it has collected K providers.
             ResolveQuery::Capability(_) => self.providers.len() >= K,
@@ -538,6 +658,9 @@ impl NameService {
         &mut self,
         record: NameRecord,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
+        // The store verifies the signature; size is checked here so a record a
+        // peer would refuse is never stored or replicated.
+        record.validate_size()?;
         self.store.put(record)
     }
 
@@ -806,6 +929,7 @@ impl NameService {
 
         let seeds = self.routing.closest(&query.target_key(), K);
         let mut lookup = Lookup::new(query.clone(), seeds);
+        lookup.set_clock(now);
         if let ResolveQuery::Capability(term) = &query {
             let mut local = ResolveResponse::empty(request_id);
             local.providers = self
@@ -822,25 +946,71 @@ impl NameService {
     }
 
     /// Feed a response into a lookup and get the next wave (empty when done).
+    ///
+    /// Does not check who sent the response; anything reading responses off the
+    /// wire should use [`NameService::on_response_from`].
     pub fn on_response(&mut self, response: &ResolveResponse) -> Vec<NodeInfo> {
-        // Learn the keyspace peers the response mentioned, whatever it answered.
-        // Both spaces at once: a referral that only reached the routing table
-        // would leave the peer un-dialable and the walk would stall on it.
-        //
-        // These are referrals, not first-hand contacts: they may fill free
-        // routing slots but never displace or redirect a contact already known,
-        // and only peers the routing table kept get an identity mapping.
-        for peer in &response.closer {
-            let kept = self.routing.insert(peer.info.clone());
-            if kept && !self.peers.contains_key(&peer.info.id) {
-                self.remember_peer(peer.info.id, peer.agent_id);
-            }
-        }
+        self.learn_referrals(&response.closer);
         let Some(lookup) = self.lookups.get_mut(&response.request_id) else {
             return Vec::new();
         };
         lookup.on_response(response);
         lookup.next_wave()
+    }
+
+    /// Like [`NameService::on_response`], for a response whose sender is known.
+    ///
+    /// Returns `None` (and learns nothing) when the response is unsolicited: no
+    /// such lookup, or the sender was not asked or has already answered. That is
+    /// what keeps one peer from counting more than once toward a lookup's
+    /// quorum. Otherwise returns the next wave, empty when the lookup is done.
+    pub fn on_response_from(
+        &mut self,
+        from: AgentId,
+        response: &ResolveResponse,
+    ) -> Option<Vec<NodeInfo>> {
+        let keys: Vec<NameKey> = self
+            .peers
+            .iter()
+            .filter(|(_, slot)| slot.agent == from)
+            .map(|(key, _)| *key)
+            .collect();
+        let lookup = self.lookups.get_mut(&response.request_id)?;
+        if !lookup.on_response_from(&keys, response) {
+            return None;
+        }
+        self.learn_referrals(&response.closer);
+        Some(
+            self.lookups
+                .get_mut(&response.request_id)
+                .map(|l| l.next_wave())
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Learn the keyspace peers a response mentioned, whatever it answered.
+    /// Both spaces at once: a referral that only reached the routing table
+    /// would leave the peer un-dialable and the walk would stall on it.
+    ///
+    /// These are referrals, not first-hand contacts: they may fill free
+    /// routing slots but never displace or redirect a contact already known,
+    /// and only peers the routing table kept get an identity mapping. The list
+    /// is bounded first (see [`bound_referrals`]).
+    fn learn_referrals(&mut self, closer: &[KeyspacePeer]) {
+        for peer in bound_referrals(closer) {
+            let kept = self.routing.insert(peer.info.clone());
+            if kept && !self.peers.contains_key(&peer.info.id) {
+                self.remember_peer(peer.info.id, peer.agent_id);
+            }
+        }
+    }
+
+    /// Requests a lookup has sent that are neither answered nor timed out; zero
+    /// for an unknown lookup.
+    pub fn lookup_in_flight(&self, request_id: u64) -> usize {
+        self.lookups
+            .get(&request_id)
+            .map_or(0, |lookup| lookup.in_flight())
     }
 
     /// The outcome of a lookup, once it has one.
@@ -1073,7 +1243,9 @@ mod tests {
     }
 
     #[test]
-    fn a_valid_record_completes_the_lookup() {
+    fn a_valid_record_completes_the_lookup_once_a_quorum_has_answered() {
+        // Changed from "the first valid record ends it": a single answer can be
+        // a stale record, so the lookup now waits for QUORUM peers.
         let mut svc = NameService::new(NameKey::of(b"local"));
         for seed in 1..=10u8 {
             svc.add_node(node(seed));
@@ -1082,13 +1254,21 @@ mod tests {
         let (id, wave) = svc.start_lookup(ResolveQuery::Name(rec.name.clone()));
         assert!(!wave.is_empty());
 
-        let next = svc.on_response(&ResolveResponse {
+        let answer = ResolveResponse {
             request_id: id,
             record: Some(rec.clone()),
             providers: vec![],
             closer: vec![],
-        });
-        assert!(next.is_empty(), "an answered lookup issues no more waves");
+        };
+        for _ in 0..(QUORUM - 1) {
+            svc.on_response(&answer);
+            assert!(
+                svc.lookup_outcome(id).is_none(),
+                "fewer than QUORUM answers must not end the lookup"
+            );
+        }
+        let next = svc.on_response(&answer);
+        assert!(next.is_empty(), "a settled lookup issues no more waves");
         assert_eq!(
             svc.finish_lookup(id),
             Some(LookupOutcome::Found(Box::new(rec)))
@@ -1819,6 +1999,259 @@ mod tests {
             service.lapsing(9_000, 900).is_empty(),
             "already expired, so past reporting"
         );
+    }
+
+    fn name_response(rec: Option<NameRecord>) -> ResolveResponse {
+        ResolveResponse {
+            request_id: 1,
+            record: rec,
+            providers: vec![],
+            closer: vec![],
+        }
+    }
+
+    #[test]
+    fn an_old_record_answering_first_cannot_win_the_lookup() {
+        let name = record(1, 1, 1_000, &[]).name.clone();
+        let mut lookup = Lookup::new(ResolveQuery::Name(name), vec![node(1), node(2), node(3)]);
+        assert_eq!(lookup.next_wave().len(), 3);
+
+        // The first peer holds an old, validly signed record.
+        assert!(lookup.on_response_from(
+            &[node(1).id],
+            &name_response(Some(record(1, 1, 1_000, &[])))
+        ));
+        assert!(!lookup.is_done(), "one answer must not end a name lookup");
+        assert!(lookup.outcome().is_none());
+
+        // The second holds the newer one, the third nothing.
+        assert!(lookup.on_response_from(
+            &[node(2).id],
+            &name_response(Some(record(1, 5, 1_000, &[])))
+        ));
+        assert!(!lookup.is_done(), "two of three is below the quorum");
+        assert!(lookup.on_response_from(&[node(3).id], &name_response(None)));
+        assert!(lookup.is_done());
+        match lookup.outcome().unwrap() {
+            LookupOutcome::Found(r) => assert_eq!(r.seq, 5, "the superseding record wins"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_small_mesh_settles_once_everyone_reachable_has_answered() {
+        let name = record(1, 1, 1_000, &[]).name.clone();
+        // Two candidates, fewer than QUORUM: both must answer, then it settles.
+        let mut lookup = Lookup::new(ResolveQuery::Name(name.clone()), vec![node(1), node(2)]);
+        lookup.next_wave();
+        lookup.on_response(&name_response(Some(record(1, 1, 1_000, &[]))));
+        assert!(!lookup.is_done(), "a peer is still outstanding");
+        lookup.on_response(&name_response(Some(record(1, 2, 1_000, &[]))));
+        assert!(lookup.is_done());
+        match lookup.outcome().unwrap() {
+            LookupOutcome::Found(r) => assert_eq!(r.seq, 2),
+            other => panic!("expected Found, got {other:?}"),
+        }
+
+        // A single candidate: availability over strictness.
+        let mut lone = Lookup::new(ResolveQuery::Name(name), vec![node(1)]);
+        lone.next_wave();
+        lone.on_response(&name_response(Some(record(1, 1, 1_000, &[]))));
+        assert!(lone.is_done());
+        assert!(matches!(lone.outcome(), Some(LookupOutcome::Found(_))));
+    }
+
+    #[test]
+    fn one_peer_answering_repeatedly_does_not_meet_the_quorum() {
+        let name = record(1, 1, 1_000, &[]).name.clone();
+        let mut lookup = Lookup::new(ResolveQuery::Name(name), vec![node(1), node(2), node(3)]);
+        lookup.next_wave();
+        let old = name_response(Some(record(1, 1, 1_000, &[])));
+        assert!(lookup.on_response_from(&[node(1).id], &old));
+        assert!(
+            !lookup.on_response_from(&[node(1).id], &old),
+            "already answered"
+        );
+        assert!(!lookup.on_response_from(&[node(1).id], &old));
+        assert!(!lookup.on_response_from(&[node(9).id], &old), "never asked");
+        assert_eq!(lookup.answered(), 1);
+        assert!(!lookup.is_done());
+    }
+
+    #[test]
+    fn the_service_ignores_responses_from_peers_it_did_not_ask() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        for seed in 1..=3u8 {
+            svc.add_peer(node(seed), agent(seed));
+        }
+        let rec = record(1, 1, 1_000, &[]);
+        let (id, wave) = svc.start_lookup(ResolveQuery::Name(rec.name.clone()));
+        assert_eq!(wave.len(), 3);
+
+        let answer = ResolveResponse {
+            request_id: id,
+            record: Some(rec),
+            providers: vec![],
+            closer: vec![],
+        };
+        assert!(svc.on_response_from(agent(9), &answer).is_none());
+        assert!(svc.on_response_from(agent(1), &answer).is_some());
+        assert!(
+            svc.on_response_from(agent(1), &answer).is_none(),
+            "a second answer from the same peer does not count"
+        );
+        assert_eq!(svc.lookup_in_flight(id), 2);
+        assert!(svc.lookup_outcome(id).is_none());
+    }
+
+    #[test]
+    fn an_expired_record_is_not_returned_but_its_peer_still_answered() {
+        // Published at 1_000 with a 3600s ttl: expires at 4_600.
+        let rec = record(1, 1, 1_000, &[]);
+        let mut lookup = Lookup::new(ResolveQuery::Name(rec.name.clone()), vec![node(1)]);
+        lookup.set_clock(5_000);
+        lookup.next_wave();
+        lookup.on_response(&name_response(Some(rec.clone())));
+        assert_eq!(lookup.answered(), 1, "the peer answered");
+        assert!(lookup.next_wave().is_empty());
+        assert_eq!(
+            lookup.outcome(),
+            Some(LookupOutcome::NotFound),
+            "an expired record is not an answer"
+        );
+
+        // The same record is accepted while it is still fresh.
+        let mut fresh = Lookup::new(ResolveQuery::Name(rec.name.clone()), vec![node(1)]);
+        fresh.set_clock(4_000);
+        fresh.next_wave();
+        fresh.on_response(&name_response(Some(rec)));
+        assert!(matches!(fresh.outcome(), Some(LookupOutcome::Found(_))));
+    }
+
+    #[test]
+    fn an_expired_record_does_not_hide_a_fresh_one_from_another_peer() {
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let mut stale = record(1, 1, 1_000, &[]).with_ttl(60);
+        stale.sign(&key).unwrap(); // expires at 1_060
+        let live = record(1, 2, 5_000, &[]);
+        let mut lookup = Lookup::new(
+            ResolveQuery::Name(live.name.clone()),
+            vec![node(1), node(2)],
+        );
+        lookup.set_clock(5_000);
+        lookup.next_wave();
+        lookup.on_response(&name_response(Some(stale)));
+        assert!(!lookup.is_done());
+        lookup.on_response(&name_response(Some(live.clone())));
+        assert_eq!(lookup.outcome(), Some(LookupOutcome::Found(Box::new(live))));
+    }
+
+    #[test]
+    fn the_service_clock_reaches_the_lookup() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        svc.add_node(node(1));
+        let rec = record(1, 1, 1_000, &[]);
+        let (id, wave) = svc.start_lookup_at(ResolveQuery::Name(rec.name.clone()), 9_000);
+        assert_eq!(wave.len(), 1);
+        svc.on_response(&ResolveResponse {
+            request_id: id,
+            record: Some(rec),
+            providers: vec![],
+            closer: vec![],
+        });
+        assert_eq!(
+            svc.finish_lookup_counted(id),
+            Some((LookupOutcome::NotFound, true))
+        );
+    }
+
+    #[test]
+    fn publishing_an_oversized_record_is_refused() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::new(name, 1, 1_000).unwrap();
+        for i in 0..200 {
+            rec = rec.with_capability(format!("cap{i}"));
+        }
+        rec.sign(&key).unwrap();
+        assert!(rec.verify().is_ok());
+
+        let mut service = NameService::new(NameKey::of(b"publisher"));
+        assert!(matches!(
+            service.publish(rec),
+            Err(spine_name::NameError::RecordTooLarge(_))
+        ));
+        assert_eq!(service.record_count(), 0);
+    }
+
+    #[test]
+    fn a_response_carrying_an_oversized_record_is_refused() {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::new(name.clone(), 1, 1_000).unwrap();
+        for i in 0..200 {
+            rec = rec.with_capability(format!("cap{i}"));
+        }
+        rec.sign(&key).unwrap();
+
+        let mut lookup = Lookup::new(ResolveQuery::Name(name), vec![node(1)]);
+        lookup.next_wave();
+        lookup.on_response(&name_response(Some(rec)));
+        assert_eq!(lookup.answered(), 1);
+        assert!(lookup.next_wave().is_empty());
+        assert_eq!(lookup.outcome(), Some(LookupOutcome::NotFound));
+    }
+
+    #[test]
+    fn excess_endpoints_are_dropped_rather_than_failing_the_message() {
+        let mut endpoints: Vec<String> = (0..20).map(|i| format!("10.0.0.{i}:9440")).collect();
+        endpoints.insert(0, "x".repeat(MAX_ENDPOINT_BYTES + 1));
+        let bounded = bound_endpoints(&endpoints);
+        assert_eq!(bounded.len(), MAX_NODE_ENDPOINTS);
+        assert!(bounded.iter().all(|e| e.len() <= MAX_ENDPOINT_BYTES));
+        assert_eq!(
+            bounded[0], "10.0.0.0:9440",
+            "the oversized entry was dropped"
+        );
+
+        let exact = "y".repeat(MAX_ENDPOINT_BYTES);
+        assert_eq!(bound_endpoints(&[exact.clone()]), vec![exact]);
+    }
+
+    #[test]
+    fn excess_referred_nodes_and_their_endpoints_are_dropped() {
+        let fat = |seed: u8| {
+            KeyspacePeer::new(
+                NodeInfo::new(
+                    NameKey::of(&[seed]),
+                    (0..30).map(|i| format!("h{seed}-{i}:1")).collect(),
+                    100,
+                ),
+                agent(seed),
+            )
+        };
+        let referred: Vec<KeyspacePeer> = (1..=40u8).map(fat).collect();
+        let bounded = bound_referrals(&referred);
+        assert_eq!(bounded.len(), K);
+        assert!(bounded
+            .iter()
+            .all(|p| p.info.endpoints.len() == MAX_NODE_ENDPOINTS));
+
+        // And the service stores only the bounded form.
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        svc.add_node(node(100));
+        let (id, _) = svc.start_lookup(ResolveQuery::Name(SpineUri::did([1u8; 32])));
+        svc.on_response(&ResolveResponse {
+            request_id: id,
+            record: None,
+            providers: vec![],
+            closer: referred,
+        });
+        assert!(svc.node_count() <= K + 1, "at most K referrals are kept");
+        assert!(svc.addressable_peers() <= K);
+        for stored in svc.routing.all() {
+            assert!(stored.endpoints.len() <= MAX_NODE_ENDPOINTS);
+        }
     }
 
     /// A record already held at an equal or newer version must not be treated as
