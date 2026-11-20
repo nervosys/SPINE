@@ -93,14 +93,13 @@ impl SweArtifact {
 
     /// Verify the signature against a public key. `false` if unsigned or invalid.
     pub fn verify(&self, vk: &ed25519_dalek::VerifyingKey) -> bool {
-        use ed25519_dalek::Verifier;
         let Some(sig_bytes) = &self.signature else {
             return false;
         };
         let Ok(sig) = ed25519_dalek::Signature::from_slice(sig_bytes) else {
             return false;
         };
-        vk.verify(self.content_hash.as_bytes(), &sig).is_ok()
+        vk.verify_strict(self.content_hash.as_bytes(), &sig).is_ok()
     }
 }
 
@@ -376,6 +375,21 @@ mod tests {
         assert!(art.verify(&key.verifying_key()), "signed → verifies");
         let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         assert!(!art.verify(&other.verifying_key()), "wrong key → rejected");
+    }
+
+    #[test]
+    fn artifact_rejects_small_order_key() {
+        // The identity point is a small-order key; with R = identity and
+        // S = 0 the signature satisfies the cofactorless equation for any
+        // message, so non-strict verification accepts it.
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(&identity).expect("identity decodes");
+        let mut art = SweArtifact::new(b"build-1", SweArtifactKind::BuildLog, agent());
+        let mut sig = vec![0u8; 64];
+        sig[0] = 1;
+        art.signature = Some(sig);
+        assert!(!art.verify(&vk), "small-order key must be rejected");
     }
 
     #[test]
