@@ -87,7 +87,6 @@ use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
