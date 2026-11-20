@@ -647,8 +647,15 @@ async fn handle_command(
                 if record.is_expired(unix_now()) {
                     anyhow::bail!("record is expired");
                 }
-                state.resources.put(&record, &content_type, &data)?;
-                state.names.publish(record.clone())?;
+                let (hash, created) = state.resources.put_tracked(&record, &content_type, &data)?;
+                if let Err(e) = state.names.publish(record.clone()) {
+                    // Drop the blob only if this request added it; an earlier
+                    // publication of the same content still refers to it.
+                    if created {
+                        let _ = state.resources.remove(hash);
+                    }
+                    return Err(e.into());
+                }
                 Ok(record)
             })();
             match result {

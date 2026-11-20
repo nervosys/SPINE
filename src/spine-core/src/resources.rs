@@ -1,5 +1,6 @@
 //! Persistent immutable resource bytes, addressed by the hash in a signed name.
 use anyhow::{ensure, Context, Result};
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use spine_name::{content_hash, NameRecord};
 use spine_protocol::resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK};
@@ -12,12 +13,43 @@ const MAX_STORED_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Serialize, Deserialize)]
 struct Blob {
     content_type: String,
+    #[serde(with = "compact_bytes")]
     data: Vec<u8>,
+}
+
+/// Bytes are stored as a base64 string (about 1.33 bytes per data byte). Stores
+/// written before this encoding held a JSON integer array; loading accepts both.
+mod compact_bytes {
+    use base64::Engine;
+    use serde::{de::Error, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(data))
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Repr {
+        Text(String),
+        Legacy(Vec<u8>),
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        match Repr::deserialize(deserializer)? {
+            Repr::Text(text) => base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .map_err(D::Error::custom),
+            Repr::Legacy(bytes) => Ok(bytes),
+        }
+    }
 }
 
 pub struct ResourceStore {
     backend: Arc<dyn StorageBackend>,
     writes: Mutex<()>,
+    /// The most recently read blob, already checked against its hash, so a
+    /// chunked download parses and hashes it once rather than per chunk.
+    verified: Mutex<Option<([u8; 32], Arc<Blob>)>>,
 }
 
 impl ResourceStore {
@@ -25,10 +57,23 @@ impl ResourceStore {
         Self {
             backend,
             writes: Mutex::new(()),
+            verified: Mutex::new(None),
         }
     }
 
     pub fn put(&self, record: &NameRecord, content_type: &str, data: &[u8]) -> Result<[u8; 32]> {
+        self.put_tracked(record, content_type, data)
+            .map(|(hash, _created)| hash)
+    }
+
+    /// Like `put`, also reporting whether this call created the blob (false if
+    /// the same content was already stored).
+    pub fn put_tracked(
+        &self,
+        record: &NameRecord,
+        content_type: &str,
+        data: &[u8],
+    ) -> Result<([u8; 32], bool)> {
         record.verify()?;
         ensure!(data.len() <= MAX_RESOURCE_BYTES, "resource exceeds 8 MiB");
         ensure!(
@@ -44,7 +89,7 @@ impl ResourceStore {
         );
         let _write = self.writes.lock().unwrap();
         if self.backend.exists(NAMESPACE, &hash)? {
-            return Ok(hash);
+            return Ok((hash, false));
         }
         // The bounded store makes quota computation bounded too. Quota is on
         // serialized storage bytes, including metadata and JSON overhead.
@@ -63,14 +108,27 @@ impl ResourceStore {
             "resource store quota exceeded"
         );
         self.backend.put(NAMESPACE, &hash, &blob)?;
-        Ok(hash)
+        Ok((hash, true))
     }
 
-    pub fn read(&self, hash: [u8; 32], offset: u64, max_bytes: u32) -> Result<ResourceChunk> {
-        ensure!(
-            (1..=MAX_RESOURCE_CHUNK).contains(&max_bytes),
-            "chunk must be 1 through 65536 bytes"
-        );
+    /// Remove a stored blob, for rolling back a publication that failed after
+    /// the blob was added. No-op if it is absent.
+    pub fn remove(&self, hash: [u8; 32]) -> Result<()> {
+        let _write = self.writes.lock().unwrap();
+        self.backend.delete(NAMESPACE, &hash)?;
+        let mut cache = self.verified.lock().unwrap();
+        if cache.as_ref().is_some_and(|(h, _)| *h == hash) {
+            *cache = None;
+        }
+        Ok(())
+    }
+
+    fn load_verified(&self, hash: [u8; 32]) -> Result<Arc<Blob>> {
+        if let Some((cached, blob)) = self.verified.lock().unwrap().as_ref() {
+            if *cached == hash {
+                return Ok(blob.clone());
+            }
+        }
         let stored = self
             .backend
             .get(NAMESPACE, &hash)?
@@ -80,6 +138,17 @@ impl ResourceStore {
             blob.data.len() <= MAX_RESOURCE_BYTES && content_hash(&blob.data) == hash,
             "stored resource failed integrity check"
         );
+        let blob = Arc::new(blob);
+        *self.verified.lock().unwrap() = Some((hash, blob.clone()));
+        Ok(blob)
+    }
+
+    pub fn read(&self, hash: [u8; 32], offset: u64, max_bytes: u32) -> Result<ResourceChunk> {
+        ensure!(
+            (1..=MAX_RESOURCE_CHUNK).contains(&max_bytes),
+            "chunk must be 1 through 65536 bytes"
+        );
+        let blob = self.load_verified(hash)?;
         let start = usize::try_from(offset).context("invalid offset")?;
         ensure!(start <= blob.data.len(), "offset beyond resource");
         let end = start
@@ -89,7 +158,7 @@ impl ResourceStore {
             hash,
             offset,
             total_bytes: blob.data.len() as u64,
-            content_type: blob.content_type,
+            content_type: blob.content_type.clone(),
             data: blob.data[start..end].to_vec(),
             complete: end == blob.data.len(),
         })
@@ -124,6 +193,11 @@ mod tests {
             store.put(&record, "text/plain", bytes).unwrap();
         }
         let store = open();
+        {
+            let store = open();
+            let first = store.read(hash, 0, 4).unwrap();
+            assert!(!first.complete);
+        }
         let first = store.read(hash, 0, 4).unwrap();
         let second = store.read(hash, 4, 64).unwrap();
         assert!(!first.complete);
@@ -131,6 +205,8 @@ mod tests {
         assert_eq!([first.data, second.data].concat(), bytes);
         assert!(store.read(hash, 1000, 4).is_err());
         assert!(store.read(hash, 0, MAX_RESOURCE_CHUNK + 1).is_err());
+        // Corruption is caught the first time a blob is loaded.
+        let store = open();
         store
             .backend
             .put(
@@ -140,5 +216,48 @@ mod tests {
             )
             .unwrap();
         assert!(store.read(hash, 0, 4).is_err());
+    }
+
+    fn signed(bytes: &[u8]) -> NameRecord {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let mut record = NameRecord::new(SpineUri::did(key.verifying_key().to_bytes()), 1, 100)
+            .unwrap()
+            .with_content_hash(content_hash(bytes));
+        record.sign(&key).unwrap();
+        record
+    }
+
+    #[test]
+    fn remove_deletes_only_the_named_blob_and_reports_creation() {
+        let store = ResourceStore::new(Arc::new(spine_storage::InMemoryBackend::new()));
+        let bytes = b"rolled back";
+        let record = signed(bytes);
+        let (hash, created) = store.put_tracked(&record, "text/plain", bytes).unwrap();
+        assert!(created);
+        let (_, again) = store.put_tracked(&record, "text/plain", bytes).unwrap();
+        assert!(!again);
+        assert!(store.read(hash, 0, 4).is_ok());
+        store.remove(hash).unwrap();
+        assert!(store.read(hash, 0, 4).is_err());
+        assert!(!store.backend.exists(NAMESPACE, &hash).unwrap());
+        store.remove(hash).unwrap();
+    }
+
+    #[test]
+    fn stores_compactly_and_still_reads_the_legacy_integer_array() {
+        let store = ResourceStore::new(Arc::new(spine_storage::InMemoryBackend::new()));
+        let bytes = [200u8; 1000];
+        let record = signed(&bytes);
+        let hash = store.put(&record, "text/plain", &bytes).unwrap();
+        let stored = store.backend.get(NAMESPACE, &hash).unwrap().unwrap();
+        assert!(stored.len() < 1500, "stored {} bytes", stored.len());
+        let legacy = serde_json::to_vec(&serde_json::json!({
+            "content_type": "text/plain",
+            "data": bytes.to_vec(),
+        }))
+        .unwrap();
+        store.backend.put(NAMESPACE, &hash, &legacy).unwrap();
+        let fresh = ResourceStore::new(store.backend.clone());
+        assert_eq!(fresh.read(hash, 0, 2000).unwrap().data, bytes);
     }
 }
