@@ -4,7 +4,7 @@ This document provides a deep dive into the technical architecture of the SPINE 
 
 ## System Overview
 
-SPINE is a **headless semantic browser with adaptive encryption** designed for AI agents. It consists of twenty-five crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
+SPINE is a headless semantic browser and native communication stack designed for software agents. The workspace contains 30 Rust crates. The current origin adds persistent signed publications, content-addressed resources, and native read-only tools; HTTP chat uses a configurable model source with explicit demo mode. Signed mesh application RPC binds both recipient ID and key, pins worker keys, and authorizes coordinator keys before accessing owner-scoped persistent tasks and immutable knowledge. Only deterministic hashing and HTML parsing execute through that service. Unsupported legacy swarm execution is refused. See [the component inventory](docs/COMPLETION_STATUS.md) and [operations contract](docs/NATIVE_OPERATIONS.md) for implemented, experimental, and unverified paths; the historical research diagram below does not establish production guarantees.
 
 ```
 ┌──────────────────────────────────────────────────────────┐

@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Agent-web completion work
+
+- Persist local publisher records and signed sequence state through the storage abstraction, restore fresh records after restart, and support opt-in node-owner renewal.
+- Add bounded DNS bootstrap, aggregate local and remote capability providers, resolve batches with bounded concurrency, and return disconnected resolution as `Unavailable`.
+- Add content-addressed origin storage, native resource upload/chunk reads, signed hash verification in the Rust SDK, namespace CLI operations, and HTTP resource access.
+- Dispatch correlated native read-only HTML parsing and SHA-256 tools with input limits and typed failures.
+- Advertise native tool schemas and add signed, recipient-bound mesh application RPC with key pinning and explicit worker allowlists. Persist owner-scoped read-only tasks, dependencies, cancellation, deadlines, duplicates, and immutable knowledge; add SDK and task CLI operations.
+- Remove legacy timer-based swarm completion and simulated confidence votes. Unsupported planning/delegation and log-only speech delivery now return explicit errors; an unmeasured surprise metric is null. Legacy WASM and cluster logs omit private queries, values, goals, and reasoning payloads.
+- Validate explicit configuration without silent fallback, pass full deployment configuration to managed children, drain on parent shutdown, restrict diagnostics to identifiers/counts, and bind gateway/metrics to the configured host.
+- Add local native candidate archives with checksums, dependency inventory, source provenance, clean installation smoke tests, and ordered release gates.
+- Replace implicit HTTP model echo with a configurable OpenAI-compatible upstream, preserving JSON requests and SSE bytes; apply IronGate routing and propagate consumer cancellation. Echo requires explicit demo configuration.
+- Refuse missing TLS files, create identity keys exclusively with restrictive Unix permissions, and redact command payloads and routing tokens.
+- Patch Rustls to 0.23.45 and Wasmtime to 36.0.16; fix verification exit handling and add regressions.
+- Neural physical-layer transmission now reports unsupported rather than simulated delivery. Replica sends no longer imply durable remote storage.
+
+- Bound TCP mesh admission, contact registries, frame/queue/write deadlines, and cancellation cleanup; make limits configurable and close evicted sockets.
+- Share native admission across transports, enforce complete-message idle deadlines, bound native writes and decompression, reject unsupported wire versions, and bound both native frame readers.
+- Apply explicit mTLS and CRL settings to native TCP and WSS; fail on missing required CA/CRL files. Generate development certificates with validity relative to creation time. Optional native QUIC refuses configured TLS until it can enforce that policy.
+
+- Add `spine mcp` stdio forwarding to native core tool schemas and execution, including TLS/mTLS options, bounded messages/calls, JSON-RPC validation, ping, and unknown-tool errors. A failed native connection is discarded rather than reused or silently retried.
+- Select the Ring TLS provider explicitly in core and SDK to avoid dependency-feature ambiguity; bound SDK connection and TLS setup and correct certificate CLI filenames.
+
+- Make native readiness reflect global connection/session capacity and draining while keeping liveness healthy under capacity pressure. Export aggregate admission and outbound outcomes, including cancellation cleanup, without user-controlled labels; derive the session gauge from the actual map on scrape.
+
+- Add configurable detached-session retention, connection leases, serialized session admission/imports, bounded atomic session/knowledge snapshots and restart expiry. Stop fabricating scout sessions for unsupported legacy swarm search.
+
+### Compatibility notes
+
+- Core migrates legacy per-session JSON files once into `spine-sessions-v1.json`, then treats that manifest as authoritative. Detached sessions expire after one hour by default; connected sessions are protected. Corrupt or over-capacity state refuses startup. Back up the manifest and configure retention for the deployment.
+
+- Native and WASM HTTP navigation now deny internal addresses by default, refuse redirects and compressed responses, and enforce bounded UTF-8 responses and request deadlines. Use exact `[outbound].internal_origins` exceptions for intentionally internal resources. Operator-configured model and mesh endpoints retain their separate trust boundaries.
+
+- Set `mutual_tls = true` explicitly when client certificates are required; a CA file alone no longer selects client authentication. TLS-enabled origin WebSocket clients must use WSS. Optional native QUIC cannot run with that configured TLS policy until equivalent certificate enforcement is integrated.
+
+`PublishResource`, `ReadResource`, `NamespaceStatus`, and `MeshCall` are appended native commands; `Unavailable` is a new resolution outcome; application RPC adds a signed mesh payload variant. Upgrade clients and nodes together. Older peers cannot use the new wire operations; exhaustive Rust matches need updates. `FetchName` retains its endpoint-discovery contract. New namespace configuration is optional and task execution defaults off. Task and immutable knowledge storage use separate v1 namespaces; publisher/resource namespaces retain their existing versioning. Cache and peer state remain ephemeral. `replicas` reports directed sends, `replication_acknowledged` remains zero, and `ReplicationReport::is_durable()` returns false until a storage-acknowledgement protocol exists. Source remains 2.0.2 for this development candidate; public release version selection and publication remain pending.
+
 ### Added
 
 - **An opt-in route through IronGate for the model dispatchers.** With

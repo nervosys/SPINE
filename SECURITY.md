@@ -1,5 +1,11 @@
 # Security Policy
 
+## Local implementation verification
+
+The 2026-10-02 continuation patches Rustls and Wasmtime advisories, refuses missing certificates when native TCP TLS is enabled, redacts model-routing tokens and native request payloads, bounds resource transfer, and reports replica sends separately from acknowledged durability. Native and WASM HTTP navigation now share DNS-pinned public-address checks, exact internal-origin exceptions, redirect refusal, and response/concurrency/deadline limits; see [native operations](docs/NATIVE_OPERATIONS.md). See [the evidence report](docs/COMPLETION_STATUS.md). These checks do not establish an independent review of the custom handshake, multi-tenant isolation, cryptographic module certification, or verified hardware erasure. The quickstart uses trusted local clients; public multi-user deployment remains gated on authorization and policy across the remaining bridge/mesh paths.
+
+The development task service additionally requires encrypted TCP, pins the recipient's key in the handshake before sending task data, checks pooled connection identity, and matches the signed caller key to the authenticated connection. Workers authorize explicit coordinator keys before accessing owner-scoped tasks or immutable knowledge. Unpinned bootstrap and other application transport modes are refused. Native clients of a coordinator share its identity; these controls do not provide multi-user origin tenancy. Application requests are never transparently replayed after an uncertain write. Read-only task recovery and duplicate semantics are documented in [native operations](docs/NATIVE_OPERATIONS.md).
+
 ## Supported Versions
 
 | Version | Status        | Receives security fixes |
@@ -14,6 +20,8 @@ key generation, AES-GCM nonce reuse, and record-store admission) affect anyone
 running a 1.x mesh. **Upgrading is a wire-breaking change:** 2.0.0 peers cannot
 speak to 1.x peers over the Chameleon layer, so a deployment upgrades together
 or not at all.
+
+The native origin TLS configuration now applies to TCP and WSS, including explicitly required client certificates and revocation lists. Transport admission, complete-message deadlines, bounded decompression, and cancelled mesh-write retirement reduce resource growth; they do not establish a process-wide memory budget. The legacy cluster and diagnostics remain trusted-network interfaces. Native origin clients have operator access; neither mTLS nor the HTTP gateway token defines per-user roles. See [the connection policy](docs/NATIVE_OPERATIONS.md#connection-and-tls-policy) for concrete limits and unsupported modes.
 
 ## Reporting a Vulnerability
 

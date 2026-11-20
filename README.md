@@ -4,10 +4,12 @@
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/tests-1418%20passing-brightgreen.svg)](#testing)
+[![Tests](https://img.shields.io/badge/test%20inventory-1478-blue.svg)](docs/COMPLETION_STATUS.md)
 [![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](CHANGELOG.md)
 
-**SPINE** (Synaptic Pathways INterconnecting Entities) is an **agentic-first web stack for the 21st century** — a complete communication, execution, and coordination layer designed from frame zero around the things modern LLM agents actually need (tokens, tools, capabilities, traces, swarms) rather than the things browsers were built for (documents, layouts, sessions). HTTP/REST and OpenAI-style SSE are first-class wire formats, but they're surfaces, not the substrate.
+**SPINE** (Synaptic Pathways INterconnecting Entities) is a Rust web stack for software agents. It provides semantic HTML parsing, native messages and tools, signed name discovery, resource transfer, authenticated durable read-only mesh tasks, and HTTP, MCP, and gRPC bridges. General agent orchestration and specialized hardware paths include experimental components.
+
+For the current local implementation, use the [agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md), [native installation and operations](docs/NATIVE_OPERATIONS.md), [completion status](docs/COMPLETION_STATUS.md), and [completion checklist](COMPLETION_PLAN.md). The source version is 2.0.2; the release badge refers to the historical 2.0.1 publication. Benchmark figures below are historical measurements, not results from the current validation run.
 
 > *"A digital nervous system for AI agents — semantic-first parsing, agentic-first framing, swarm-first coordination, all with the option to fall back to plain HTTP whenever a human or legacy client needs to talk to it."*
 

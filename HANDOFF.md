@@ -1,4 +1,8 @@
+Current continuation also implements configurable TCP mesh admission/deadlines, shared native admission and idle cleanup, bounded native decompression, explicit TCP/WSS mTLS policy, fresh development certificate validity, and a native MCP stdio tool adapter. The authoritative validation and remaining scope are in [the completion status](docs/COMPLETION_STATUS.md); historical phases below are retained as history.
+
 # Handoff — Phase 38: The Namespace
+
+**Local continuation, 2026-10-02:** the historical release status below does not describe completion of the current plan. Working-tree changes implement persistent publications/resources, configurable HTTP model forwarding, native tools and capability schemas, signed durable read-only task coordination, deployment configuration handoff, managed shutdown, and local archive preparation. Simulated legacy task completion is removed. See [current evidence and open gates](docs/COMPLETION_STATUS.md), the [operator quickstart](docs/AGENT_WEB_QUICKSTART.md), and [native operations](docs/NATIVE_OPERATIONS.md). No new publication or credential revocation was performed.
 
 **Status:** complete, verified, merged, **published to crates.io** at 2.0.1 —
 all 29 crates, 2026-08-24 — and **released with binaries** at

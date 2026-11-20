@@ -1,5 +1,7 @@
 # SPINE Roadmap
 
+Current local work is tracked in [the completion checklist](COMPLETION_PLAN.md) and [verification report](docs/COMPLETION_STATUS.md). Counts and completed phases below are historical; they do not close the remaining production and release gates.
+
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
 > 30 Rust crates · 1,418 tests · 0 warnings · AGPL-3.0-or-later
 
