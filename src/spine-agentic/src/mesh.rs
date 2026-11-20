@@ -1091,6 +1091,54 @@ pub enum MeshAction {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_replay_guard_admits_once_and_refuses_stale_envelopes() {
+        let mut guard = ReplayGuard::new(8);
+        let sender = AgentId::new();
+        let id = Uuid::new_v4();
+        let now = 1_000_000;
+
+        assert_eq!(guard.admit(sender, id, now, now), Ok(()));
+        assert_eq!(
+            guard.admit(sender, id, now, now + 1),
+            Err(ReplayRefusal::Duplicate)
+        );
+        // The same id from a different sender is a different envelope.
+        assert_eq!(guard.admit(AgentId::new(), id, now, now), Ok(()));
+
+        let window = APPLICATION_FRESHNESS_SECS;
+        for skew in [window + 1, -(window + 1)] {
+            assert_eq!(
+                guard.admit(sender, Uuid::new_v4(), now + skew, now),
+                Err(ReplayRefusal::Stale)
+            );
+        }
+        for skew in [window, -window] {
+            assert_eq!(guard.admit(sender, Uuid::new_v4(), now + skew, now), Ok(()));
+        }
+    }
+
+    #[test]
+    fn a_full_replay_guard_refuses_rather_than_forgetting_live_entries() {
+        let mut guard = ReplayGuard::new(2);
+        let sender = AgentId::new();
+        let now = 1_000_000;
+        assert_eq!(guard.admit(sender, Uuid::new_v4(), now, now), Ok(()));
+        assert_eq!(guard.admit(sender, Uuid::new_v4(), now, now), Ok(()));
+        assert_eq!(
+            guard.admit(sender, Uuid::new_v4(), now, now),
+            Err(ReplayRefusal::Full)
+        );
+        assert_eq!(guard.len(), 2);
+
+        // Once the remembered envelopes can no longer pass the freshness
+        // check they are dropped, and there is room again.
+        let later = now + APPLICATION_FRESHNESS_SECS + 1;
+        assert_eq!(guard.admit(sender, Uuid::new_v4(), later, later), Ok(()));
+        assert_eq!(guard.len(), 1);
+        assert!(!guard.is_empty());
+    }
+
     fn test_identity(name: &str) -> SigningIdentity {
         SigningIdentity::from_seed(name, [name.len() as u8; 32])
     }

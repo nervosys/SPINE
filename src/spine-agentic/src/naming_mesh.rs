@@ -986,6 +986,11 @@ impl MeshNameResolver {
                     // Requests only: a response is matched to a waiter above,
                     // which is removed on first use. The signature is already
                     // verified, so unsigned traffic cannot fill the table.
+                    //
+                    // Freshness is judged against the wall clock, not the `now`
+                    // this function is handed: the signed timestamp is stamped
+                    // from the wall clock when the envelope is created, and the
+                    // two must be the same clock to be comparable.
                     let admitted = self
                         .rpc_replay
                         .lock()
@@ -994,7 +999,7 @@ impl MeshNameResolver {
                                 envelope.from,
                                 envelope.id,
                                 envelope.timestamp.timestamp(),
-                                i64::try_from(now).unwrap_or(i64::MAX),
+                                chrono::Utc::now().timestamp(),
                             )
                         })
                         .unwrap_or(Err(crate::mesh::ReplayRefusal::Full));
