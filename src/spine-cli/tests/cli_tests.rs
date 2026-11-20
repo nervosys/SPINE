@@ -2,6 +2,53 @@
 //!
 //! Tests offline functionality: CLI parsing, init scaffolding, utility logic.
 
+#[test]
+fn name_create_signs_content_and_refuses_to_overwrite_owner_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("resource.txt"), b"signed bytes").unwrap();
+    let run = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_spine"))
+            .current_dir(dir.path())
+            .args([
+                "name",
+                "create",
+                "--key",
+                "owner.key",
+                "--output",
+                "record.json",
+                "--endpoint",
+                "127.0.0.1:8080",
+                "--path",
+                "/example",
+                "--capability",
+                "example.documents",
+                "--resource",
+                "resource.txt",
+            ])
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record: spine_name::NameRecord =
+        serde_json::from_slice(&std::fs::read(dir.path().join("record.json")).unwrap()).unwrap();
+    record.verify().unwrap();
+    assert_eq!(
+        record.content_hash,
+        Some(spine_name::content_hash(b"signed bytes"))
+    );
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains(&record.name.to_string()));
+    let before = std::fs::read(dir.path().join("owner.key")).unwrap();
+    assert!(!run().status.success());
+    assert_eq!(std::fs::read(dir.path().join("owner.key")).unwrap(), before);
+}
+
 // =============================================================================
 // INIT COMMAND TESTS
 // =============================================================================

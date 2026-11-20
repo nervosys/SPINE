@@ -32,7 +32,7 @@
 //! an error naming both variables, rather than a direct call.
 
 /// Where a gateway is, read once from the environment.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// `IRONGATE_URL`, without a trailing slash. `None` when unset or empty.
     pub url: Option<String>,
@@ -40,6 +40,16 @@ pub struct Settings {
     pub token: Option<String>,
     /// `SPINE_REQUIRE_GATEWAY=1`: refuse a remote call that would go direct.
     pub required: bool,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("url", &self.url)
+            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
+            .field("required", &self.required)
+            .finish()
+    }
 }
 
 impl Settings {
@@ -90,7 +100,7 @@ impl Settings {
 }
 
 /// Where one call goes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Route {
     /// To the provider, as before.
     Direct,
@@ -99,6 +109,19 @@ pub enum Route {
         endpoint: String,
         token: Option<String>,
     },
+}
+
+impl std::fmt::Debug for Route {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct => f.write_str("Direct"),
+            Self::Gateway { endpoint, token } => f
+                .debug_struct("Gateway")
+                .field("endpoint", endpoint)
+                .field("token", &token.as_ref().map(|_| "[redacted]"))
+                .finish(),
+        }
+    }
 }
 
 /// Whether a base URL names this machine: `localhost`, `127.x.x.x` or `[::1]`.

@@ -3,5 +3,8 @@ pub mod cert;
 pub mod connect;
 pub mod deploy;
 pub mod init;
+pub mod mcp;
+pub mod names;
 pub mod query;
 pub mod status;
+pub mod tasks;

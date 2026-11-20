@@ -18,13 +18,13 @@
 //!
 //! A node that joins and then sits still slowly stops being useful. Records are
 //! stored at the nodes closest to their keys *as of the moment they were
-//! published*, and that set changes as peers come and go — so [`join`] also
+//! published*, and that set changes as peers come and go — so [`join_with_application`] also
 //! starts a maintenance task that re-offers held records to whoever is closest
 //! now, and drops the ones that have expired.
 //!
 //! ## Why joining is allowed to fail
 //!
-//! [`join`] returns the node even when no seed answered. A namespace this node
+//! [`join_with_application`] returns the node even when no seed answered. A namespace this node
 //! cannot reach is a degraded state, not a broken one: it still serves the names
 //! it holds locally, and refusing to start would take a working origin offline
 //! because a seed was down. The failure is reported, loudly, and the node runs.
@@ -37,7 +37,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use spine_agentic::identity::SigningIdentity;
 use spine_agentic::mesh::{MeshConfig, MeshNode};
-use spine_agentic::mesh_tcp::{serve_node, TcpNameTransport};
+use spine_agentic::mesh_tcp::{serve_node_with, EncryptionConfig, Security, TcpNameTransport};
 use spine_agentic::naming_mesh::{MaintenancePolicy, MeshNameResolver};
 use tracing::{info, warn};
 
@@ -47,20 +47,40 @@ use crate::config::NamespaceConfig;
 ///
 /// Returns the resolver even when no seed answered — see the module docs on why
 /// an unreachable namespace is a degraded state rather than a fatal one.
-pub async fn join(cfg: &NamespaceConfig, host: &str) -> Result<Arc<MeshNameResolver>> {
+pub async fn join_with_application(
+    cfg: &NamespaceConfig,
+    host: &str,
+    application: Option<Arc<dyn spine_agentic::naming_mesh::MeshApplication>>,
+) -> Result<Arc<MeshNameResolver>> {
     let seed = load_or_create_key(&cfg.key_path)?;
     let identity = SigningIdentity::from_seed("spine-core", seed);
     let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
 
-    let (transport, inbound) = TcpNameTransport::new();
-    let resolver = Arc::new(MeshNameResolver::new(mesh.clone(), transport.clone()));
+    let (transport, inbound) = TcpNameTransport::with_limits(
+        Security::Encrypted(Box::new(EncryptionConfig {
+            signing: ed25519_dalek::SigningKey::from_bytes(&seed),
+        })),
+        cfg.connection_limits(),
+    )
+    .map_err(|e| anyhow::anyhow!("namespace connection policy: {e}"))?;
+    let mut resolver = MeshNameResolver::new(mesh.clone(), transport.clone());
+    if let Some(application) = application {
+        resolver = resolver.with_application(application);
+    }
+    let resolver = Arc::new(resolver);
 
     let bind: SocketAddr = format!("{host}:{}", cfg.port)
         .parse()
         .with_context(|| format!("namespace bind address {host}:{}", cfg.port))?;
-    let addr = serve_node(bind, resolver.clone(), transport, inbound)
-        .await
-        .map_err(|e| anyhow::anyhow!("namespace listener: {e}"))?;
+    let addr = serve_node_with(
+        bind,
+        resolver.clone(),
+        transport,
+        inbound,
+        Some(ed25519_dalek::SigningKey::from_bytes(&seed)),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("namespace listener: {e}"))?;
 
     // Advertise what the operator configured, falling back to the address we
     // actually bound. The fallback is right for a node on a routable address and
@@ -72,7 +92,7 @@ pub async fn join(cfg: &NamespaceConfig, host: &str) -> Result<Arc<MeshNameResol
     };
     resolver.set_endpoints(advertise).await;
 
-    let seeds = cfg.seed_addresses();
+    let seeds = bootstrap_addresses(cfg).await;
     let bootstrap = resolver.bootstrap(&seeds).await;
 
     if bootstrap.is_connected() {
@@ -97,6 +117,121 @@ pub async fn join(cfg: &NamespaceConfig, host: &str) -> Result<Arc<MeshNameResol
     spawn_maintenance(resolver.clone(), cfg);
 
     Ok(resolver)
+}
+
+pub fn task_application(
+    cfg: &NamespaceConfig,
+    backend: Arc<dyn spine_storage::StorageBackend>,
+) -> Result<Option<Arc<dyn spine_agentic::naming_mesh::MeshApplication>>> {
+    if !cfg.tasks_enabled {
+        return Ok(None);
+    }
+    anyhow::ensure!(cfg.enabled, "task worker requires an enabled namespace");
+    let allowed = cfg
+        .task_peers
+        .iter()
+        .map(|key| decode_hex(key).context("task_peers entries must be 64 hex characters"))
+        .collect::<Result<Vec<_>>>()?;
+    let service = Arc::new(spine_core::tasks::TaskService::new(backend, allowed)?);
+    service.start();
+    Ok(Some(service))
+}
+
+/// Configured DNS names supply addresses, never trusted identities. The mesh
+/// handshake still verifies every responder. DNS failure leaves local service
+/// available and cannot make startup wait indefinitely.
+async fn bootstrap_addresses(cfg: &NamespaceConfig) -> Vec<String> {
+    use futures::StreamExt;
+    let mut seeds = cfg.seed_addresses();
+    seeds.truncate(128);
+    let results = futures::stream::iter(cfg.dns_seeds.iter().take(16).map(|name| async move {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::net::lookup_host(name.as_str()),
+        )
+        .await
+        {
+            Ok(Ok(addresses)) => addresses
+                .take(16)
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>(),
+            _ => {
+                warn!("DNS namespace bootstrap source unavailable");
+                Vec::new()
+            }
+        }
+    }))
+    .buffered(4)
+    .collect::<Vec<_>>()
+    .await;
+    for address in results.into_iter().flatten() {
+        if seeds.len() >= 128 {
+            break;
+        }
+        if !seeds.contains(&address) {
+            seeds.push(address);
+        }
+    }
+    seeds
+}
+
+/// Owner-driven renewal is opt-in and can never extend a foreign publisher's
+/// names. The durable resolver keeps expired sequence markers for recovery.
+pub fn owned_renewals(
+    names: &spine_name::LocalResolver,
+    signing: &ed25519_dalek::SigningKey,
+    now: u64,
+    window: u64,
+) -> Result<Vec<spine_name::NameRecord>> {
+    let authority = spine_name::Authority::Did(signing.verifying_key().to_bytes());
+    let mut renewed = Vec::new();
+    for record in names.published_records()? {
+        if record.name.authority() == &authority
+            && record.ttl_secs > 0
+            && record.remaining_ttl(now) <= window.min((record.ttl_secs as u64) / 2)
+        {
+            renewed.push(record.renewed(signing, now, record.ttl_secs)?);
+        }
+    }
+    Ok(renewed)
+}
+
+pub fn spawn_owner_renewal(
+    names: Arc<spine_name::LocalResolver>,
+    mesh: Option<Arc<MeshNameResolver>>,
+    cfg: &NamespaceConfig,
+) -> Result<()> {
+    if !cfg.renew_owned_records {
+        return Ok(());
+    }
+    let signing = ed25519_dalek::SigningKey::from_bytes(&load_or_create_key(&cfg.key_path)?);
+    let window = cfg.lapse_window_secs;
+    let period = Duration::from_secs(cfg.renewal_secs.max(1));
+    let budget = cfg.maintain_batch.max(1);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(period);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            match owned_renewals(&names, &signing, names.now(), window) {
+                Ok(records) => {
+                    for record in records.into_iter().take(budget) {
+                        if let Err(error) = names.publish(record.clone()) {
+                            warn!(%error, "owner renewal could not be persisted");
+                            continue;
+                        }
+                        if let Some(mesh) = &mesh {
+                            if let Err(error) = mesh.publish(record).await {
+                                warn!(%error, "renewal saved locally but mesh publication failed");
+                            }
+                        }
+                    }
+                }
+                Err(error) => warn!(%error, "owner renewal failed"),
+            }
+        }
+    });
+    Ok(())
 }
 
 /// Keep held records where lookups will find them, for as long as the node runs.
@@ -169,22 +304,28 @@ fn load_or_create_key(path: &str) -> Result<[u8; 32]> {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
     }
-    std::fs::write(path, encode_hex(&seed))
-        .with_context(|| format!("writing node key {}", path.display()))?;
-    restrict(path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Another starter won creation: retain its identity, never overwrite it.
+            let raw = std::fs::read_to_string(path)?;
+            return decode_hex(raw.trim()).context("existing node key is incomplete or invalid");
+        }
+        Err(error) => return Err(error).context("creating node identity"),
+    };
+    use std::io::Write;
+    file.write_all(encode_hex(&seed).as_bytes())?;
+    file.sync_all()?;
     info!(key = %path.display(), "generated a new node identity");
     Ok(seed)
 }
-
-/// Make the key file owner-readable only, where the platform has the concept.
-#[cfg(unix)]
-fn restrict(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn restrict(_path: &Path) {}
 
 fn encode_hex(bytes: &[u8; 32]) -> String {
     let mut out = String::with_capacity(64);
@@ -234,5 +375,42 @@ mod tests {
         assert_eq!(first, second, "a restart must not move the node");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dns_bootstrap_is_bounded_and_deduplicates_addresses() {
+        let cfg = NamespaceConfig {
+            seeds: vec!["127.0.0.1:9440".into()],
+            dns_seeds: vec!["127.0.0.1:9440".into()],
+            ..Default::default()
+        };
+        assert_eq!(bootstrap_addresses(&cfg).await, vec!["127.0.0.1:9440"]);
+    }
+
+    #[test]
+    fn renewal_extends_only_records_owned_by_the_configured_key() {
+        use spine_name::{NameRecord, SpineUri};
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let foreign = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let names = spine_name::LocalResolver::persistent(
+            || 200,
+            Arc::new(spine_storage::InMemoryBackend::new()),
+        )
+        .unwrap();
+        for key in [&signing, &foreign] {
+            let mut record = NameRecord::new(SpineUri::did(key.verifying_key().to_bytes()), 1, 100)
+                .unwrap()
+                .with_ttl(50);
+            record.sign(key).unwrap();
+            names.publish(record).unwrap();
+        }
+        let renewed = owned_renewals(&names, &signing, 200, 25).unwrap();
+        assert_eq!(renewed.len(), 1);
+        assert_eq!(renewed[0].seq, 2);
+        assert!(!renewed[0].is_expired(200));
+        assert_eq!(
+            renewed[0].name.authority(),
+            &spine_name::Authority::Did(signing.verifying_key().to_bytes())
+        );
     }
 }

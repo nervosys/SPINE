@@ -11,6 +11,7 @@
 
 mod agentic_sse;
 mod auth;
+mod model;
 mod names;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -62,6 +63,8 @@ use tracing::instrument;
         names::publish_name,
         names::fetch_name,
         names::crawl_names,
+        names::upload_resource,
+        names::download_resource,
     ),
     components(schemas(
         CreateSessionReq, SessionInfo, NavigateReq, SearchReq,
@@ -108,6 +111,7 @@ impl Modify for SecurityAddon {
 type Session = Arc<Mutex<AgentClient<TcpStream>>>;
 
 struct AppState {
+    chat_backend: model::ChatBackend,
     sessions: DashMap<Uuid, Session>,
     backend_addr: String,
     start_time: Instant,
@@ -123,6 +127,7 @@ struct AppState {
 impl AppState {
     fn new(config: &SpineConfig) -> Self {
         Self {
+            chat_backend: model::ChatBackend::Disabled,
             sessions: DashMap::new(),
             backend_addr: format!("{}:{}", config.server.host, config.server.port),
             start_time: Instant::now(),
@@ -629,31 +634,30 @@ async fn main() -> anyhow::Result<()> {
     // happen before the first TLS handshake.
     install_fips_provider()?;
 
-    let config = SpineConfig::load();
+    let config = SpineConfig::try_load()?;
     let gateway_port = config.server.metrics_port + 1; // 9091
 
-    let state = Arc::new(AppState::new(&config));
+    let mut state = AppState::new(&config);
+    state.chat_backend = model::ChatBackend::from_env()?;
+    let state = Arc::new(state);
 
     let app = Router::new()
         // Session management
         .route("/api/sessions", post(create_session))
-        .route("/api/sessions/{id}", delete(delete_session))
+        .route("/api/sessions/:id", delete(delete_session))
         // Browse
-        .route("/api/sessions/{id}/navigate", post(navigate))
-        .route("/api/sessions/{id}/ur", get(get_ur))
-        .route("/api/sessions/{id}/html", get(get_html))
-        .route("/api/sessions/{id}/search", post(search))
-        .route("/api/sessions/{id}/ping", get(ping_session))
+        .route("/api/sessions/:id/navigate", post(navigate))
+        .route("/api/sessions/:id/ur", get(get_ur))
+        .route("/api/sessions/:id/html", get(get_html))
+        .route("/api/sessions/:id/search", post(search))
+        .route("/api/sessions/:id/ping", get(ping_session))
         // Compute
-        .route("/api/sessions/{id}/execute", post(execute_hls))
+        .route("/api/sessions/:id/execute", post(execute_hls))
         .route("/api/parse", post(parse_html_endpoint))
         .route("/api/compile", post(compile_hls))
         // Agentic surface — OpenAI-compatible chat/completions + capability
         // discovery. Bridges SPINE StreamToken frames to SSE.
-        .route(
-            "/v1/chat/completions",
-            post(agentic_sse::chat_completions_stream),
-        )
+        .route("/v1/chat/completions", post(model::chat_completions))
         .route("/v1/agentic/capabilities", get(agentic_sse::capabilities))
         // Neural encoder-decoder protocols — embeddings + codec catalog.
         .route("/v1/embeddings", post(agentic_sse::embeddings))
@@ -668,6 +672,12 @@ async fn main() -> anyhow::Result<()> {
         .route("/v1/names/publish", post(names::publish_name))
         .route("/v1/names/endpoints", get(names::fetch_name))
         .route("/v1/names/crawl", get(names::crawl_names))
+        .route(
+            "/v1/resources",
+            get(names::download_resource)
+                .post(names::upload_resource)
+                .layer(DefaultBodyLimit::max(40 * 1024 * 1024)),
+        )
         // Ops
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -715,9 +725,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{gateway_port}")).await?;
-    tracing::info!("SPINE Gateway listening on http://0.0.0.0:{gateway_port}");
-    tracing::info!("Swagger UI: http://0.0.0.0:{gateway_port}/swagger-ui/");
+    let gateway_addr = format!("{}:{gateway_port}", config.server.host);
+    let listener = tokio::net::TcpListener::bind(&gateway_addr).await?;
+    tracing::info!("SPINE Gateway listening on http://{gateway_addr}");
+    tracing::info!("Swagger UI: http://{gateway_addr}/swagger-ui/");
     tracing::info!("Backend: {}:{}", config.server.host, config.server.port);
 
     axum::serve(listener, app)

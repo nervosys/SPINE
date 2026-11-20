@@ -16,6 +16,9 @@ name = "spine"
 path = "src/main.rs"
 
 [dependencies]
+spine-name = { path = "../spine-name", version = "2.0.2" }
+ed25519-dalek.workspace = true
+rand.workspace = true
 spine-agent = { path = "../spine-agent", version = "2.0.2" }
 spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }

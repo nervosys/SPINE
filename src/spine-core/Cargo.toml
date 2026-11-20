@@ -12,7 +12,8 @@ authors.workspace = true
 description = "Core engine for the SPINE bioinspired agentic browser"
 
 [dependencies]
-spine-name = { path = "../spine-name", version = "2.0.2" }
+spine-name = { path = "../spine-name", version = "2.0.2", features = ["storage"] }
+spine-storage = { path = "../spine-storage", version = "2.0.2" }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 spine-agent = { path = "../spine-agent", version = "2.0.2" }
@@ -49,6 +50,10 @@ rustls-pemfile.workspace = true
 rcgen = "0.13"
 sha2 = "0.10"
 base64 = "0.22"
+futures = "0.3"
+async-trait = "0.1"
+tempfile = "3"
+ed25519-dalek.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

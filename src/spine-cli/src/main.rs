@@ -30,6 +30,26 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Serve the native core's read-only tools over MCP stdio
+    Mcp(commands::mcp::McpArgs),
+    /// Submit and inspect durable work over the signed mesh
+    Task {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+        #[arg(long)]
+        peer: String,
+        #[arg(long)]
+        peer_key: String,
+        #[command(subcommand)]
+        action: commands::tasks::TaskAction,
+    },
+    /// Publish, discover, renew, and retrieve signed agent-web resources
+    Name {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+        #[command(subcommand)]
+        action: commands::names::NameAction,
+    },
     /// Initialize a new SPINE project
     Init {
         /// Project directory (default: current directory)
@@ -249,6 +269,14 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     match cli.command {
+        Commands::Mcp(args) => commands::mcp::run(args).await,
+        Commands::Name { addr, action } => commands::names::run(addr, action).await,
+        Commands::Task {
+            addr,
+            peer,
+            peer_key,
+            action,
+        } => commands::tasks::run(addr, peer, peer_key, action).await,
         Commands::Init {
             path,
             name,

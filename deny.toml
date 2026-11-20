@@ -4,8 +4,9 @@
 [advisories]
 # Ignore specific advisories by RUSTSEC ID.
 #
-# Every entry here is `informational = "unmaintained"` -- a crate with no
-# maintained successor to move to, which is not a fix anyone can apply. No
+# Every entry here is `informational = "unmaintained"`. Dependency paths,
+# temporary rationales, owner and review dates are recorded in
+# docs/DEPENDENCY_EXCEPTIONS.md. Migration requires compatibility review. No
 # actual vulnerability is suppressed, and none should be: if one reappears
 # through a dependency, this job must fail rather than stay quiet.
 #
@@ -22,9 +23,9 @@ ignore = [
     "RUSTSEC-2025-0141",
     # derivative unmaintained — transitive
     "RUSTSEC-2024-0388",
-    # fxhash unmaintained — transitive via criterion
+    # fxhash unmaintained — transitive parser/runtime hashing
     "RUSTSEC-2025-0057",
-    # instant unmaintained — transitive via criterion/parking_lot
+    # instant unmaintained — transitive timing dependency
     "RUSTSEC-2024-0384",
     # number_prefix unmaintained — transitive via indicatif
     "RUSTSEC-2025-0119",
@@ -32,7 +33,7 @@ ignore = [
     "RUSTSEC-2024-0436",
     # proc-macro-error unmaintained — transitive
     "RUSTSEC-2024-0370",
-    # rustls-pemfile unmaintained — transitive via rustls
+    # rustls-pemfile unmaintained — direct TLS loading and native-cert dependency
     "RUSTSEC-2025-0134",
     # backoff unmaintained — transitive via kube-runtime
     "RUSTSEC-2025-0012",
