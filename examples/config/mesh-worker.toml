@@ -1,0 +1,27 @@
+# Start in a separate worker directory; keep the node identity across restarts.
+[server]
+host = "127.0.0.1"
+port = 8180
+metrics_port = 9190
+max_sessions = 100
+max_connections_per_ip = 20
+
+[namespace]
+connection_limit = 64
+handshake_timeout_secs = 10
+frame_timeout_secs = 60
+queue_timeout_secs = 5
+write_timeout_secs = 10
+enabled = true
+port = 9540
+key_path = "spine-node.key"
+records_path = "spine-names.sqlite"
+seeds = ["127.0.0.1:9440"]
+maintain_secs = 60
+# Enable only after adding the coordinator public key reported by `spine name status`.
+tasks_enabled = false
+task_peers = []
+
+[logging]
+format = "json"
+level = "info"

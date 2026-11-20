@@ -53,16 +53,28 @@ set -uo pipefail
 #
 # Update it when the workspace gains or loses a test target. A mismatch here is
 # the signal, not a nuisance.
-EXPECTED_SUITES_MIN=68
+EXPECTED_SUITES_MIN=70
 EXPECTED_IGNORED=5
 EXPECTED_TOTAL="${1:-}"
 
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
+# Optional retained stage logs for release evidence. Never mix stages in one
+# saved file, or a later green command could conceal an earlier failure.
+if [ -n "${SPINE_VERIFY_LOG_DIR:-}" ]; then
+    mkdir -p "$SPINE_VERIFY_LOG_DIR" || exit 1
+fi
+retain_log() {
+    if [ -n "${SPINE_VERIFY_LOG_DIR:-}" ]; then
+        cp "$log" "$SPINE_VERIFY_LOG_DIR/$1.log" || return 1
+    fi
+}
+
 echo "running cargo test --workspace --no-fail-fast ..."
 cargo test --workspace --no-fail-fast >"$log" 2>&1
 test_status=$?
+retain_log tests || exit 1
 
 results=$(grep -c 'test result:' "$log" || true)
 failed_suites=$(grep -c 'test result: FAILED' "$log" || true)
@@ -110,10 +122,12 @@ if [ "$test_status" -ne 0 ] && [ "$ok" -eq 0 ]; then
 fi
 
 echo "running cargo clippy --workspace --all-targets ..."
-clippy_out=$(cargo clippy --workspace --all-targets 2>&1 | grep -E '^(warning|error)' || true)
-if [ -n "$clippy_out" ]; then
-    echo "FAIL: Clippy is not silent"
-    echo "$clippy_out" | head -20
+cargo clippy --workspace --all-targets -- -D warnings >"$log" 2>&1
+clippy_status=$?
+retain_log clippy || exit 1
+if [ "$clippy_status" -ne 0 ]; then
+    echo "FAIL: Clippy exited $clippy_status"
+    tail -40 "$log"
     ok=1
 fi
 
@@ -122,11 +136,12 @@ fi
 # unformatted files were stopping every job downstream of it — including the one
 # that uploads release binaries. Nothing local was looking.
 echo "running cargo fmt --all -- --check ..."
-fmt_out=$(cargo fmt --all -- --check 2>&1 | grep -E '^Diff in ' || true)
-if [ -n "$fmt_out" ]; then
-    fmt_files=$(echo "$fmt_out" | sed 's/^Diff in //; s/:[0-9]*:$//' | sort -u)
-    echo "FAIL: rustfmt is not clean — $(echo "$fmt_files" | wc -l) file(s)"
-    echo "$fmt_files" | head -20
+cargo fmt --all -- --check >"$log" 2>&1
+fmt_status=$?
+retain_log fmt || exit 1
+if [ "$fmt_status" -ne 0 ]; then
+    echo "FAIL: rustfmt exited $fmt_status"
+    head -40 "$log"
     echo "      fix with: cargo fmt --all"
     ok=1
 fi

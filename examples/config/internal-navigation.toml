@@ -1,0 +1,13 @@
+# Only clients trusted to access this internal origin should reach the native core.
+[server]
+host = "127.0.0.1"
+port = 8080
+metrics_port = 9090
+
+[outbound]
+enabled = true
+# Exact scheme, host and port. All paths at this origin are allowed.
+internal_origins = ["http://127.0.0.1:8088"]
+max_response_bytes = 2097152
+timeout_secs = 30
+max_concurrent = 16
