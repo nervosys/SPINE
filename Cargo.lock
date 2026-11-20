@@ -6910,7 +6910,6 @@ dependencies = [
 name = "spine-neural"
 version = "2.0.2"
 dependencies = [
- "log",
  "rand 0.8.8",
  "serde",
  "smallvec",
@@ -7035,7 +7034,6 @@ name = "spine-transport"
 version = "2.0.2"
 dependencies = [
  "aes-gcm",
- "anyhow",
  "bincode",
  "bitflags 2.13.1",
  "bytes",
@@ -7065,7 +7063,6 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-uring",
  "tracing",
- "uuid",
  "zstd",
 ]
 

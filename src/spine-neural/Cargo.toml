@@ -16,7 +16,6 @@ simd = []    # Enable explicit SIMD optimizations
 
 [dependencies]
 serde.workspace = true
-log.workspace = true
 rand.workspace = true
 smallvec = { version = "1.13", features = ["const_generics", "union", "serde"] }
 
