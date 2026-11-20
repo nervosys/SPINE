@@ -1,6 +1,5 @@
 //! Persistent immutable resource bytes, addressed by the hash in a signed name.
 use anyhow::{ensure, Context, Result};
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use spine_name::{content_hash, NameRecord};
 use spine_protocol::resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK};
