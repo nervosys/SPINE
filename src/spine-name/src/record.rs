@@ -150,6 +150,22 @@ impl NameRecord {
         self
     }
 
+    /// Renew with the resource owner's key, preserving endpoints and content.
+    /// No replica can extend the lifetime without that key. An exhausted
+    /// sequence is an error rather than a wraparound to an older record.
+    pub fn renewed(&self, key: &SigningKey, now: u64, ttl_secs: u32) -> Result<Self, NameError> {
+        self.verify()?;
+        let mut record = self.clone();
+        record.seq = record
+            .seq
+            .checked_add(1)
+            .ok_or(NameError::SequenceExhausted)?;
+        record.published_at = now;
+        record.ttl_secs = ttl_secs;
+        record.sign(key)?;
+        Ok(record)
+    }
+
     pub fn with_endpoint(mut self, endpoint: Endpoint) -> Self {
         self.endpoints.push(endpoint);
         self

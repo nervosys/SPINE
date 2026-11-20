@@ -179,6 +179,7 @@ impl ResolverCache {
     }
 
     pub fn remove(&mut self, uri: &SpineUri) -> Option<NameRecord> {
+        self.negative.remove(&uri.key());
         self.entries.remove(&uri.key()).map(|e| e.record)
     }
 

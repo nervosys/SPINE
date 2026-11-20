@@ -6,6 +6,8 @@ pub mod agentic_codec;
 pub mod mcp;
 pub mod negotiation;
 pub mod replay;
+pub mod resource;
+pub mod tasks;
 pub mod wire;
 
 pub use agentic::{
@@ -91,7 +93,6 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
-use zstd::stream::decode_all;
 use zstd::stream::encode_all;
 
 // High-performance binary serialization
@@ -120,6 +121,34 @@ pub async fn write_header_body<W: AsyncWrite + Unpin + ?Sized>(
     header: &[u8],
     body: &[u8],
 ) -> std::io::Result<()> {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        write_header_body_inner(w, header, body),
+    )
+    .await;
+    match result {
+        Ok(Ok(())) => Ok(()),
+        other => {
+            // A partial frame cannot be retried on this byte stream. Closing
+            // also bounds server output when the remote client stops reading.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(1), w.shutdown()).await;
+            match other {
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "native write deadline exceeded",
+                )),
+                Ok(Ok(())) => unreachable!(),
+            }
+        }
+    }
+}
+
+async fn write_header_body_inner<W: AsyncWrite + Unpin + ?Sized>(
+    w: &mut W,
+    header: &[u8],
+    body: &[u8],
+) -> std::io::Result<()> {
     use std::io::IoSlice;
     let total = header.len() + body.len();
     let mut sent: usize = 0;
@@ -143,12 +172,10 @@ pub async fn write_header_body<W: AsyncWrite + Unpin + ?Sized>(
 // CHAMELEON PROTOCOL
 // =============================================================================
 //
-// A moving-target defense system using latent space transformations for
-// implicit encryption and compression.
-//
-// Core Insight: High-dimensional vector spaces are inherently encrypted—
-// the transformation matrix IS the key. By evolving the transformation
-// based on message history, we create a protocol impossible to analyze.
+// Experimental adaptive representation and compression. Vector transforms
+// and moving headers do not establish confidentiality or cryptographic
+// authenticity. Use an authenticated transport for private sessions; these
+// research codecs are not substitutes for TLS or reviewed AEAD.
 
 // =============================================================================
 // SPECULATIVE DECODING ENGINE
@@ -1144,6 +1171,27 @@ pub enum BrowserCommand {
         #[serde(default)]
         max_visits: Option<usize>,
     },
+    /// Store verified bytes and publish their signed binding on this origin.
+    PublishResource {
+        record: serde_json::Value,
+        content_type: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    /// Read immutable bytes after resolving a signed content hash.
+    ReadResource {
+        hash: [u8; 32],
+        offset: u64,
+        max_bytes: u32,
+    },
+    /// Local namespace identity, connectivity, and authenticated peer contacts.
+    NamespaceStatus,
+    /// Versioned signed application call, pinned to an expected peer key.
+    MeshCall {
+        peer_id: String,
+        peer_key: [u8; 32],
+        payload: serde_json::Value,
+    },
 }
 
 /// The result of a name resolution.
@@ -1165,6 +1213,8 @@ pub enum NameResolution {
     NotFound { name: String },
     /// The name was malformed, or names a set rather than a single record.
     Invalid { name: String, reason: String },
+    /// A disconnected namespace or failed lookup is not an authoritative miss.
+    Unavailable { name: String, reason: String },
 }
 
 /// Where a resolution came from. Mirrors `spine_name::Provenance` at the
@@ -1699,7 +1749,7 @@ where
             return Err(anyhow::anyhow!("Empty message after decryption"));
         }
         data = if data[0] == 0x01 {
-            decode_all(&data[1..])?
+            wire::decode_zstd_limited(&data[1..], wire::MAX_DECODED_FRAME_BYTES)?
         } else {
             data[1..].to_vec()
         };
@@ -1841,6 +1891,10 @@ where
     /// Write frame with morphing header format (stack-allocated header, no heap alloc)
     #[inline]
     async fn write_morphed_frame(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            data.len() <= wire::MAX_TRANSPORT_FRAME_BYTES,
+            "native transport frame exceeds size limit"
+        );
         let len = data.len() as u32;
         let header_size = self.morphology.header_size as usize;
 
@@ -1885,7 +1939,7 @@ where
         } as usize;
 
         // SECURITY: Limit maximum frame size to prevent OOM attacks (16 MiB)
-        const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
+        const MAX_FRAME_SIZE: usize = wire::MAX_TRANSPORT_FRAME_BYTES;
         if len > MAX_FRAME_SIZE {
             anyhow::bail!(
                 "Frame size {} exceeds maximum allowed size {}",
@@ -2577,7 +2631,7 @@ impl ProtocolHandlerState {
             return Err(anyhow::anyhow!("Empty message after decryption"));
         }
         data = if data[0] == 0x01 {
-            decode_all(&data[1..])?
+            wire::decode_zstd_limited(&data[1..], wire::MAX_DECODED_FRAME_BYTES)?
         } else {
             data[1..].to_vec()
         };
@@ -2594,6 +2648,10 @@ impl ProtocolHandlerState {
         writer: &mut W,
         data: &[u8],
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            data.len() <= wire::MAX_TRANSPORT_FRAME_BYTES,
+            "native transport frame exceeds size limit"
+        );
         let len = data.len() as u32;
         let mut header = Vec::with_capacity(self.morphology.header_size as usize);
 
@@ -2627,6 +2685,10 @@ impl ProtocolHandlerState {
             u32::from_le_bytes(len_bytes)
         } as usize;
 
+        anyhow::ensure!(
+            len <= wire::MAX_TRANSPORT_FRAME_BYTES,
+            "native transport frame exceeds size limit"
+        );
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await?;
         Ok(buf)

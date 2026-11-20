@@ -56,6 +56,35 @@ pub const WIRE_VERSION: u8 = 1;
 
 /// Size of [`SpineWireHeader`] in bytes.
 pub const HEADER_LEN: usize = 8;
+/// Maximum serialized message body, before any optional compression.
+pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum decoded outer speculative frame (JSON expands byte arrays).
+pub const MAX_DECODED_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum frame carried by native TCP or a native transport stream.
+pub const MAX_TRANSPORT_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Bound both decoded output and the decoder's history window. A one-byte
+/// lookahead distinguishes a complete body at the limit from an oversized one.
+pub(crate) fn decode_zstd_limited(payload: &[u8], limit: usize) -> Result<Vec<u8>, WireError> {
+    use std::io::Read;
+    let mut decoder = zstd::stream::read::Decoder::new(payload)?;
+    decoder.window_log_max(23)?;
+    let mut output = Vec::new();
+    decoder.take(limit as u64 + 1).read_to_end(&mut output)?;
+    if output.len() > limit {
+        return Err(WireError::TooLarge { limit });
+    }
+    Ok(output)
+}
+
+fn check_message_size(payload: &[u8]) -> Result<(), WireError> {
+    if payload.len() > MAX_MESSAGE_BYTES {
+        return Err(WireError::TooLarge {
+            limit: MAX_MESSAGE_BYTES,
+        });
+    }
+    Ok(())
+}
 
 /// Payload codec: JSON text (legacy / debugging).
 pub const FORMAT_JSON: u8 = 0x01;
@@ -78,6 +107,10 @@ pub const ZSTD_LEVEL: i32 = 3;
 /// Errors produced while encoding or decoding a SPINE wire frame.
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
+    #[error("unsupported SPINE wire version: {0}")]
+    UnsupportedVersion(u8),
+    #[error("wire body exceeds the {limit}-byte limit")]
+    TooLarge { limit: usize },
     /// The buffer was shorter than an 8-byte [`SpineWireHeader`].
     #[error("wire frame too short: {0} bytes (need >= {HEADER_LEN})")]
     TooShort(usize),
@@ -174,6 +207,7 @@ impl SpineWireHeader {
 pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
     let mut cbor = Vec::new();
     ciborium::into_writer(msg, &mut cbor).map_err(|e| WireError::CborEncode(e.to_string()))?;
+    check_message_size(&cbor)?;
     Ok(frame(FORMAT_CBOR, &cbor))
 }
 
@@ -189,12 +223,14 @@ pub fn encode(msg: &Message) -> Result<Vec<u8>, WireError> {
 pub fn encode_compressed(msg: &Message) -> Result<Vec<u8>, WireError> {
     let mut cbor = Vec::new();
     ciborium::into_writer(msg, &mut cbor).map_err(|e| WireError::CborEncode(e.to_string()))?;
+    check_message_size(&cbor)?;
     if cbor.len() >= ZSTD_THRESHOLD {
         let compressed = zstd::stream::encode_all(&cbor[..], ZSTD_LEVEL)?;
         if compressed.len() < cbor.len() {
             return Ok(frame(FORMAT_CBOR_ZSTD, &compressed));
         }
     }
+    check_message_size(&cbor)?;
     Ok(frame(FORMAT_CBOR, &cbor))
 }
 
@@ -204,6 +240,7 @@ pub fn encode_compressed(msg: &Message) -> Result<Vec<u8>, WireError> {
 /// production path. Output is still wrapped in a [`SpineWireHeader`].
 pub fn encode_json(msg: &Message) -> Result<Vec<u8>, WireError> {
     let payload = serde_json::to_vec(msg)?;
+    check_message_size(&payload)?;
     Ok(frame(FORMAT_JSON, &payload))
 }
 
@@ -222,12 +259,22 @@ fn frame(format: u8, payload: &[u8]) -> Vec<u8> {
 /// buffer carries no SPINE magic, it is treated as a legacy headerless JSON
 /// body and parsed directly — see the [module docs](self) on compatibility.
 pub fn decode(buf: &[u8]) -> Result<Message, WireError> {
+    if buf.len() > MAX_MESSAGE_BYTES + HEADER_LEN {
+        return Err(WireError::TooLarge {
+            limit: MAX_MESSAGE_BYTES,
+        });
+    }
     let Some(header) = SpineWireHeader::from_bytes(buf) else {
         // Legacy v1.3.x body: raw serde_json, no SPINE header.
+        check_message_size(buf)?;
         return Ok(serde_json::from_slice(buf)?);
     };
 
+    if header.version != WIRE_VERSION {
+        return Err(WireError::UnsupportedVersion(header.version));
+    }
     let payload = &buf[HEADER_LEN..];
+    check_message_size(payload)?;
     if payload.len() != header.payload_len as usize {
         return Err(WireError::LengthMismatch {
             expected: header.payload_len as usize,
@@ -241,7 +288,7 @@ pub fn decode(buf: &[u8]) -> Result<Message, WireError> {
             ciborium::from_reader(payload).map_err(|e| WireError::CborDecode(e.to_string()))
         }
         FORMAT_CBOR_ZSTD => {
-            let cbor = zstd::stream::decode_all(payload)?;
+            let cbor = decode_zstd_limited(payload, MAX_MESSAGE_BYTES)?;
             ciborium::from_reader(&cbor[..]).map_err(|e| WireError::CborDecode(e.to_string()))
         }
         other => Err(WireError::UnknownFormat(other)),
@@ -252,6 +299,23 @@ pub fn decode(buf: &[u8]) -> Result<Message, WireError> {
 mod tests {
     use super::*;
     use crate::Message;
+
+    #[test]
+    fn decoder_enforces_small_output_limits_and_supported_versions() {
+        let text = b"a normal small codec test fixture";
+        let compressed = zstd::stream::encode_all(&text[..], ZSTD_LEVEL).unwrap();
+        assert_eq!(decode_zstd_limited(&compressed, text.len()).unwrap(), text);
+        assert!(matches!(
+            decode_zstd_limited(&compressed, text.len() - 1),
+            Err(WireError::TooLarge { .. })
+        ));
+        let mut framed = encode(&Message::Ping { timestamp: 42 }).unwrap();
+        framed[2] = WIRE_VERSION + 1;
+        assert!(matches!(
+            decode(&framed),
+            Err(WireError::UnsupportedVersion(_))
+        ));
+    }
 
     #[test]
     fn header_roundtrips() {

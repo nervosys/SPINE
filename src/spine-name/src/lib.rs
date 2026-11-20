@@ -98,6 +98,18 @@ pub fn content_hash(bytes: &[u8]) -> [u8; 32] {
 /// Everything that can go wrong naming or resolving.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum NameError {
+    #[error("name storage failed: {0}")]
+    Storage(String),
+
+    #[error("name record store is full")]
+    Capacity,
+
+    #[error("record sequence is exhausted")]
+    SequenceExhausted,
+
+    #[error("publication does not supersede the stored record")]
+    StalePublication,
+
     #[error("not a spine:// name: {0}")]
     NotSpineScheme(String),
 

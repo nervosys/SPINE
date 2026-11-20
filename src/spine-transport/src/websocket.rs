@@ -70,9 +70,9 @@ pub struct WebSocketBridge {
 }
 
 /// A server-side WebSocket connection accepted from a raw TCP upgrade.
-pub struct WebSocketServerBridge {
-    /// Underlying WebSocket stream (server-side, no TLS wrapper)
-    inner: tokio_tungstenite::WebSocketStream<TcpStream>,
+pub struct WebSocketServerBridge<S = TcpStream> {
+    /// Underlying WebSocket stream; may be plain TCP or authenticated TLS.
+    inner: tokio_tungstenite::WebSocketStream<S>,
     /// Connection creation time
     created_at: Instant,
     /// Last activity time
@@ -231,10 +231,13 @@ impl TransportBackend for WebSocketBridge {
 // SERVER-SIDE BRIDGE
 // =============================================================================
 
-impl WebSocketServerBridge {
+impl<S: AsyncRead + AsyncWrite + Unpin> WebSocketServerBridge<S> {
     /// Accept a WebSocket connection from an already-upgraded TCP stream.
-    pub async fn accept(stream: TcpStream) -> TransportResult<Self> {
-        let ws_stream = tokio_tungstenite::accept_async(stream)
+    pub async fn accept(stream: S) -> TransportResult<Self> {
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(16 * 1024 * 1024))
+            .max_frame_size(Some(16 * 1024 * 1024));
+        let ws_stream = tokio_tungstenite::accept_async_with_config(stream, Some(config))
             .await
             .map_err(|e| TransportError::Protocol(format!("WebSocket accept failed: {}", e)))?;
 
@@ -260,7 +263,9 @@ impl WebSocketServerBridge {
     }
 }
 
-impl TransportBackend for WebSocketServerBridge {
+impl<S: AsyncRead + AsyncWrite + Send + Sync + Unpin> TransportBackend
+    for WebSocketServerBridge<S>
+{
     async fn send_frame(&mut self, frame: Frame) -> TransportResult<()> {
         use futures::SinkExt;
         use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -357,14 +362,14 @@ impl TransportBackend for WebSocketServerBridge {
 /// This adapts the message-oriented WebSocket protocol to the byte-stream
 /// interface expected by the SPINE protocol handler. Binary WebSocket messages
 /// are buffered and presented as a continuous byte stream.
-pub struct WebSocketStream {
-    bridge: WebSocketServerBridge,
+pub struct WebSocketStream<S = TcpStream> {
+    bridge: WebSocketServerBridge<S>,
     /// Read buffer for partially consumed messages
     read_buf: BytesMut,
 }
 
-impl WebSocketStream {
-    pub fn new(bridge: WebSocketServerBridge) -> Self {
+impl<S> WebSocketStream<S> {
+    pub fn new(bridge: WebSocketServerBridge<S>) -> Self {
         Self {
             bridge,
             read_buf: BytesMut::with_capacity(8192),
@@ -372,12 +377,12 @@ impl WebSocketStream {
     }
 
     /// Consume and return the inner bridge.
-    pub fn into_inner(self) -> WebSocketServerBridge {
+    pub fn into_inner(self) -> WebSocketServerBridge<S> {
         self.bridge
     }
 }
 
-impl AsyncRead for WebSocketStream {
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for WebSocketStream<S> {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -426,7 +431,7 @@ impl AsyncRead for WebSocketStream {
     }
 }
 
-impl AsyncWrite for WebSocketStream {
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for WebSocketStream<S> {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
