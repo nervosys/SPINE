@@ -228,6 +228,9 @@ pub struct Lookup {
     /// shortlist ran dry, discarding answers from peers still in flight — which
     /// silently truncates a capability query to whatever its fastest peer knew.
     in_flight: usize,
+    /// Peers that actually answered. Zero at the end of a walk means nothing was
+    /// learned, which is not the same as the keyspace confirming absence.
+    answered: usize,
     /// Set once no unqueried candidate remains, nothing is in flight, or the
     /// round cap is hit.
     exhausted: bool,
@@ -246,6 +249,7 @@ impl Lookup {
             providers: Vec::new(),
             rounds: 0,
             in_flight: 0,
+            answered: 0,
             exhausted: false,
         };
         lookup.absorb_nodes(seeds);
@@ -312,6 +316,7 @@ impl Lookup {
     /// Absorb a peer's response.
     pub fn on_response(&mut self, response: &ResolveResponse) {
         self.in_flight = self.in_flight.saturating_sub(1);
+        self.answered += 1;
 
         // A record only counts if it verifies and actually answers *this* query.
         // A peer that returns someone else's record — or a forgery — must not be
@@ -347,6 +352,11 @@ impl Lookup {
         }
         self.queried.insert(*node);
         self.shortlist.retain(|n| &n.id != node);
+    }
+
+    /// Peers that have answered this lookup, with or without the record.
+    pub fn answered(&self) -> usize {
+        self.answered
     }
 
     /// Requests sent but not yet answered.
@@ -772,9 +782,17 @@ impl NameService {
 
     /// Drop a finished lookup and take its outcome.
     pub fn finish_lookup(&mut self, request_id: u64) -> Option<LookupOutcome> {
-        let outcome = self.lookups.get(&request_id)?.outcome()?;
+        self.finish_lookup_counted(request_id).map(|(o, _)| o)
+    }
+
+    /// Like [`NameService::finish_lookup`], also reporting whether any peer
+    /// answered. A `NotFound` with no answers means nobody could be asked.
+    pub fn finish_lookup_counted(&mut self, request_id: u64) -> Option<(LookupOutcome, bool)> {
+        let lookup = self.lookups.get(&request_id)?;
+        let outcome = lookup.outcome()?;
+        let answered = lookup.answered() > 0;
         self.lookups.remove(&request_id);
-        Some(outcome)
+        Some((outcome, answered))
     }
 
     /// Lookups still in flight.
@@ -1198,6 +1216,36 @@ mod tests {
             LookupOutcome::Providers(p) => assert_eq!(p.len(), 2, "no answer was dropped"),
             other => panic!("expected Providers, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_lookup_reports_whether_any_peer_answered() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        svc.add_node(node(1));
+        let (id, wave) = svc.start_lookup(ResolveQuery::Name(SpineUri::did([1u8; 32])));
+        assert_eq!(wave.len(), 1);
+        svc.mark_unreachable(id, &wave[0].id);
+        assert!(svc.next_wave(id).is_empty());
+        assert_eq!(
+            svc.finish_lookup_counted(id),
+            Some((LookupOutcome::NotFound, false)),
+            "nobody answered: nothing was learned"
+        );
+
+        svc.add_node(node(2));
+        let (id, wave) = svc.start_lookup(ResolveQuery::Name(SpineUri::did([1u8; 32])));
+        assert_eq!(wave.len(), 1);
+        svc.on_response(&ResolveResponse {
+            request_id: id,
+            record: None,
+            providers: vec![],
+            closer: vec![],
+        });
+        assert_eq!(
+            svc.finish_lookup_counted(id),
+            Some((LookupOutcome::NotFound, true)),
+            "a peer answered without the record: absence is confirmed"
+        );
     }
 
     #[test]

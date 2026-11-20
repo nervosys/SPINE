@@ -472,6 +472,16 @@ async fn resolve_one(
                 },
             }
         }
+        // A still-valid negative entry is an answer, not a miss: it is the whole
+        // point of caching the absence. Both surface as `NotFound` from the
+        // resolver, so ask the cache which this was before walking the mesh.
+        // Publishing or renewing a name clears the entry, so this cannot mask a
+        // newly published record.
+        Err(spine_name::NameError::NotFound(_)) if state.names.is_negative_cached(&uri) => {
+            spine_protocol::NameResolution::NotFound {
+                name: raw.to_string(),
+            }
+        }
         // Not held locally: this is where the node stops being a directory and
         // starts being a participant. Cache what the walk returns, so the next
         // ask for the same name is answered without another round trip.

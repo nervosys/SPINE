@@ -260,6 +260,15 @@ impl LocalResolver {
         self.cache.lock().unwrap().put_negative(uri, now);
     }
 
+    /// Whether a still-valid negative entry covers `uri`.
+    ///
+    /// Lets a caller tell a remembered absence from a plain miss, both of which
+    /// `resolve` reports as `NotFound`. Only the former may skip a mesh walk.
+    pub fn is_negative_cached(&self, uri: &SpineUri) -> bool {
+        let now = self.now();
+        self.cache.lock().unwrap().is_negative(uri, now)
+    }
+
     /// Cache statistics.
     pub fn cache_stats(&self) -> CacheStats {
         self.cache.lock().unwrap().stats()
@@ -482,6 +491,24 @@ mod tests {
         r.cache_negative(&uri);
         assert!(matches!(r.resolve(&uri).await, Err(NameError::NotFound(_))));
         assert_eq!(r.cache_stats().negative_hits, 1);
+    }
+
+    #[tokio::test]
+    async fn a_miss_is_distinguishable_from_a_remembered_absence() {
+        let r = LocalResolver::at_time(1_000);
+        let first = signed(1, 1_000, 100, &[], 1);
+        assert!(matches!(
+            r.resolve(&first.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        assert!(!r.is_negative_cached(&first.name), "a plain miss");
+
+        r.cache_negative(&first.name);
+        assert!(r.is_negative_cached(&first.name));
+
+        // Publishing invalidates the entry, so the walk-skipping path ends.
+        r.publish(first.clone()).unwrap();
+        assert!(!r.is_negative_cached(&first.name));
     }
 
     #[tokio::test]

@@ -282,7 +282,7 @@ pub struct MeshNameResolver {
     /// Addresses this node advertises to peers it introduces itself to.
     endpoints: Mutex<Vec<String>>,
     /// Lookups awaiting an outcome, by request id.
-    waiters: DashMap<u64, oneshot::Sender<LookupOutcome>>,
+    waiters: DashMap<u64, oneshot::Sender<(LookupOutcome, bool)>>,
     /// Bootstrap handshakes awaiting an ack, by the endpoint dialed.
     greetings: DashMap<String, oneshot::Sender<BootstrapPeer>>,
     /// Last record key a maintenance pass re-offered, so the next one resumes
@@ -723,6 +723,23 @@ impl MeshNameResolver {
         }
     }
 
+    /// Whether a finished lookup learned anything. A name lookup that ends
+    /// `NotFound` with no peer having answered is a failure to find out, and is
+    /// reported as such so callers neither cache nor report an absence.
+    fn settled(
+        query: &ResolveQuery,
+        outcome: LookupOutcome,
+        answered: bool,
+    ) -> Result<LookupOutcome, NameMeshError> {
+        if matches!(query, ResolveQuery::Name(_)) && outcome == LookupOutcome::NotFound && !answered
+        {
+            return Err(NameMeshError::Transport(
+                "no peer answered the lookup".into(),
+            ));
+        }
+        Ok(outcome)
+    }
+
     /// Find providers of a capability across the mesh.
     pub async fn find_providers(&self, term: &str) -> Result<Vec<NameRecord>, NameMeshError> {
         match self
@@ -737,6 +754,7 @@ impl MeshNameResolver {
     /// Start a lookup, dispatch its first wave, and await the outcome.
     async fn run_lookup(&self, query: ResolveQuery) -> Result<LookupOutcome, NameMeshError> {
         let now = self.now();
+        let query_kind = query.clone();
 
         let (request_id, wave) = {
             let mut service = self.service.lock().await;
@@ -756,9 +774,10 @@ impl MeshNameResolver {
         if wave.is_empty() {
             let outcome = {
                 let mut service = self.service.lock().await;
-                service.finish_lookup(request_id)
+                service.finish_lookup_counted(request_id)
             };
-            return Ok(outcome.unwrap_or(LookupOutcome::NotFound));
+            let (outcome, answered) = outcome.unwrap_or((LookupOutcome::NotFound, false));
+            return Self::settled(&query_kind, outcome, answered);
         }
 
         let (tx, rx) = oneshot::channel();
@@ -766,14 +785,14 @@ impl MeshNameResolver {
         self.dispatch(request_id, wave).await;
 
         match tokio::time::timeout(self.timeout, rx).await {
-            Ok(Ok(outcome)) => {
+            Ok(Ok((outcome, answered))) => {
                 self.metrics.lock().await.lookups_resolved += 1;
-                Ok(outcome)
+                Self::settled(&query_kind, outcome, answered)
             }
             // Sender dropped: the lookup ended without an outcome being posted.
             Ok(Err(_)) => {
                 self.cleanup(request_id).await;
-                Ok(LookupOutcome::NotFound)
+                Self::settled(&query_kind, LookupOutcome::NotFound, false)
             }
             Err(_) => {
                 self.waiters.remove(&request_id);
@@ -1097,10 +1116,10 @@ impl MeshNameResolver {
     async fn settle(&self, request_id: u64) {
         let outcome = {
             let mut service = self.service.lock().await;
-            service.finish_lookup(request_id)
+            service.finish_lookup_counted(request_id)
         };
         if let Some((_, tx)) = self.waiters.remove(&request_id) {
-            let _ = tx.send(outcome.unwrap_or(LookupOutcome::NotFound));
+            let _ = tx.send(outcome.unwrap_or((LookupOutcome::NotFound, false)));
         }
     }
 
@@ -1717,7 +1736,8 @@ mod tests {
         h.introduce(0, 1).await;
         h.board.blackhole(*h.nodes[1].node.agent_id());
 
-        // Must return promptly with NotFound, not wait out the timeout.
+        // Must return promptly, not wait out the timeout. Nobody answered, so
+        // this is Unavailable (a transport error), not a confirmed absence.
         let result = tokio::time::timeout(
             Duration::from_secs(2),
             h.nodes[0].resolve(&record(1, &[]).name),
@@ -1725,9 +1745,30 @@ mod tests {
         .await
         .expect("resolve() hung despite having no reachable peer");
 
-        assert!(matches!(result, Err(NameMeshError::NotFound(_))));
+        assert!(matches!(result, Err(NameMeshError::Transport(_))));
         assert!(h.nodes[0].metrics().await.unroutable_peers >= 1);
         assert_eq!(h.nodes[0].pending_lookups(), 0, "no waiter left behind");
+    }
+
+    #[tokio::test]
+    async fn an_answering_peer_without_the_record_confirms_absence() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+
+        let seeker = h.nodes[0].clone();
+        let name = record(1, &[]).name;
+        let lookup = tokio::spawn(async move { seeker.resolve(&name).await });
+
+        for _ in 0..16 {
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
+
+        let result = lookup.await.unwrap();
+        assert!(
+            matches!(result, Err(NameMeshError::NotFound(_))),
+            "a peer answered and did not have it: that is NotFound, got {result:?}"
+        );
     }
 
     #[tokio::test]

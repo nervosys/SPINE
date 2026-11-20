@@ -169,6 +169,17 @@ impl ResolverCache {
             .insert(uri.key(), now.saturating_add(self.negative_ttl));
     }
 
+    /// Whether a still-valid negative entry exists for `uri` at `now`.
+    ///
+    /// A read-only peek: it neither counts as a hit nor removes a lapsed entry.
+    /// An entry that also has a positive record does not count, matching
+    /// [`ResolverCache::get`], which answers from the record first.
+    pub fn is_negative(&self, uri: &SpineUri, now: u64) -> bool {
+        let key = uri.key();
+        !self.entries.contains_key(&key)
+            && self.negative.get(&key).is_some_and(|until| now < *until)
+    }
+
     /// Whether a cached record still matches a content hash — the strong
     /// validator that lets a revalidation return "unchanged" without a body.
     pub fn matches_validator(&self, uri: &SpineUri, hash: &[u8; 32]) -> bool {
@@ -331,6 +342,19 @@ mod tests {
         // After the TTL the name is retried.
         assert_eq!(c.get(&uri, 1_030), CacheLookup::Miss);
         assert_eq!(c.negative_len(), 0, "lapsed entry is cleaned up on read");
+    }
+
+    #[test]
+    fn peeking_at_a_negative_entry_is_read_only_and_honours_expiry() {
+        let mut c = ResolverCache::new(10).with_negative_ttl(30);
+        let uri = SpineUri::did([9u8; 32]);
+        assert!(!c.is_negative(&uri, 1_000));
+        c.put_negative(&uri, 1_000);
+        assert!(c.is_negative(&uri, 1_010));
+        assert_eq!(c.stats().negative_hits, 0, "a peek is not a hit");
+        assert!(!c.is_negative(&uri, 1_030), "lapsed");
+        c.remove(&uri);
+        assert!(!c.is_negative(&uri, 1_010), "invalidation clears it");
     }
 
     #[test]
