@@ -2,6 +2,7 @@
 //! preserves tool deltas and usage, applies backpressure, and drops the upstream
 //! response when the downstream consumer cancels. No token queue is accumulated.
 
+use crate::gateway_route::{Route, Settings};
 use axum::{
     body::Body,
     extract::State,
@@ -11,7 +12,6 @@ use axum::{
 };
 use futures::StreamExt;
 use serde_json::Value;
-use spine_recursive::gateway_route::{Route, Settings};
 use std::{sync::Arc, time::Duration};
 
 #[derive(Clone)]

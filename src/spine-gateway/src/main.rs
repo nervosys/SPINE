@@ -11,6 +11,7 @@
 
 mod agentic_sse;
 mod auth;
+mod gateway_route;
 mod model;
 mod names;
 
