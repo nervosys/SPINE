@@ -52,6 +52,9 @@ jobs:
           cargo clippy -p spine-protocol --no-default-features --all-targets -- -D warnings
           cargo clippy -p spine-protocol --no-default-features --features quic --all-targets -- -D warnings
 
+      - name: Clippy (spine-core without research code)
+        run: cargo clippy -p spine-core --no-default-features --all-targets -- -D warnings
+
   # ── Security Audit ─────────────────────────────────────────────────────────
   audit:
     runs-on: ubuntu-latest
