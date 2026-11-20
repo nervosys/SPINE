@@ -31,14 +31,18 @@ ignore = [
     "RUSTSEC-2025-0119",
     # paste unmaintained — transitive
     "RUSTSEC-2024-0436",
-    # proc-macro-error unmaintained — transitive
-    "RUSTSEC-2024-0370",
     # rustls-pemfile unmaintained — direct TLS loading and native-cert dependency
     "RUSTSEC-2025-0134",
     # backoff unmaintained — transitive via kube-runtime
     "RUSTSEC-2025-0012",
     # ttf-parser unmaintained — transitive via owned_ttf_parser → ab_glyph
     "RUSTSEC-2026-0192",
+    # chrono unmaintained — direct dependency of spine-agentic and others
+    "RUSTSEC-2026-0543",
+    # zbus_names / zvariant / zvariant_derive unmaintained — transitive via atspi -> AccessKit -> eframe (spine-browser GUI)
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0372",
 ]
 
 [licenses]
