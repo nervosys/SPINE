@@ -417,17 +417,20 @@ impl MeshNameResolver {
             waiters: &self.rpc_waiters,
             id,
         };
-        let envelope = self.node.create_envelope(
-            MeshTarget::Agent(peer),
-            MeshPayload::Application(Box::new(ApplicationMessage {
-                public_key: *self.local_key().as_bytes(),
-                recipient: peer,
-                recipient_key: peer_key,
-                request_id: id,
-                response: false,
-                data,
-            })),
-        );
+        let envelope = self
+            .node
+            .create_envelope(
+                MeshTarget::Agent(peer),
+                MeshPayload::Application(Box::new(ApplicationMessage {
+                    public_key: *self.local_key().as_bytes(),
+                    recipient: peer,
+                    recipient_key: peer_key,
+                    request_id: id,
+                    response: false,
+                    data,
+                })),
+            )
+            .map_err(|e| NameMeshError::Transport(e.to_string()))?;
         tokio::time::timeout(Duration::from_secs(30), async {
             self.transport.send(envelope).await?;
             rx.await
@@ -538,7 +541,13 @@ impl MeshNameResolver {
         let (tx, rx) = oneshot::channel();
         self.greetings.insert(endpoint.to_string(), tx);
 
-        let hello = self.node.name_hello(self.endpoints().await);
+        let hello = match self.node.name_hello(self.endpoints().await) {
+            Ok(hello) => hello,
+            Err(e) => {
+                self.greetings.remove(endpoint);
+                return Err(NameMeshError::Transport(e.to_string()));
+            }
+        };
         if let Err(e) = self.transport.send_to(endpoint, hello).await {
             self.greetings.remove(endpoint);
             self.transport.release(endpoint).await;
@@ -834,9 +843,13 @@ impl MeshNameResolver {
                 unreachable.push(node.id);
                 continue;
             };
-            let envelope = self
+            let Ok(envelope) = self
                 .node
-                .name_resolve_request(agent_id, request_id, query.clone());
+                .name_resolve_request(agent_id, request_id, query.clone())
+            else {
+                unreachable.push(node.id);
+                continue;
+            };
             let transport = self.transport.clone();
             let key = node.id;
             sends.push(async move { (key, transport.send(envelope).await) });
@@ -932,7 +945,7 @@ impl MeshNameResolver {
                     if serde_json::to_vec(&data).map_or(true, |v| v.len() > 2 * 1024 * 1024) {
                         data = serde_json::json!({"error":{"code":"response_too_large","message":"application response exceeds 2 MiB"}});
                     }
-                    let answer = self.node.create_envelope(
+                    let Ok(answer) = self.node.create_envelope(
                         MeshTarget::Agent(envelope.from),
                         MeshPayload::Application(Box::new(ApplicationMessage {
                             public_key: *self.local_key().as_bytes(),
@@ -942,7 +955,9 @@ impl MeshNameResolver {
                             response: true,
                             data,
                         })),
-                    );
+                    ) else {
+                        return true;
+                    };
                     match reply {
                         Some(back) => {
                             let _ = back.send(answer).await;
@@ -979,7 +994,9 @@ impl MeshNameResolver {
                     service.handle_request(request, now)
                 };
                 self.metrics.lock().await.requests_answered += 1;
-                let answer = self.node.name_resolve_response(envelope.from, response);
+                let Ok(answer) = self.node.name_resolve_response(envelope.from, response) else {
+                    return true;
+                };
                 match reply {
                     Some(back) => {
                         let _ = back.send(answer).await;
@@ -1013,9 +1030,12 @@ impl MeshNameResolver {
                 let closer = self.service.lock().await.peers_for_newcomer(&key);
                 self.metrics.lock().await.greetings_answered += 1;
 
-                let ack = self
-                    .node
-                    .name_hello_ack(envelope.from, self.endpoints().await, closer);
+                let Ok(ack) =
+                    self.node
+                        .name_hello_ack(envelope.from, self.endpoints().await, closer)
+                else {
+                    return true;
+                };
                 match reply {
                     Some(back) => {
                         let _ = back.send(ack).await;
@@ -1190,17 +1210,19 @@ mod application_tests {
             MeshNameResolver::new(receiver_node.clone(), capture.clone())
                 .with_application(Arc::new(Echo)),
         );
-        let envelope = sender_node.create_envelope(
-            MeshTarget::Agent(resolver.agent_id()),
-            MeshPayload::Application(Box::new(ApplicationMessage {
-                public_key: sender_key,
-                recipient: resolver.agent_id(),
-                recipient_key: receiver_key,
-                request_id: Uuid::new_v4(),
-                response: false,
-                data: serde_json::json!({"operation":"probe"}),
-            })),
-        );
+        let envelope = sender_node
+            .create_envelope(
+                MeshTarget::Agent(resolver.agent_id()),
+                MeshPayload::Application(Box::new(ApplicationMessage {
+                    public_key: sender_key,
+                    recipient: resolver.agent_id(),
+                    recipient_key: receiver_key,
+                    request_id: Uuid::new_v4(),
+                    response: false,
+                    data: serde_json::json!({"operation":"probe"}),
+                })),
+            )
+            .unwrap();
         resolver.handle_envelope(&envelope, resolver.now()).await;
         assert_eq!(capture.0.lock().unwrap().len(), 1);
         let mut invalid = envelope.clone();
@@ -1552,7 +1574,10 @@ mod tests {
     async fn a_hello_whose_signature_does_not_match_its_key_is_refused() {
         let h = Harness::new(2);
 
-        let mut hello = h.nodes[0].node.name_hello(vec!["liar:9440".into()]);
+        let mut hello = h.nodes[0]
+            .node
+            .name_hello(vec!["liar:9440".into()])
+            .unwrap();
         // Claim someone else's keyspace position while keeping our signature.
         if let MeshPayload::NameHello(inner) = &mut hello.payload {
             inner.public_key = *h.nodes[1].local_key().as_bytes();
@@ -1679,10 +1704,13 @@ mod tests {
         forged.capabilities.push("admin".into()); // breaks the signature
 
         // Construct the envelope directly: announce_name would refuse to build it.
-        let envelope = h.nodes[0].node.create_envelope(
-            crate::mesh::MeshTarget::Broadcast,
-            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(forged))),
-        );
+        let envelope = h.nodes[0]
+            .node
+            .create_envelope(
+                crate::mesh::MeshTarget::Broadcast,
+                MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(forged))),
+            )
+            .unwrap();
         assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
 
         assert_eq!(
@@ -1699,11 +1727,14 @@ mod tests {
         let rec = record(1, &[]);
         h.nodes[1].publish_local(rec.clone()).await.unwrap();
 
-        let envelope = h.nodes[0].node.name_resolve_request(
-            *h.nodes[1].node.agent_id(),
-            77,
-            ResolveQuery::Name(rec.name.clone()),
-        );
+        let envelope = h.nodes[0]
+            .node
+            .name_resolve_request(
+                *h.nodes[1].node.agent_id(),
+                77,
+                ResolveQuery::Name(rec.name.clone()),
+            )
+            .unwrap();
         assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
 
         // The answer is queued back to the asker.
@@ -1723,7 +1754,8 @@ mod tests {
         let h = Harness::new(1);
         let envelope = h.nodes[0]
             .node
-            .create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1));
+            .create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1))
+            .unwrap();
         assert!(
             !h.nodes[0].handle_envelope(&envelope, NOW).await,
             "the driver must not swallow unrelated mesh traffic"

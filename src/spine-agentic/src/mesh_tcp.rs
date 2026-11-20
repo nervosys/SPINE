@@ -1247,8 +1247,9 @@ mod tests {
             SigningIdentity::from_seed("test", [44; 32]),
             MeshConfig::default(),
         );
-        let envelope =
-            node.create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1));
+        let envelope = node
+            .create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1))
+            .unwrap();
         assert!(plain.send(envelope.clone()).await.is_err());
 
         let (mut stream, mut peer) = tokio::io::duplex(32768);
@@ -1278,6 +1279,7 @@ mod tests {
             MeshConfig::default(),
         )
         .create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1))
+        .unwrap()
     }
 
     #[test]
@@ -1614,11 +1616,13 @@ mod tests {
         );
         let mut buf = Vec::new();
         for i in 0..5u64 {
-            let e = node.name_resolve_request(
-                *node.agent_id(),
-                i,
-                ResolveQuery::Capability("web.search".into()),
-            );
+            let e = node
+                .name_resolve_request(
+                    *node.agent_id(),
+                    i,
+                    ResolveQuery::Capability("web.search".into()),
+                )
+                .unwrap();
             write_envelope(&mut buf, &e).await.unwrap();
         }
 
@@ -1679,11 +1683,13 @@ mod tests {
             SigningIdentity::from_seed("lonely", [3u8; 32]),
             MeshConfig::default(),
         );
-        let envelope = node.name_resolve_request(
-            *node.agent_id(),
-            1,
-            ResolveQuery::Name(SpineUri::did([1u8; 32])),
-        );
+        let envelope = node
+            .name_resolve_request(
+                *node.agent_id(),
+                1,
+                ResolveQuery::Name(SpineUri::did([1u8; 32])),
+            )
+            .unwrap();
         let err = transport.send(envelope).await.unwrap_err();
         assert!(err.to_string().contains("no address known"), "{err}");
     }
@@ -1894,10 +1900,13 @@ mod tests {
 
         let mut forged = record(1, &[]);
         forged.capabilities.push("admin".into()); // breaks the signature
-        let envelope = publisher.mesh.create_envelope(
-            crate::mesh::MeshTarget::Broadcast,
-            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(forged))),
-        );
+        let envelope = publisher
+            .mesh
+            .create_envelope(
+                crate::mesh::MeshTarget::Broadcast,
+                MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(forged))),
+            )
+            .unwrap();
         publisher.transport.send(envelope).await.unwrap();
 
         for _ in 0..50 {
@@ -2113,17 +2122,20 @@ mod secure_tests {
         let pooled = caller.transport.connection(&worker_id, None).await.unwrap();
         assert_eq!(pooled.authenticated_peer(), Some(worker_key));
         let envelope = |key| {
-            caller.mesh.create_envelope(
-                MeshTarget::Agent(worker_id),
-                MeshPayload::Application(Box::new(ApplicationMessage {
-                    public_key: caller.signing.verifying_key().to_bytes(),
-                    recipient: worker_id,
-                    recipient_key: key,
-                    request_id: uuid::Uuid::new_v4(),
-                    response: false,
-                    data: serde_json::json!({"operation":"capabilities"}),
-                })),
-            )
+            caller
+                .mesh
+                .create_envelope(
+                    MeshTarget::Agent(worker_id),
+                    MeshPayload::Application(Box::new(ApplicationMessage {
+                        public_key: caller.signing.verifying_key().to_bytes(),
+                        recipient: worker_id,
+                        recipient_key: key,
+                        request_id: uuid::Uuid::new_v4(),
+                        response: false,
+                        data: serde_json::json!({"operation":"capabilities"}),
+                    })),
+                )
+                .unwrap()
         };
         let error = caller.transport.send(envelope([99; 32])).await.unwrap_err();
         assert!(
@@ -2209,11 +2221,13 @@ mod secure_tests {
             SigningIdentity::from_seed("observer", [123u8; 32]),
             MeshConfig::default(),
         );
-        let request = node.name_resolve_request(
-            *holder.mesh.agent_id(),
-            1,
-            crate::naming::ResolveQuery::Name(rec.name.clone()),
-        );
+        let request = node
+            .name_resolve_request(
+                *holder.mesh.agent_id(),
+                1,
+                crate::naming::ResolveQuery::Name(rec.name.clone()),
+            )
+            .unwrap();
         let plaintext = serde_json::to_vec(&request).unwrap();
         let sealed = session.seal(&plaintext).unwrap();
 
@@ -2277,11 +2291,13 @@ mod secure_tests {
             SigningIdentity::from_seed("plain", [77u8; 32]),
             MeshConfig::default(),
         );
-        let envelope = node.name_resolve_request(
-            *holder.mesh.agent_id(),
-            1,
-            crate::naming::ResolveQuery::Name(record(1, &[]).name),
-        );
+        let envelope = node
+            .name_resolve_request(
+                *holder.mesh.agent_id(),
+                1,
+                crate::naming::ResolveQuery::Name(record(1, &[]).name),
+            )
+            .unwrap();
         let _ = write_envelope(&mut stream, &envelope).await;
 
         // No reply ever arrives.
@@ -2319,11 +2335,13 @@ mod secure_tests {
             SigningIdentity::from_seed("tamper", [124u8; 32]),
             MeshConfig::default(),
         );
-        let request = node.name_resolve_request(
-            *holder.mesh.agent_id(),
-            1,
-            crate::naming::ResolveQuery::Name(record(1, &[]).name),
-        );
+        let request = node
+            .name_resolve_request(
+                *holder.mesh.agent_id(),
+                1,
+                crate::naming::ResolveQuery::Name(record(1, &[]).name),
+            )
+            .unwrap();
         let mut sealed = session
             .seal(&serde_json::to_vec(&request).unwrap())
             .unwrap();

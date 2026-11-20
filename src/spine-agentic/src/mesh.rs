@@ -37,6 +37,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
+/// Domain-separation prefix for mesh envelope signatures.
+const ENVELOPE_SIG_DOMAIN: &[u8] = b"spine-mesh-envelope-v2\0";
+
 // ──────────────────────────── Configuration ────────────────────────────
 
 /// Configuration for a mesh node.
@@ -159,7 +162,15 @@ pub struct MeshEnvelope {
     pub hops: Vec<AgentId>,
     /// The message payload.
     pub payload: MeshPayload,
-    /// Signature over (id || from || to || payload) by the originator.
+    /// Ed25519 signature by the originator over the bytes produced by
+    /// [`MeshNode::signature_data`]: a domain-separation prefix, then `id`,
+    /// `from`, `to`, `timestamp` and `payload`, with `to` and `payload` (JSON)
+    /// length-prefixed so the encoding is unambiguous.
+    ///
+    /// `ttl` and `hops` are deliberately NOT covered: forwarders legitimately
+    /// rewrite them at every hop, so the originator cannot sign them. They are
+    /// advisory routing metadata and must not be trusted for anything else.
+    /// `signature` itself is of course not covered either.
     pub signature: Vec<u8>,
     /// When the message was created.
     pub timestamp: DateTime<Utc>,
@@ -642,10 +653,11 @@ impl MeshNode {
         record: spine_name::NameRecord,
     ) -> Result<MeshEnvelope, spine_name::NameError> {
         record.verify()?;
-        Ok(self.create_envelope(
+        self.create_envelope(
             MeshTarget::Broadcast,
             MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(record))),
-        ))
+        )
+        .map_err(|e| spine_name::NameError::Transport(e.to_string()))
     }
 
     /// Build an envelope asking one specific peer to store a signed record.
@@ -660,10 +672,11 @@ impl MeshNode {
         record: spine_name::NameRecord,
     ) -> Result<MeshEnvelope, spine_name::NameError> {
         record.verify()?;
-        Ok(self.create_envelope(
+        self.create_envelope(
             MeshTarget::Agent(peer),
             MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(record))),
-        ))
+        )
+        .map_err(|e| spine_name::NameError::Transport(e.to_string()))
     }
 
     /// Build an envelope asking a specific peer to resolve a query.
@@ -672,7 +685,7 @@ impl MeshNode {
         peer: AgentId,
         request_id: u64,
         query: crate::naming::ResolveQuery,
-    ) -> MeshEnvelope {
+    ) -> Result<MeshEnvelope> {
         self.create_envelope(
             MeshTarget::Agent(peer),
             MeshPayload::NameResolveRequest(crate::naming::ResolveRequest { request_id, query }),
@@ -684,7 +697,7 @@ impl MeshNode {
         &self,
         peer: AgentId,
         response: crate::naming::ResolveResponse,
-    ) -> MeshEnvelope {
+    ) -> Result<MeshEnvelope> {
         self.create_envelope(
             MeshTarget::Agent(peer),
             MeshPayload::NameResolveResponse(Box::new(response)),
@@ -696,7 +709,7 @@ impl MeshNode {
     /// Addressed to [`MeshTarget::Broadcast`] because the whole point is that the
     /// recipient's agent id is not yet known — "whoever is listening at this
     /// address". The naming handler consumes it, so it is never gossiped onward.
-    pub fn name_hello(&self, endpoints: Vec<String>) -> MeshEnvelope {
+    pub fn name_hello(&self, endpoints: Vec<String>) -> Result<MeshEnvelope> {
         self.create_envelope(
             MeshTarget::Broadcast,
             MeshPayload::NameHello(crate::naming::NameHello {
@@ -712,7 +725,7 @@ impl MeshNode {
         peer: AgentId,
         endpoints: Vec<String>,
         closer: Vec<crate::naming::KeyspacePeer>,
-    ) -> MeshEnvelope {
+    ) -> Result<MeshEnvelope> {
         self.create_envelope(
             MeshTarget::Agent(peer),
             MeshPayload::NameHelloAck(Box::new(crate::naming::NameHelloAck {
@@ -732,22 +745,41 @@ impl MeshNode {
     /// having: the sender holds the private half, so it cannot claim a keyspace
     /// position it is unable to sign for.
     pub fn verify_carried_key(envelope: &MeshEnvelope, public_key: &[u8; 32]) -> bool {
-        let sig_data = Self::signature_data(&envelope.id, &envelope.from, &envelope.payload);
-        crate::identity::Ed25519Keypair::verify(public_key, &sig_data, &envelope.signature)
+        Self::verify_envelope(public_key, envelope)
+    }
+
+    /// Check an envelope's signature against `public_key`. Returns false if the
+    /// signed bytes cannot be built (serialisation failure) or the signature is bad.
+    fn verify_envelope(public_key: &[u8], envelope: &MeshEnvelope) -> bool {
+        match Self::signature_data(
+            &envelope.id,
+            &envelope.from,
+            &envelope.to,
+            &envelope.timestamp,
+            &envelope.payload,
+        ) {
+            Ok(sig_data) => {
+                crate::identity::Ed25519Keypair::verify(public_key, &sig_data, &envelope.signature)
+            }
+            Err(_) => false,
+        }
     }
 
     /// Create a signed mesh envelope for a message.
-    pub fn create_envelope(&self, to: MeshTarget, payload: MeshPayload) -> MeshEnvelope {
+    ///
+    /// Fails if the destination or payload cannot be serialised for signing.
+    pub fn create_envelope(&self, to: MeshTarget, payload: MeshPayload) -> Result<MeshEnvelope> {
         let id = Uuid::new_v4();
         let from = self.identity.agent_id;
+        let timestamp = Utc::now();
 
-        // Compute signature over (id || from || payload)
-        let sig_data = Self::signature_data(&id, &from, &payload);
+        // Sign (domain || id || from || to || timestamp || payload).
+        let sig_data = Self::signature_data(&id, &from, &to, &timestamp, &payload)?;
         let signature = self.identity.sign(&sig_data).to_vec();
 
         self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
 
-        MeshEnvelope {
+        Ok(MeshEnvelope {
             id,
             from,
             to,
@@ -755,8 +787,8 @@ impl MeshNode {
             hops: vec![self.identity.agent_id],
             payload,
             signature,
-            timestamp: Utc::now(),
-        }
+            timestamp,
+        })
     }
 
     /// Process an incoming envelope: verify, route, or deliver.
@@ -777,8 +809,7 @@ impl MeshNode {
 
         // 3. Verify signature (if we know the sender's key)
         if let Some(key) = self.trusted_keys.get(&envelope.from) {
-            let sig_data = Self::signature_data(&envelope.id, &envelope.from, &envelope.payload);
-            if !crate::identity::Ed25519Keypair::verify(&key, &sig_data, &envelope.signature) {
+            if !Self::verify_envelope(&key, &envelope) {
                 self.stats.messages_dropped.fetch_add(1, Ordering::Relaxed);
                 return Ok(MeshAction::Drop("invalid signature".into()));
             }
@@ -912,15 +943,40 @@ impl MeshNode {
         dedup.prune(300); // 5 minute window
     }
 
-    /// Compute the data to sign for a message.
-    fn signature_data(id: &Uuid, from: &AgentId, payload: &MeshPayload) -> Vec<u8> {
-        let mut data = Vec::with_capacity(256);
+    /// Compute the bytes an envelope signature covers:
+    ///
+    /// `"spine-mesh-envelope-v2\0"` || id (16 bytes) || from (16 bytes) ||
+    /// len(to_json) as u64 BE || to_json || timestamp seconds (i64 BE) ||
+    /// timestamp subsecond nanos (u32 BE) || len(payload_json) as u64 BE ||
+    /// payload_json.
+    ///
+    /// Errors if `to` or `payload` cannot be serialised; callers must never sign
+    /// or accept a signature over a partial encoding.
+    fn signature_data(
+        id: &Uuid,
+        from: &AgentId,
+        to: &MeshTarget,
+        timestamp: &DateTime<Utc>,
+        payload: &MeshPayload,
+    ) -> Result<Vec<u8>> {
+        let to_bytes = serde_json::to_vec(to)
+            .map_err(|e| anyhow::anyhow!("cannot serialise envelope destination: {e}"))?;
+        let payload_bytes = serde_json::to_vec(payload)
+            .map_err(|e| anyhow::anyhow!("cannot serialise envelope payload: {e}"))?;
+
+        let mut data = Vec::with_capacity(
+            ENVELOPE_SIG_DOMAIN.len() + 64 + to_bytes.len() + payload_bytes.len(),
+        );
+        data.extend_from_slice(ENVELOPE_SIG_DOMAIN);
         data.extend_from_slice(id.as_bytes());
         data.extend_from_slice(from.0.as_bytes());
-        if let Ok(payload_bytes) = serde_json::to_vec(payload) {
-            data.extend_from_slice(&payload_bytes);
-        }
-        data
+        data.extend_from_slice(&(to_bytes.len() as u64).to_be_bytes());
+        data.extend_from_slice(&to_bytes);
+        data.extend_from_slice(&timestamp.timestamp().to_be_bytes());
+        data.extend_from_slice(&timestamp.timestamp_subsec_nanos().to_be_bytes());
+        data.extend_from_slice(&(payload_bytes.len() as u64).to_be_bytes());
+        data.extend_from_slice(&payload_bytes);
+        Ok(data)
     }
 
     /// Whether the node is currently running.
@@ -1035,7 +1091,9 @@ mod tests {
         let node = MeshNode::new(id, test_config());
         let target = AgentId::new();
 
-        let envelope = node.create_envelope(MeshTarget::Agent(target), MeshPayload::Ping(12345));
+        let envelope = node
+            .create_envelope(MeshTarget::Agent(target), MeshPayload::Ping(12345))
+            .unwrap();
 
         assert_eq!(envelope.from, *node.agent_id());
         assert_eq!(envelope.to, MeshTarget::Agent(target));
@@ -1053,8 +1111,9 @@ mod tests {
         // Create envelope addressed to this node
         let sender_id = test_identity("sender");
         let sender_node = MeshNode::new(sender_id, test_config());
-        let envelope =
-            sender_node.create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(999));
+        let envelope = sender_node
+            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(999))
+            .unwrap();
 
         let action = node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Deliver(_)));
@@ -1069,8 +1128,9 @@ mod tests {
         let target = AgentId::new(); // Not us
 
         let sender_node = MeshNode::new(test_identity("sender"), test_config());
-        let envelope =
-            sender_node.create_envelope(MeshTarget::Agent(target), MeshPayload::Ping(111));
+        let envelope = sender_node
+            .create_envelope(MeshTarget::Agent(target), MeshPayload::Ping(111))
+            .unwrap();
 
         let action = node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Forward(_)));
@@ -1135,17 +1195,51 @@ mod tests {
         receiver_node.trust_key(sender.agent_id, sender.public_key().to_vec());
 
         // Valid envelope
-        let envelope =
-            sender_node.create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77));
+        let envelope = sender_node
+            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77))
+            .unwrap();
         let action = receiver_node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Deliver(_)));
 
         // Tampered envelope — change the payload after signing
-        let mut bad_envelope =
-            sender_node.create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77));
+        let mut bad_envelope = sender_node
+            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77))
+            .unwrap();
         bad_envelope.payload = MeshPayload::Ping(99); // tamper
         let action = receiver_node.process_envelope(bad_envelope).await.unwrap();
         assert!(matches!(action, MeshAction::Drop(_)));
+    }
+
+    #[test]
+    fn envelope_signature_covers_destination_and_timestamp_but_not_hop_fields() {
+        let sender = test_identity("sig-cover");
+        let node = MeshNode::new(sender, test_config());
+        let key = *node.identity.public_key();
+        let envelope = node
+            .create_envelope(MeshTarget::Agent(AgentId::new()), MeshPayload::Ping(5))
+            .unwrap();
+
+        // Unmodified envelope verifies.
+        assert!(MeshNode::verify_carried_key(&envelope, &key));
+
+        // Redirecting it invalidates the signature.
+        let mut redirected = envelope.clone();
+        redirected.to = MeshTarget::Agent(AgentId::new());
+        assert!(!MeshNode::verify_carried_key(&redirected, &key));
+        let mut broadcast = envelope.clone();
+        broadcast.to = MeshTarget::Broadcast;
+        assert!(!MeshNode::verify_carried_key(&broadcast, &key));
+
+        // So does changing the timestamp.
+        let mut retimed = envelope.clone();
+        retimed.timestamp = retimed.timestamp + chrono::Duration::seconds(1);
+        assert!(!MeshNode::verify_carried_key(&retimed, &key));
+
+        // ttl and hops are rewritten by forwarders and are not covered.
+        let mut forwarded = envelope.clone();
+        forwarded.ttl = forwarded.ttl.wrapping_sub(1);
+        forwarded.hops.push(AgentId::new());
+        assert!(MeshNode::verify_carried_key(&forwarded, &key));
     }
 
     #[test]
@@ -1362,7 +1456,9 @@ mod tests {
 
         let sender = test_identity("broadcaster");
         let sender_node = MeshNode::new(sender, test_config());
-        let envelope = sender_node.create_envelope(MeshTarget::Broadcast, MeshPayload::Ping(0));
+        let envelope = sender_node
+            .create_envelope(MeshTarget::Broadcast, MeshPayload::Ping(0))
+            .unwrap();
 
         let action = node.process_envelope(envelope).await.unwrap();
         assert!(matches!(action, MeshAction::DeliverAndForward(_)));

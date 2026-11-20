@@ -1374,15 +1374,18 @@ mod tests {
 
         // A request and its answer are ordinary addressed envelopes.
         let peer = *node.agent_id();
-        let req =
-            node.name_resolve_request(peer, 42, ResolveQuery::Capability("web.search".into()));
+        let req = node
+            .name_resolve_request(peer, 42, ResolveQuery::Capability("web.search".into()))
+            .unwrap();
         assert_eq!(req.to, MeshTarget::Agent(peer));
         match &req.payload {
             MeshPayload::NameResolveRequest(r) => assert_eq!(r.request_id, 42),
             other => panic!("expected NameResolveRequest, got {other:?}"),
         }
 
-        let resp = node.name_resolve_response(peer, ResolveResponse::empty(42));
+        let resp = node
+            .name_resolve_response(peer, ResolveResponse::empty(42))
+            .unwrap();
         assert!(matches!(resp.payload, MeshPayload::NameResolveResponse(_)));
     }
 

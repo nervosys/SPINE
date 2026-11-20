@@ -711,11 +711,13 @@ mod tests {
             SigningIdentity::from_seed("lonely-quic", [201u8; 32]),
             MeshConfig::default(),
         );
-        let envelope = node.name_resolve_request(
-            *node.agent_id(),
-            1,
-            crate::naming::ResolveQuery::Name(SpineUri::did([1u8; 32])),
-        );
+        let envelope = node
+            .name_resolve_request(
+                *node.agent_id(),
+                1,
+                crate::naming::ResolveQuery::Name(SpineUri::did([1u8; 32])),
+            )
+            .unwrap();
         let err = transport.send(envelope).await.unwrap_err();
         assert!(err.to_string().contains("no address known"), "{err}");
     }
