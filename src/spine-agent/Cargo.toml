@@ -36,4 +36,3 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 spine-nostd = { path = "../spine-nostd" }
 spine-embedded = { path = "../spine-embedded" }
-spine-kernel = { path = "../spine-kernel" }

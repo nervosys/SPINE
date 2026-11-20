@@ -2495,6 +2495,13 @@ impl SpineConnection {
                 let mut len_buf = [0u8; 4];
                 transport.read_exact(&mut len_buf).await?;
                 let len = u32::from_le_bytes(len_buf) as usize;
+                // The length prefix is peer-controlled; bound it before allocating.
+                if len > wire::MAX_TRANSPORT_FRAME_BYTES {
+                    anyhow::bail!(
+                        "QUIC frame of {len} bytes exceeds the {} byte limit",
+                        wire::MAX_TRANSPORT_FRAME_BYTES
+                    );
+                }
                 let mut buf = vec![0u8; len];
                 transport.read_exact(&mut buf).await?;
                 buf

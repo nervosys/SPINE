@@ -73,7 +73,7 @@
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use hkdf::Hkdf;
 use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey};
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768, MlKem768Params};
@@ -162,7 +162,7 @@ fn verifying_key(bytes: &[u8]) -> Result<VerifyingKey, HandshakeError> {
 
 fn check_signature(vk: &VerifyingKey, message: &[u8], sig: &[u8]) -> Result<(), HandshakeError> {
     let arr: [u8; 64] = sig.try_into().map_err(|_| HandshakeError::Malformed)?;
-    vk.verify(message, &Signature::from_bytes(&arr))
+    vk.verify_strict(message, &Signature::from_bytes(&arr))
         .map_err(|_| HandshakeError::BadSignature)
 }
 

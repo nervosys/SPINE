@@ -39,7 +39,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Internal dependencies
 spine-transport = { path = "../spine-transport", version = "2.0.2" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -10,7 +10,7 @@
 //! Records are signed by the `did:` key that names them, so verification needs
 //! no certificate authority — the name *is* the key.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -277,7 +277,7 @@ impl NameRecord {
         let vk = VerifyingKey::from_bytes(pk_bytes).map_err(|_| NameError::BadSignature)?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
-        vk.verify(&self.signing_bytes(), &Signature::from_bytes(&sig))
+        vk.verify_strict(&self.signing_bytes(), &Signature::from_bytes(&sig))
             .map_err(|_| NameError::BadSignature)
     }
 

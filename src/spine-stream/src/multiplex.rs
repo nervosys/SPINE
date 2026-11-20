@@ -241,7 +241,8 @@ impl StreamMultiplexer {
                 increment,
             } => {
                 if let Some(mut stream) = self.streams.get_mut(&stream_id) {
-                    stream.flow_state.send_window += increment;
+                    stream.flow_state.send_window =
+                        stream.flow_state.send_window.saturating_add(increment);
                 }
             }
             StreamControl::Pause { stream_id } => {

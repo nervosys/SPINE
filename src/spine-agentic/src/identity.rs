@@ -20,7 +20,7 @@
 
 use crate::AgentId;
 use chrono::{DateTime, Utc};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -123,7 +123,7 @@ impl Ed25519Keypair {
         };
         let sig = Signature::from_bytes(&sig_bytes);
 
-        verifying_key.verify(message, &sig).is_ok()
+        verifying_key.verify_strict(message, &sig).is_ok()
     }
 }
 
@@ -436,7 +436,7 @@ mod tests {
         let vk = direct_key.verifying_key();
         let sig = Signature::from_bytes(&sig_bytes);
         assert!(
-            vk.verify(msg, &sig).is_ok(),
+            vk.verify_strict(msg, &sig).is_ok(),
             "dalek must accept our signature"
         );
     }
