@@ -121,6 +121,9 @@ pub enum HandshakeError {
 
     #[error("frame failed authentication — corrupted, replayed, or tampered with")]
     BadFrame,
+
+    #[error("session frame counter exhausted — the channel must be re-established")]
+    CounterExhausted,
 }
 
 fn hex16(bytes: &[u8]) -> String {
@@ -473,9 +476,16 @@ impl Session {
     /// The frame counter is the nonce and is also authenticated as associated
     /// data, so a frame cannot be reordered or replayed into a different
     /// position in the stream without the tag failing.
-    pub fn seal(&mut self, plaintext: &[u8]) -> Vec<u8> {
+    ///
+    /// Fails with [`HandshakeError::CounterExhausted`] once the counter can no
+    /// longer advance; reusing a nonce under AES-GCM is catastrophic, so the
+    /// session must be re-established instead.
+    pub fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, HandshakeError> {
         let counter = self.tx_counter;
-        self.tx_counter += 1;
+        let next = counter
+            .checked_add(1)
+            .ok_or(HandshakeError::CounterExhausted)?;
+        self.tx_counter = next;
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.tx_key));
         let nonce_bytes = Self::nonce(counter);
@@ -492,7 +502,7 @@ impl Session {
         let mut out = Vec::with_capacity(8 + ciphertext.len());
         out.extend_from_slice(&counter.to_be_bytes());
         out.extend_from_slice(&ciphertext);
-        out
+        Ok(out)
     }
 
     /// Decrypt one frame, enforcing that it is the next one expected.
@@ -507,6 +517,9 @@ impl Session {
         if counter != self.rx_counter {
             return Err(HandshakeError::BadFrame);
         }
+        let next = counter
+            .checked_add(1)
+            .ok_or(HandshakeError::CounterExhausted)?;
 
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.rx_key));
         let nonce_bytes = Self::nonce(counter);
@@ -520,7 +533,7 @@ impl Session {
             )
             .map_err(|_| HandshakeError::BadFrame)?;
 
-        self.rx_counter += 1;
+        self.rx_counter = next;
         Ok(plaintext)
     }
 
@@ -562,10 +575,10 @@ mod tests {
     fn a_message_survives_a_round_trip_in_both_directions() {
         let (mut client, mut server) = establish();
 
-        let sealed = client.seal(b"resolve spine://did:...");
+        let sealed = client.seal(b"resolve spine://did:...").unwrap();
         assert_eq!(server.open(&sealed).unwrap(), b"resolve spine://did:...");
 
-        let sealed = server.seal(b"here is the record");
+        let sealed = server.seal(b"here is the record").unwrap();
         assert_eq!(client.open(&sealed).unwrap(), b"here is the record");
     }
 
@@ -573,7 +586,7 @@ mod tests {
     fn ciphertext_does_not_contain_the_plaintext() {
         let (mut client, _server) = establish();
         let secret = b"spine://cap:medical.diagnosis/";
-        let sealed = client.seal(secret);
+        let sealed = client.seal(secret).unwrap();
         assert!(
             !sealed.windows(secret.len()).any(|w| w == secret),
             "the query an agent makes must not be readable on the wire"
@@ -585,7 +598,7 @@ mod tests {
         let (mut client, mut server) = establish();
         for i in 0..100u32 {
             let msg = format!("frame {i}");
-            let sealed = client.seal(msg.as_bytes());
+            let sealed = client.seal(msg.as_bytes()).unwrap();
             assert_eq!(server.open(&sealed).unwrap(), msg.as_bytes());
         }
         assert_eq!(client.counters().0, 100);
@@ -598,7 +611,7 @@ mod tests {
         let (mut client, _server) = establish();
         let mut seen = std::collections::HashSet::new();
         for _ in 0..1000 {
-            let sealed = client.seal(b"identical plaintext");
+            let sealed = client.seal(b"identical plaintext").unwrap();
             assert!(seen.insert(sealed[..8].to_vec()), "nonce reused");
         }
     }
@@ -606,8 +619,8 @@ mod tests {
     #[test]
     fn identical_plaintexts_produce_different_ciphertexts() {
         let (mut client, _server) = establish();
-        let a = client.seal(b"same");
-        let b = client.seal(b"same");
+        let a = client.seal(b"same").unwrap();
+        let b = client.seal(b"same").unwrap();
         assert_ne!(
             a[8..],
             b[8..],
@@ -618,7 +631,7 @@ mod tests {
     #[test]
     fn a_tampered_frame_is_rejected() {
         let (mut client, mut server) = establish();
-        let mut sealed = client.seal(b"authentic payload");
+        let mut sealed = client.seal(b"authentic payload").unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01;
         assert_eq!(server.open(&sealed), Err(HandshakeError::BadFrame));
@@ -627,7 +640,7 @@ mod tests {
     #[test]
     fn a_replayed_frame_is_rejected() {
         let (mut client, mut server) = establish();
-        let sealed = client.seal(b"transfer once");
+        let sealed = client.seal(b"transfer once").unwrap();
         assert!(server.open(&sealed).is_ok());
         assert_eq!(
             server.open(&sealed),
@@ -639,8 +652,8 @@ mod tests {
     #[test]
     fn frames_delivered_out_of_order_are_rejected() {
         let (mut client, mut server) = establish();
-        let first = client.seal(b"one");
-        let second = client.seal(b"two");
+        let first = client.seal(b"one").unwrap();
+        let second = client.seal(b"two").unwrap();
         assert_eq!(server.open(&second), Err(HandshakeError::BadFrame));
         // The stream is still usable in the correct order.
         assert!(server.open(&first).is_ok());
@@ -650,7 +663,7 @@ mod tests {
     #[test]
     fn a_truncated_frame_is_rejected_rather_than_panicking() {
         let (mut client, mut server) = establish();
-        let sealed = client.seal(b"payload");
+        let sealed = client.seal(b"payload").unwrap();
         for cut in 0..sealed.len().min(24) {
             assert!(server.open(&sealed[..cut]).is_err());
         }
@@ -659,7 +672,7 @@ mod tests {
     #[test]
     fn the_two_directions_use_different_keys() {
         let (mut client, mut server) = establish();
-        let from_client = client.seal(b"probe");
+        let from_client = client.seal(b"probe").unwrap();
         // The client must not be able to open its own frame: if it could, both
         // directions would share a key and their counters would collide.
         assert!(client.open(&from_client).is_err());
@@ -820,12 +833,12 @@ mod tests {
         let mut server2 = a2.session;
 
         // Session one's traffic is unreadable to session two, and vice versa.
-        let from_one = s1.seal(b"session one traffic");
+        let from_one = s1.seal(b"session one traffic").unwrap();
         assert!(
             server2.open(&from_one).is_err(),
             "one session's key must not open another's traffic"
         );
-        let from_two = s2.seal(b"session two traffic");
+        let from_two = s2.seal(b"session two traffic").unwrap();
         assert!(server1.open(&from_two).is_err());
 
         // Each session still works on its own terms.
@@ -836,15 +849,32 @@ mod tests {
     #[test]
     fn an_empty_payload_round_trips() {
         let (mut client, mut server) = establish();
-        let sealed = client.seal(b"");
+        let sealed = client.seal(b"").unwrap();
         assert_eq!(server.open(&sealed).unwrap(), b"");
+    }
+
+    #[test]
+    fn an_exhausted_counter_is_an_error_not_a_panic() {
+        let (mut client, mut server) = establish();
+        client.tx_counter = u64::MAX;
+        assert_eq!(
+            client.seal(b"too late"),
+            Err(HandshakeError::CounterExhausted)
+        );
+        assert_eq!(client.counters().0, u64::MAX);
+
+        // A peer frame at the final counter value is refused, not wrapped.
+        let mut frame = vec![0u8; 8 + 16];
+        frame[..8].copy_from_slice(&u64::MAX.to_be_bytes());
+        server.rx_counter = u64::MAX;
+        assert_eq!(server.open(&frame), Err(HandshakeError::CounterExhausted));
     }
 
     #[test]
     fn a_large_payload_round_trips() {
         let (mut client, mut server) = establish();
         let big = vec![0xAB; 1 << 20];
-        let sealed = client.seal(&big);
+        let sealed = client.seal(&big).unwrap();
         assert_eq!(server.open(&sealed).unwrap(), big);
     }
 

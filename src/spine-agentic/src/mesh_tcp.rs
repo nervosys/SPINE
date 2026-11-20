@@ -551,7 +551,9 @@ impl NameTransport for SecureSocketTransport {
         // which the receiver correctly refuses.
         let sealed = {
             let mut session = guard.session.lock().await;
-            session.seal(&body)
+            session
+                .seal(&body)
+                .map_err(|e| NameMeshError::Transport(format!("seal: {e}")))?
         };
         let result = tokio::time::timeout(
             self.limits.write_timeout,
@@ -2213,7 +2215,7 @@ mod secure_tests {
             crate::naming::ResolveQuery::Name(rec.name.clone()),
         );
         let plaintext = serde_json::to_vec(&request).unwrap();
-        let sealed = session.seal(&plaintext);
+        let sealed = session.seal(&plaintext).unwrap();
 
         // The name is plainly present before sealing and absent after.
         let needle = rec.name.to_string();
@@ -2322,7 +2324,9 @@ mod secure_tests {
             1,
             crate::naming::ResolveQuery::Name(record(1, &[]).name),
         );
-        let mut sealed = session.seal(&serde_json::to_vec(&request).unwrap());
+        let mut sealed = session
+            .seal(&serde_json::to_vec(&request).unwrap())
+            .unwrap();
         let last = sealed.len() - 1;
         sealed[last] ^= 0x01; // flip a bit in the tag
 

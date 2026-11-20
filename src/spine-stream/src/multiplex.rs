@@ -454,7 +454,7 @@ impl StreamScheduler {
             if let Some(&stream_id) = stream_ids.get(idx as usize) {
                 if let Some(mut queue) = self.queues.get_mut(&stream_id) {
                     if !queue.paused && !queue.messages.is_empty() {
-                        queue.deficit += queue.weight as i32;
+                        queue.deficit = queue.deficit.saturating_add(queue.weight as i32);
                         if queue.deficit > 0 {
                             queue.deficit -= 1;
                             return Some(queue.messages.remove(0));

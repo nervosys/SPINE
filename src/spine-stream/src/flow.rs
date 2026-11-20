@@ -140,7 +140,7 @@ impl FlowController {
         // Use minimum of send window and congestion window
         let effective_window = send_window.min(cwnd);
 
-        if in_flight + bytes <= effective_window {
+        if in_flight.saturating_add(bytes) <= effective_window {
             self.in_flight.fetch_add(bytes, Ordering::Relaxed);
             self.stats.bytes_sent.fetch_add(bytes, Ordering::Relaxed);
             true
@@ -185,7 +185,7 @@ impl FlowController {
     /// Handle ACK for congestion control
     fn on_ack(&self, bytes: u64) {
         let mut state = self.state.write();
-        state.ack_streak += 1;
+        state.ack_streak = state.ack_streak.saturating_add(1);
 
         let cwnd = self.cwnd.load(Ordering::Relaxed);
         let ssthresh = self.ssthresh.load(Ordering::Relaxed);
@@ -203,7 +203,7 @@ impl FlowController {
             // Congestion avoidance: linear increase
             // Increase by aimd_increase per RTT worth of acks
             let rtt_bytes = cwnd; // Approximate RTT worth of bytes
-            if state.ack_streak * bytes as u32 >= rtt_bytes {
+            if state.ack_streak.saturating_mul(bytes as u32) >= rtt_bytes {
                 let new_cwnd = cwnd.saturating_add(self.config.aimd_increase);
                 self.cwnd
                     .store(new_cwnd.min(self.config.max_window), Ordering::Relaxed);
@@ -267,8 +267,13 @@ impl FlowController {
 
     /// Free receive buffer space and optionally generate update
     pub fn free_recv(&self, bytes: u32) -> Option<u32> {
-        let prev_window = self.recv_window.fetch_add(bytes, Ordering::Relaxed);
-        let new_window = prev_window + bytes;
+        let prev_window = self
+            .recv_window
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
+                Some(w.saturating_add(bytes))
+            })
+            .unwrap_or_else(|w| w);
+        let new_window = prev_window.saturating_add(bytes);
 
         // Send update if significant space available
         let threshold = (self.config.initial_window as f32 * self.config.update_threshold) as u32;
@@ -528,7 +533,7 @@ impl TokenBucket {
         let new_tokens = (elapsed.as_secs_f64() * self.rate as f64) as u64;
         if new_tokens > 0 {
             let current = self.tokens.load(Ordering::Relaxed);
-            let new_total = (current + new_tokens).min(self.capacity);
+            let new_total = current.saturating_add(new_tokens).min(self.capacity);
             self.tokens.store(new_total, Ordering::Relaxed);
             *last_refill = now;
 
@@ -581,7 +586,7 @@ impl LeakyBucket {
         self.leak();
 
         let current = self.fill.load(Ordering::Relaxed);
-        if current + amount <= self.capacity {
+        if current.saturating_add(amount) <= self.capacity {
             self.fill.fetch_add(amount, Ordering::Relaxed);
             true
         } else {
@@ -623,6 +628,20 @@ impl LeakyBucket {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_window_arithmetic_saturates_instead_of_overflowing() {
+        let fc = FlowController::new(FlowConfig::default());
+
+        // Receive window already near the top: freeing more must not overflow.
+        fc.recv_window.store(u32::MAX - 1, Ordering::Relaxed);
+        let _ = fc.free_recv(u32::MAX);
+        assert_eq!(fc.recv_window.load(Ordering::Relaxed), u32::MAX);
+
+        // An enormous request is refused rather than wrapping past the window.
+        fc.in_flight.store(u64::MAX - 1, Ordering::Relaxed);
+        assert!(!fc.try_acquire(u64::MAX));
+    }
 
     #[test]
     fn test_flow_controller_acquire_release() {
