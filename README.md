@@ -1439,7 +1439,7 @@ column sums to the workspace total.
 | spine-web       | 0     | Umbrella facade crate (re-exports only)                       |
 | spine-browser   | 0     | Cross-platform GUI browser (egui)                             |
 
-\* `spine-agentic` and `spine-mesh` are counts of `#[test]` / `#[tokio::test]` attributes in the source (258 and 168), not a measured run; the old measured figure for `spine-agentic` was 392 before the split. Re-measure with a per-crate run, after which the column should again sum to the workspace total.
+\* `spine-agentic` (258) and `spine-mesh` (168) are from the Linux CI run on `6e47224`, which reported those two unit-test suites; before the split `spine-agentic` was listed at 392. The other rows and the 1,418 total date from the last full local run and have not been re-measured, so the column does not currently sum to the total.
 
 ### Benchmarks
 
