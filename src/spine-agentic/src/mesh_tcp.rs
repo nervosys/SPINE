@@ -41,10 +41,14 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use ed25519_dalek::SigningKey;
 use spine_crypto::handshake::{Initiator, Responder, Session, MAX_HANDSHAKE_BYTES};
@@ -58,7 +62,97 @@ use crate::AgentId;
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
 /// Depth of the inbound queue before backpressure applies.
-pub const INBOUND_QUEUE: usize = 1024;
+pub const INBOUND_QUEUE: usize = 64;
+/// Address and identity registries each have a fixed entry budget.
+pub const MAX_KNOWN_PEERS: usize = 1024;
+
+/// Bounds for a mesh socket, including time waiting for a complete frame.
+/// Incoming and outgoing TCP connections each have their own admission budget.
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectionLimits {
+    pub max_connections: usize,
+    pub handshake_timeout: Duration,
+    pub frame_timeout: Duration,
+    pub queue_timeout: Duration,
+    pub write_timeout: Duration,
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        Self {
+            max_connections: 64,
+            handshake_timeout: Duration::from_secs(10),
+            frame_timeout: Duration::from_secs(60),
+            queue_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(10),
+        }
+    }
+}
+
+impl ConnectionLimits {
+    pub fn validate(&self) -> Result<(), NameMeshError> {
+        if self.max_connections == 0
+            || self.max_connections > 1024
+            || [
+                self.handshake_timeout,
+                self.frame_timeout,
+                self.queue_timeout,
+                self.write_timeout,
+            ]
+            .iter()
+            .any(|duration| duration.is_zero() || *duration > Duration::from_secs(3600))
+        {
+            return Err(NameMeshError::Transport(
+                "invalid mesh connection limits".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ConnectionState {
+    closed: AtomicBool,
+    shutdown: Notify,
+}
+
+impl ConnectionState {
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.shutdown.notify_one();
+    }
+    async fn until_closed(&self) {
+        // notify_one retains a permit, so closing between the check and wait
+        // cannot leave the reader stranded.
+        while !self.is_closed() {
+            self.shutdown.notified().await;
+        }
+    }
+}
+
+// Dropping a send after its first write may leave a partial frame (and an
+// advanced AEAD counter). Such a socket must never be reused.
+struct WriteGuard {
+    state: Arc<ConnectionState>,
+    complete: bool,
+}
+impl Drop for WriteGuard {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.state.close();
+        }
+    }
+}
+
+struct ClosedOnDrop(Arc<ConnectionState>);
+impl Drop for ClosedOnDrop {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
 
 // ───────────────────────────────── Framing ─────────────────────────────────
 
@@ -131,6 +225,8 @@ where
 #[derive(Clone)]
 pub struct SocketTransport {
     writer: Arc<Mutex<Box<dyn AsyncWrite + Send + Unpin>>>,
+    closed: Arc<ConnectionState>,
+    limits: ConnectionLimits,
 }
 
 impl std::fmt::Debug for SocketTransport {
@@ -149,6 +245,8 @@ impl SocketTransport {
     fn new(writer: impl AsyncWrite + Send + Unpin + 'static) -> Self {
         Self {
             writer: Arc::new(Mutex::new(Box::new(writer))),
+            closed: Arc::new(ConnectionState::default()),
+            limits: ConnectionLimits::default(),
         }
     }
 }
@@ -157,7 +255,21 @@ impl SocketTransport {
 impl NameTransport for SocketTransport {
     async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
         let mut guard = self.writer.lock().await;
-        write_envelope(&mut *guard, &envelope).await
+        if self.closed.is_closed() {
+            return Err(NameMeshError::Transport("mesh connection is closed".into()));
+        }
+        let mut write = WriteGuard {
+            state: self.closed.clone(),
+            complete: false,
+        };
+        let result = tokio::time::timeout(
+            self.limits.write_timeout,
+            write_envelope(&mut *guard, &envelope),
+        )
+        .await
+        .map_err(|_| NameMeshError::Transport("mesh write deadline exceeded".into()))?;
+        write.complete = result.is_ok();
+        result
     }
 }
 
@@ -167,6 +279,27 @@ impl NameTransport for SocketTransport {
 pub enum ReplyPath {
     Plain(SocketTransport),
     Secure(SecureSocketTransport),
+}
+
+impl ReplyPath {
+    pub fn authenticated_peer(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Plain(_) => None,
+            Self::Secure(path) => Some(path.peer_identity),
+        }
+    }
+    fn close(&self) {
+        match self {
+            Self::Plain(path) => path.closed.close(),
+            Self::Secure(path) => path.closed.close(),
+        }
+    }
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Plain(path) => path.closed.is_closed(),
+            Self::Secure(path) => path.closed.is_closed(),
+        }
+    }
 }
 
 #[async_trait]
@@ -196,22 +329,33 @@ async fn read_loop<R: AsyncRead + Unpin>(
     reply: SocketTransport,
     inbound: mpsc::Sender<Inbound>,
 ) {
+    let _closed = ClosedOnDrop(reply.closed.clone());
     loop {
-        match read_envelope(&mut reader).await {
-            Ok(Some(envelope)) => {
-                let item = Inbound {
-                    envelope,
-                    reply: ReplyPath::Plain(reply.clone()),
-                };
-                if inbound.send(item).await.is_err() {
-                    return; // pump is gone; nothing left to do
+        let next = tokio::select! {
+            _ = reply.closed.until_closed() => return,
+            next = tokio::time::timeout(reply.limits.frame_timeout, read_envelope(&mut reader)) => next,
+        };
+        match next {
+            Err(_) => return,
+            Ok(next) => match next {
+                Ok(Some(envelope)) => {
+                    let item = Inbound {
+                        envelope,
+                        reply: ReplyPath::Plain(reply.clone()),
+                    };
+                    tokio::select! {
+                        _ = reply.closed.until_closed() => return,
+                        result = tokio::time::timeout(reply.limits.queue_timeout, inbound.send(item)) => {
+                            if !matches!(result, Ok(Ok(()))) { return; }
+                        }
+                    }
                 }
-            }
-            Ok(None) => return, // clean disconnect
-            Err(e) => {
-                tracing::debug!("mesh connection closed after a framing error: {e}");
-                return;
-            }
+                Ok(None) => return, // clean disconnect
+                Err(e) => {
+                    tracing::debug!("mesh connection closed after a framing error: {e}");
+                    return;
+                }
+            },
         }
     }
 }
@@ -225,9 +369,32 @@ pub fn attach<S>(stream: S, inbound: mpsc::Sender<Inbound>) -> SocketTransport
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
+    attach_bounded(stream, inbound, ConnectionLimits::default(), None)
+}
+
+fn attach_bounded<S>(
+    stream: S,
+    inbound: mpsc::Sender<Inbound>,
+    limits: ConnectionLimits,
+    permit: Option<OwnedSemaphorePermit>,
+) -> SocketTransport
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let (reader, writer) = tokio::io::split(stream);
-    let transport = SocketTransport::new(writer);
-    tokio::spawn(read_loop(reader, transport.clone(), inbound));
+    let mut transport = SocketTransport::new(writer);
+    transport.limits = limits;
+    let reply = transport.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        read_loop(reader, reply.clone(), inbound).await;
+        let _ = tokio::time::timeout(limits.write_timeout, async {
+            let mut writer =
+                std::mem::replace(&mut *reply.writer.lock().await, Box::new(tokio::io::sink()));
+            writer.shutdown().await
+        })
+        .await;
+    });
     transport
 }
 
@@ -239,6 +406,19 @@ where
 /// Passing `None` is the bootstrap case: dialing an address whose identity is
 /// genuinely not yet known.
 pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    signing: &SigningKey,
+    expected_peer: Option<&[u8; 32]>,
+) -> Result<Session, NameMeshError> {
+    tokio::time::timeout(
+        ConnectionLimits::default().handshake_timeout,
+        client_handshake_inner(stream, signing, expected_peer),
+    )
+    .await
+    .map_err(|_| NameMeshError::Transport("mesh handshake deadline exceeded".into()))?
+}
+
+async fn client_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     signing: &SigningKey,
     expected_peer: Option<&[u8; 32]>,
@@ -255,6 +435,18 @@ pub async fn client_handshake<S: AsyncRead + AsyncWrite + Unpin>(
 
 /// Perform the accepting half of a handshake over a socket.
 pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    signing: &SigningKey,
+) -> Result<Session, NameMeshError> {
+    tokio::time::timeout(
+        ConnectionLimits::default().handshake_timeout,
+        server_handshake_inner(stream, signing),
+    )
+    .await
+    .map_err(|_| NameMeshError::Transport("mesh handshake deadline exceeded".into()))?
+}
+
+async fn server_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     signing: &SigningKey,
 ) -> Result<Session, NameMeshError> {
@@ -316,6 +508,9 @@ where
 #[derive(Clone)]
 pub struct SecureSocketTransport {
     inner: Arc<Mutex<SecureWriter>>,
+    closed: Arc<ConnectionState>,
+    limits: ConnectionLimits,
+    peer_identity: [u8; 32],
 }
 
 struct SecureWriter {
@@ -342,6 +537,15 @@ impl NameTransport for SecureSocketTransport {
             )));
         }
         let mut guard = self.inner.lock().await;
+        if self.closed.is_closed() {
+            return Err(NameMeshError::Transport(
+                "secure mesh connection is closed".into(),
+            ));
+        }
+        let mut write = WriteGuard {
+            state: self.closed.clone(),
+            complete: false,
+        };
         // Seal and write under one lock: releasing between them would let a
         // second sender interleave and deliver frames out of counter order,
         // which the receiver correctly refuses.
@@ -349,7 +553,14 @@ impl NameTransport for SecureSocketTransport {
             let mut session = guard.session.lock().await;
             session.seal(&body)
         };
-        write_frame(&mut guard.writer, &sealed).await
+        let result = tokio::time::timeout(
+            self.limits.write_timeout,
+            write_frame(&mut guard.writer, &sealed),
+        )
+        .await
+        .map_err(|_| NameMeshError::Transport("secure mesh write deadline exceeded".into()))?;
+        write.complete = result.is_ok();
+        result
     }
 }
 
@@ -360,14 +571,23 @@ async fn secure_read_loop<R: AsyncRead + Unpin>(
     reply: SecureSocketTransport,
     inbound: mpsc::Sender<Inbound>,
 ) {
+    let _closed = ClosedOnDrop(reply.closed.clone());
     loop {
-        let frame = match read_frame(&mut reader, MAX_FRAME_BYTES + 1024).await {
-            Ok(Some(f)) => f,
-            Ok(None) => return,
-            Err(e) => {
-                tracing::debug!("secure mesh connection closed: {e}");
-                return;
-            }
+        let next = tokio::select! {
+            _ = reply.closed.until_closed() => return,
+            next = tokio::time::timeout(reply.limits.frame_timeout,
+                read_frame(&mut reader, MAX_FRAME_BYTES + 1024)) => next,
+        };
+        let frame = match next {
+            Err(_) => return,
+            Ok(next) => match next {
+                Ok(Some(f)) => f,
+                Ok(None) => return,
+                Err(e) => {
+                    tracing::debug!("secure mesh connection closed: {e}");
+                    return;
+                }
+            },
         };
         let plaintext = {
             let mut s = session.lock().await;
@@ -393,8 +613,11 @@ async fn secure_read_loop<R: AsyncRead + Unpin>(
             envelope,
             reply: ReplyPath::Secure(reply.clone()),
         };
-        if inbound.send(item).await.is_err() {
-            return;
+        tokio::select! {
+            _ = reply.closed.until_closed() => return,
+            result = tokio::time::timeout(reply.limits.queue_timeout, inbound.send(item)) => {
+                if !matches!(result, Ok(Ok(()))) { return; }
+            }
         }
     }
 }
@@ -408,20 +631,44 @@ pub fn attach_secure<S>(
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
+    attach_secure_bounded(stream, session, inbound, ConnectionLimits::default(), None)
+}
+
+fn attach_secure_bounded<S>(
+    stream: S,
+    session: Session,
+    inbound: mpsc::Sender<Inbound>,
+    limits: ConnectionLimits,
+    permit: Option<OwnedSemaphorePermit>,
+) -> SecureSocketTransport
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let (reader, writer) = tokio::io::split(stream);
+    let peer_identity = *session.peer_identity();
     let session = Arc::new(Mutex::new(session));
     let transport = SecureSocketTransport {
         inner: Arc::new(Mutex::new(SecureWriter {
             writer: Box::new(writer),
             session: session.clone(),
         })),
+        closed: Arc::new(ConnectionState::default()),
+        limits,
+        peer_identity,
     };
-    tokio::spawn(secure_read_loop(
-        reader,
-        session,
-        transport.clone(),
-        inbound,
-    ));
+    let reply = transport.clone();
+    tokio::spawn(async move {
+        let _permit = permit;
+        secure_read_loop(reader, session, reply.clone(), inbound).await;
+        let _ = tokio::time::timeout(limits.write_timeout, async {
+            let mut writer = std::mem::replace(
+                &mut reply.inner.lock().await.writer,
+                Box::new(tokio::io::sink()),
+            );
+            writer.shutdown().await
+        })
+        .await;
+    });
     transport
 }
 
@@ -443,6 +690,9 @@ pub struct TcpNameTransport {
     inbound: mpsc::Sender<Inbound>,
     /// Whether connections are encrypted.
     security: Security,
+    connections: Arc<Semaphore>,
+    limits: ConnectionLimits,
+    contacts: std::sync::Mutex<()>,
 }
 
 /// How a transport protects its connections.
@@ -498,6 +748,15 @@ impl TcpNameTransport {
 
     /// Build a transport with an explicit security mode.
     pub fn with_security(security: Security) -> (Arc<Self>, mpsc::Receiver<Inbound>) {
+        Self::with_limits(security, ConnectionLimits::default()).expect("valid default mesh limits")
+    }
+
+    /// Configure both outgoing admission and per-socket deadlines.
+    pub fn with_limits(
+        security: Security,
+        limits: ConnectionLimits,
+    ) -> Result<(Arc<Self>, mpsc::Receiver<Inbound>), NameMeshError> {
+        limits.validate()?;
         let (tx, rx) = mpsc::channel(INBOUND_QUEUE);
         let transport = Arc::new(Self {
             addresses: DashMap::new(),
@@ -506,8 +765,11 @@ impl TcpNameTransport {
             identities: DashMap::new(),
             inbound: tx,
             security,
+            connections: Arc::new(Semaphore::new(limits.max_connections)),
+            limits,
+            contacts: std::sync::Mutex::new(()),
         });
-        (transport, rx)
+        Ok((transport, rx))
     }
 
     /// Whether connections are encrypted.
@@ -519,8 +781,19 @@ impl TcpNameTransport {
     ///
     /// Without this, a dial is unpinned: it still gets confidentiality and knows
     /// *who* answered, but cannot refuse an unexpected peer up front.
+    /// New entries beyond [`MAX_KNOWN_PEERS`] are ignored; changed pins close
+    /// any existing connection before further traffic can reuse it.
     pub fn set_identity(&self, agent: AgentId, identity: [u8; 32]) {
-        self.identities.insert(agent, identity);
+        let _contacts = self
+            .contacts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self.identities.contains_key(&agent) && self.identities.len() >= MAX_KNOWN_PEERS {
+            return;
+        }
+        if self.identities.insert(agent, identity) != Some(identity) {
+            self.evict(&agent);
+        }
     }
 
     /// A sender for the same inbound stream, for a listener to share.
@@ -528,13 +801,21 @@ impl TcpNameTransport {
         self.inbound.clone()
     }
 
-    /// Record where a peer can be reached.
+    /// Record where a peer can be reached. New entries beyond [`MAX_KNOWN_PEERS`]
+    /// are ignored; existing contacts can still update their address.
     pub fn set_address(&self, agent: AgentId, addr: SocketAddr) {
+        let _contacts = self
+            .contacts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !self.addresses.contains_key(&agent) && self.addresses.len() >= MAX_KNOWN_PEERS {
+            return;
+        }
         let previous = self.addresses.insert(agent, addr);
         // A genuinely changed address invalidates the pooled connection to the
         // old one; re-announcing the same address leaves it alone.
         if previous != Some(addr) {
-            self.pool.remove(&agent);
+            self.evict(&agent);
         }
     }
 
@@ -545,45 +826,86 @@ impl TcpNameTransport {
 
     /// Currently pooled connections.
     pub fn pooled_connections(&self) -> usize {
-        self.pool.len()
+        self.pool
+            .iter()
+            .filter(|entry| !entry.value().is_closed())
+            .count()
     }
 
     /// Drop a peer's pooled connection, forcing a re-dial next time.
     pub fn evict(&self, agent: &AgentId) {
-        self.pool.remove(agent);
+        if let Some((_, path)) = self.pool.remove(agent) {
+            path.close();
+        }
     }
 
-    async fn connection(&self, agent: &AgentId) -> Result<ReplyPath, NameMeshError> {
+    async fn connection(
+        &self,
+        agent: &AgentId,
+        required: Option<[u8; 32]>,
+    ) -> Result<ReplyPath, NameMeshError> {
         if let Some(existing) = self.pool.get(agent) {
-            return Ok(existing.value().clone());
+            if !existing.value().is_closed()
+                && required.is_none_or(|key| existing.value().authenticated_peer() == Some(key))
+            {
+                return Ok(existing.value().clone());
+            }
         }
+        self.evict(agent);
         let addr = self
             .addresses
             .get(agent)
             .map(|e| *e.value())
             .ok_or_else(|| NameMeshError::Transport(format!("no address known for {agent:?}")))?;
 
-        let mut stream = TcpStream::connect(addr)
-            .await
-            .map_err(|e| NameMeshError::Transport(format!("dial {addr}: {e}")))?;
+        self.pool.retain(|_, path| !path.is_closed());
+        self.bootstrap.retain(|_, path| !path.is_closed());
+        let permit = self.connections.clone().try_acquire_owned().map_err(|_| {
+            NameMeshError::Transport("outbound mesh connection limit reached".into())
+        })?;
+        let mut stream =
+            tokio::time::timeout(self.limits.handshake_timeout, TcpStream::connect(addr))
+                .await
+                .map_err(|_| NameMeshError::Transport("mesh dial deadline exceeded".into()))?
+                .map_err(|e| NameMeshError::Transport(format!("dial {addr}: {e}")))?;
         // Envelopes are small and latency-sensitive; Nagle would add up to a
         // 40 ms delay per DHT hop for no benefit.
         let _ = stream.set_nodelay(true);
 
         let transport = match &self.security {
-            Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
+            Security::Plaintext => ReplyPath::Plain(attach_bounded(
+                stream,
+                self.inbound.clone(),
+                self.limits,
+                Some(permit),
+            )),
             Security::Encrypted(cfg) => {
                 let signing = &cfg.signing;
                 // Pin the far end to the identity we meant to reach, when we
                 // know it. The keyspace id and the handshake key are the same
                 // Ed25519 key, so "the peer I dialed" and "the peer whose
                 // records I would trust" are one fact.
-                let expected = self.expected_identity(agent);
-                let session = client_handshake(&mut stream, signing, expected.as_ref()).await?;
-                ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
+                let expected = required.or_else(|| self.expected_identity(agent));
+                let session = tokio::time::timeout(
+                    self.limits.handshake_timeout,
+                    client_handshake_inner(&mut stream, signing, expected.as_ref()),
+                )
+                .await
+                .map_err(|_| {
+                    NameMeshError::Transport("mesh handshake deadline exceeded".into())
+                })??;
+                ReplyPath::Secure(attach_secure_bounded(
+                    stream,
+                    session,
+                    self.inbound.clone(),
+                    self.limits,
+                    Some(permit),
+                ))
             }
         };
-        self.pool.insert(*agent, transport.clone());
+        if let Some(old) = self.pool.insert(*agent, transport.clone()) {
+            old.close();
+        }
         Ok(transport)
     }
 
@@ -594,14 +916,31 @@ impl TcpNameTransport {
 
     /// Send to one peer, re-dialing once if the pooled connection is dead.
     async fn deliver(&self, target: AgentId, envelope: &MeshEnvelope) -> Result<(), NameMeshError> {
-        let conn = self.connection(&target).await?;
-        if conn.send(envelope.clone()).await.is_ok() {
-            return Ok(());
+        let required = match &envelope.payload {
+            crate::mesh::MeshPayload::Application(message) => {
+                if !self.is_encrypted() {
+                    return Err(NameMeshError::Transport(
+                        "application RPC requires encrypted, key-pinned TCP".into(),
+                    ));
+                }
+                Some(message.recipient_key)
+            }
+            _ => None,
+        };
+        let conn = self.connection(&target, required).await?;
+        let result = conn.send(envelope.clone()).await;
+        if result.is_ok() {
+            return result;
         }
         // The pooled socket was stale — most often a peer that restarted. Retry
         // once on a fresh connection, then report honestly.
-        self.pool.remove(&target);
-        let conn = self.connection(&target).await?;
+        self.evict(&target);
+        // Application delivery may already have reached the recipient. The
+        // caller must inspect its original task id after reconnecting.
+        if matches!(envelope.payload, crate::mesh::MeshPayload::Application(_)) {
+            return result;
+        }
+        let conn = self.connection(&target, required).await?;
         conn.send(envelope.clone()).await
     }
 
@@ -618,28 +957,60 @@ impl TcpNameTransport {
     /// signature over the key its ack carries.
     async fn provisional(&self, endpoint: &str) -> Result<ReplyPath, NameMeshError> {
         if let Some(existing) = self.bootstrap.get(endpoint) {
-            return Ok(existing.value().clone());
+            if !existing.value().is_closed() {
+                return Ok(existing.value().clone());
+            }
+        }
+        if let Some((_, path)) = self.bootstrap.remove(endpoint) {
+            path.close();
         }
 
         let addr: SocketAddr = endpoint
             .parse()
             .map_err(|e| NameMeshError::Transport(format!("bad seed address `{endpoint}`: {e}")))?;
 
-        let mut stream = TcpStream::connect(addr)
-            .await
-            .map_err(|e| NameMeshError::Transport(format!("dial seed {addr}: {e}")))?;
+        self.pool.retain(|_, path| !path.is_closed());
+        self.bootstrap.retain(|_, path| !path.is_closed());
+        let permit = self.connections.clone().try_acquire_owned().map_err(|_| {
+            NameMeshError::Transport("outbound mesh connection limit reached".into())
+        })?;
+        let mut stream =
+            tokio::time::timeout(self.limits.handshake_timeout, TcpStream::connect(addr))
+                .await
+                .map_err(|_| NameMeshError::Transport("mesh dial deadline exceeded".into()))?
+                .map_err(|e| NameMeshError::Transport(format!("dial seed {addr}: {e}")))?;
         let _ = stream.set_nodelay(true);
 
         let path = match &self.security {
-            Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
+            Security::Plaintext => ReplyPath::Plain(attach_bounded(
+                stream,
+                self.inbound.clone(),
+                self.limits,
+                Some(permit),
+            )),
             Security::Encrypted(cfg) => {
                 // Nothing to pin to: establishing the identity is the point of
                 // dialing a bootstrap address.
-                let session = client_handshake(&mut stream, &cfg.signing, None).await?;
-                ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
+                let session = tokio::time::timeout(
+                    self.limits.handshake_timeout,
+                    client_handshake_inner(&mut stream, &cfg.signing, None),
+                )
+                .await
+                .map_err(|_| {
+                    NameMeshError::Transport("mesh handshake deadline exceeded".into())
+                })??;
+                ReplyPath::Secure(attach_secure_bounded(
+                    stream,
+                    session,
+                    self.inbound.clone(),
+                    self.limits,
+                    Some(permit),
+                ))
             }
         };
-        self.bootstrap.insert(endpoint.to_string(), path.clone());
+        if let Some(old) = self.bootstrap.insert(endpoint.to_string(), path.clone()) {
+            old.close();
+        }
         Ok(path)
     }
 }
@@ -647,6 +1018,14 @@ impl TcpNameTransport {
 #[async_trait]
 impl NameTransport for TcpNameTransport {
     async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        if let crate::mesh::MeshPayload::Application(message) = &envelope.payload {
+            if !matches!(envelope.to, crate::mesh::MeshTarget::Agent(id) if id == message.recipient)
+            {
+                return Err(NameMeshError::Transport(
+                    "application RPC must target its signed recipient".into(),
+                ));
+            }
+        }
         match envelope.to {
             crate::mesh::MeshTarget::Agent(id) => self.deliver(id, &envelope).await,
             // A broadcast goes to every peer we can reach. Individual failures
@@ -664,6 +1043,11 @@ impl NameTransport for TcpNameTransport {
     }
 
     async fn send_to(&self, endpoint: &str, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        if matches!(envelope.payload, crate::mesh::MeshPayload::Application(_)) {
+            return Err(NameMeshError::Transport(
+                "application RPC cannot use unpinned bootstrap delivery".into(),
+            ));
+        }
         self.provisional(endpoint).await?.send(envelope).await
     }
 
@@ -679,7 +1063,9 @@ impl NameTransport for TcpNameTransport {
     }
 
     async fn release(&self, endpoint: &str) {
-        self.bootstrap.remove(endpoint);
+        if let Some((_, path)) = self.bootstrap.remove(endpoint) {
+            path.close();
+        }
     }
 }
 
@@ -689,15 +1075,25 @@ impl NameTransport for TcpNameTransport {
 #[derive(Debug)]
 pub struct MeshListener {
     listener: TcpListener,
+    limits: ConnectionLimits,
 }
 
 impl MeshListener {
     /// Bind a listener. Pass port 0 to let the OS choose.
     pub async fn bind(addr: SocketAddr) -> Result<Self, NameMeshError> {
+        Self::bind_with_limits(addr, ConnectionLimits::default()).await
+    }
+
+    /// Bind with explicit admission and socket deadlines. Invalid limits fail closed.
+    pub async fn bind_with_limits(
+        addr: SocketAddr,
+        limits: ConnectionLimits,
+    ) -> Result<Self, NameMeshError> {
+        limits.validate()?;
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| NameMeshError::Transport(format!("bind {addr}: {e}")))?;
-        Ok(Self { listener })
+        Ok(Self { listener, limits })
     }
 
     /// The address actually bound — the real port when 0 was requested.
@@ -720,30 +1116,52 @@ impl MeshListener {
     /// The handshake runs on the connection's own task, so a peer that stalls
     /// mid-handshake cannot hold up the accept loop.
     pub async fn serve_with(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
+        let admission = Arc::new(Semaphore::new(self.limits.max_connections));
         loop {
             match self.listener.accept().await {
                 Ok((mut stream, peer)) => {
+                    let Ok(permit) = admission.clone().try_acquire_owned() else {
+                        // Refuse immediately; never queue unbounded accept tasks.
+                        drop(stream);
+                        continue;
+                    };
                     let _ = stream.set_nodelay(true);
                     let inbound = inbound.clone();
+                    let limits = self.limits;
                     match signing.clone() {
                         None => {
-                            attach(stream, inbound);
+                            attach_bounded(stream, inbound, limits, Some(permit));
                         }
                         Some(key) => {
                             tokio::spawn(async move {
-                                match server_handshake(&mut stream, &key).await {
-                                    Ok(session) => {
-                                        attach_secure(stream, session, inbound);
+                                match tokio::time::timeout(
+                                    limits.handshake_timeout,
+                                    server_handshake_inner(&mut stream, &key),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(session)) => {
+                                        attach_secure_bounded(
+                                            stream,
+                                            session,
+                                            inbound,
+                                            limits,
+                                            Some(permit),
+                                        );
                                     }
-                                    Err(e) => {
+                                    Ok(Err(e)) => {
                                         tracing::debug!("handshake with {peer} failed: {e}")
                                     }
+                                    Err(_) => tracing::debug!("mesh handshake deadline exceeded"),
                                 }
                             });
                         }
                     }
                 }
-                Err(e) => tracing::warn!("mesh accept failed: {e}"),
+                Err(e) => {
+                    tracing::warn!("mesh accept failed: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
         }
     }
@@ -754,6 +1172,11 @@ impl MeshListener {
 /// Each envelope is answered on the connection it arrived on.
 pub async fn pump(mut inbound: mpsc::Receiver<Inbound>, resolver: Arc<MeshNameResolver>) {
     while let Some(item) = inbound.recv().await {
+        if let crate::mesh::MeshPayload::Application(message) = &item.envelope.payload {
+            if item.reply.authenticated_peer() != Some(message.public_key) {
+                continue;
+            }
+        }
         let now = resolver.now();
         let reply = item.reply.clone();
         resolver
@@ -786,7 +1209,7 @@ pub async fn serve_node_with(
     inbound: mpsc::Receiver<Inbound>,
     signing: Option<SigningKey>,
 ) -> Result<SocketAddr, NameMeshError> {
-    let listener = MeshListener::bind(bind_addr).await?;
+    let listener = MeshListener::bind_with_limits(bind_addr, transport.limits).await?;
     let addr = listener.local_addr()?;
     tokio::spawn(listener.serve_with(transport.inbound_sender(), signing));
     tokio::spawn(pump(inbound, resolver));
@@ -804,6 +1227,294 @@ mod tests {
     use std::time::Duration;
 
     const NOW: u64 = 1_700_000_000;
+
+    #[tokio::test]
+    async fn reader_eof_invalidates_plain_and_secure_pooled_writers() {
+        let (sender, _receiver) = mpsc::channel(4);
+        let (stream, mut peer) = tokio::io::duplex(4096);
+        let plain = ReplyPath::Plain(attach(stream, sender.clone()));
+        peer.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !plain.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let node = MeshNode::new(
+            SigningIdentity::from_seed("test", [44; 32]),
+            MeshConfig::default(),
+        );
+        let envelope =
+            node.create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1));
+        assert!(plain.send(envelope.clone()).await.is_err());
+
+        let (mut stream, mut peer) = tokio::io::duplex(32768);
+        let client_key = SigningKey::from_bytes(&[45; 32]);
+        let server_key = SigningKey::from_bytes(&[46; 32]);
+        let (client, server) = tokio::join!(
+            client_handshake(&mut stream, &client_key, None),
+            server_handshake(&mut peer, &server_key)
+        );
+        let session = client.unwrap();
+        let _peer_session = server.unwrap();
+        let secure = ReplyPath::Secure(attach_secure(stream, session, sender));
+        peer.shutdown().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !secure.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(secure.send(envelope).await.is_err());
+    }
+
+    fn ping() -> MeshEnvelope {
+        MeshNode::new(
+            SigningIdentity::from_seed("limits", [51; 32]),
+            MeshConfig::default(),
+        )
+        .create_envelope(crate::mesh::MeshTarget::Broadcast, MeshPayload::Ping(1))
+    }
+
+    #[test]
+    fn contact_registries_are_bounded_and_existing_contacts_can_update() {
+        let (transport, _receiver) = TcpNameTransport::new();
+        let address: SocketAddr = "127.0.0.1:9440".parse().unwrap();
+        let first = AgentId::new();
+        transport.set_address(first, address);
+        transport.set_identity(first, [57; 32]);
+        for _ in 1..MAX_KNOWN_PEERS + 10 {
+            let id = AgentId::new();
+            transport.set_address(id, address);
+            transport.set_identity(id, [57; 32]);
+        }
+        assert_eq!(transport.known_addresses(), MAX_KNOWN_PEERS);
+        assert_eq!(transport.identities.len(), MAX_KNOWN_PEERS);
+        let updated: SocketAddr = "127.0.0.1:9441".parse().unwrap();
+        transport.set_address(first, updated);
+        transport.set_identity(first, [58; 32]);
+        assert_eq!(*transport.addresses.get(&first).unwrap(), updated);
+        assert_eq!(transport.expected_identity(&first), Some([58; 32]));
+    }
+
+    #[tokio::test]
+    async fn connection_limits_reject_invalid_policy() {
+        for limits in [
+            ConnectionLimits {
+                max_connections: 0,
+                ..Default::default()
+            },
+            ConnectionLimits {
+                max_connections: 1025,
+                ..Default::default()
+            },
+            ConnectionLimits {
+                frame_timeout: Duration::ZERO,
+                ..Default::default()
+            },
+            ConnectionLimits {
+                write_timeout: Duration::ZERO,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                MeshListener::bind_with_limits("127.0.0.1:0".parse().unwrap(), limits)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    // A controlled local writer that accepts one byte and then remains pending.
+    // This exercises caller cancellation without relying on OS socket buffers.
+    struct PausedWriter {
+        started: Arc<Notify>,
+        written: bool,
+    }
+    impl AsyncWrite for PausedWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self.written {
+                return std::task::Poll::Pending;
+            }
+            self.written = true;
+            self.started.notify_one();
+            std::task::Poll::Ready(Ok(bytes.len().min(1)))
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_partial_write_retires_plain_and_secure_sockets() {
+        let started = Arc::new(Notify::new());
+        let plain = ReplyPath::Plain(SocketTransport::from_writer(PausedWriter {
+            started: started.clone(),
+            written: false,
+        }));
+        let sending = plain.clone();
+        let job = tokio::spawn(async move { sending.send(ping()).await });
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        assert!(plain.is_closed());
+        assert!(plain.send(ping()).await.is_err());
+
+        let (mut stream, mut peer) = tokio::io::duplex(32768);
+        let client_key = SigningKey::from_bytes(&[52; 32]);
+        let server_key = SigningKey::from_bytes(&[53; 32]);
+        let (client, server) = tokio::join!(
+            client_handshake(&mut stream, &client_key, None),
+            server_handshake(&mut peer, &server_key)
+        );
+        let _session = server.unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let secure = attach_secure(stream, client.unwrap(), sender);
+        secure.inner.lock().await.writer = Box::new(PausedWriter {
+            started: started.clone(),
+            written: false,
+        });
+        let sending = secure.clone();
+        let job = tokio::spawn(async move { sending.send(ping()).await });
+        tokio::time::timeout(Duration::from_secs(2), started.notified())
+            .await
+            .unwrap();
+        job.abort();
+        assert!(job.await.unwrap_err().is_cancelled());
+        assert!(secure.closed.is_closed());
+        assert!(secure.send(ping()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn frame_and_queue_deadlines_release_connection_admission() {
+        for block_queue in [false, true] {
+            let admission = Arc::new(Semaphore::new(1));
+            let permit = admission.clone().try_acquire_owned().unwrap();
+            let limits = ConnectionLimits {
+                frame_timeout: if block_queue {
+                    Duration::from_secs(2)
+                } else {
+                    Duration::from_millis(50)
+                },
+                queue_timeout: Duration::from_millis(50),
+                ..Default::default()
+            };
+            let (sender, mut receiver) = mpsc::channel(1);
+            let (stream, mut peer) = tokio::io::duplex(4096);
+            let transport = attach_bounded(stream, sender, limits, Some(permit));
+            if block_queue {
+                write_envelope(&mut peer, &ping()).await.unwrap();
+                write_envelope(&mut peer, &ping()).await.unwrap();
+            }
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while admission.available_permits() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(transport.closed.is_closed());
+            assert!(transport.send(ping()).await.is_err());
+            let mut byte = [0];
+            assert_eq!(
+                peer.read(&mut byte).await.unwrap(),
+                0,
+                "writer must shut down even if reply clones survive"
+            );
+            if block_queue {
+                assert!(receiver.recv().await.is_some());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn listener_bounds_handshakes_and_recovers_admission_after_timeout() {
+        let limits = ConnectionLimits {
+            max_connections: 1,
+            handshake_timeout: Duration::from_millis(500),
+            ..Default::default()
+        };
+        let listener = MeshListener::bind_with_limits("127.0.0.1:0".parse().unwrap(), limits)
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sender, _receiver) = mpsc::channel(1);
+        let server_key = SigningKey::from_bytes(&[54; 32]);
+        let server = tokio::spawn(listener.serve_with(sender, Some(server_key.clone())));
+        let mut quiet = TcpStream::connect(address).await.unwrap();
+        // Sending a valid handshake header isn't necessary: the deadline covers
+        // a quiet local connection from accept until handshake completion.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut excess = TcpStream::connect(address).await.unwrap();
+        let mut byte = [0];
+        let ended = tokio::time::timeout(Duration::from_secs(2), excess.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(matches!(ended, Ok(0)) || ended.is_err());
+        let ended = tokio::time::timeout(Duration::from_secs(2), quiet.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(matches!(ended, Ok(0)) || ended.is_err());
+        let mut next = TcpStream::connect(address).await.unwrap();
+        let client_key = SigningKey::from_bytes(&[55; 32]);
+        assert!(client_handshake(
+            &mut next,
+            &client_key,
+            Some(&server_key.verifying_key().to_bytes())
+        )
+        .await
+        .is_ok());
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn outbound_dials_share_a_bounded_connection_budget() {
+        let (mut transport, _receiver) = TcpNameTransport::new();
+        Arc::get_mut(&mut transport).unwrap().connections = Arc::new(Semaphore::new(1));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let first = AgentId::new();
+        let second = AgentId::new();
+        transport.set_address(first, address);
+        transport.set_address(second, address);
+        let first_path = transport.connection(&first, None).await.unwrap();
+        let (peer, _) = listener.accept().await.unwrap();
+        let error = transport.connection(&second, None).await.unwrap_err();
+        assert!(error.to_string().contains("connection limit"));
+        drop(peer);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while transport.connections.available_permits() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(first_path.is_closed());
+        assert!(transport.connection(&second, None).await.is_ok());
+        assert_eq!(
+            transport.pooled_connections(),
+            1,
+            "closed entries must be pruned"
+        );
+    }
 
     fn record(seed: u8, caps: &[&str]) -> NameRecord {
         let key = SigningKey::from_bytes(&[seed; 32]);
@@ -1082,7 +1793,8 @@ mod tests {
 
         let rec = record(9, &[]);
         let report = publisher.resolver.publish(rec.clone()).await.unwrap();
-        assert!(report.is_durable(), "no copy was placed: {report:?}");
+        assert!(report.sent > 0, "no copy was sent: {report:?}");
+        assert!(!report.is_durable());
 
         // An announcement is fire-and-forget: `publish` returns once the copy
         // is on the wire, and there is no ack to await. Wait for the holder to
@@ -1386,6 +2098,50 @@ mod secure_tests {
         a.resolver
             .register_peer(&b.mesh.public_identity(), vec![b.addr.to_string()], NOW)
             .await;
+    }
+
+    #[tokio::test]
+    async fn application_delivery_pins_the_handshake_even_with_a_pooled_socket() {
+        use crate::mesh::{ApplicationMessage, MeshPayload, MeshTarget};
+        let caller = spawn_secure(21).await;
+        let worker = spawn_secure(22).await;
+        introduce(&caller, &worker).await;
+        let worker_id = *worker.mesh.agent_id();
+        let worker_key = worker.signing.verifying_key().to_bytes();
+        let pooled = caller.transport.connection(&worker_id, None).await.unwrap();
+        assert_eq!(pooled.authenticated_peer(), Some(worker_key));
+        let envelope = |key| {
+            caller.mesh.create_envelope(
+                MeshTarget::Agent(worker_id),
+                MeshPayload::Application(Box::new(ApplicationMessage {
+                    public_key: caller.signing.verifying_key().to_bytes(),
+                    recipient: worker_id,
+                    recipient_key: key,
+                    request_id: uuid::Uuid::new_v4(),
+                    response: false,
+                    data: serde_json::json!({"operation":"capabilities"}),
+                })),
+            )
+        };
+        let error = caller.transport.send(envelope([99; 32])).await.unwrap_err();
+        assert!(
+            error.to_string().contains("not the expected"),
+            "wrong pinned key must fail the handshake before task data is sent"
+        );
+        caller.transport.send(envelope(worker_key)).await.unwrap();
+        let (plain, _inbound) = TcpNameTransport::new();
+        plain.set_address(worker_id, worker.addr);
+        assert!(plain
+            .send(envelope(worker_key))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("requires encrypted"));
+        assert!(caller
+            .transport
+            .send_to(&worker.addr.to_string(), envelope(worker_key))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

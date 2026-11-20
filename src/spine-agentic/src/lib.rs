@@ -8412,26 +8412,13 @@ impl NeuralProtocol {
         self.latency
     }
 
-    /// Transmit data through the neural protocol (stub).
+    /// The experimental physical layer has no transport backend. Fail
+    /// explicitly rather than reporting simulated elapsed time as delivery.
     pub async fn transmit(
         &mut self,
-        data: &[u8],
-        domain: ProtocolDomain,
+        _data: &[u8],
+        _domain: ProtocolDomain,
     ) -> Result<TransmissionResult, String> {
-        let start = std::time::Instant::now();
-        let duration = start.elapsed();
-        Ok(TransmissionResult {
-            bytes_sent: data.len(),
-            latency_us: duration.as_micros() as u64,
-            domain: format!("{:?}", domain),
-            throughput_mbps: if duration.as_secs_f64() > 0.0 {
-                (data.len() as f64 * 8.0) / (duration.as_secs_f64() * 1_000_000.0)
-            } else {
-                0.0
-            },
-            compression_ratio: 1.0,
-            spike_count: data.len() / 64,
-            duration,
-        })
+        Err("Neural physical transport is unavailable; use the native encoded frame and transport APIs".into())
     }
 }

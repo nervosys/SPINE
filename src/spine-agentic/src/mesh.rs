@@ -228,6 +228,19 @@ pub enum MeshPayload {
     /// Answer a [`MeshPayload::NameHello`]: who the responder is, and the
     /// keyspace peers it can refer the newcomer to.
     NameHelloAck(Box<crate::naming::NameHelloAck>),
+    /// Versioned application RPC over the same authenticated mesh transport.
+    Application(Box<ApplicationMessage>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplicationMessage {
+    pub public_key: [u8; 32],
+    /// Bound inside the signed payload, unlike mutable routing metadata.
+    pub recipient: AgentId,
+    pub recipient_key: [u8; 32],
+    pub request_id: Uuid,
+    pub response: bool,
+    pub data: serde_json::Value,
 }
 
 /// Compact agent message for mesh transport (avoids Box<MessageContent> serialization issues).

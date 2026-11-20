@@ -193,6 +193,11 @@ impl WsNameTransport {
 #[async_trait]
 impl NameTransport for WsNameTransport {
     async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        if matches!(envelope.payload, crate::mesh::MeshPayload::Application(_)) {
+            return Err(NameMeshError::Transport(
+                "application RPC is supported only over key-pinned encrypted TCP".into(),
+            ));
+        }
         match envelope.to {
             crate::mesh::MeshTarget::Agent(id) => self.deliver(id, &envelope).await,
             _ => {
@@ -208,6 +213,11 @@ impl NameTransport for WsNameTransport {
     }
 
     async fn send_to(&self, endpoint: &str, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+        if matches!(envelope.payload, crate::mesh::MeshPayload::Application(_)) {
+            return Err(NameMeshError::Transport(
+                "application RPC cannot use unpinned bootstrap delivery".into(),
+            ));
+        }
         self.provisional(endpoint).await?.send(envelope).await
     }
 

@@ -10,6 +10,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
 use tracing::instrument;
+pub mod resources;
 
 // Re-export the compiler for convenience
 pub use spine_compiler::Compiler;
@@ -28,7 +29,10 @@ pub struct AgentClient<S> {
 
 impl AgentClient<TcpStream> {
     pub async fn connect(addr: &str) -> anyhow::Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
         let handler = ProtocolHandler::new(stream);
         Ok(Self {
             handler,
@@ -118,6 +122,7 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             }
         }
 
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
         let config = if let Some((cert_path, key_path)) = client_cert {
             let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
             let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
@@ -134,19 +139,29 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
                 .ok_or_else(|| anyhow::anyhow!("No key"))?
                 .into();
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_provider(provider.clone())
+                .with_safe_default_protocol_versions()?
                 .with_root_certificates(root_store)
                 .with_client_auth_cert(certs, key)?
         } else {
-            ClientConfig::builder()
+            ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()?
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         };
 
         let connector = TlsConnector::from(Arc::new(config));
-        let stream = TcpStream::connect(addr).await?;
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
         let domain = ServerName::try_from(domain.to_owned())?;
-        let tls_stream = connector.connect(domain, stream).await?;
+        let tls_stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connector.connect(domain, stream),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("native TLS handshake deadline exceeded"))??;
 
         let handler = ProtocolHandler::new(tls_stream);
         Ok(Self {
@@ -236,6 +251,74 @@ where
         (latent_rx, event_rx)
     }
 
+    pub async fn capabilities(
+        &mut self,
+    ) -> anyhow::Result<spine_protocol::CapabilityAdvertisement> {
+        self.request_counter += 1;
+        let id = format!("cap-{}", self.request_counter);
+        self.handler
+            .send_message(&Message::CapabilityQuery(spine_protocol::CapabilityQuery {
+                id: id.clone(),
+                selector: spine_protocol::CapabilitySelector::All,
+            }))
+            .await?;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if let Message::CapabilityAd(result) = self.handler.receive_message().await? {
+                    if result.id == id {
+                        return Ok(result);
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "capability discovery deadline exceeded; reconnect before another request"
+            )
+        })?
+    }
+
+    pub async fn namespace_status(&mut self) -> anyhow::Result<serde_json::Value> {
+        let response = self.send_request(BrowserCommand::NamespaceStatus).await?;
+        if let Some(error) = response.error {
+            anyhow::bail!(error);
+        }
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("namespace status returned no result"))
+    }
+
+    /// Pin the worker signing key. Never automatically retry a mutation after
+    /// uncertain delivery; resubmit the exact same task id and specification.
+    pub async fn mesh_call(
+        &mut self,
+        peer_id: &str,
+        peer_key: [u8; 32],
+        payload: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let response = self
+            .send_request(BrowserCommand::MeshCall {
+                peer_id: peer_id.into(),
+                peer_key,
+                payload,
+            })
+            .await?;
+        if let Some(error) = response.error {
+            anyhow::bail!("mesh call: {error}");
+        }
+        let value = response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("mesh call returned no result"))?;
+        if let Some(error) = value.get("error") {
+            anyhow::bail!("application: {error}");
+        }
+        value
+            .get("result")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("application returned no result"))
+    }
+
     async fn send_request(&mut self, command: BrowserCommand) -> anyhow::Result<Response> {
         self.request_counter += 1;
         let id = self.request_counter.to_string();
@@ -263,6 +346,40 @@ where
                 _ => continue,
             }
         }
+    }
+
+    /// Invoke a native tool once. Calls are serialized on this client and are
+    /// never automatically replayed. Drop the connection after a timeout.
+    pub async fn call_tool(
+        &mut self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<spine_protocol::ToolResult> {
+        self.request_counter += 1;
+        let id = format!("tool-{}", self.request_counter);
+        let call = spine_protocol::ToolCall {
+            id: id.clone(),
+            name: name.into(),
+            args,
+            trace: None,
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            self.handler.send_message(&Message::ToolCall(call)).await?;
+            loop {
+                match self.handler.receive_message().await? {
+                    Message::ToolResult(result) if result.id == id => return Ok(result),
+                    Message::MorphRequest { .. } => {}
+                    Message::Ping { timestamp } => {
+                        self.handler
+                            .send_message(&Message::Pong { timestamp })
+                            .await?
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("tool deadline exceeded; reconnect before another request"))?
     }
 
     #[instrument(skip(self))]

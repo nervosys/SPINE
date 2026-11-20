@@ -693,11 +693,26 @@ impl NameService {
 
     /// Begin a lookup, returning its request id and the first wave to query.
     pub fn start_lookup(&mut self, query: ResolveQuery) -> (u64, Vec<NodeInfo>) {
+        self.start_lookup_at(query, 0)
+    }
+
+    /// Begin a lookup with the caller's freshness clock.
+    pub fn start_lookup_at(&mut self, query: ResolveQuery, now: u64) -> (u64, Vec<NodeInfo>) {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
         let seeds = self.routing.closest(&query.target_key(), K);
-        let mut lookup = Lookup::new(query, seeds);
+        let mut lookup = Lookup::new(query.clone(), seeds);
+        if let ResolveQuery::Capability(term) = &query {
+            let mut local = ResolveResponse::empty(request_id);
+            local.providers = self
+                .store
+                .providers_of(term, now)
+                .into_iter()
+                .cloned()
+                .collect();
+            lookup.on_response(&local);
+        }
         let wave = lookup.next_wave();
         self.lookups.insert(request_id, lookup);
         (request_id, wave)

@@ -36,7 +36,27 @@ use tokio::sync::{oneshot, Mutex};
 use spine_name::{NameKey, NameRecord, NodeInfo, SpineUri};
 
 use crate::identity::PublicIdentity;
+use crate::mesh::{ApplicationMessage, MeshTarget};
 use crate::mesh::{MeshEnvelope, MeshNode, MeshPayload};
+use uuid::Uuid;
+
+/// Application handlers receive the verified signing key, never a claimed
+/// caller id. Implementations must apply their own allowlist and ownership policy.
+#[async_trait]
+pub trait MeshApplication: Send + Sync {
+    async fn handle(&self, caller: [u8; 32], request: serde_json::Value) -> serde_json::Value;
+}
+
+type RpcWaiter = ([u8; 32], AgentId, oneshot::Sender<serde_json::Value>);
+struct RpcGuard<'a> {
+    waiters: &'a DashMap<Uuid, RpcWaiter>,
+    id: Uuid,
+}
+impl Drop for RpcGuard<'_> {
+    fn drop(&mut self) {
+        self.waiters.remove(&self.id);
+    }
+}
 use crate::naming::{KeyspacePeer, LookupOutcome, NameService, ResolveQuery, ResolveResponse, K};
 use crate::AgentId;
 
@@ -180,7 +200,7 @@ impl BootstrapReport {
 /// Where a record ended up.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReplicationReport {
-    /// Peers that accepted a directed copy.
+    /// Directed sends completed by the transport; no remote storage ack exists.
     pub sent: usize,
     /// Peers the copy could not be delivered to.
     pub failed: usize,
@@ -190,7 +210,7 @@ pub struct ReplicationReport {
 }
 
 impl ReplicationReport {
-    /// How many copies exist beyond the publisher's own.
+    /// Number of completed directed sends (legacy method name).
     ///
     /// A broadcast counts as none: it may well have reached peers, but not
     /// peers chosen for their position, so nothing about the record's
@@ -199,9 +219,10 @@ impl ReplicationReport {
         self.sent
     }
 
-    /// Whether the record survives this node going away.
+    /// Whether remote persistent storage has been acknowledged. The current
+    /// mesh has no such acknowledgement, so transport delivery cannot prove it.
     pub fn is_durable(&self) -> bool {
-        self.sent > 0
+        false
     }
 }
 
@@ -252,6 +273,9 @@ pub struct MaintenanceReport {
 
 /// A [`NameService`] wired to a live mesh.
 pub struct MeshNameResolver {
+    application: Option<Arc<dyn MeshApplication>>,
+    rpc_waiters: DashMap<Uuid, RpcWaiter>,
+    rpc_slots: tokio::sync::Semaphore,
     service: Mutex<NameService>,
     node: Arc<MeshNode>,
     transport: Arc<dyn NameTransport>,
@@ -286,6 +310,9 @@ impl MeshNameResolver {
     pub fn new(node: Arc<MeshNode>, transport: Arc<dyn NameTransport>) -> Self {
         let service = NameService::new(node.name_key());
         Self {
+            application: None,
+            rpc_waiters: DashMap::new(),
+            rpc_slots: tokio::sync::Semaphore::new(64),
             service: Mutex::new(service),
             node,
             transport,
@@ -324,6 +351,90 @@ impl MeshNameResolver {
     /// This node's keyspace position.
     pub fn local_key(&self) -> NameKey {
         self.node.name_key()
+    }
+
+    pub fn with_application(mut self, application: Arc<dyn MeshApplication>) -> Self {
+        self.application = Some(application);
+        self
+    }
+
+    pub fn agent_id(&self) -> AgentId {
+        *self.node.agent_id()
+    }
+
+    pub fn pending_application_calls(&self) -> usize {
+        self.rpc_waiters.len()
+    }
+
+    pub async fn peers(&self) -> Vec<KeyspacePeer> {
+        self.service
+            .lock()
+            .await
+            .closest_peers(&self.local_key(), 128)
+    }
+
+    /// A single bounded RPC. Timeouts never imply that a mutation did not run;
+    /// application ids must make retries idempotent. Dropping this future removes
+    /// its waiter and releases its concurrency permit.
+    pub async fn application_call(
+        &self,
+        peer: AgentId,
+        peer_key: [u8; 32],
+        data: serde_json::Value,
+    ) -> Result<serde_json::Value, NameMeshError> {
+        if serde_json::to_vec(&data)
+            .map_err(|e| NameMeshError::Transport(e.to_string()))?
+            .len()
+            > 2 * 1024 * 1024
+        {
+            return Err(NameMeshError::Transport(
+                "application request exceeds 2 MiB".into(),
+            ));
+        }
+        let _permit = self.rpc_slots.try_acquire().map_err(|_| {
+            NameMeshError::Transport("application RPC concurrency exhausted".into())
+        })?;
+        let contact = self
+            .peers()
+            .await
+            .into_iter()
+            .find(|p| p.agent_id == peer)
+            .ok_or_else(|| {
+                NameMeshError::Transport(
+                    "application peer is not in the authenticated routing table".into(),
+                )
+            })?;
+        if contact.info.id.as_bytes() != &peer_key {
+            return Err(NameMeshError::Transport(
+                "application peer key does not match the pinned key".into(),
+            ));
+        }
+        let id = Uuid::new_v4();
+        let (tx, rx) = oneshot::channel();
+        self.rpc_waiters
+            .insert(id, (*contact.info.id.as_bytes(), peer, tx));
+        let _guard = RpcGuard {
+            waiters: &self.rpc_waiters,
+            id,
+        };
+        let envelope = self.node.create_envelope(
+            MeshTarget::Agent(peer),
+            MeshPayload::Application(Box::new(ApplicationMessage {
+                public_key: *self.local_key().as_bytes(),
+                recipient: peer,
+                recipient_key: peer_key,
+                request_id: id,
+                response: false,
+                data,
+            })),
+        );
+        tokio::time::timeout(Duration::from_secs(30), async {
+            self.transport.send(envelope).await?;
+            rx.await
+                .map_err(|_| NameMeshError::Transport("application response channel closed".into()))
+        })
+        .await
+        .map_err(|_| NameMeshError::Timeout(Duration::from_secs(30)))?
     }
 
     /// Register a peer in both routing spaces at once.
@@ -631,10 +742,12 @@ impl MeshNameResolver {
             let mut service = self.service.lock().await;
             // A node that already holds the answer has no business walking the
             // keyspace for it. This is the hot path once a cache is warm.
-            if let Some(outcome) = service.resolve_locally(&query, now) {
-                return Ok(outcome);
+            if !matches!(query, ResolveQuery::Capability(_)) {
+                if let Some(outcome) = service.resolve_locally(&query, now) {
+                    return Ok(outcome);
+                }
             }
-            service.start_lookup(query)
+            service.start_lookup_at(query, now)
         };
         self.metrics.lock().await.lookups_started += 1;
 
@@ -766,6 +879,62 @@ impl MeshNameResolver {
         reply: Option<&dyn NameTransport>,
     ) -> bool {
         match &envelope.payload {
+            MeshPayload::Application(message) => {
+                if message.recipient != *self.node.agent_id()
+                    || &message.recipient_key != self.local_key().as_bytes()
+                    || !matches!(envelope.to, MeshTarget::Agent(id) if id == *self.node.agent_id())
+                    || !MeshNode::verify_carried_key(envelope, &message.public_key)
+                    || serde_json::to_vec(&message.data).map_or(true, |v| v.len() > 2 * 1024 * 1024)
+                {
+                    return true;
+                }
+                if message.response {
+                    if self
+                        .rpc_waiters
+                        .get(&message.request_id)
+                        .is_some_and(|w| w.0 == message.public_key && w.1 == envelope.from)
+                    {
+                        if let Some((_, (_, _, tx))) = self.rpc_waiters.remove(&message.request_id)
+                        {
+                            let _ = tx.send(message.data.clone());
+                        }
+                    }
+                } else {
+                    let mut data = match &self.application {
+                        Some(application) => {
+                            application
+                                .handle(message.public_key, message.data.clone())
+                                .await
+                        }
+                        None => {
+                            serde_json::json!({"error":{"code":"unsupported","message":"application RPC is disabled"}})
+                        }
+                    };
+                    if serde_json::to_vec(&data).map_or(true, |v| v.len() > 2 * 1024 * 1024) {
+                        data = serde_json::json!({"error":{"code":"response_too_large","message":"application response exceeds 2 MiB"}});
+                    }
+                    let answer = self.node.create_envelope(
+                        MeshTarget::Agent(envelope.from),
+                        MeshPayload::Application(Box::new(ApplicationMessage {
+                            public_key: *self.local_key().as_bytes(),
+                            recipient: envelope.from,
+                            recipient_key: message.public_key,
+                            request_id: message.request_id,
+                            response: true,
+                            data,
+                        })),
+                    );
+                    match reply {
+                        Some(back) => {
+                            let _ = back.send(answer).await;
+                        }
+                        None => {
+                            let _ = self.transport.send(answer).await;
+                        }
+                    }
+                }
+                true
+            }
             MeshPayload::NameAnnounce(announced) => {
                 // accept_announcement verifies and applies admission control, so
                 // a forgery is counted and dropped rather than becoming servable
@@ -963,6 +1132,95 @@ impl MeshNameResolver {
     /// Drop expired records.
     pub async fn sweep(&self, now: u64) -> usize {
         self.service.lock().await.sweep(now)
+    }
+}
+
+#[cfg(test)]
+mod application_tests {
+    use super::*;
+    use crate::identity::SigningIdentity;
+    use crate::mesh::MeshConfig;
+    use std::sync::Mutex as StdMutex;
+    #[derive(Default)]
+    struct Capture(StdMutex<Vec<MeshEnvelope>>);
+    #[async_trait]
+    impl NameTransport for Capture {
+        async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
+            self.0.lock().unwrap().push(envelope);
+            Ok(())
+        }
+    }
+    struct Echo;
+    #[async_trait]
+    impl MeshApplication for Echo {
+        async fn handle(&self, caller: [u8; 32], request: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({"caller":caller,"request":request})
+        }
+    }
+    #[tokio::test]
+    async fn application_signatures_recipient_pins_and_cancelled_waiters() {
+        let sender = SigningIdentity::from_seed("sender", [9; 32]);
+        let receiver = SigningIdentity::from_seed("receiver", [8; 32]);
+        let sender_key = *sender.public_key();
+        let receiver_key = *receiver.public_key();
+        let sender_public = sender.public_identity();
+        let sender_node = MeshNode::new(sender, MeshConfig::default());
+        let receiver_node = Arc::new(MeshNode::new(receiver, MeshConfig::default()));
+        let capture = Arc::new(Capture::default());
+        let resolver = Arc::new(
+            MeshNameResolver::new(receiver_node.clone(), capture.clone())
+                .with_application(Arc::new(Echo)),
+        );
+        let envelope = sender_node.create_envelope(
+            MeshTarget::Agent(resolver.agent_id()),
+            MeshPayload::Application(Box::new(ApplicationMessage {
+                public_key: sender_key,
+                recipient: resolver.agent_id(),
+                recipient_key: receiver_key,
+                request_id: Uuid::new_v4(),
+                response: false,
+                data: serde_json::json!({"operation":"probe"}),
+            })),
+        );
+        resolver.handle_envelope(&envelope, resolver.now()).await;
+        assert_eq!(capture.0.lock().unwrap().len(), 1);
+        let mut invalid = envelope.clone();
+        invalid.signature = vec![0; 64];
+        resolver.handle_envelope(&invalid, resolver.now()).await;
+        assert_eq!(
+            capture.0.lock().unwrap().len(),
+            1,
+            "unsigned calls must not reach an application"
+        );
+        resolver
+            .register_peer(
+                &sender_public,
+                vec!["127.0.0.1:9440".into()],
+                resolver.now(),
+            )
+            .await;
+        let peer = sender_node.agent_id().to_owned();
+        let outgoing = resolver.clone();
+        let call = tokio::spawn(async move {
+            outgoing
+                .application_call(peer, sender_key, serde_json::json!({}))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while resolver.pending_application_calls() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        call.abort();
+        let _ = call.await;
+        assert_eq!(
+            resolver.pending_application_calls(),
+            0,
+            "cancelled caller must remove its waiter"
+        );
+        assert_eq!(resolver.rpc_slots.available_permits(), 64);
     }
 }
 
@@ -1545,7 +1803,8 @@ mod tests {
         h.pump_until(16).await;
         let report = run.await.unwrap();
 
-        assert!(report.is_durable(), "nothing was replicated: {report:?}");
+        assert!(report.sent > 0, "nothing was sent: {report:?}");
+        assert!(!report.is_durable(), "a send is not a durable storage ack");
         assert_eq!(report.sent, 2, "both keyspace peers should hold a copy");
         assert!(!report.broadcast, "a directed store is not a broadcast");
         assert_eq!(h.nodes[1].record_count().await, 1);
