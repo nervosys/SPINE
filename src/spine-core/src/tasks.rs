@@ -14,9 +14,28 @@ use uuid::Uuid;
 
 const TASKS: &str = "spine-tasks-v1";
 const KNOWLEDGE: &str = "spine-task-knowledge-v1";
+/// Maximum task records (any state) held by one worker across all owners.
 const MAX_TASKS: usize = 256;
+/// Maximum pending or running tasks one owner may hold: a quarter of
+/// `MAX_TASKS`, so no single coordinator can fill the store for the others.
+/// Terminal tasks do not count against this share.
+const MAX_ACTIVE_TASKS_PER_OWNER: usize = 64;
+/// Maximum immutable knowledge entries held by one worker across all owners.
+/// Knowledge is never evicted; at this limit every new key is refused.
+const MAX_KNOWLEDGE: usize = 256;
+/// Maximum knowledge entries one owner may hold: a quarter of
+/// `MAX_KNOWLEDGE`. Knowledge is immutable and never evicted automatically.
+const MAX_KNOWLEDGE_PER_OWNER: usize = 64;
 const MAX_ARGS: usize = 64 * 1024;
+/// Largest serialized tool result a task may record (256 KiB).
 const MAX_RESULT: usize = 256 * 1024;
+
+fn is_terminal(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Completed | TaskState::Failed | TaskState::Cancelled
+    )
+}
 
 pub struct TaskService {
     backend: Arc<dyn StorageBackend>,
@@ -68,8 +87,12 @@ impl TaskService {
             );
             service.validate(&record.spec)?;
             if record.state == TaskState::Running {
-                // Every admitted tool is read-only and deterministic; replay is
-                // safe. This contract must change before adding side effects.
+                // INVARIANT: re-running an interrupted task from scratch on
+                // restart is only safe for tools without side effects. Every
+                // admitted tool (see `validate`) is read-only and
+                // deterministic. A tool with effects must not be added to the
+                // allow-list in `validate` until this recovery path is
+                // changed (for example to fail the task instead of replaying).
                 record.state = TaskState::Pending;
                 service.save(&record)?;
             }
@@ -81,6 +104,8 @@ impl TaskService {
     }
 
     fn validate(&self, spec: &TaskSpec) -> Result<()> {
+        // Register new tools here only if they are read-only and free of side
+        // effects: interrupted tasks are re-run on restart (see `new`).
         ensure!(
             matches!(
                 spec.tool.as_str(),
@@ -123,6 +148,42 @@ impl TaskService {
             .context("task not found for this owner")?;
         Ok(serde_json::from_slice(&bytes)?)
     }
+    fn snapshot(&self) -> Result<Vec<TaskRecord>> {
+        self.backend
+            .scan(TASKS, None)?
+            .into_iter()
+            .map(|(_, bytes)| Ok(serde_json::from_slice(&bytes)?))
+            .collect()
+    }
+    /// Delete the terminal task that was created earliest, never one that a
+    /// pending or running task (or the task being admitted) depends on.
+    /// `created_at` is the ordering key because records carry no completion
+    /// time. The delete is written to storage before returning, like `save`.
+    fn evict_oldest_terminal(
+        &self,
+        records: &[TaskRecord],
+        caller: &[u8; 32],
+        new_dependencies: &[Uuid],
+    ) -> Result<()> {
+        let mut protected: HashSet<([u8; 32], Uuid)> =
+            new_dependencies.iter().map(|id| (*caller, *id)).collect();
+        for record in records.iter().filter(|r| !is_terminal(r.state)) {
+            for id in &record.spec.dependencies {
+                protected.insert((record.owner, *id));
+            }
+        }
+        let victim = records
+            .iter()
+            .filter(|r| is_terminal(r.state) && !protected.contains(&(r.owner, r.spec.id)))
+            .min_by_key(|r| (r.created_at, r.owner, r.spec.id))
+            .context(
+                "task store capacity reached: every task is pending, running or needed by one",
+            )?;
+        let key = task_key(&victim.owner, victim.spec.id);
+        self.backend.delete(TASKS, &key)?;
+        self.pending.lock().unwrap().remove(&key);
+        Ok(())
+    }
     fn save(&self, record: &TaskRecord) -> Result<()> {
         self.backend.put(
             TASKS,
@@ -149,7 +210,7 @@ impl TaskService {
                 Ok(serde_json::json!({"protocol":"spine.tasks","version":1,
                 "tools":crate::tools::capabilities(),"ownership":"caller signing key",
                 "permissions":["task.submit","task.read","task.cancel","knowledge.read","knowledge.publish"],
-                "limits":{"tasks":MAX_TASKS,"args_bytes":MAX_ARGS,"result_bytes":MAX_RESULT,"deadline_secs":300}}))
+                "limits":{"tasks":MAX_TASKS,"active_tasks_per_owner":MAX_ACTIVE_TASKS_PER_OWNER,"knowledge":MAX_KNOWLEDGE,"knowledge_per_owner":MAX_KNOWLEDGE_PER_OWNER,"args_bytes":MAX_ARGS,"result_bytes":MAX_RESULT,"deadline_secs":300}}))
             }
             TaskOperation::Submit { spec } => {
                 self.validate(&spec)?;
@@ -161,14 +222,24 @@ impl TaskService {
                     );
                     return Ok(serde_json::to_value(existing)?);
                 }
-                ensure!(
-                    self.backend.count(TASKS)? < MAX_TASKS,
-                    "task store capacity reached"
-                );
                 // Dependencies must already exist in the owner's scope. Together
                 // with self-reference refusal, this makes admission acyclic.
                 for id in &spec.dependencies {
                     self.get(&caller, *id)?;
+                }
+                let records = self.snapshot()?;
+                let active = records
+                    .iter()
+                    .filter(|r| r.owner == caller && !is_terminal(r.state))
+                    .count();
+                ensure!(
+                    active < MAX_ACTIVE_TASKS_PER_OWNER,
+                    "owner task quota reached: at most {MAX_ACTIVE_TASKS_PER_OWNER} pending or running tasks per owner"
+                );
+                // At capacity, evict the oldest terminal task (persisted
+                // delete); if none is evictable, refuse.
+                if records.len() >= MAX_TASKS {
+                    self.evict_oldest_terminal(&records, &caller, &spec.dependencies)?;
                 }
                 let record = TaskRecord {
                     owner: caller,
@@ -202,10 +273,22 @@ impl TaskService {
                     );
                     return Ok(serde_json::json!({"stored":true}));
                 }
+                // Knowledge is immutable and never evicted; refuse with a
+                // distinct error for the owner share and for the worker total.
                 ensure!(
-                    self.backend.exists(KNOWLEDGE, &key)?
-                        || self.backend.count(KNOWLEDGE)? < MAX_TASKS,
-                    "knowledge store capacity reached"
+                    // Not a prefix scan: the storage prefix upper bound wraps for
+                    // owner keys ending in 0xFF.
+                    self.backend
+                        .keys(KNOWLEDGE)?
+                        .iter()
+                        .filter(|k| k.starts_with(caller.as_slice()))
+                        .count()
+                        < MAX_KNOWLEDGE_PER_OWNER,
+                    "knowledge owner quota reached: at most {MAX_KNOWLEDGE_PER_OWNER} entries per owner"
+                );
+                ensure!(
+                    self.backend.count(KNOWLEDGE)? < MAX_KNOWLEDGE,
+                    "knowledge worker capacity reached: at most {MAX_KNOWLEDGE} entries per worker"
                 );
                 self.backend.put(KNOWLEDGE, &key, &bytes)?;
                 Ok(serde_json::json!({"stored":true}))
@@ -232,6 +315,9 @@ impl TaskService {
             if record.state != TaskState::Pending || !self.allowed.contains(&record.owner) {
                 continue;
             }
+            // The deadline is wall-clock time from `created_at` (submission),
+            // covering dependency waiting AND any time the worker was down:
+            // a task interrupted by a long outage fails on the next pass.
             if now().saturating_sub(record.created_at) >= u64::from(record.spec.timeout_secs) {
                 record.state = TaskState::Failed;
                 record.error = Some("task deadline exceeded".into());
@@ -315,18 +401,26 @@ impl TaskService {
                 continue;
             }
             match result {
-                Ok(Ok(result)) if serde_json::to_vec(&result)?.len() <= MAX_RESULT => {
-                    current.state = if matches!(result.outcome, ToolOutcome::Ok { .. }) {
-                        TaskState::Completed
+                Ok(Ok(result)) => {
+                    let size = serde_json::to_vec(&result)?.len();
+                    if size > MAX_RESULT {
+                        current.state = TaskState::Failed;
+                        current.error = Some(format!(
+                            "task result is {size} bytes, over the {MAX_RESULT}-byte ({} KiB) result limit",
+                            MAX_RESULT / 1024
+                        ));
                     } else {
-                        TaskState::Failed
-                    };
-                    current.result = Some(result);
+                        current.state = if matches!(result.outcome, ToolOutcome::Ok { .. }) {
+                            TaskState::Completed
+                        } else {
+                            TaskState::Failed
+                        };
+                        current.result = Some(result);
+                    }
                 }
                 _ => {
                     current.state = TaskState::Failed;
-                    current.error =
-                        Some("tool deadline, output bound, or execution failure".into());
+                    current.error = Some("tool deadline or execution failure".into());
                 }
             }
             self.save(&current)?;
@@ -381,6 +475,150 @@ mod tests {
             timeout_secs: 300,
         }
     }
+    fn open_store(dir: &tempfile::TempDir, owners: u8) -> TaskService {
+        let path = dir.path().join("cap.sqlite");
+        TaskService::new(
+            Arc::new(spine_storage::sqlite::SqliteBackend::open(path.to_str().unwrap()).unwrap()),
+            (1..=owners).map(|n| [n; 32]).collect(),
+        )
+        .unwrap()
+    }
+    fn submit(service: &TaskService, owner: u8, spec: TaskSpec) -> Result<serde_json::Value> {
+        service.request([owner; 32], TaskOperation::Submit { spec })
+    }
+    fn finish(service: &TaskService, owner: u8, id: Uuid, state: TaskState, created_at: u64) {
+        let mut record = service.get(&[owner; 32], id).unwrap();
+        record.state = state;
+        record.created_at = created_at;
+        service.save(&record).unwrap();
+    }
+    /// Fill the store with 256 pending tasks spread over owners 1..=4.
+    fn fill(service: &TaskService) -> Vec<(u8, Uuid)> {
+        let mut ids = vec![];
+        for owner in 1..=4u8 {
+            for _ in 0..MAX_ACTIVE_TASKS_PER_OWNER {
+                let s = spec();
+                ids.push((owner, s.id));
+                submit(service, owner, s).unwrap();
+            }
+        }
+        ids
+    }
+
+    #[test]
+    fn full_store_evicts_oldest_terminal_and_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let ids = fill(&service);
+        let err = submit(&service, 5, spec()).unwrap_err().to_string();
+        assert!(err.contains("capacity"), "{err}");
+        // Three terminal tasks of different owners; the oldest goes first.
+        finish(&service, 2, ids[70].1, TaskState::Completed, 50);
+        finish(&service, 1, ids[3].1, TaskState::Failed, 10);
+        finish(&service, 3, ids[140].1, TaskState::Cancelled, 30);
+        let fresh = spec();
+        submit(&service, 5, fresh.clone()).unwrap();
+        assert!(service.get(&[1; 32], ids[3].1).is_err());
+        assert!(service.get(&[2; 32], ids[70].1).is_ok());
+        assert!(service.get(&[3; 32], ids[140].1).is_ok());
+        assert!(service
+            .request([1; 32], TaskOperation::Status { id: ids[3].1 })
+            .is_err());
+        drop(service);
+        let service = open_store(&dir, 5);
+        assert!(service.get(&[1; 32], ids[3].1).is_err());
+        assert!(service.get(&[5; 32], fresh.id).is_ok());
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+    }
+
+    #[test]
+    fn terminal_task_with_live_dependent_is_not_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let base = spec();
+        submit(&service, 1, base.clone()).unwrap();
+        let mut dependent = spec();
+        dependent.dependencies = vec![base.id];
+        submit(&service, 1, dependent.clone()).unwrap();
+        let mut ids = vec![];
+        for owner in 2..=4u8 {
+            for _ in 0..MAX_ACTIVE_TASKS_PER_OWNER {
+                let s = spec();
+                ids.push((owner, s.id));
+                submit(&service, owner, s).unwrap();
+            }
+        }
+        for _ in 0..(MAX_ACTIVE_TASKS_PER_OWNER - 2) {
+            submit(&service, 1, spec()).unwrap();
+        }
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        // The oldest terminal task is needed by a pending dependent.
+        finish(&service, 1, base.id, TaskState::Completed, 1);
+        finish(&service, 2, ids[0].1, TaskState::Completed, 99);
+        submit(&service, 5, spec()).unwrap();
+        assert!(service.get(&[1; 32], base.id).is_ok());
+        assert!(service.get(&[2; 32], ids[0].1).is_err());
+    }
+
+    #[test]
+    fn full_of_non_terminal_tasks_refuses_and_keeps_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let ids = fill(&service);
+        // Pending and running tasks are never evicted.
+        finish(&service, ids[0].0, ids[0].1, TaskState::Running, 1);
+        assert!(submit(&service, 5, spec()).is_err());
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        assert!(service.get(&[ids[0].0; 32], ids[0].1).is_ok());
+    }
+
+    #[test]
+    fn owner_active_task_cap_is_per_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 2);
+        let mut first = vec![];
+        for _ in 0..MAX_ACTIVE_TASKS_PER_OWNER {
+            let s = spec();
+            first.push(s.id);
+            submit(&service, 1, s).unwrap();
+        }
+        let err = submit(&service, 1, spec()).unwrap_err().to_string();
+        assert!(err.contains("owner task quota"), "{err}");
+        submit(&service, 2, spec()).unwrap();
+        // A terminal task frees the owner's share.
+        finish(&service, 1, first[0], TaskState::Completed, 1);
+        submit(&service, 1, spec()).unwrap();
+    }
+
+    #[test]
+    fn knowledge_owner_and_worker_caps_have_distinct_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let put = |owner: u8, n: usize| {
+            service.request(
+                [owner; 32],
+                TaskOperation::KnowledgePut {
+                    key: format!("k{n}"),
+                    value: serde_json::json!({"n":n}),
+                },
+            )
+        };
+        for n in 0..MAX_KNOWLEDGE_PER_OWNER {
+            put(1, n).unwrap();
+        }
+        let err = put(1, 1000).unwrap_err().to_string();
+        assert!(err.contains("owner quota"), "{err}");
+        // Repeating an existing identical entry stays idempotent at the cap.
+        put(1, 0).unwrap();
+        for owner in 2..=4u8 {
+            for n in 0..MAX_KNOWLEDGE_PER_OWNER {
+                put(owner, n).unwrap();
+            }
+        }
+        let err = put(5, 0).unwrap_err().to_string();
+        assert!(err.contains("worker capacity"), "{err}");
+    }
+
     #[tokio::test]
     async fn durable_dependencies_duplicates_cancellation_and_owner_isolation() {
         let dir = tempfile::tempdir().unwrap();
