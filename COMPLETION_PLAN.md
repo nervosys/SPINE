@@ -56,12 +56,12 @@ These cannot be closed from inside the repository.
 
 ## Stage 1. Re-establish the baseline on the current toolchain
 
-- [ ] Fix the Clippy failure Rust 1.100 introduces at `src/spine-crypto/src/lib.rs:939` (`needless_range_loop`), then any further lints it was hiding in dependent crates.
-- [ ] `scripts/verify.sh 1478` passes on Rust 1.100.0, run unpiped on a quiet machine: 1,478 tests, 70 suites, 5 ignored, Clippy silent, formatting clean. Tests and formatting already pass as of 2026-11-19; Clippy does not.
-- [ ] Resolve the new Cargo manifest warnings (about 20 unused dependencies and 30 redundant declarations) by removing what is unused; do not silence the lint.
+- [x] Fix the Clippy failure Rust 1.100 introduces at `src/spine-crypto/src/lib.rs:939` (`needless_range_loop`), then any further lints it was hiding in dependent crates. Done 2026-11-19; the CI toolchain also rejected the deprecated `fetch_update`, replaced with compare-exchange loops so 1.88 still compiles. CI lint, docs, coverage and tests on all three platforms passed on `2801d13`.
+- [ ] `scripts/verify.sh 1478` passes on Rust 1.100.0, run unpiped on a quiet machine: 1,478 tests, 70 suites, 5 ignored, Clippy silent, formatting clean. Tests and formatting already pass as of 2026-11-19; Clippy does not. Clippy passes locally since `2801d13`. The full run has not been repeated after the Stage 2 lockfile change: the 2026-11-19 attempt was stopped by the system for low memory before any test ran.
+- [ ] Resolve the new Cargo manifest warnings (about 20 unused dependencies and 30 redundant declarations) by removing what is unused; do not silence the lint. Partly done 2026-11-19: 32 unused dependencies and the redundant `homepage` fields removed. 13 unused-dependency warnings remain where the crate name still appears in cfg-gated code, examples or benches, plus the unused `readme` workspace field; each needs a per-target check.
 - [ ] `cargo +1.88 check --workspace --exclude spine-browser --locked` passes.
 - [ ] `python scripts/release_gate.py` passes end to end, including the 19 clean-install checks, after Stage 2 changes the lockfile.
-- [ ] Fix every CI failure from the Stage 0 pull request. Expect platform differences in process tests, file permissions (Unix 0600 key creation is untested on a real Unix host), and path handling.
+- [ ] Fix every CI failure from the Stage 0 pull request. Expect platform differences in process tests, file permissions (Unix 0600 key creation is untested on a real Unix host), and path handling. On `2801d13` only `audit` and `deny` still fail; both are Stage 2.
 - [ ] Update `EXPECTED_SUITES_MIN`, the expected total, and the README test badge only to match a complete run.
 
 **Done when:** local gates and CI are green on the same commit.
@@ -70,17 +70,17 @@ These cannot be closed from inside the repository.
 
 All figures are from `cargo audit` on 2026-11-19 against the current lockfile. Re-run it first; the minimum fixed versions below are the lowest the advisories name and later advisories may raise them.
 
-- [ ] `wasmtime` 36.0.16 → at least 36.0.19 (7 advisories, two rated critical-impact miscompilation in Cranelift). Keep the matching Cranelift and internal packages aligned.
-- [ ] `rustls` 0.23.45 → at least 0.23.46 (4 advisories); `rustls-webpki` → at least 0.103.16; `webpki-roots` and `webpki-root-certs` → at least 1.0.10 (distrusted intermediates).
-- [ ] `quinn-proto` 0.11.17 → at least 0.11.18 (5 advisories, remote panics); `quinn-udp` → at least 0.5.16.
-- [ ] `zstd`: move the three crates still on `zstd = "0.12"` (`spine-protocol`, `spine-transport`, `spine-compiler`) and `spine-stream` to a fixed 0.13.x; this brings `zstd-safe` to at least 7.4 and `zstd-sys` to at least 2.1.2. Re-run the bounded-decompression and wire-compatibility tests, since this touches the native codec.
-- [ ] `libsqlite3-sys` 0.28 → at least 0.39 by upgrading `rusqlite` from 0.31 in `spine-storage`. This is a major upgrade under the namespace, resource, task and knowledge stores: re-run restart and backup/restore acceptance.
-- [ ] `zip` 1.1.4 (6 advisories) arrives only as a build dependency of `utoipa-swagger-ui` 7.1.0 in `spine-gateway`. Upgrade `utoipa-swagger-ui` to a release on a fixed `zip`, or drop the bundled Swagger UI.
-- [ ] `libz-sys` 1.1.29 → at least 1.1.33.
-- [ ] Review the 20 unsound and 2 yanked warnings individually; replace yanked versions.
-- [ ] Review the exception register, due 2026-11-02: six new unmaintained packages (including `chrono`, `humantime`, `zbus_names`, `zvariant`, `zvariant_derive`) need a rationale and owner or a migration. Give `rustls-pemfile` priority; it parses certificates and keys.
-- [ ] Triage the 15 open Dependabot pull requests: close #10, #12 and #15 as superseded; fold #48 into this stage; decide #33 to #38 individually (several are major upgrades).
-- [ ] `cargo audit` reports zero vulnerabilities and `cargo deny check advisories licenses sources` passes locally and in CI.
+- [x] `wasmtime` 36.0.16 → at least 36.0.19 (7 advisories, two rated critical-impact miscompilation in Cranelift). Keep the matching Cranelift and internal packages aligned. Done: 36.0.23.
+- [x] `rustls` 0.23.45 → at least 0.23.46 (4 advisories); `rustls-webpki` → at least 0.103.16; `webpki-roots` and `webpki-root-certs` → at least 1.0.10 (distrusted intermediates). Done: 0.23.46, 0.103.17, 1.0.12.
+- [x] `quinn-proto` 0.11.17 → at least 0.11.18 (5 advisories, remote panics); `quinn-udp` → at least 0.5.16. Done: 0.11.19 and 0.5.16.
+- [x] `zstd`: move the three crates still on `zstd = "0.12"` (`spine-protocol`, `spine-transport`, `spine-compiler`) and `spine-stream` to a fixed 0.13.x; this brings `zstd-safe` to at least 7.4 and `zstd-sys` to at least 2.1.2. Re-run the bounded-decompression and wire-compatibility tests, since this touches the native codec. Done: `zstd` 0.13.5, `zstd-safe` 7.4.1, `zstd-sys` 2.1.3; protocol, transport, stream and compiler tests passed.
+- [ ] `libsqlite3-sys` 0.28 → at least 0.39 by upgrading `rusqlite` from 0.31 in `spine-storage`. This is a major upgrade under the namespace, resource, task and knowledge stores: re-run restart and backup/restore acceptance. **Open.** `rusqlite` moved to 0.40.2 (`libsqlite3-sys` 0.38.2), which is still affected by RUSTSEC-2026-0459. The fix needs `rusqlite` 0.41 or later, which requires rustc 1.89, one above the 1.88 MSRV. `rusqlite` 0.43 compiles with no source change. Decision needed: raise the MSRV to 1.89 (recommended) or make the SQLite backend optional.
+- [x] `zip` 1.1.4 (6 advisories) arrives only as a build dependency of `utoipa-swagger-ui` 7.1.0 in `spine-gateway`. Upgrade `utoipa-swagger-ui` to a release on a fixed `zip`, or drop the bundled Swagger UI. Done: `utoipa` 6, `utoipa-swagger-ui` 10.0.2 and `axum` 0.8 in the gateway bring `zip` 9.7.3 (9.8.0 needs rustc 1.89). No source change was needed; the generated OpenAPI document has not been compared with the previous one.
+- [x] `libz-sys` 1.1.29 → at least 1.1.33. Done: 1.1.33.
+- [ ] Review the 20 unsound and 2 yanked warnings individually; replace yanked versions. Yanked versions replaced (0 remain). Two unsound warnings remain unreviewed: `tokio` RUSTSEC-2026-0386 and `rustix` RUSTSEC-2026-0486.
+- [x] Review the exception register, due 2026-11-02: six new unmaintained packages (including `chrono`, `humantime`, `zbus_names`, `zvariant`, `zvariant_derive`) need a rationale and owner or a migration. Give `rustls-pemfile` priority; it parses certificates and keys. Reviewed 2026-11-19, next review 2026-12-19: `chrono`, `zbus_names`, `zvariant` and `zvariant_derive` added with rationale; `proc-macro-error` and `humantime` are gone from the lockfile. `rustls-pemfile` migration is still outstanding.
+- [ ] Triage the 15 open Dependabot pull requests: close #10, #12 and #15 as superseded; fold #48 into this stage; decide #33 to #38 individually (several are major upgrades). #10, #12 and #15 closed 2026-11-19. #48 and #27 to #38 remain open.
+- [ ] `cargo audit` reports zero vulnerabilities and `cargo deny check advisories licenses sources` passes locally and in CI. As of 2026-11-19: 1 vulnerability (down from 34), the SQLite advisory above; licenses and sources pass.
 
 **Done when:** both tools are green on the Stage 1 commit and the register has a new review date.
 
