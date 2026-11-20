@@ -31,8 +31,6 @@ pub use agentic_codec::{
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "quic")]
 use std::sync::Arc;
-#[cfg(feature = "quic")]
-use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
