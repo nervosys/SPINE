@@ -1232,7 +1232,7 @@ mod tests {
 
         // So does changing the timestamp.
         let mut retimed = envelope.clone();
-        retimed.timestamp = retimed.timestamp + chrono::Duration::seconds(1);
+        retimed.timestamp += chrono::Duration::seconds(1);
         assert!(!MeshNode::verify_carried_key(&retimed, &key));
 
         // ttl and hops are rewritten by forwarders and are not covered.
