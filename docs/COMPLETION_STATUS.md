@@ -4,6 +4,8 @@ This checkout implements the portable agent-web path, authenticated durable read
 
 Verification date: 2026-10-02. Base commit: `38e6ad581ae2fdc3591850ff9ec3a5172df6c72c`, with uncommitted implementation changes described here. Toolchain: Rust/Cargo 1.98.1, Windows x64, `protoc` 36.0. Source version: 2.0.2; historical published version: 2.0.1. The shared Cargo target directory is `E:/cargo-target`. Free space at validation was about 769 GiB on C: and 815 GiB on E:. The initial working tree contained only the new completion plan; this continuation adds the implementation and documentation changes. Results apply to this working tree, not a new tag or published package.
 
+**Update 2026-11-19.** This work is now committed on branch `completion/agent-web` (draft pull request #49). The environment above is historical: the toolchain is Rust 1.100.0, the shared target directory moved to C:, and drive E: is full. On the new toolchain the 1,478 tests and formatting pass, Clippy fails on a newly applied lint, and `cargo audit` reports 34 vulnerabilities in the locked dependencies, so the dependency results in the table below no longer hold. See the verification log in [the completion plan](../COMPLETION_PLAN.md).
+
 ## Implemented behavior
 
 | Area | Implemented and exercised | Limits |

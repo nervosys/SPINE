@@ -14,7 +14,7 @@ Revised 2026-11-19. This replaces the 2026-10-02 plan and carries every item tha
 
 | Finding (checked 2026-11-19) | Consequence |
 | --- | --- |
-| All of the October work is uncommitted: 46 modified and 27 untracked files, about 3,500 inserted lines, on `master` at `38e6ad5` | Seven weeks of implementation exists in one working tree only. Stage 0 comes before anything else. |
+| All of the October work was uncommitted: 46 modified and 27 untracked files on `master` at `38e6ad5` | Resolved the same day: committed to `completion/agent-web` and pushed as draft pull request #49. |
 | `cargo audit` reports 34 vulnerabilities across 14 locked crate versions; it reported zero on 2026-10-02. `cargo deny check advisories` fails. | The security gate that was green is red. Stage 2. |
 | The dependency exception register was due for review on 2026-11-02 | Overdue; unmaintained warnings grew from 11 to 17, plus 20 unsound and 2 yanked. |
 | Toolchain is now Rust 1.100.0; all evidence is from 1.98.1. Cargo 1.100 emits about 50 new manifest warnings (unused and redundant dependencies). | The baseline must be re-established before new work. Stage 1. |
@@ -46,11 +46,11 @@ These cannot be closed from inside the repository.
 ## Stage 0. Secure the work
 
 - [ ] Confirm no other session is writing to this working tree or moving refs. Seven unrelated Cargo builds were running on this machine during today's check.
-- [ ] Create a branch for the October work and commit it in reviewable groups: namespace persistence and renewal; resources and tools; mesh tasks and transport limits; TLS/mTLS; MCP adapter; outbound navigation; diagnostics and session retention; scripts; documentation.
-- [ ] Before committing, re-run `python scripts/scan_secrets.py` and confirm `artifacts/`, `build_completion*` logs, generated identities and `*.pem`/`*.key` files stay ignored.
-- [ ] Push the branch and open a pull request so CI runs on Linux, macOS and Windows. This is the first cross-platform evidence for the new code.
+- [x] Create a branch for the October work and commit it in reviewable groups. Done 2026-11-19 as five commits on `completion/agent-web`, grouped by layer (protocol and names; mesh and SDK; core, gateway and CLI; scripts and examples; documentation) because the features share files and could not be separated cleanly.
+- [x] Before committing, re-run `python scripts/scan_secrets.py` and confirm `artifacts/`, `build_completion*` logs, generated identities and `*.pem`/`*.key` files stay ignored.
+- [x] Push the branch and open a pull request so CI runs on Linux, macOS and Windows. Done 2026-11-19: draft pull request #49.
 - [ ] Free space on E: or remove it from any build path; keep at least 30 GB free on the drive holding the Cargo target directory before a full workspace build.
-- [ ] Correct the stale environment facts in `docs/COMPLETION_STATUS.md` (target directory, free space, toolchain).
+- [x] Correct the stale environment facts in `docs/COMPLETION_STATUS.md` (target directory, free space, toolchain). Added as a dated update; the 2026-10-02 record is kept as it was.
 
 **Done when:** the work exists in commits on a pushed branch, and a CI run has reported on all three platforms.
 
