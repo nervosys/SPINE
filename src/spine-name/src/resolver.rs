@@ -157,7 +157,13 @@ impl LocalResolver {
                     "stored key does not match record name".into(),
                 ));
             }
-            record.verify()?;
+            // A record that no longer verifies (for example one signed under
+            // an older signing-bytes layout) must not stop the node starting.
+            // It is skipped here, never served, and replaced by the owner's
+            // next publication.
+            if record.verify().is_err() {
+                continue;
+            }
             if !record.is_expired(resolver.now()) {
                 resolver.publish(record)?;
             }
@@ -177,10 +183,12 @@ impl LocalResolver {
             .map_err(|e| NameError::Storage(e.to_string()))?
             .into_iter()
             .map(|(_, bytes)| {
-                let record: NameRecord = serde_json::from_slice(&bytes)
-                    .map_err(|e| NameError::Storage(e.to_string()))?;
-                record.verify()?;
-                Ok(record)
+                serde_json::from_slice::<NameRecord>(&bytes)
+                    .map_err(|e| NameError::Storage(e.to_string()))
+            })
+            .filter(|parsed| match parsed {
+                Ok(record) => record.verify().is_ok(),
+                Err(_) => true,
             })
             .collect()
     }
@@ -210,7 +218,9 @@ impl LocalResolver {
             {
                 let previous: NameRecord = serde_json::from_slice(&bytes)
                     .map_err(|e| NameError::Storage(e.to_string()))?;
-                if !record.supersedes(&previous) {
+                // A stored predecessor that no longer verifies cannot hold the
+                // sequence number against a valid record.
+                if previous.verify().is_ok() && !record.supersedes(&previous) {
                     return if record == previous {
                         Ok(())
                     } else {
@@ -652,5 +662,32 @@ mod tests {
             .put("spine-name-publishers-v1", b"bad", b"{}")
             .unwrap();
         assert!(LocalResolver::persistent(|| 1_000, backend).is_err());
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn a_stored_record_with_an_invalid_signature_is_skipped_not_fatal() {
+        use spine_storage::{InMemoryBackend, StorageBackend};
+        use std::sync::Arc;
+        let good = signed(1, 1_000, 100, &["web.search"], 1);
+        let mut bad = signed(2, 1_000, 100, &["web.search"], 1);
+        bad.seq += 1; // signature no longer matches the signed bytes
+        let backend = Arc::new(InMemoryBackend::new());
+        for rec in [&good, &bad] {
+            backend
+                .put(
+                    "spine-name-publishers-v1",
+                    rec.name.to_string().as_bytes(),
+                    &serde_json::to_vec(rec).unwrap(),
+                )
+                .unwrap();
+        }
+        let r = LocalResolver::persistent(|| 1_010, backend).unwrap();
+        assert_eq!(r.resolve(&good.name).await.unwrap().record, good);
+        assert!(matches!(
+            r.resolve(&bad.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        assert_eq!(r.published_records().unwrap(), vec![good]);
     }
 }

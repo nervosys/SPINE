@@ -21,6 +21,10 @@ use crate::NameError;
 /// Default record lifetime: 1 hour.
 pub const DEFAULT_TTL_SECS: u32 = 3600;
 
+/// Domain-separation prefix of the signed bytes. Bump it whenever the layout
+/// in [`NameRecord::signing_bytes`] changes.
+const SIGNING_DOMAIN: &[u8] = b"spine-name-record-v2\0";
+
 /// A transport address a named resource can be reached at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Endpoint {
@@ -191,34 +195,60 @@ impl NameRecord {
         self
     }
 
-    /// The canonical bytes covered by the signature.
+    /// The canonical bytes covered by the signature (layout `v2`).
     ///
-    /// Built field-by-field with explicit separators rather than by serializing
-    /// the struct: a serializer's field order or number formatting could change
-    /// under a dependency bump and silently invalidate every record in
-    /// existence. `BTreeMap` keeps metadata ordered for the same reason.
+    /// Built field-by-field rather than by serializing the struct: a
+    /// serializer's field order or number formatting could change under a
+    /// dependency bump and silently invalidate every record in existence.
+    /// `BTreeMap` keeps metadata ordered for the same reason.
+    ///
+    /// Every field of the record except `signature` is covered. The encoding
+    /// is injective: nothing is terminated by a sentinel, so no choice of
+    /// string contents can move a field boundary.
+    ///
+    /// ```text
+    /// "spine-name-record-v2\0"                      domain separation
+    /// str(name)                                      canonical URI string
+    /// u64 seq | u32 ttl_secs | u64 published_at      big-endian
+    /// u32 n_endpoints, then per endpoint:
+    ///     str(transport) str(address) u8 priority
+    /// u32 n_capabilities, then per capability: str(term)
+    /// u8 has_content_hash (0|1), then 32 hash bytes iff 1
+    /// u32 n_links, then per link:
+    ///     str(rel) str(target)
+    ///     u8 has_title (0|1), then str(title) iff 1
+    ///     u32 n_link_capabilities, then per term: str(term)
+    /// u32 n_meta, then per entry in key order: str(key) str(value)
+    /// ```
+    ///
+    /// where `str(x)` is a big-endian `u32` byte length followed by the UTF-8
+    /// bytes, and every `u32 n_*` is a big-endian element count.
     pub fn signing_bytes(&self) -> Vec<u8> {
+        fn put_str(out: &mut Vec<u8>, s: &str) {
+            out.extend_from_slice(&(s.len() as u32).to_be_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+        fn put_count(out: &mut Vec<u8>, n: usize) {
+            out.extend_from_slice(&(n as u32).to_be_bytes());
+        }
+
         let mut out = Vec::with_capacity(256);
-        out.extend_from_slice(b"spine-name-record-v1\0");
-        out.extend_from_slice(self.name.to_string().as_bytes());
-        out.push(0);
+        out.extend_from_slice(SIGNING_DOMAIN);
+        put_str(&mut out, &self.name.to_string());
         out.extend_from_slice(&self.seq.to_be_bytes());
         out.extend_from_slice(&self.ttl_secs.to_be_bytes());
         out.extend_from_slice(&self.published_at.to_be_bytes());
 
-        out.extend_from_slice(&(self.endpoints.len() as u32).to_be_bytes());
+        put_count(&mut out, self.endpoints.len());
         for e in &self.endpoints {
-            out.extend_from_slice(e.transport.as_bytes());
-            out.push(0);
-            out.extend_from_slice(e.address.as_bytes());
-            out.push(0);
+            put_str(&mut out, &e.transport);
+            put_str(&mut out, &e.address);
             out.push(e.priority);
         }
 
-        out.extend_from_slice(&(self.capabilities.len() as u32).to_be_bytes());
+        put_count(&mut out, self.capabilities.len());
         for c in &self.capabilities {
-            out.extend_from_slice(c.as_bytes());
-            out.push(0);
+            put_str(&mut out, c);
         }
 
         match &self.content_hash {
@@ -229,20 +259,27 @@ impl NameRecord {
             None => out.push(0),
         }
 
-        out.extend_from_slice(&(self.links.len() as u32).to_be_bytes());
+        put_count(&mut out, self.links.len());
         for l in &self.links {
-            out.extend_from_slice(l.rel.as_str().as_bytes());
-            out.push(0);
-            out.extend_from_slice(l.target.to_string().as_bytes());
-            out.push(0);
+            put_str(&mut out, l.rel.as_str());
+            put_str(&mut out, &l.target.to_string());
+            match &l.title {
+                Some(t) => {
+                    out.push(1);
+                    put_str(&mut out, t);
+                }
+                None => out.push(0),
+            }
+            put_count(&mut out, l.capabilities.len());
+            for c in &l.capabilities {
+                put_str(&mut out, c);
+            }
         }
 
-        out.extend_from_slice(&(self.meta.len() as u32).to_be_bytes());
+        put_count(&mut out, self.meta.len());
         for (k, v) in &self.meta {
-            out.extend_from_slice(k.as_bytes());
-            out.push(0);
-            out.extend_from_slice(v.as_bytes());
-            out.push(0);
+            put_str(&mut out, k);
+            put_str(&mut out, v);
         }
         out
     }
@@ -411,6 +448,103 @@ mod tests {
         let mut meta = base.clone();
         meta.meta.insert("k".into(), "v".into());
         assert!(matches!(meta.verify(), Err(NameError::BadSignature)));
+    }
+
+    #[test]
+    fn tampering_with_nested_link_and_endpoint_fields_invalidates_the_record() {
+        let key = keypair(1);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut base = NameRecord::new(name, 1, 1_000)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "a:1").with_priority(3))
+            .with_link(
+                Link::new(Rel::Provides, SpineUri::did([3u8; 32]))
+                    .with_title("Search")
+                    .with_capability("web.search"),
+            );
+        base.sign(&key).unwrap();
+        assert!(base.verify().is_ok());
+
+        let mut title = base.clone();
+        title.links[0].title = Some("Other".into());
+        assert!(matches!(title.verify(), Err(NameError::BadSignature)));
+
+        let mut no_title = base.clone();
+        no_title.links[0].title = None;
+        assert!(matches!(no_title.verify(), Err(NameError::BadSignature)));
+
+        let mut link_cap = base.clone();
+        link_cap.links[0].capabilities.push("admin".into());
+        assert!(matches!(link_cap.verify(), Err(NameError::BadSignature)));
+
+        let mut link_cap_swap = base.clone();
+        link_cap_swap.links[0].capabilities[0] = "web.crawl".into();
+        assert!(matches!(
+            link_cap_swap.verify(),
+            Err(NameError::BadSignature)
+        ));
+
+        let mut rel = base.clone();
+        rel.links[0].rel = Rel::Child;
+        assert!(matches!(rel.verify(), Err(NameError::BadSignature)));
+
+        let mut target = base.clone();
+        target.links[0].target = SpineUri::did([4u8; 32]);
+        assert!(matches!(target.verify(), Err(NameError::BadSignature)));
+
+        let mut priority = base.clone();
+        priority.endpoints[0].priority = 4;
+        assert!(matches!(priority.verify(), Err(NameError::BadSignature)));
+
+        let mut published = base.clone();
+        published.published_at += 1;
+        assert!(matches!(published.verify(), Err(NameError::BadSignature)));
+    }
+
+    #[test]
+    fn field_boundaries_cannot_be_shifted_to_forge_equal_signing_bytes() {
+        let (_, rec) = signed(1, 1, 0);
+
+        // The old NUL-terminated layout encoded these identically.
+        let a = rec
+            .clone()
+            .with_endpoint(Endpoint::new("tc\0p", "x"))
+            .signing_bytes();
+        let b = rec
+            .clone()
+            .with_endpoint(Endpoint::new("tc", "p\0x"))
+            .signing_bytes();
+        assert_ne!(a, b);
+
+        let a = rec.clone().with_meta("k\0v", "w").signing_bytes();
+        let b = rec.clone().with_meta("k", "v\0w").signing_bytes();
+        assert_ne!(a, b);
+
+        let a = rec
+            .clone()
+            .with_capability("a")
+            .with_capability("b")
+            .signing_bytes();
+        let b = rec.clone().with_capability("a\0b").signing_bytes();
+        assert_ne!(a, b);
+
+        // A title moved into a link capability must not collide.
+        let target = SpineUri::did([3u8; 32]);
+        let a = rec
+            .clone()
+            .with_link(Link::new(Rel::Child, target.clone()).with_title("x"))
+            .signing_bytes();
+        let b = rec
+            .clone()
+            .with_link(Link::new(Rel::Child, target).with_capability("x"))
+            .signing_bytes();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn signing_bytes_carry_the_v2_domain_prefix() {
+        let (_, rec) = signed(1, 1, 0);
+        assert!(rec.signing_bytes().starts_with(b"spine-name-record-v2\0"));
     }
 
     #[test]
