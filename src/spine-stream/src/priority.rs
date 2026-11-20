@@ -323,8 +323,8 @@ impl WeightedFairQueue {
 
     /// Strict priority pop (ignores weights, always takes highest priority)
     pub fn pop_strict(&self) -> Option<StreamMessage> {
-        for level in 0..8 {
-            let mut queue = self.levels[level].lock();
+        for level in &self.levels {
+            let mut queue = level.lock();
             if !queue.is_empty() {
                 return Some(queue.remove(0));
             }

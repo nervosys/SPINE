@@ -936,9 +936,9 @@ impl RingElement {
         let mut result = vec![0i64; self.n];
 
         for i in 0..self.n {
-            for j in 0..self.n {
+            for (j, &other_coeff) in other.coeffs[..self.n].iter().enumerate() {
                 let idx = i + j;
-                let coeff = self.coeffs[i] * other.coeffs[j];
+                let coeff = self.coeffs[i] * other_coeff;
                 if idx < self.n {
                     result[idx] += coeff;
                 } else {

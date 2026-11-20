@@ -251,11 +251,18 @@ impl FlowController {
 
     /// Consume receive buffer space
     pub fn consume_recv(&self, bytes: u32) {
-        let _ = self
-            .recv_window
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
-                Some(w.saturating_sub(bytes))
-            });
+        let mut w = self.recv_window.load(Ordering::Relaxed);
+        loop {
+            match self.recv_window.compare_exchange_weak(
+                w,
+                w.saturating_sub(bytes),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => w = actual,
+            }
+        }
     }
 
     /// Free receive buffer space and optionally generate update
