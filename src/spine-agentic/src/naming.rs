@@ -2215,7 +2215,7 @@ mod tests {
         );
 
         let exact = "y".repeat(MAX_ENDPOINT_BYTES);
-        assert_eq!(bound_endpoints(&[exact.clone()]), vec![exact]);
+        assert_eq!(bound_endpoints(std::slice::from_ref(&exact)), vec![exact]);
     }
 
     #[test]
