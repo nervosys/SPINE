@@ -242,7 +242,7 @@ and `CrawlNames`.
 
 **Resolution traffic is encrypted.** Records are signed, so they could never be
 forged over a plaintext link — but a plaintext link leaks *what an agent is
-looking for*, which is usually a direct read on its task. `spine-crypto::handshake`
+looking for*, which is usually a direct read on its task. `spine-session::handshake`
 gives the mesh an ML-KEM-768 (FIPS 203) + Ed25519 signed-ephemeral handshake with
 AES-256-GCM frames: forward-secret per connection, and mutually authenticated
 against the same Ed25519 key that positions a node in the DHT and signs its
@@ -335,7 +335,8 @@ SPINE is composed of 28 specialized crates organized into a cohesive bioinspired
 - **`spine-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the SPINE stack.
 - **`spine-name`**: The namespace — the `spine://` URI scheme, self-certifying `did:`/`blob:`/`cap:` authorities, signed name records, the 256-bit DHT keyspace, the resolver cache, and the typed link graph with its crawl frontier.
 - **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities. Also hosts mesh-backed name resolution — `naming` (Kademlia lookup state machines), `naming_mesh` (the live driver: dispatch, correlation, timeouts, and the `NameTransport` seam), `mesh_tcp` (the mesh's socket layer: framing, pooled bidirectional connections, listener, and the encrypted-transport mode), `mesh_ws` (the same over WebSocket, for proxy traversal and browser-resident agents), and `mesh_quic` (stream-per-exchange multiplexing).
-- **`spine-crypto`**: X3DH, RLWE lattice keys, ML-KEM (FIPS 203), and `handshake` — the authenticated, forward-secret channel the mesh runs over.
+- **`spine-session`**: the `handshake` — the authenticated, forward-secret channel the mesh runs over (ML-KEM-768 + Ed25519). No dependency on any other workspace crate; `spine-crypto` re-exports it as `spine_crypto::handshake`.
+- **`spine-crypto`**: X3DH, RLWE lattice keys, and ML-KEM (FIPS 203) research primitives.
 - **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
 - **`spine-human`**: Legacy web bridge (compatibility layer) with realistic mouse paths, typing delays, and human-like interaction patterns.
 
@@ -903,7 +904,7 @@ bits derived with a non-cryptographic hash.
    encoding does not repeat across a session. This is *not* forward secrecy —
    message hashes are derivable by anyone holding the transcript, and the
    long-term secret still keys everything. Genuine forward secrecy lives in the
-   mesh handshake (`spine-crypto::handshake`), whose ML-KEM keypair is ephemeral
+   mesh handshake (`spine-session::handshake`), whose ML-KEM keypair is ephemeral
    per connection and is described in
    [`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md).
 
@@ -997,7 +998,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (30 Crates)
+### The SPINE Stack (31 Crates)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -1380,7 +1381,7 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 30 crates:
+SPINE includes comprehensive test coverage across all 31 crates:
 
 ```bash
 # Run all tests
@@ -1395,7 +1396,7 @@ cargo test -p spine-crypto
 ### Test Summary (1,418 tests, 0 failures)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,418 passed / 0 failed / 5 ignored** across all 30 crates. The five
+**1,418 passed / 0 failed / 5 ignored** across all 31 crates. The five
 ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
 hidden failures. The per-crate breakdown below is measured rather than
 estimated — it is produced by running each crate on its own, and the
@@ -1408,7 +1409,8 @@ column sums to the workspace total.
 | spine-protocol  | 148   | Chameleon protocol, AEAD, chaos, integration, property        |
 | spine-name      | 113   | The `spine://` namespace: URIs, records, keyspace, resolution |
 | spine-transport | 85    | Zero-copy I/O, BBR, connection pooling, property              |
-| spine-crypto    | 83    | RLWE, ML-KEM, mesh handshake, Titans predictor, property      |
+| spine-crypto    | 57    | RLWE, ML-KEM, Titans predictor, property                      |
+| spine-session   | 26    | Mesh handshake: ML-KEM + Ed25519, framing, replay, bounds     |
 | spine-gateway   | 56    | REST gateway, namespace over HTTP, auth, health checks        |
 | spine-parser    | 53    | HTML parsing, UR extraction, agent links, property tests      |
 | spine-core      | 48    | Session orchestration, config, namespace join, TLS/cert       |

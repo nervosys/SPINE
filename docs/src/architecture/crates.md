@@ -39,6 +39,7 @@
 | `spine-transport` | Library | Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system  |
 | `spine-stream`    | Library | Reactive streams, multiplexing, flow control, priority queuing          |
 | `spine-crypto`    | Library | Titans prediction, quantum cryptography, X3DH, MIRAS memory             |
+| `spine-session`   | Library | Authenticated, forward-secret session handshake (ML-KEM-768, Ed25519) |
 | `spine-neural`    | Library | VAE encoder, Titans memory, attention, learned projections              |
 | `spine-cluster`   | Library | Distributed coordination, Raft consensus, Sybil resistance, marketplace |
 | `spine-wasm`      | Library | WebAssembly runtime (wasmtime) for HLS execution                        |
@@ -74,6 +75,7 @@ spine-gateway --+
 spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
                 |                                   +-- spine-neural
                 |                                   +-- spine-crypto
+                |                                   +-- spine-session
                 |                                   +-- spine-knowledge -- spine-storage
                 |                                                          spine-cache
                 |

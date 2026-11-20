@@ -20,6 +20,7 @@ API documentation: <https://docs.rs/spine-agentic>
 - `spine-knowledge`
 - `spine-name`
 - `spine-neural`
+- `spine-session`
 - `spine-protocol`
 - `spine-transport`
 - `spine-wasm`

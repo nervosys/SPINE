@@ -47,8 +47,12 @@ use std::collections::VecDeque;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+// The session handshake lives in `spine-session`, which has no dependency on
+// this crate's research code; re-exported so `spine_crypto::handshake` paths
+// keep working.
+pub use spine_session::handshake;
+
 // ML-KEM (FIPS 203) post-quantum KEM
-pub mod handshake;
 
 use ml_kem::kem::{Decapsulate, DecapsulationKey, Encapsulate, EncapsulationKey};
 use ml_kem::{

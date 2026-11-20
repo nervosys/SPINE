@@ -16,6 +16,7 @@ API documentation: <https://docs.rs/spine-crypto>
 ## Workspace dependencies
 
 - `spine-neural`
+- `spine-session`
 
 ## License
 

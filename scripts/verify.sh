@@ -53,7 +53,12 @@ set -uo pipefail
 #
 # Update it when the workspace gains or loses a test target. A mismatch here is
 # the signal, not a nuisance.
-EXPECTED_SUITES_MIN=70
+#
+# 70 -> 71: the session handshake moved out of spine-crypto into its own
+# spine-session crate, so its unit tests (previously inside spine-crypto's lib
+# suite) now report a "test result:" line of their own. The new crate's doctest
+# target may add one more line; re-measure and tighten this on the next full run.
+EXPECTED_SUITES_MIN=71
 EXPECTED_IGNORED=5
 EXPECTED_TOTAL="${1:-}"
 

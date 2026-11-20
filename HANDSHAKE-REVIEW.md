@@ -2,7 +2,7 @@
 
 A self-contained description of the `spine-mesh-hs-v1` handshake, written so a
 cryptographer can review it without reading the codebase. Implementation:
-`src/spine-crypto/src/handshake.rs`.
+`src/spine-session/src/handshake.rs`.
 
 **What is being asked:** whether the construction below delivers the properties
 claimed in §4, and whether the concessions in §5 are the only ones.

@@ -6565,6 +6565,7 @@ dependencies = [
  "spine-name",
  "spine-neural",
  "spine-protocol",
+ "spine-session",
  "spine-transport",
  "spine-wasm",
  "thiserror 1.0.69",
@@ -6719,7 +6720,6 @@ name = "spine-crypto"
 version = "2.0.2"
 dependencies = [
  "aes-gcm",
- "ed25519-dalek",
  "hkdf",
  "log",
  "ml-kem",
@@ -6728,8 +6728,8 @@ dependencies = [
  "serde",
  "sha2",
  "spine-neural",
+ "spine-session",
  "subtle",
- "thiserror 1.0.69",
  "zeroize",
 ]
 
@@ -6991,6 +6991,20 @@ dependencies = [
  "tokio-test",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "spine-session"
+version = "2.0.2"
+dependencies = [
+ "aes-gcm",
+ "ed25519-dalek",
+ "hkdf",
+ "ml-kem",
+ "rand 0.8.8",
+ "sha2",
+ "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]

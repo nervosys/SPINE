@@ -92,7 +92,7 @@ spine://host:node.example.org:9440/                     bootstrap escape hatch
 | `mesh_ws` | Same, over a WebSocket upgrade. Shares the stream-generic code path. |
 | `mesh_quic` | One connection per peer, **one stream per exchange**. |
 
-### `spine-crypto::handshake`
+### `spine-session::handshake` (re-exported as `spine-crypto::handshake`)
 
 ML-KEM-768 (FIPS 203) + Ed25519 signed-ephemeral handshake, AES-256-GCM frames
 with per-direction keys and counter nonces.
@@ -126,7 +126,7 @@ Every file below is new except the four marked *(edited)*.
 | `src/spine-agentic/src/mesh_tcp.rs` | 1300 | Framing, pooling, encryption mode, TCP listener. |
 | `src/spine-agentic/src/naming.rs` | 992 | `Lookup` state machine, `NameService`. |
 | `src/spine-agentic/src/naming_mesh.rs` | 695 | The live driver and the two-routing-space bridge. |
-| `src/spine-crypto/src/handshake.rs` | 715 | ML-KEM + Ed25519 channel. Read the module docs first. |
+| `src/spine-session/src/handshake.rs` | 715 | ML-KEM + Ed25519 channel. Read the module docs first. |
 | `src/spine-agentic/src/mesh_quic.rs` | 595 | Stream-per-exchange QUIC. |
 | `src/spine-agentic/src/mesh_ws.rs` | 444 | WebSocket establishment. |
 | `src/spine-parser/src/lib.rs` | *(edited)* | `Element::AgentLink`, `agent_links()`. |

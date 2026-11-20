@@ -55,7 +55,7 @@ The five ignored tests are documentation sketches: cluster marketplace usage, de
 
 ## Component inventory and support boundaries
 
-These statuses describe evidence available in this checkout, rather than a cross-platform certification. All 30 default workspace crates compile and participate in the Windows workspace checks. That establishes build/test coverage, not production behavior for every optional backend.
+These statuses describe evidence available in this checkout, rather than a cross-platform certification. All 31 default workspace crates compile and participate in the Windows workspace checks. That establishes build/test coverage, not production behavior for every optional backend.
 
 | Components | Scope |
 | --- | --- |
@@ -65,7 +65,7 @@ These statuses describe evidence available in this checkout, rather than a cross
 | `spine-gateway`, `spine-grpc` | HTTP/SSE, gRPC, and model bridges; HTTP provider forwarding tested against mock upstreams; real deployment interoperability needs separate acceptance |
 | `spine-storage`, `spine-cache`, `spine-knowledge` | Portable data backends and retrieval; SQLite namespace/resource restart tests added; broad backup/migration evidence remains open |
 | `spine-agentic`, `spine-cluster`, `spine-recursive`, `spine-neural`, `spine-human`, `spine-mechgen` | Signed mesh RPC supports durable read-only tasks. Legacy cluster planning/delegation is refused by core; general orchestration and research remain experimental. Neural physical-layer `transmit` returns unsupported |
-| `spine-crypto` | Standard cryptographic primitives alongside research features; no new independent review or certification claimed |
+| `spine-session`, `spine-crypto` | Standard cryptographic primitives alongside research features; no new independent review or certification claimed |
 | `spine-browser`, `spine-ffi` | GUI and C ABI compile/test coverage; GUI user acceptance and ABI consumers require separate validation |
 | `extension/` | Browser extension is experimental and excluded from the supported headless candidate; no browser runtime acceptance was performed |
 | `spine-nostd`, `spine-embedded` | Host-side coverage only; board/firmware acceptance remains experimental; embedded keeps its separate 0.2.0 version line |

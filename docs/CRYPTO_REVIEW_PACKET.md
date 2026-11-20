@@ -4,7 +4,7 @@ This prepares independent review of the development checkout. It is not an audit
 
 ## Sources and deployed path
 
-The custom construction in [handshake.rs](../src/spine-crypto/src/handshake.rs) combines ephemeral ML-KEM-768, Ed25519 identity signatures, a SHA-256 transcript, HKDF-SHA256 direction labels, and AES-256-GCM frames with ordered counters. Ed25519 authentication is classical; ML-KEM alone does not establish post-quantum authentication, certification, or a reviewed hybrid construction.
+The custom construction in [handshake.rs](../src/spine-session/src/handshake.rs) combines ephemeral ML-KEM-768, Ed25519 identity signatures, a SHA-256 transcript, HKDF-SHA256 direction labels, and AES-256-GCM frames with ordered counters. Ed25519 authentication is classical; ML-KEM alone does not establish post-quantum authentication, certification, or a reviewed hybrid construction.
 
 Mesh transport integration is in [mesh_tcp.rs](../src/spine-agentic/src/mesh_tcp.rs) and [namespace.rs](../src/spine-core/src/namespace.rs). Native origin Rustls policy is separate, in [tls.rs](../src/spine-core/src/tls.rs). Chameleon/vector/morphology experiments do not substitute for authenticated transport protection.
 

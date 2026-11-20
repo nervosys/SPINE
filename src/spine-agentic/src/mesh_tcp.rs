@@ -51,7 +51,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use ed25519_dalek::SigningKey;
-use spine_crypto::handshake::{Initiator, Responder, Session, MAX_HANDSHAKE_BYTES};
+use spine_session::handshake::{Initiator, Responder, Session, MAX_HANDSHAKE_BYTES};
 
 use crate::mesh::MeshEnvelope;
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
@@ -400,7 +400,7 @@ where
 
 // ─────────────────────────── Encrypted connections ──────────────────────────
 
-/// Perform the dialing half of a [`spine_crypto::handshake`] over a socket.
+/// Perform the dialing half of a [`spine_session::handshake`] over a socket.
 ///
 /// `expected_peer` pins the far end to the mesh identity we meant to reach.
 /// Passing `None` is the bootstrap case: dialing an address whose identity is
