@@ -35,10 +35,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use spine_agentic::identity::SigningIdentity;
-use spine_agentic::mesh::{MeshConfig, MeshNode};
-use spine_agentic::mesh_tcp::{serve_node_with, EncryptionConfig, Security, TcpNameTransport};
-use spine_agentic::naming_mesh::{MaintenancePolicy, MeshNameResolver};
+use spine_mesh::identity::SigningIdentity;
+use spine_mesh::mesh::{MeshConfig, MeshNode};
+use spine_mesh::mesh_tcp::{serve_node_with, EncryptionConfig, Security, TcpNameTransport};
+use spine_mesh::naming_mesh::{MaintenancePolicy, MeshNameResolver};
 use tracing::{info, warn};
 
 use crate::config::NamespaceConfig;
@@ -50,7 +50,7 @@ use crate::config::NamespaceConfig;
 pub async fn join_with_application(
     cfg: &NamespaceConfig,
     host: &str,
-    application: Option<Arc<dyn spine_agentic::naming_mesh::MeshApplication>>,
+    application: Option<Arc<dyn spine_mesh::naming_mesh::MeshApplication>>,
 ) -> Result<Arc<MeshNameResolver>> {
     let seed = load_or_create_key(&cfg.key_path)?;
     let identity = SigningIdentity::from_seed("spine-core", seed);
@@ -122,7 +122,7 @@ pub async fn join_with_application(
 pub fn task_application(
     cfg: &NamespaceConfig,
     backend: Arc<dyn spine_storage::StorageBackend>,
-) -> Result<Option<Arc<dyn spine_agentic::naming_mesh::MeshApplication>>> {
+) -> Result<Option<Arc<dyn spine_mesh::naming_mesh::MeshApplication>>> {
     if !cfg.tasks_enabled {
         return Ok(None);
     }

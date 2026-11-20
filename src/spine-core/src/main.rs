@@ -173,7 +173,7 @@ struct BrowserState {
     /// `None` means the node is an origin but not a participant: it serves what
     /// it holds and cannot look anything up. That is a supported configuration,
     /// not a failure — a node with no seeds has nothing to route through.
-    mesh_names: Option<Arc<spine_agentic::naming_mesh::MeshNameResolver>>,
+    mesh_names: Option<Arc<spine_mesh::naming_mesh::MeshNameResolver>>,
 }
 
 impl BrowserState {
@@ -532,7 +532,7 @@ async fn resolve_over_mesh(
     }
     match mesh.resolve(uri).await {
         Ok(record) => Ok(Some(record)),
-        Err(spine_agentic::naming_mesh::NameMeshError::NotFound(_)) => Ok(None),
+        Err(spine_mesh::naming_mesh::NameMeshError::NotFound(_)) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -596,7 +596,7 @@ async fn handle_command(
         } => {
             let result = match (&state.mesh_names, uuid::Uuid::parse_str(&peer_id)) {
                 (Some(mesh), Ok(id)) => mesh
-                    .application_call(spine_agentic::AgentId(id), peer_key, payload)
+                    .application_call(spine_mesh::AgentId(id), peer_key, payload)
                     .await
                     .map_err(|e| e.to_string()),
                 (None, _) => Err("namespace is unavailable".into()),

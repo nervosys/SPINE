@@ -6697,6 +6697,7 @@ dependencies = [
  "spine-agentic",
  "spine-cluster",
  "spine-human",
+ "spine-mesh",
  "spine-name",
  "spine-neural",
  "spine-parser",

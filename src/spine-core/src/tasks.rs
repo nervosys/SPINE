@@ -444,7 +444,7 @@ impl TaskService {
 }
 
 #[async_trait::async_trait]
-impl spine_agentic::naming_mesh::MeshApplication for TaskService {
+impl spine_mesh::naming_mesh::MeshApplication for TaskService {
     async fn handle(&self, caller: [u8; 32], request: serde_json::Value) -> serde_json::Value {
         if !self.allowed.contains(&caller) {
             return serde_json::json!({"error":{"code":"not_authorized","message":"peer signing key is not authorized for tasks"}});

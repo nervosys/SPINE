@@ -316,9 +316,9 @@ impl Default for NamespaceConfig {
 }
 
 impl NamespaceConfig {
-    pub fn connection_limits(&self) -> spine_agentic::mesh_tcp::ConnectionLimits {
+    pub fn connection_limits(&self) -> spine_mesh::mesh_tcp::ConnectionLimits {
         use std::time::Duration;
-        spine_agentic::mesh_tcp::ConnectionLimits {
+        spine_mesh::mesh_tcp::ConnectionLimits {
             max_connections: self.connection_limit,
             handshake_timeout: Duration::from_secs(self.handshake_timeout_secs),
             frame_timeout: Duration::from_secs(self.frame_timeout_secs),
