@@ -29,6 +29,7 @@
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
@@ -57,7 +58,10 @@ impl Drop for RpcGuard<'_> {
         self.waiters.remove(&self.id);
     }
 }
-use crate::naming::{KeyspacePeer, LookupOutcome, NameService, ResolveQuery, ResolveResponse, K};
+use crate::naming::{
+    capability_placement_keys, KeyspacePeer, LookupOutcome, NameService, ResolveQuery,
+    ResolveResponse, K,
+};
 use crate::AgentId;
 
 /// Default time a lookup waits before giving up.
@@ -204,6 +208,13 @@ pub struct ReplicationReport {
     pub sent: usize,
     /// Peers the copy could not be delivered to.
     pub failed: usize,
+    /// Directed sends completed toward the nodes nearest the record's
+    /// capability keys (see `MAX_CAPABILITY_KEYS`). Counted apart from `sent`,
+    /// and equally unacknowledged: they make the record discoverable by
+    /// capability, not durable.
+    pub capability_sent: usize,
+    /// Capability-key sends the transport could not deliver.
+    pub capability_failed: usize,
     /// Whether the fan-out fell back to a broadcast because no keyspace peer
     /// could be addressed.
     pub broadcast: bool,
@@ -624,8 +635,45 @@ impl MeshNameResolver {
             return report;
         }
 
+        let mut offered: HashSet<AgentId> = HashSet::new();
+        let (sent, failed) = self.send_copies(record, &targets, &mut offered).await;
+        report.sent = sent;
+        report.failed = failed;
+
+        // Capability discovery routes toward SHA-256("cap:" + term), not toward
+        // the record's own key, so the record must also sit near each of those
+        // points or a capability walk converges on nodes that never saw it.
+        // Bounded by MAX_CAPABILITY_KEYS; walks and sends run one key at a time,
+        // each send fan-out being at most K wide. A peer already offered the
+        // record (for its name key or an earlier capability key) is not sent it
+        // again. These sends are counted apart from `sent` and, like it, are
+        // never an acknowledgement.
+        for cap_key in capability_placement_keys(record) {
+            let cap_targets = self.find_node(cap_key).await;
+            let (sent, failed) = self.send_copies(record, &cap_targets, &mut offered).await;
+            report.capability_sent += sent;
+            report.capability_failed += failed;
+        }
+
+        let mut m = self.metrics.lock().await;
+        m.replicas_sent += (report.sent + report.capability_sent) as u64;
+        m.replicas_failed += (report.failed + report.capability_failed) as u64;
+        report
+    }
+
+    /// Send `record` to each peer not already in `offered`, concurrently, and
+    /// return how many sends completed and how many failed.
+    async fn send_copies(
+        &self,
+        record: &NameRecord,
+        targets: &[KeyspacePeer],
+        offered: &mut HashSet<AgentId>,
+    ) -> (usize, usize) {
         let mut sends = Vec::new();
-        for peer in &targets {
+        for peer in targets {
+            if !offered.insert(peer.agent_id) {
+                continue;
+            }
             // announce_name_to re-verifies, so an invalid record never reaches
             // the wire even if it somehow entered the store.
             let Ok(envelope) = self.node.announce_name_to(peer.agent_id, record.clone()) else {
@@ -635,17 +683,14 @@ impl MeshNameResolver {
             sends.push(async move { transport.send(envelope).await });
         }
 
+        let (mut sent, mut failed) = (0, 0);
         for result in futures::future::join_all(sends).await {
             match result {
-                Ok(()) => report.sent += 1,
-                Err(_) => report.failed += 1,
+                Ok(()) => sent += 1,
+                Err(_) => failed += 1,
             }
         }
-
-        let mut m = self.metrics.lock().await;
-        m.replicas_sent += report.sent as u64;
-        m.replicas_failed += report.failed as u64;
-        report
+        (sent, failed)
     }
 
     /// Find the addressable peers closest to a keyspace point.
@@ -710,9 +755,10 @@ impl MeshNameResolver {
             let record = &mine[(start + offset) % mine.len()];
             last_key = Some(record.name.key());
             let result = self.replicate(record).await;
-            if result.sent > 0 {
+            let sent = result.sent + result.capability_sent;
+            if sent > 0 {
                 report.refreshed += 1;
-                report.replicas_sent += result.sent;
+                report.replicas_sent += sent;
             }
         }
 
@@ -1882,6 +1928,88 @@ mod tests {
         assert!(!report.broadcast, "a directed store is not a broadcast");
         assert_eq!(h.nodes[1].record_count().await, 1);
         assert_eq!(h.nodes[2].record_count().await, 1);
+    }
+
+    /// Capability discovery walks toward the capability key, so the record must
+    /// be placed there as well as at its name key. In a mesh larger than K the
+    /// node nearest the capability key is chosen to be one that the name key
+    /// alone would never have sent the record to; a seeker that knows only that
+    /// node must still find the provider.
+    #[tokio::test]
+    async fn a_capability_is_placed_near_its_own_key_not_only_the_name_key() {
+        const NODES: u8 = 40;
+        let seeker_ix = (NODES - 1) as usize;
+        let h = Harness::new(NODES);
+        for a in 0..seeker_ix {
+            for b in 0..seeker_ix {
+                if a != b {
+                    h.introduce(a, b).await;
+                }
+            }
+        }
+
+        // Find a term whose nearest node (publisher excluded) is outside the K
+        // nearest to the record's name key, so only capability placement can
+        // have put the record there.
+        let keys: Vec<NameKey> = h.nodes.iter().map(|n| n.local_key()).collect();
+        let mut chosen = None;
+        for t in 0..256 {
+            let term = format!("cap.term{t}");
+            let rec = record(1, &[term.as_str()]);
+            let name_key = rec.name.key();
+            let cap_key = crate::naming::capability_key(&term);
+
+            let mut by_name: Vec<usize> = (1..seeker_ix).collect();
+            by_name.sort_by_key(|&i| keys[i].distance(&name_key));
+            let mut by_cap: Vec<usize> = (1..seeker_ix).collect();
+            by_cap.sort_by_key(|&i| keys[i].distance(&cap_key));
+
+            let holder = by_cap[0];
+            if !by_name[..K].contains(&holder) {
+                chosen = Some((term, rec, holder));
+                break;
+            }
+        }
+        let (term, rec, holder) =
+            chosen.expect("some term lands its nearest node off the name path");
+
+        let publisher = h.nodes[0].clone();
+        let handed = rec.clone();
+        let run = tokio::spawn(async move { publisher.publish(handed).await.unwrap() });
+        for _ in 0..4000 {
+            if run.is_finished() {
+                break;
+            }
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
+        let report = run.await.unwrap();
+
+        assert!(
+            report.capability_sent > 0,
+            "no capability sends: {report:?}"
+        );
+        assert!(!report.is_durable());
+        assert_eq!(
+            h.nodes[holder].record_count().await,
+            1,
+            "the node nearest the capability key must hold the record: {report:?}"
+        );
+
+        // A seeker that knows only that node finds the provider through it.
+        h.introduce(seeker_ix, holder).await;
+        let seeker = h.nodes[seeker_ix].clone();
+        let wanted = term.clone();
+        let lookup = tokio::spawn(async move { seeker.find_providers(&wanted).await });
+        for _ in 0..64 {
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
+        let providers = lookup.await.unwrap().unwrap();
+        assert!(
+            providers.iter().any(|p| p.name == rec.name),
+            "capability lookup missed the provider: {providers:?}"
+        );
     }
 
     /// The stronger property: a copy reaches a node the publisher was never

@@ -67,6 +67,38 @@ pub enum ResolveQuery {
     Node(NameKey),
 }
 
+/// Most capability keys a record is placed at, besides its own name key.
+///
+/// A record may advertise arbitrarily many terms, and each key costs a
+/// keyspace walk plus up to [`K`] sends on the publisher and a stored copy on
+/// the receivers. The first `MAX_CAPABILITY_KEYS` terms in sorted order are
+/// placed, so the choice is deterministic and a receiver computes the same set
+/// the publisher did. Terms beyond the cap are discoverable only through the
+/// nodes that happen to hold the record.
+pub const MAX_CAPABILITY_KEYS: usize = 8;
+
+/// The keyspace point a capability term routes to (case-insensitive).
+pub fn capability_key(term: &str) -> NameKey {
+    NameKey::of(format!("cap:{}", term.to_ascii_lowercase()).as_bytes())
+}
+
+/// The capability keys a record is placed at: one per advertised term, sorted
+/// and deduplicated, capped at [`MAX_CAPABILITY_KEYS`].
+pub fn capability_placement_keys(record: &NameRecord) -> Vec<NameKey> {
+    let mut terms: Vec<String> = record
+        .capabilities
+        .iter()
+        .map(|t| t.to_ascii_lowercase())
+        .collect();
+    terms.sort();
+    terms.dedup();
+    terms
+        .into_iter()
+        .take(MAX_CAPABILITY_KEYS)
+        .map(|t| capability_key(&t))
+        .collect()
+}
+
 impl ResolveQuery {
     /// The keyspace point this query routes toward.
     ///
@@ -77,9 +109,7 @@ impl ResolveQuery {
     pub fn target_key(&self) -> NameKey {
         match self {
             ResolveQuery::Name(uri) => uri.key(),
-            ResolveQuery::Capability(term) => {
-                NameKey::of(format!("cap:{}", term.to_ascii_lowercase()).as_bytes())
-            }
+            ResolveQuery::Capability(term) => capability_key(term),
             ResolveQuery::Node(key) => *key,
         }
     }
@@ -499,7 +529,15 @@ impl NameService {
         &mut self,
         record: NameRecord,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
-        if !self.is_responsible_for(&record.name.key()) {
+        // A record is also placed near each capability key it advertises, so a
+        // capability walk converges on nodes that hold it. Responsibility for
+        // any of those keys suffices; the set is capped, so a record cannot
+        // claim a place in more than a few neighbourhoods.
+        let responsible = self.is_responsible_for(&record.name.key())
+            || capability_placement_keys(&record)
+                .iter()
+                .any(|k| self.is_responsible_for(k));
+        if !responsible {
             return Ok(spine_name::PutOutcome::Rejected);
         }
         self.store.put(record)
@@ -1594,6 +1632,48 @@ mod tests {
             "a node must be able to serve what it publishes, wherever it sits"
         );
         assert_eq!(service.record_count(), 1);
+    }
+
+    /// A record is also placed near the keys of the capabilities it advertises,
+    /// so a node near a capability key must accept it even when it is far from
+    /// the record's name key, and must index it for capability queries.
+    #[test]
+    fn an_announcement_is_accepted_near_a_capability_key() {
+        let rec = record(4, 1, 1_000, &["web.search"]);
+        let target = rec.name.key();
+
+        let mut service = NameService::new(NameKey::of(b"far from that key"));
+        for i in 0..K as u8 {
+            let mut bytes = *target.as_bytes();
+            bytes[31] ^= i;
+            service.add_peer(
+                NodeInfo::new(NameKey::from_bytes(bytes), vec![], 100),
+                agent(i),
+            );
+        }
+
+        assert_eq!(
+            service.accept_announcement(rec.clone()).unwrap(),
+            spine_name::PutOutcome::Inserted,
+        );
+        assert_eq!(
+            service.resolve_locally(&ResolveQuery::Capability("web.search".into()), 1_000),
+            Some(LookupOutcome::Providers(vec![rec])),
+            "the capability index must answer for the placed record"
+        );
+    }
+
+    #[test]
+    fn capability_placement_is_sorted_deduplicated_and_capped() {
+        let caps: Vec<String> = (0..20).map(|i| format!("cap{i:02}")).collect();
+        let refs: Vec<&str> = caps.iter().map(|s| s.as_str()).collect();
+        let mut rec = record(5, 1, 1_000, &refs);
+        rec.capabilities.push("CAP00".into());
+
+        let keys = capability_placement_keys(&rec);
+        assert_eq!(keys.len(), MAX_CAPABILITY_KEYS);
+        assert_eq!(keys[0], capability_key("cap00"));
+        assert_eq!(keys[MAX_CAPABILITY_KEYS - 1], capability_key("cap07"));
     }
 
     /// An expired record is not something to re-offer; it is something to drop.
