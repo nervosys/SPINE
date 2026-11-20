@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **MSRV raised from 1.88 to 1.89.** `rusqlite` 0.43 (bundling a `libsqlite3-sys` without RUSTSEC-2026-0459) requires it. Dependency upgrades also clear the other 33 advisories reported on 2026-11-19: Wasmtime 36.0.23, Rustls 0.23.46, Quinn 0.11.19, Zstd 0.13.5, and the gateway on Axum 0.8 with utoipa 6.
+
 ### Agent-web completion work
 
 - Persist local publisher records and signed sequence state through the storage abstraction, restore fresh records after restart, and support opt-in node-owner renewal.

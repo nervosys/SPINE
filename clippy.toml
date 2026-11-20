@@ -16,10 +16,14 @@
 #   3. Past those, `time@0.3.47` and `time-core@0.1.8` require 1.88, which is
 #      the binding constraint and the reason this reads 1.88 rather than 1.87.
 #
+#   4. From 2026-11-20 the floor is 1.89: `rusqlite` >= 0.41 requires it, and
+#      that is the first release on a `libsqlite3-sys` without
+#      RUSTSEC-2026-0459.
+#
 # Only the third was measured rather than inferred, and only because the first
 # two were cleared first.
 #
 # Raise this and the `msrv` job's toolchain together, and the README badge,
 # docs/src/getting-started/installation.md, ROADMAP.md and
 # .github/copilot-instructions.md with them.
-msrv = "1.88"
+msrv = "1.89"

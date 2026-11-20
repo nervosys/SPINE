@@ -4,7 +4,7 @@ The current candidate supports Windows x64 headless core, CLI, and HTTP gateway.
 
 ## Build and install
 
-Install Rust 1.88 or newer and `protoc`; current validation uses Rust 1.98.1. Run `python scripts/package_candidate.py` from the repository. It builds the three binaries in release mode and writes a local archive and SHA-256 checksum under `artifacts/`. No account or publication operation occurs. The manifest identifies the base commit, dirty state, source digest, toolchain, and dependencies. A development candidate is not a tagged release.
+Install Rust 1.89 or newer and `protoc`; current validation uses Rust 1.98.1. Run `python scripts/package_candidate.py` from the repository. It builds the three binaries in release mode and writes a local archive and SHA-256 checksum under `artifacts/`. No account or publication operation occurs. The manifest identifies the base commit, dirty state, source digest, toolchain, and dependencies. A development candidate is not a tagged release.
 
 Verify the archive checksum against its adjacent `.sha256` file, extract it into a clean location, and add its `bin` directory to PATH. Verify each member against `SHA256SUMS`. Preserve the dependency inventory and license when redistributing; transitive license obligations require review before public distribution. Run `spine --help` to confirm installation. `python scripts/smoke_candidate.py ARCHIVE` independently verifies and extracts the archive, then exercises its binaries with fresh temporary state.
 

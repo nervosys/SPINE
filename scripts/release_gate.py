@@ -20,7 +20,7 @@ def main():
         ("final_audit", ["cargo", "audit", "--json"]),
         ("final_deny", ["cargo", "deny", "check", "advisories", "licenses"]),
         ("final_secrets", [sys.executable, "scripts/scan_secrets.py"]),
-        ("final_msrv", ["cargo", "+1.88", "check", "--workspace", "--exclude", "spine-browser", "--locked"]),
+        ("final_msrv", ["cargo", "+1.89", "check", "--workspace", "--exclude", "spine-browser", "--locked"]),
         ("release", ["cargo", "build", "--locked", "--release", "-p", "spine-core", "-p", "spine-cli", "-p", "spine-gateway"]),
         ("candidate_package", [sys.executable, "scripts/package_candidate.py", "--no-build"]),
     ]

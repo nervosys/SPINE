@@ -6,7 +6,7 @@ This guide covers the portable implementation in this checkout. Read [completion
 
 ## Prerequisites
 
-Install Rust, Cargo, and `protoc`. The verified development toolchain is Rust 1.98.1 on Windows x64. Rust 1.88 compilation also passes against the current lockfile with the GUI excluded, matching CI's minimum-toolchain scope. Build the native applications:
+Install Rust, Cargo, and `protoc`. The verified development toolchain is Rust 1.98.1 on Windows x64. Rust 1.89 is the minimum supported toolchain; compilation at the minimum is checked with the GUI excluded, matching CI's minimum-toolchain scope. Build the native applications:
 
 ```sh
 cargo build -p spine-core -p spine-cli -p spine-gateway
