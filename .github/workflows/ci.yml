@@ -52,6 +52,12 @@ jobs:
           cargo clippy -p spine-protocol --no-default-features --all-targets -- -D warnings
           cargo clippy -p spine-protocol --no-default-features --features quic --all-targets -- -D warnings
 
+      - name: Clippy (spine-protocol with research code)
+        run: cargo clippy -p spine-protocol --features research --all-targets -- -D warnings
+
+      - name: Clippy (spine-web with research code)
+        run: cargo clippy -p spine-web --features research --all-targets -- -D warnings
+
       - name: Clippy (spine-core with research code)
         run: cargo clippy -p spine-core --features research --all-targets -- -D warnings
 
@@ -155,6 +161,12 @@ jobs:
 
       - name: Run doc tests
         run: cargo test --workspace --doc --target ${{ matrix.target }}
+
+      # spine-protocol's research code is off by default now, so the workspace run
+      # above no longer compiles it. Cover its lib and integration tests here, once.
+      - name: Run spine-protocol research tests
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo test -p spine-protocol --features research --lib --tests
 
 
   # -- Coverage ---------------------------------------------------------------

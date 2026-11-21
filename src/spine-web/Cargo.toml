@@ -12,7 +12,9 @@ readme = "README.md"
 
 # This crate is a thin facade: it contains no logic of its own, only re-exports
 # of the component crates, each gated behind a feature of the same name. Pick the
-# pieces you need; nothing is pulled unless its feature is on.
+# pieces you need; nothing is pulled unless its feature is on. The research
+# crates (neural, crypto, agentic, cluster, human, recursive, knowledge, kernel,
+# gpu, mechgen, k8s) are never in `default`.
 
 [dependencies]
 spine-protocol  = { path = "../spine-protocol",  version = "2.0.2", optional = true }
@@ -40,16 +42,30 @@ spine-cache     = { path = "../spine-cache",     version = "2.0.2", optional = t
 spine-k8s       = { path = "../../research/spine-k8s",       version = "2.0.2", optional = true }
 
 [features]
-# A practical agentic-web starter: the wire protocol, transport, and the agent
-# runtime (which transitively brings parser/compiler/wasm/cluster/human).
-default = ["protocol", "transport", "agent", "agentic", "name"]
+# A practical agentic-web starter built only from the stable workspace crates:
+# the wire protocol, transport, the agent runtime and the `spine://` namespace.
+# No research crate is in the default build; opt in with `research` (all of them)
+# or with the individual features below.
+default = ["protocol", "transport", "agent", "name"]
 
-# Everything that is a reusable library. Heavy optional backends (GPU, SQLite,
-# Kubernetes) come in only via their own features below, not via `full`.
+# Every research crate except the heavy backends (`gpu`, `k8s`), plus the
+# research code paths of the stable crates that have them. Pulls in spine-neural
+# and spine-crypto (through `spine-protocol/research`), spine-agentic,
+# spine-human and spine-cluster, and the rest of research/.
+research = [
+    "protocol", "spine-protocol/research",
+    "spine-agent?/research", "spine-core?/research",
+    "neural", "crypto", "agentic", "cluster", "human", "recursive",
+    "knowledge", "kernel", "mechgen",
+]
+
+# Everything that is a reusable library: the stable crates plus `research`.
+# Heavy optional backends (GPU, Kubernetes) come in only via their own features
+# below, not via `full`.
 full = [
-    "protocol", "transport", "parser", "compiler", "wasm", "neural", "crypto",
-    "agent", "agentic", "cluster", "human", "stream", "recursive", "knowledge",
-    "storage", "kernel", "grpc", "mechgen", "core", "cache", "name",
+    "research",
+    "protocol", "transport", "parser", "compiler", "wasm", "agent", "stream",
+    "storage", "grpc", "core", "cache", "name",
 ]
 
 # One feature per component crate.
