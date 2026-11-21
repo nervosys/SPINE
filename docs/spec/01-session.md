@@ -12,8 +12,8 @@ Layer 1 in `docs/FIRST_PRINCIPLES.md` is "Session": connect to a key, multiplexe
 
 | Name used here | What it is | Where |
 | --- | --- | --- |
-| **Mesh channel** | The encrypted, key-authenticated TCP channel that carries DHT name-resolution traffic and application RPC between mesh nodes. Uses the custom `spine-mesh-hs-v1` handshake. This is the only SPINE-specific channel security that is wired into a production binary. | `src/spine-crypto/src/handshake.rs`, `src/spine-agentic/src/mesh_tcp.rs`, wired by `src/spine-core/src/namespace.rs:56-83` |
-| **Mesh alternates** | The same handshake over WebSocket and QUIC, used only by tests and library users. | `src/spine-agentic/src/mesh_ws.rs`, `mesh_quic.rs` |
+| **Mesh channel** | The encrypted, key-authenticated TCP channel that carries DHT name-resolution traffic and application RPC between mesh nodes. Uses the custom `spine-mesh-hs-v1` handshake. This is the only SPINE-specific channel security that is wired into a production binary. | `research/spine-crypto/src/handshake.rs`, `research/spine-agentic/src/mesh_tcp.rs`, wired by `src/spine-core/src/namespace.rs:56-83` |
+| **Mesh alternates** | The same handshake over WebSocket and QUIC, used only by tests and library users. | `research/spine-agentic/src/mesh_ws.rs`, `mesh_quic.rs` |
 | **Native wire** | The client-facing protocol served by `spine-core` on TCP, WebSocket and optional QUIC: a length-prefixed frame carrying a CBOR message body. Security is rustls TLS or nothing. | `src/spine-protocol/src/lib.rs`, `wire.rs`; served by `src/spine-core/src/main.rs:2152-2415` |
 | **Transport crate and stream crate** | `Frame` with a 12-byte header, `FrameCodec`, congestion and pooling in `spine-transport`; a stream multiplexer, flow controller and priority queues in `spine-stream`. | `src/spine-transport/`, `src/spine-stream/` |
 
@@ -22,7 +22,7 @@ Terms:
 - **Initiator (I)**, **Responder (R)**: the dialing and accepting side of the mesh handshake.
 - **Identity**: a 32-byte Ed25519 public key. The same key is the node's DHT keyspace position and the authority of the name records it signs (`HANDSHAKE-REVIEW.md:30-34`).
 - **Pin**: an expected 32-byte responder identity supplied to the dialer before the handshake.
-- **Envelope**: `MeshEnvelope`, a JSON object carrying a payload and an Ed25519 signature by the originator (`src/spine-agentic/src/mesh.rs:149-166`). Envelopes are the plaintext that the mesh channel protects.
+- **Envelope**: `MeshEnvelope`, a JSON object carrying a payload and an Ed25519 signature by the originator (`research/spine-agentic/src/mesh.rs:149-166`). Envelopes are the plaintext that the mesh channel protects.
 - **Record**: one AEAD-sealed unit on the mesh channel (section 2.9).
 - **Frame**: used in two senses. "Mesh frame" is the u32-length-prefixed unit in `mesh_tcp.rs`. "Native frame" is the unit in `spine-protocol`. "Transport `Frame`" is the 12-byte-header struct in `spine-transport`. Section 4 keeps them apart.
 - **`‖`**: byte concatenation.
@@ -167,7 +167,7 @@ After the handshake, for `Application` payloads only, `pump` drops an inbound en
 
 For non-application mesh traffic there is no comparison between `session.peer_identity()` and the key carried in the envelope or `NameHelloAck`. The ack's key is checked only by the envelope signature (`naming_mesh.rs:1011-1013`, `mesh.rs:734-737`).
 
-The mapping from a dialed target to a key goes through `AgentId`, a UUID. `SigningIdentity::from_seed` derives it as a hash of the seed, not of the public key, and `SigningIdentity::new` uses a random UUID (`src/spine-agentic/src/identity.rs:148, 167`; `lib.rs:233-251`). See observation O2.
+The mapping from a dialed target to a key goes through `AgentId`, a UUID. `SigningIdentity::from_seed` derives it as a hash of the seed, not of the public key, and `SigningIdentity::new` uses a random UUID (`research/spine-agentic/src/identity.rs:148, 167`; `lib.rs:233-251`). See observation O2.
 
 ### 2.9 AEAD record format after the handshake
 
@@ -217,7 +217,7 @@ Downgrade:
 
 ### 2.11 Rekeying and lifetime
 
-Undetermined whether any caller closes and re-dials connections on a schedule: searched `src/spine-agentic/src/mesh_tcp.rs` and `src/spine-core/src/namespace.rs`; found idle and frame timeouts only (`ConnectionLimits`, `mesh_tcp.rs:69-90`). The session itself has no rekey operation and no key update message. A connection ends on an error, an idle `frame_timeout` of 60 s without a complete frame (`mesh_tcp.rs:82-85, 578-580`), eviction, or process exit. Session keys are zeroed when `Session` drops (`handshake.rs:410-420`).
+Undetermined whether any caller closes and re-dials connections on a schedule: searched `research/spine-agentic/src/mesh_tcp.rs` and `src/spine-core/src/namespace.rs`; found idle and frame timeouts only (`ConnectionLimits`, `mesh_tcp.rs:69-90`). The session itself has no rekey operation and no key update message. A connection ends on an error, an idle `frame_timeout` of 60 s without a complete frame (`mesh_tcp.rs:82-85, 578-580`), eviction, or process exit. Session keys are zeroed when `Session` drops (`handshake.rs:410-420`).
 
 ### 2.12 Concurrency and bounds around the channel
 
@@ -565,10 +565,10 @@ These describe classes of problem and their locations. They are not exploit desc
 
 | Item | File or files searched | Reason |
 | --- | --- | --- |
-| Whether any code re-dials or recycles a mesh connection on a schedule, which would be the only rekey | `src/spine-agentic/src/mesh_tcp.rs`, `src/spine-core/src/namespace.rs` | Found only idle and frame timeouts and eviction on address or pin change |
+| Whether any code re-dials or recycles a mesh connection on a schedule, which would be the only rekey | `research/spine-agentic/src/mesh_tcp.rs`, `src/spine-core/src/namespace.rs` | Found only idle and frame timeouts and eviction on address or pin change |
 | Whether a native client can re-attach to a detached session id after reconnecting | `src/spine-core/src/main.rs` | Session leases exist; no resume message found |
 | Whether `ml-kem` 0.2.3 wipes `DecapsulationKey` and shared secrets on drop | not read (external crate) | Source not in the repository |
 | Which published Noise hybrid or KEM extension to target | none | No document in the repository names one |
 | Whether the tests listed in section 6 pass at HEAD | `build_completion_final_tests.log` | The log is older than HEAD; cargo was not run for this document |
 | Whether `load_or_create_key` sets restrictive file permissions on the identity seed | `src/spine-core/src/namespace.rs` (lines 287-326 not read in detail) | `CRYPTO_REVIEW_PACKET.md:17` lists key storage as a review item |
-| Whether mesh `from` (an `AgentId`) is checked against the authenticated session for non-application envelopes in any handler | `src/spine-agentic/src/naming_mesh.rs`, `mesh_tcp.rs:1173-1186` | Only the `Application` branch compares sender key and authenticated peer |
+| Whether mesh `from` (an `AgentId`) is checked against the authenticated session for non-application envelopes in any handler | `research/spine-agentic/src/naming_mesh.rs`, `mesh_tcp.rs:1173-1186` | Only the `Application` branch compares sender key and authenticated peer |

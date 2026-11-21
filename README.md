@@ -308,7 +308,13 @@ StreamData::Encoded(EncodedFrame {
 
 ## Core Components
 
-SPINE is composed of 28 specialized crates organized into a cohesive bioinspired architecture:
+SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesive bioinspired architecture (the per-layer list below predates the split and still describes all of them):
+
+### Two workspaces
+
+- **Stack (repository root, `src/`)**, 18 crates, built by default with `cargo build` at the root: `spine-name`, `spine-session`, `spine-mesh`, `spine-transport`, `spine-storage`, `spine-protocol`, `spine-parser`, `spine-cache`, `spine-wasm`, `spine-compiler`, `spine-stream`, `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway`, `spine-grpc`, `spine-ffi`, `spine-web`. No research crate is in their default dependency tree, apart from what the `spine-web` facade enables by default (`agentic`).
+- **Research (`research/`)**, 14 crates, a separate workspace with its own `Cargo.toml` and `Cargo.lock`, built with `cd research && cargo build`: `spine-agentic`, `spine-browser`, `spine-cluster`, `spine-crypto`, `spine-embedded`, `spine-gpu`, `spine-human`, `spine-k8s`, `spine-kernel`, `spine-knowledge`, `spine-mechgen`, `spine-neural`, `spine-nostd`, `spine-recursive`. Stack crates reach them only through opt-in `research` cargo features (optional path dependencies) and through optional features of `spine-web`; research crates may depend on stack crates.
+- `research/Cargo.toml` copies `[workspace.package]`, `[workspace.dependencies]` and the profiles from the root `Cargo.toml`; the two must be kept in sync by hand.
 
 ### Kernel Layer
 
@@ -768,14 +774,19 @@ The default `spine-core` is built without the `research` feature: cluster swarm,
 ### Building
 
 ```bash
-cargo build --release
+cargo build --release              # the stack (repository root)
+(cd research && cargo build)       # the research crates, a separate workspace
 ```
 
 ### Verifying
 
 ```bash
-scripts/verify.sh 1418     # tests + Clippy, and checks the run finished
+scripts/verify.sh              # tests + Clippy of the root workspace, and checks the run finished
 ```
+
+The `1418` total this command used to take is stale: the root workspace no
+longer runs the research crates' tests. Re-measure it before passing a total.
+Research tests run separately: `cd research && cargo test --workspace --exclude spine-browser`.
 
 Preferred over running `cargo test` and `cargo clippy` by hand. Summing test
 results cannot distinguish a passing run from a truncated one — a run that dies
@@ -799,7 +810,7 @@ The core will listen on `127.0.0.1:8082` for agent and browser connections.
 In a separate terminal, launch the cross-platform GUI:
 
 ```bash
-cargo run -p spine-browser
+cd research && cargo run -p spine-browser
 ```
 
 The GUI allows you to:
@@ -1007,7 +1018,7 @@ client.handler.send_message(&Message::Request(Request {
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (32 Crates)
+### The SPINE Stack (32 Crates, in two workspaces: `src/` and `research/`)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -1298,7 +1309,7 @@ cargo test  --package spine-transport rdma  # 4 trait tests
 
 Absolute internal-operation timings, re-run on current hardware. These are the only
 component/kernel numbers retained in the README because they are the ones reproduced this
-session (`cargo bench -p spine-kernel --bench kernel_bench`, `-p spine-transport --bench
+session (`cd research && cargo bench -p spine-kernel --bench kernel_bench`, `-p spine-transport --bench
 transport_bench`). Absolute figures are hardware-specific medians, not constants.
 
 | Operation                     | Bench                         | Time     | Throughput     |
@@ -1390,17 +1401,25 @@ swarm.broadcast(sender, message_types::BROADCAST, &payload);
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 32 crates:
+SPINE includes comprehensive test coverage across all 32 crates, which now live in two workspaces:
 
 ```bash
-# Run all tests
+# Run the stack tests (repository root)
 cargo test --workspace
 
-# Run tests for a specific crate
-cargo test -p spine-kernel
-cargo test -p spine-neural
-cargo test -p spine-crypto
+# Run the research crates' tests (separate workspace)
+cd research && cargo test --workspace --exclude spine-browser
+
+# Run tests for a specific research crate
+cd research && cargo test -p spine-kernel
+cd research && cargo test -p spine-neural
+cd research && cargo test -p spine-crypto
 ```
+
+> **Stale numbers.** The totals and the table below were measured before the
+> research crates moved to `research/`. They were not re-measured for the split,
+> and `cargo test --workspace` at the root no longer includes the research
+> crates, so do not read the root total as the sum of this table.
 
 ### Test Summary (1,418 tests, 0 failures)
 
@@ -1455,8 +1474,8 @@ column sums to the workspace total.
 # Run all benchmarks
 cargo bench
 
-# Run specific benchmark suite
-cargo bench -p spine-kernel
+# Run specific benchmark suite (spine-kernel is in the research workspace)
+(cd research && cargo bench -p spine-kernel)
 cargo bench -p spine-transport
 ```
 

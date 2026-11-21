@@ -12,7 +12,7 @@ description = "Advanced cryptographic primitives for SPINE including transformer
 
 [dependencies]
 spine-neural = { path = "../spine-neural", version = "2.0.2" }
-spine-session = { path = "../spine-session", version = "2.0.2" }
+spine-session = { path = "../../src/spine-session", version = "2.0.2" }
 serde.workspace = true
 log.workspace = true
 rand.workspace = true

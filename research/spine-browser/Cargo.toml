@@ -11,10 +11,10 @@ description.workspace = true
 license.workspace = true
 
 [dependencies]
-spine-agent = { path = "../spine-agent", version = "2.0.2", features = ["research"] }
+spine-agent = { path = "../../src/spine-agent", version = "2.0.2", features = ["research"] }
 spine-human = { path = "../spine-human", version = "2.0.2" }
-spine-wasm = { path = "../spine-wasm", version = "2.0.2" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
+spine-wasm = { path = "../../src/spine-wasm", version = "2.0.2" }
+spine-protocol = { path = "../../src/spine-protocol", version = "2.0.2" }
 spine-cluster = { path = "../spine-cluster", version = "2.0.2" }
 spine-agentic = { path = "../spine-agentic", version = "2.0.2" }
 eframe = "0.28"

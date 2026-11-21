@@ -65,7 +65,7 @@ These cannot be closed from inside the repository.
 
 ## Stage 1. Re-establish the baseline on the current toolchain
 
-- [x] Fix the Clippy failure Rust 1.100 introduces at `src/spine-crypto/src/lib.rs:939` (`needless_range_loop`), then any further lints it was hiding in dependent crates. Done 2026-11-19; the CI toolchain also rejected the deprecated `fetch_update`, replaced with compare-exchange loops so 1.88 still compiles. CI lint, docs, coverage and tests on all three platforms passed on `2801d13`.
+- [x] Fix the Clippy failure Rust 1.100 introduces at `research/spine-crypto/src/lib.rs:939` (`needless_range_loop`), then any further lints it was hiding in dependent crates. Done 2026-11-19; the CI toolchain also rejected the deprecated `fetch_update`, replaced with compare-exchange loops so 1.88 still compiles. CI lint, docs, coverage and tests on all three platforms passed on `2801d13`.
 - [ ] `scripts/verify.sh 1478` passes on Rust 1.100.0, run unpiped on a quiet machine: 1,478 tests, 70 suites, 5 ignored, Clippy silent, formatting clean. Tests and formatting already pass as of 2026-11-19; Clippy does not. Clippy passes locally since `2801d13`. The full run has not been repeated after the Stage 2 lockfile change: the 2026-11-19 attempt was stopped by the system for low memory before any test ran.
 - [ ] Resolve the new Cargo manifest warnings (about 20 unused dependencies and 30 redundant declarations) by removing what is unused; do not silence the lint. Partly done 2026-11-19: 32 unused dependencies and the redundant `homepage` fields removed. 13 unused-dependency warnings remain where the crate name still appears in cfg-gated code, examples or benches, plus the unused `readme` workspace field; each needs a per-target check.
 - [ ] `cargo +1.89 check --workspace --exclude spine-browser --locked` passes.
@@ -111,7 +111,7 @@ The as-built specifications in `docs/spec/` were written on 2026-11-20 by readin
 
 - [ ] `Link.title`, `Link.capabilities` and a resource's `content_type` are not covered by the record signature. Link fields done in `c6dd827` (v2 signing layout covering every record field). Still open: `content_type` is not a record field; it lives beside the blob and can be relabelled by whoever relays it.
 - [ ] Signed bytes use NUL-terminated strings and, for mesh envelopes, `serde_json` output. Move to a length-prefixed canonical encoding (decided in Stage 5). Name records done in `c6dd827` and mesh envelopes length-prefixed in `d89d5f9`; envelope payloads still pass through `serde_json` before signing.
-- [x] The mesh envelope signature omits the destination and timestamp, although the comment says the destination is covered (comment confirmed at `src/spine-agentic/src/mesh.rs`). If payload serialisation fails the payload is silently dropped from the signed bytes; fail closed. Done in `d89d5f9`. Hop count and time-to-live stay unsigned because forwarders change them.
+- [x] The mesh envelope signature omits the destination and timestamp, although the comment says the destination is covered (comment confirmed at `research/spine-agentic/src/mesh.rs`). If payload serialisation fails the payload is silently dropped from the signed bytes; fail closed. Done in `d89d5f9`. Hop count and time-to-live stay unsigned because forwarders change them.
 - [x] Use strict Ed25519 verification throughout. Done in `3476769` for name records, agent identities and the handshake. `swe.rs` switched in `a94fb6a`'s parent commit; an audit found no other non-strict call and no other signature library.
 - [x] The signed RPC path has no application-level replay or duplicate check; `MessageDedup` is never called on it. Safe today only because every operation is read-only or idempotent. Done in `d5cbf37` and `c1f2c89`: requests outside a 120-second window or already seen from the same sender are refused; the table holds 4,096 entries and refuses new requests when full of live ones. Unit-tested; no end-to-end replay test.
 
@@ -143,7 +143,7 @@ Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source 
 - [ ] Decide `spine-human`: its transpiler runs on every `Navigate`, so it is a feature on the gateway path, not an experiment. Either it becomes part of the edge or `Navigate` stops depending on it.
 - [ ] Keep `sybil.rs` when `spine-cluster` leaves: Argon2id proof of work and stake-weighted voting are the only admission-cost code in the repository, and Stage 10 needs one.
 - [ ] `spine-knowledge` and `spine-mechgen` follow the research half of `spine-agentic`. `spine-nostd` and `spine-embedded` have no runtime dependents and can move at any time.
-- [ ] Move the research crates to a separate workspace. In the same change lower `EXPECTED_SUITES_MIN` and the ignored count in `scripts/verify.sh`, and update `scripts/release_gate.py`, `scripts/publish.sh`, CI, the README and the status report.
+- [x] Move the research crates to a separate workspace. Done in this change: the 14 research crates are under `research/` (own `Cargo.toml` and `Cargo.lock`), `scripts/verify.sh` expects 43 suites (derived, not measured; re-measure from CI) and 3 ignored tests, and `scripts/release_gate.py`, `scripts/publish.sh`, CI and the README were updated. The status report was not touched. In the same change lower `EXPECTED_SUITES_MIN` and the ignored count in `scripts/verify.sh`, and update `scripts/release_gate.py`, `scripts/publish.sh`, CI, the README and the status report.
 - [ ] Decide what happens to the 29 crates already on crates.io at 2.0.1; moving sources does not unpublish them (account holder).
 - [ ] Remove the remaining unused-dependency warnings as their crates are touched.
 
@@ -289,7 +289,7 @@ These were checked in the previous plan with evidence in the status report. They
 | Stage | Result |
 | --- | --- |
 | `cargo test --workspace --no-fail-fast` | Passed: 1,478 tests, 70 suites, 0 failed, 5 ignored |
-| `cargo clippy --workspace --all-targets -- -D warnings` | **Failed.** `clippy::needless_range_loop` at `src/spine-crypto/src/lib.rs:939`, a lint Rust 1.100 applies and 1.98.1 did not. Clippy stopped at `spine-crypto`, so crates that depend on it were not linted; more findings may follow once this one is fixed. |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **Failed.** `clippy::needless_range_loop` at `research/spine-crypto/src/lib.rs:939`, a lint Rust 1.100 applies and 1.98.1 did not. Clippy stopped at `spine-crypto`, so crates that depend on it were not linted; more findings may follow once this one is fixed. |
 | `cargo fmt --all -- --check` | Passed |
 
 The run shared the machine with several unrelated builds, so the passing test count is not weakened by that, but timings are not meaningful. An earlier attempt the same day was interrupted mid-build and is disregarded. The MSRV check, release build, packaging and clean-install checks were not run.

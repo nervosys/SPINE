@@ -172,7 +172,7 @@
 
 - [x] **TLA+ specification** (`formal/tla/ChameleonProtocol.tla`): Chameleon Protocol state machine with epoch monotonicity, synchronized evolution invariant, morphology abstraction, decoy messages, TLC model checking config
 - [x] **Tamarin prover model** (`formal/tamarin/SpineKeyExchange.spthy`): X3DH + RLWE key exchange with 10 security lemmas (secrecy, PFS, KCI), three security levels, key evolution rules
-- [x] **Kani model checking** (`src/spine-kernel/src/kani_harnesses.rs`): 15 bounded verification harnesses for unsafe code (allocators, lock-free structures, ring buffers, SIMD)
+- [x] **Kani model checking** (`research/spine-kernel/src/kani_harnesses.rs`): 15 bounded verification harnesses for unsafe code (allocators, lock-free structures, ring buffers, SIMD)
 - [x] **Cryptographic audit** (`formal/audit/CRYPTO_AUDIT.md`): 13 findings (2 critical, 4 high, 4 medium, 3 low) with remediation priorities and third-party audit scope
 - [x] **MISRA compliance** (`formal/misra/MISRA_COMPLIANCE.md`): 16 MISRA C:2012 rules mapped to Rust unsafe, 8 documented deviations with justification and kani verification links
 - [x] **349 tests passing**: 0 new (verification artifacts are external tools), 0 failures, 0 clippy warnings
@@ -296,7 +296,7 @@
 
 - [x] **Ed25519 crypto fix**: Replaced homebrew Ed25519 with `ed25519-dalek` v2; real `SigningKey`/`VerifyingKey` with CSPRNG keygen
 - [x] **AgentDID real signing**: Swapped stub `[0u8; 64]` signatures for actual Ed25519 signing/verification
-- [x] **Dead code removal**: Trimmed `src/spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−41%)
+- [x] **Dead code removal**: Trimmed `research/spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−41%)
 - [x] **Broken example cleanup**: Deleted 8 obsolete examples, retained 5 working ones
 - [x] **Message type unification**: `From<AgentMessage> ↔ AgentMessageCompact` conversion traits
 - [x] **MeshTransport TCP layer**: Length-prefixed framing with `listen()`, `send_to()`, `gossip()`
@@ -330,34 +330,34 @@
 
 ### Phase 26: Autonomous Agent Runtime ✅
 
-- [x] **Persistent agent lifecycle** (`src/spine-agentic/src/lifecycle.rs`): AgentState machine (7 states), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow, configurable capacity limits
-- [x] **WASM capability sandboxing** (`src/spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry
-- [x] **Distributed task scheduler** (`src/spine-agentic/src/scheduler.rs`): Priority WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement
-- [x] **Agent-to-agent contracts** (`src/spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
+- [x] **Persistent agent lifecycle** (`research/spine-agentic/src/lifecycle.rs`): AgentState machine (7 states), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow, configurable capacity limits
+- [x] **WASM capability sandboxing** (`research/spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry
+- [x] **Distributed task scheduler** (`research/spine-agentic/src/scheduler.rs`): Priority WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement
+- [x] **Agent-to-agent contracts** (`research/spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
 - [x] **626 tests passing**: +47 tests, 0 failures, 0 Clippy warnings
 
 ### Phase 27: Swarm Intelligence v2 ✅
 
-- [x] **Emergent stigmergy** (`src/spine-agentic/src/stigmergy.rs`): Pheromone-inspired coordination with exponential decay, reinforcement, capacity pruning, multi-kind sensing (Trail/Warning/Resource/Recruitment/Explored/Consensus/Custom), intensity aggregation, strongest-signal discovery
-- [x] **BFT consensus** (`src/spine-agentic/src/consensus.rs`): Byzantine fault tolerant collective decision-making with weighted trust voting, 5 quorum rules (Majority/SuperMajority/Unanimous/Threshold/BFT), ranked Borda count, weighted allocation, equivocation detection, byzantine agent exclusion, SHA-256 proposal integrity
-- [x] **Adaptive topology** (`src/spine-agentic/src/topology.rs`): Dynamic swarm restructuring with auto-partition on overload, merge on underutilization, capability-affinity-based bisection, agent migration, leader election, hierarchical clustering, event audit log
-- [x] **Cross-swarm federation** (`src/spine-agentic/src/federation.rs`): Trust boundary enforcement with 5-tier trust (Untrusted→Integrated), 8 permission types, policy conditions (time window/rate limit/capability/concurrency), request lifecycle, capability discovery, SHA-256 request integrity
+- [x] **Emergent stigmergy** (`research/spine-agentic/src/stigmergy.rs`): Pheromone-inspired coordination with exponential decay, reinforcement, capacity pruning, multi-kind sensing (Trail/Warning/Resource/Recruitment/Explored/Consensus/Custom), intensity aggregation, strongest-signal discovery
+- [x] **BFT consensus** (`research/spine-agentic/src/consensus.rs`): Byzantine fault tolerant collective decision-making with weighted trust voting, 5 quorum rules (Majority/SuperMajority/Unanimous/Threshold/BFT), ranked Borda count, weighted allocation, equivocation detection, byzantine agent exclusion, SHA-256 proposal integrity
+- [x] **Adaptive topology** (`research/spine-agentic/src/topology.rs`): Dynamic swarm restructuring with auto-partition on overload, merge on underutilization, capability-affinity-based bisection, agent migration, leader election, hierarchical clustering, event audit log
+- [x] **Cross-swarm federation** (`research/spine-agentic/src/federation.rs`): Trust boundary enforcement with 5-tier trust (Untrusted→Integrated), 8 permission types, policy conditions (time window/rate limit/capability/concurrency), request lifecycle, capability discovery, SHA-256 request integrity
 - [x] **668 tests passing**: +42 tests, 0 failures, 0 Clippy warnings
 
 ### Phase 28: Observability & Debugging ✅
 
-- [x] **Distributed tracing** (`src/spine-agentic/src/tracing.rs`): AgentSpan with trace_id/span_id/parent hierarchy, SpanStatus (InProgress/Ok/Error), SpanEvent with timestamps, TraceContext wire propagation via header serialization, TraceCollector with DashMap storage and capacity eviction, trace queries (root_span, max_hops, slow_spans, error_spans, agent_spans)
-- [x] **Agent replay debugger** (`src/spine-agentic/src/replay.rs`): ReplayLog with SHA-256 integrity, ReplayEntry with 7 kinds (MessageReceived/Sent, Decision, StateTransition, TaskAction, ExternalEvent, Error), ReplayDebugger with breakpoints, state verification callbacks, divergence detection between logs, step/continue/run-to-end execution
-- [x] **Swarm visualizer data** (`src/spine-agentic/src/visualizer.rs`): SwarmSnapshot with nodes/edges/clusters/message-flows/resource-heatmap, NodeSnapshot with state/load/capabilities, EdgeSnapshot with latency/bandwidth, ClusterSnapshot, MessageFlow, ResourceCell, SnapshotRecorder with time-series extraction for load and message volume
-- [x] **Anomaly detection** (`src/spine-agentic/src/anomaly.rs`): AnomalyDetector with sliding-window MetricSamples, 4 detectors: spike (σ-based), drift (linear regression on throughput), livelock (low progress + non-zero throughput), deadlock (zero throughput + high queue depth), configurable thresholds, severity classification, evidence collection
+- [x] **Distributed tracing** (`research/spine-agentic/src/tracing.rs`): AgentSpan with trace_id/span_id/parent hierarchy, SpanStatus (InProgress/Ok/Error), SpanEvent with timestamps, TraceContext wire propagation via header serialization, TraceCollector with DashMap storage and capacity eviction, trace queries (root_span, max_hops, slow_spans, error_spans, agent_spans)
+- [x] **Agent replay debugger** (`research/spine-agentic/src/replay.rs`): ReplayLog with SHA-256 integrity, ReplayEntry with 7 kinds (MessageReceived/Sent, Decision, StateTransition, TaskAction, ExternalEvent, Error), ReplayDebugger with breakpoints, state verification callbacks, divergence detection between logs, step/continue/run-to-end execution
+- [x] **Swarm visualizer data** (`research/spine-agentic/src/visualizer.rs`): SwarmSnapshot with nodes/edges/clusters/message-flows/resource-heatmap, NodeSnapshot with state/load/capabilities, EdgeSnapshot with latency/bandwidth, ClusterSnapshot, MessageFlow, ResourceCell, SnapshotRecorder with time-series extraction for load and message volume
+- [x] **Anomaly detection** (`research/spine-agentic/src/anomaly.rs`): AnomalyDetector with sliding-window MetricSamples, 4 detectors: spike (σ-based), drift (linear regression on throughput), livelock (low progress + non-zero throughput), deadlock (zero throughput + high queue depth), configurable thresholds, severity classification, evidence collection
 - [x] **708 tests passing**: +40 tests (12 tracing + 9 replay + 11 visualizer + 11 anomaly - 3 overlap), 0 failures, 0 Clippy warnings
 
 ### Phase 29: Performance & Hardening ✅
 
-- [x] **`#![no_std]` core** (`src/spine-nostd/`): New crate (crate #28) with `#![no_std]`, Q8.8 fixed-point `LatentVectorFixed<N>`, `AgentIdBytes` (16-byte UUID), `FrameHeader` (12-byte wire format), `encode_frame_header`/`decode_frame_header` codec, Adler-32 checksums, FNV-1a 32/64-bit hashing, fixed-point `dot_product`/`cosine_similarity`/`softmax`/`isqrt`, zero-allocation design
+- [x] **`#![no_std]` core** (`research/spine-nostd/`): New crate (crate #28) with `#![no_std]`, Q8.8 fixed-point `LatentVectorFixed<N>`, `AgentIdBytes` (16-byte UUID), `FrameHeader` (12-byte wire format), `encode_frame_header`/`decode_frame_header` codec, Adler-32 checksums, FNV-1a 32/64-bit hashing, fixed-point `dot_product`/`cosine_similarity`/`softmax`/`isqrt`, zero-allocation design
 - [x] **io_uring transport backend** (`src/spine-transport/src/uring_backend.rs`): `UringBackend` wrapping `UringRing` with per-connection state tracking, batched `submit_send`/`submit_recv`, `process_completions` with success/error callbacks, `UringBackendStats` (AtomicU64 counters), feature-gated `#[cfg(all(target_os = "linux", feature = "io-uring"))]`
 - [x] **Formal verification of mesh routing** (`formal/tla/MeshRouting.tla`): TLA+ specification modeling MeshNode routing tables, multi-hop message delivery, gossip peer discovery, TTL-based forwarding; 7 invariants (TTLMonotonicity, DeduplicationInvariant, PathBounded, NoRoutingLoops, ValidRoutes, SelfRouteZero, DeliveryCorrectness); 2 temporal properties (EventualResolution, GossipConvergence); model checking config (`MeshRouting_MC.tla`)
-- [x] **Chaos engineering framework** (`src/spine-agentic/src/chaos.rs`): 10 `FaultType` variants (MessageDrop/Delay/Corruption, AgentCrash/Hang, NetworkPartition, ResourceExhaustion, ClockSkew, MessageDuplicate, BandwidthThrottle), `ChaosScenario` with SHA-256 integrity verification, 4 predefined scenarios (rolling_crashes, network_split, gradual_degradation, combined_faults), `FaultInjector` with activation/expiry/audit log, `CampaignRunner` with anomaly detector integration and per-step verdict evaluation
+- [x] **Chaos engineering framework** (`research/spine-agentic/src/chaos.rs`): 10 `FaultType` variants (MessageDrop/Delay/Corruption, AgentCrash/Hang, NetworkPartition, ResourceExhaustion, ClockSkew, MessageDuplicate, BandwidthThrottle), `ChaosScenario` with SHA-256 integrity verification, 4 predefined scenarios (rolling_crashes, network_split, gradual_degradation, combined_faults), `FaultInjector` with activation/expiry/audit log, `CampaignRunner` with anomaly detector integration and per-step verdict evaluation
 - [x] **816 tests passing**: +84 tests (30 spine-nostd + 20 chaos + 13 E2E + 2 doc), 0 failures, 0 Clippy warnings
 
 
@@ -378,7 +378,7 @@
 - [x] **Demo script** (`scripts/demo.ps1`): Full walkthrough with build verification, offline demo, CLI init
 ### Phase 36: Complete Agent Discoverability Ontology ✔
 
-- [x] **ontology_vocab module** (`src/spine-agentic/src/ontology_vocab.rs`): 230+ hierarchical terms across 16 categories
+- [x] **ontology_vocab module** (`research/spine-agentic/src/ontology_vocab.rs`): 230+ hierarchical terms across 16 categories
 - [x] **Capability taxonomy**: 9 top-level domains with 150+ leaf terms; 15 roles; 15 domains
 - [x] **Pre-built ontologies**: 6 role-specific ontologies (web researcher, security sentinel, IoT edge, data pipeline, swarm coordinator, ML inference)
 - [x] **Protocol/IO/QoS/Security/Hardware terms**: 65 descriptors for interop, formats, performance, security properties, runtime constraints
@@ -390,7 +390,7 @@
 
 ### Phase 38: Cross-Cutting Enhancements $([char]0x2714)
 
-- [x] **Workflow orchestration** (`src/spine-agentic/src/workflow.rs`): DAG-based multi-step agent pipelines with StepKind (10 variants), WorkflowBuilder with cycle detection, WorkflowEngine with start/complete/fail/cancel/pause, event log, SHA-256 definition hashing, templates
+- [x] **Workflow orchestration** (`research/spine-agentic/src/workflow.rs`): DAG-based multi-step agent pipelines with StepKind (10 variants), WorkflowBuilder with cycle detection, WorkflowEngine with start/complete/fail/cancel/pause, event log, SHA-256 definition hashing, templates
 - [x] **Protocol version negotiation** (`src/spine-protocol/src/negotiation.rs`): VersionOffer/VersionResponse handshake, 13 ProtocolFeature variants, feature intersection, magic bytes (SPNE), length-prefixed serialization
 - [x] **Structured tracing migration**: Replaced all `log::` macros with `tracing::` across 8 files (spine-agent, spine-agentic, spine-cluster, spine-core, spine-gateway, spine-gpu, spine-protocol, spine-transport)
 - [x] **Cross-language FFI integration tests**: 16 new tests (roundtrip, error propagation, memory safety, concurrent access, UTF-8/Unicode, large payloads)

@@ -50,7 +50,7 @@ SPINE is a **headless semantic browser with adaptive encryption** for AI agents.
 **Mitigations**:
 - Deployed mesh handshake: ML-KEM-768 (FIPS 203) for confidentiality. Identity
   signatures are Ed25519, so authentication is not post-quantum.
-- The custom RLWE KEM and RLWE+ML-KEM hybrid in `src/spine-crypto/src/lib.rs` are
+- The custom RLWE KEM and RLWE+ML-KEM hybrid in `research/spine-crypto/src/lib.rs` are
   not used by the mesh handshake (see "Not deployed / research")
 - **Explicit limitation**: RLWE security unproven
 
@@ -136,7 +136,7 @@ Properties the code does not provide:
 
 The following describe constructions that are NOT in the deployed mesh handshake. They are retained as design/research material.
 
-### Security Levels (research; `src/spine-crypto/src/lib.rs` KEM options, example output only)
+### Security Levels (research; `research/spine-crypto/src/lib.rs` KEM options, example output only)
 
 | Level | Key Exchange | Encryption | Use Case |
 |-------|-------------|------------|----------|

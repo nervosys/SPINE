@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+/research/target/
 /build_completion*.log
 /build_completion*.json
 /build_completion_checks/

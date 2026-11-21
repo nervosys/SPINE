@@ -25,8 +25,8 @@ spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-featur
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 spine-wasm = { path = "../spine-wasm", version = "2.0.2" }
-spine-human = { path = "../spine-human", version = "2.0.2", optional = true }
-spine-agentic = { path = "../spine-agentic", version = "2.0.2", optional = true }
+spine-human = { path = "../../research/spine-human", version = "2.0.2", optional = true }
+spine-agentic = { path = "../../research/spine-agentic", version = "2.0.2", optional = true }
 spine-transport = { path = "../spine-transport", version = "2.0.2" }
 serde.workspace = true
 serde_json.workspace = true
@@ -43,8 +43,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 
 [dev-dependencies]
-spine-nostd = { path = "../spine-nostd" }
-spine-embedded = { path = "../spine-embedded" }
+spine-nostd = { path = "../../research/spine-nostd" }
+spine-embedded = { path = "../../research/spine-embedded" }
 
 [[example]]
 name = "agent_autonomous"

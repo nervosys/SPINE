@@ -12,7 +12,7 @@ import unittest
 
 
 class VerifyScriptTests(unittest.TestCase):
-    def run_verify(self, stage="", suites=100, ignored=5):
+    def run_verify(self, stage="", suites=100, ignored=3):
         repo = Path(__file__).resolve().parent.parent
         bash = shutil.which("bash")
         git_bash = Path("C:/Program Files/Git/bin/bash.exe")

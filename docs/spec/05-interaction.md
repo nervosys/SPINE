@@ -99,8 +99,8 @@ An MCP stdio adapter maps these two tools to MCP names and forwards calls to the
 ### 3.1 Path of a call
 
 1. A client of node A sends `BrowserCommand::MeshCall { peer_id: string (UUID), peer_key: [u8;32], payload: json }` (`lib.rs:1190-1194`). Any native client of A can do this; the call is made with A's identity, not the client's (`main.rs:582-607`).
-2. A calls `MeshNameResolver::application_call(peer, peer_key, payload)` (`src/spine-agentic/src/naming_mesh.rs:379-438`).
-3. B's mesh listener receives the envelope, B's pump checks the authenticated connection key (`src/spine-agentic/src/mesh_tcp.rs:1173-1186`), then `handle_envelope_with_reply` verifies and dispatches (`naming_mesh.rs:882-937`).
+2. A calls `MeshNameResolver::application_call(peer, peer_key, payload)` (`research/spine-agentic/src/naming_mesh.rs:379-438`).
+3. B's mesh listener receives the envelope, B's pump checks the authenticated connection key (`research/spine-agentic/src/mesh_tcp.rs:1173-1186`), then `handle_envelope_with_reply` verifies and dispatches (`naming_mesh.rs:882-937`).
 4. B's `MeshApplication::handle(caller_key, request)` produces the answer (`naming_mesh.rs:43-48`). The task service is the only implementation in the origin (`src/spine-core/src/namespace.rs:122-138`).
 5. B signs a response envelope and returns it on the same socket (`naming_mesh.rs:916-935`).
 
@@ -108,12 +108,12 @@ The SDK wrapper `mesh_call` unwraps the reply: an `error` object becomes an erro
 
 ### 3.2 Envelope fields
 
-The signed unit is `MeshEnvelope` (`src/spine-agentic/src/mesh.rs:149-166`):
+The signed unit is `MeshEnvelope` (`research/spine-agentic/src/mesh.rs:149-166`):
 
 | Field | Type | Role in an Application RPC |
 | --- | --- | --- |
 | `id` | UUID | Random per envelope (`mesh.rs:741`) |
-| `from` | `AgentId` | Sender's 16-byte UUID. Derived as the first 16 bytes of SHA-256 over the secret seed (`src/spine-agentic/src/lib.rs:245-250`, `identity.rs:166-167`), so a receiver cannot recompute it from the public key |
+| `from` | `AgentId` | Sender's 16-byte UUID. Derived as the first 16 bytes of SHA-256 over the secret seed (`research/spine-agentic/src/lib.rs:245-250`, `identity.rs:166-167`), so a receiver cannot recompute it from the public key |
 | `to` | `MeshTarget` | `Agent(recipient)` for RPC |
 | `ttl` | u8 | `config.max_hops` (`mesh.rs:754`) |
 | `hops` | list of `AgentId` | Starts with the sender |
@@ -163,12 +163,12 @@ The "caller" is a node key. All native clients of that node act under it (sectio
 
 ### 3.6 Replay and duplicate handling
 
-- Within one encrypted connection, frames carry a counter used as AEAD nonce and associated data (`src/spine-crypto/src/handshake.rs:473-490`); a frame that fails to open ends the connection, and the comment names replay as a cause (`mesh_tcp.rs:597-601`).
+- Within one encrypted connection, frames carry a counter used as AEAD nonce and associated data (`research/spine-crypto/src/handshake.rs:473-490`); a frame that fails to open ends the connection, and the comment names replay as a cause (`mesh_tcp.rs:597-601`).
 - There is no application-level replay protection. The Application path does not consult `MessageDedup` (that tracker, `mesh.rs:358-409`, is used only inside `MeshNode::process_envelope`, `mesh.rs:763-776`, which nothing outside `mesh.rs` calls; searched `src/` for `process_envelope`). The `timestamp` is not checked. `request_id` is not recorded by the receiver.
 - A repeated request from an authenticated peer therefore re-runs the handler. Every operation the task service offers is idempotent or read-only (section 4.3), so this is harmless today. The doc comment on `application_call` states the contract: timeouts never imply that a mutation did not run, and application ids must make retries idempotent (`naming_mesh.rs:376-378`).
 - On the response side a waiter is removed on the first matching response; later duplicates find no waiter and are ignored (`naming_mesh.rs:891-901`).
 - Delivery failures are never retried transparently for Application payloads (`mesh_tcp.rs:935-942`), and the SDK says never to retry a mutation after uncertain delivery (`lib.rs:292-293`).
-- A separate `SignedFrame` module (`src/spine-agentic/src/signed_frame.rs`: magic `SPS1`, 32-byte key, 64-byte signature, then a wire frame) offers per-message detached signatures. Nothing outside `spine-agentic` references it (searched `src/` for `signed_frame::`), so it is not part of any path described here.
+- A separate `SignedFrame` module (`research/spine-agentic/src/signed_frame.rs`: magic `SPS1`, 32-byte key, 64-byte signature, then a wire frame) offers per-message detached signatures. Nothing outside `spine-agentic` references it (searched `src/` for `signed_frame::`), so it is not part of any path described here.
 
 ### 3.7 Allowlist
 

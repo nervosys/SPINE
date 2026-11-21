@@ -25,15 +25,15 @@ ed25519-dalek.workspace = true
 # Internal dependencies
 spine-neural = { path = "../spine-neural", version = "2.0.2" }
 spine-crypto = { path = "../spine-crypto", version = "2.0.2" }
-spine-mesh = { path = "../spine-mesh", version = "2.0.2" }
-spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
+spine-mesh = { path = "../../src/spine-mesh", version = "2.0.2" }
+spine-compiler = { path = "../../src/spine-compiler", version = "2.0.2" }
 spine-knowledge = { path = "../spine-knowledge", version = "2.0.2" }
-spine-name = { path = "../spine-name", version = "2.0.2" }
+spine-name = { path = "../../src/spine-name", version = "2.0.2" }
 # Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
 # Default-on so the runtime executes out of the box; disable default-features to
 # drop the wasmtime dependency (Action::Execute then returns an honest error,
 # never a fake success).
-spine-wasm = { path = "../spine-wasm", version = "2.0.2", optional = true }
+spine-wasm = { path = "../../src/spine-wasm", version = "2.0.2", optional = true }
 
 # Agent-specific
 uuid = { version = "1", features = ["v4", "serde"] }

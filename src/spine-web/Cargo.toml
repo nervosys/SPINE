@@ -21,23 +21,23 @@ spine-parser    = { path = "../spine-parser",    version = "2.0.2", optional = t
 spine-name      = { path = "../spine-name",      version = "2.0.2", optional = true }
 spine-compiler  = { path = "../spine-compiler",  version = "2.0.2", optional = true }
 spine-wasm      = { path = "../spine-wasm",      version = "2.0.2", optional = true }
-spine-neural    = { path = "../spine-neural",    version = "2.0.2", optional = true }
-spine-crypto    = { path = "../spine-crypto",    version = "2.0.2", optional = true }
+spine-neural    = { path = "../../research/spine-neural",    version = "2.0.2", optional = true }
+spine-crypto    = { path = "../../research/spine-crypto",    version = "2.0.2", optional = true }
 spine-agent     = { path = "../spine-agent",     version = "2.0.2", optional = true }
-spine-agentic   = { path = "../spine-agentic",   version = "2.0.2", optional = true }
-spine-cluster   = { path = "../spine-cluster",   version = "2.0.2", optional = true }
-spine-human     = { path = "../spine-human",     version = "2.0.2", optional = true }
+spine-agentic   = { path = "../../research/spine-agentic",   version = "2.0.2", optional = true }
+spine-cluster   = { path = "../../research/spine-cluster",   version = "2.0.2", optional = true }
+spine-human     = { path = "../../research/spine-human",     version = "2.0.2", optional = true }
 spine-stream    = { path = "../spine-stream",    version = "2.0.2", optional = true }
-spine-recursive = { path = "../spine-recursive", version = "2.0.2", optional = true }
-spine-knowledge = { path = "../spine-knowledge", version = "2.0.2", optional = true }
+spine-recursive = { path = "../../research/spine-recursive", version = "2.0.2", optional = true }
+spine-knowledge = { path = "../../research/spine-knowledge", version = "2.0.2", optional = true }
 spine-storage   = { path = "../spine-storage",   version = "2.0.2", optional = true }
-spine-kernel    = { path = "../spine-kernel",    version = "2.0.2", optional = true }
-spine-gpu       = { path = "../spine-gpu",       version = "2.0.2", optional = true }
+spine-kernel    = { path = "../../research/spine-kernel",    version = "2.0.2", optional = true }
+spine-gpu       = { path = "../../research/spine-gpu",       version = "2.0.2", optional = true }
 spine-grpc      = { path = "../spine-grpc",      version = "2.0.2", optional = true }
-spine-mechgen   = { path = "../spine-mechgen",   version = "2.0.2", optional = true }
+spine-mechgen   = { path = "../../research/spine-mechgen",   version = "2.0.2", optional = true }
 spine-core      = { path = "../spine-core",      version = "2.0.2", optional = true }
 spine-cache     = { path = "../spine-cache",     version = "2.0.2", optional = true }
-spine-k8s       = { path = "../spine-k8s",       version = "2.0.2", optional = true }
+spine-k8s       = { path = "../../research/spine-k8s",       version = "2.0.2", optional = true }
 
 [features]
 # A practical agentic-web starter: the wire protocol, transport, and the agent

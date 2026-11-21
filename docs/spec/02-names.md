@@ -2,7 +2,7 @@
 
 Status: description of the code on branch `completion/agent-web`, read 2026-11-20. It states what the code does, not what it should do. Nothing was executed to produce it; every behaviour below was determined by reading the cited source. Where reading did not settle a question the text says "Undetermined". Section 8 is the only place that discusses the target design.
 
-Primary sources: `src/spine-name/src/` (uri.rs, base32.rs, key.rs, record.rs, link.rs, store.rs, cache.rs, resolver.rs, routing.rs, frontier.rs), `src/spine-agentic/src/naming.rs`, `src/spine-agentic/src/naming_mesh.rs`, the naming message builders in `src/spine-agentic/src/mesh.rs`, and the node glue in `src/spine-core/src/main.rs` and `src/spine-core/src/namespace.rs`.
+Primary sources: `src/spine-name/src/` (uri.rs, base32.rs, key.rs, record.rs, link.rs, store.rs, cache.rs, resolver.rs, routing.rs, frontier.rs), `research/spine-agentic/src/naming.rs`, `research/spine-agentic/src/naming_mesh.rs`, the naming message builders in `research/spine-agentic/src/mesh.rs`, and the node glue in `src/spine-core/src/main.rs` and `src/spine-core/src/namespace.rs`.
 
 ## 1. Scope and terminology
 

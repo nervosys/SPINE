@@ -1,3 +1,6 @@
+# NOTE: research/Cargo.toml is a second, independent workspace. Its
+# [workspace.package], [workspace.dependencies] and [profile.*] tables are
+# copies of the ones below and MUST be kept in sync by hand.
 [workspace]
 members = [
     "src/spine-core",
@@ -7,33 +10,19 @@ members = [
     "src/spine-agent",
     "src/spine-compiler",
     "src/spine-wasm",
-    "src/spine-cluster",
-    "src/spine-neural",
-    "src/spine-crypto",
     "src/spine-session",
     "src/spine-mesh",
-    "src/spine-human",
-    "src/spine-browser",
-    "src/spine-agentic",
     "src/spine-transport",
     "src/spine-stream",
-    "src/spine-recursive",
-    "src/spine-knowledge",
-    "src/spine-kernel",
     "src/spine-cli",
     "src/spine-gateway",
-    "src/spine-gpu",
     "src/spine-storage",
     "src/spine-cache",
-    "src/spine-k8s",
     "src/spine-ffi",
-    "src/spine-nostd",
-    "src/spine-embedded",
-    "src/spine-mechgen",
     "src/spine-name",
     "src/spine-web",
 ]
-exclude = ["src/spine-python", "src/spine-js"]
+exclude = ["src/spine-python", "src/spine-js", "research"]
 resolver = "2"
 
 [workspace.package]
