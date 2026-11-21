@@ -8,14 +8,13 @@ use spine_grpc::{
     AgentServiceClient, AgentServiceServer, CallToolRequest, ListCapabilitiesRequest, SpineAgent,
     StreamChatRequest,
 };
-use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
+use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome};
 use tokio_stream::wrappers::TcpListenerStream;
 use tokio_stream::StreamExt;
 use tonic::transport::Server;
 
 fn agent() -> SpineAgent {
     let ad = CapabilityAdvertisement {
-        id: "e2e".into(),
         agent_id: "did:spine:e2e".into(),
         capabilities: vec![Capability {
             uri: "agent.math/add".into(),
@@ -28,12 +27,8 @@ fn agent() -> SpineAgent {
     SpineAgent::new(ad, |call: ToolCall| {
         let a = call.args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = call.args.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
-        ToolResult {
-            id: call.id,
-            outcome: ToolOutcome::Ok {
-                content: json!({"sum": a + b}),
-            },
-            trace: None,
+        ToolOutcome::Ok {
+            content: json!({"sum": a + b}),
         }
     })
 }

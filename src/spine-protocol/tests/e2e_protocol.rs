@@ -8,10 +8,11 @@
 //! answers every `REQUEST` with a `RESPONSE` and lets `Connection` answer
 //! `PING`. Every network await has a timeout.
 
+use serde_json::Value;
 use spine_protocol::connection::Connection;
 use spine_protocol::frame::{Frame, FrameType};
 use spine_protocol::native;
-use spine_protocol::{BrowserCommand, Message, Request, Response};
+use spine_protocol::BrowserCommand;
 use std::future::Future;
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -55,19 +56,20 @@ async fn spawn_echo_server() -> u16 {
                     if frame.frame_type != FrameType::Request {
                         continue;
                     }
-                    let reply = match native::decode_request(&frame.body) {
-                        Ok(Message::Request(req)) => Message::Response(Response {
-                            id: req.id,
-                            result: Some(serde_json::json!({"echo": true})),
-                            error: None,
-                        }),
-                        Ok(_) => native::error_reply("unsupported"),
-                        Err(error) => native::error_reply(error.to_string()),
+                    let sent = match native::decode_command(&frame.body) {
+                        Ok(_) => {
+                            native::send_ok(
+                                &mut conn,
+                                frame.request_id,
+                                &serde_json::json!({"echo": true}),
+                            )
+                            .await
+                        }
+                        Err(error) => {
+                            native::send_err(&mut conn, frame.request_id, &error.to_wire()).await
+                        }
                     };
-                    if native::send_reply(&mut conn, frame.request_id, &reply)
-                        .await
-                        .is_err()
-                    {
+                    if sent.is_err() {
                         break;
                     }
                 }
@@ -105,13 +107,6 @@ async fn ping(conn: &mut Connection<TcpStream>, id: u64, token: u64) -> u64 {
     }
 }
 
-fn request(id: impl Into<String>, command: BrowserCommand) -> Message {
-    Message::Request(Request {
-        id: id.into(),
-        command,
-    })
-}
-
 // ====== TCP Round-Trip ======
 
 #[tokio::test]
@@ -119,24 +114,44 @@ async fn e2e_tcp_request_response() {
     let port = spawn_echo_server().await;
     let mut client = connect(port).await;
 
-    let req = request(
-        "e2e-1",
-        BrowserCommand::Navigate {
-            url: "https://example.com".into(),
-        },
-    );
-    let resp = within(native::call(&mut client, &req)).await.unwrap();
+    let req = BrowserCommand::Navigate {
+        url: "https://example.com".into(),
+    };
+    let id = within(native::send_command(&mut client, &req))
+        .await
+        .unwrap();
+    // The frame request_id is the only correlation id.
+    let resp: Value = within(native::await_reply(&mut client, id)).await.unwrap();
+    assert_eq!(resp, serde_json::json!({"echo": true}));
+}
 
-    match resp {
-        Message::Response(r) => {
-            assert_eq!(r.id, "e2e-1");
-            assert!(r.error.is_none());
-        }
-        other => panic!(
-            "Expected Response, got {:?}",
-            std::mem::discriminant(&other)
-        ),
+/// A body that is not a command is answered with `err`, and the connection
+/// survives it.
+#[tokio::test]
+async fn e2e_tcp_bad_commands_get_err_replies() {
+    let port = spawn_echo_server().await;
+    let mut client = connect(port).await;
+
+    // CBOR text "bogus": a unit-variant shape naming no command.
+    let body = vec![0x65, b'b', b'o', b'g', b'u', b's'];
+    let id = within(client.request(body)).await.unwrap();
+    match within(native::await_reply::<_, Value>(&mut client, id)).await {
+        Err(native::NativeError::Remote { code, .. }) => assert_eq!(code, "unknown_command"),
+        other => panic!("expected unknown_command, got {other:?}"),
     }
+
+    // CBOR integer 7: not a command at all.
+    let id = within(client.request(vec![0x07])).await.unwrap();
+    match within(native::await_reply::<_, Value>(&mut client, id)).await {
+        Err(native::NativeError::Remote { code, .. }) => assert_eq!(code, "invalid_request"),
+        other => panic!("expected invalid_request, got {other:?}"),
+    }
+
+    // The connection still serves a good command.
+    let resp: Value = within(native::call(&mut client, &BrowserCommand::GetUR))
+        .await
+        .unwrap();
+    assert_eq!(resp, serde_json::json!({"echo": true}));
 }
 
 #[tokio::test]
@@ -161,17 +176,13 @@ async fn e2e_concurrent_tcp_sessions() {
             let mut client = connect(port).await;
 
             for i in 0..5u32 {
-                let req_id = format!("sess-{}-msg-{}", session_id, i);
-                let req = request(req_id.clone(), BrowserCommand::GetUR);
-                let resp = within(native::call(&mut client, &req)).await.unwrap();
-                match resp {
-                    Message::Response(r) => assert_eq!(r.id, req_id),
-                    other => panic!(
-                        "Session {} expected Response, got {:?}",
-                        session_id,
-                        std::mem::discriminant(&other)
-                    ),
-                }
+                let id = within(native::send_command(&mut client, &BrowserCommand::GetUR))
+                    .await
+                    .unwrap();
+                let resp: Value = within(native::await_reply(&mut client, id))
+                    .await
+                    .unwrap_or_else(|e| panic!("session {session_id} message {i}: {e}"));
+                assert_eq!(resp, serde_json::json!({"echo": true}));
             }
         }));
     }
@@ -190,9 +201,10 @@ async fn e2e_rapid_reconnect() {
     for attempt in 0..5u64 {
         let mut client = connect(port).await;
         assert_eq!(ping(&mut client, 1, attempt).await, attempt);
-        let req = request(format!("r-{attempt}"), BrowserCommand::GetUR);
-        let resp = within(native::call(&mut client, &req)).await.unwrap();
-        assert!(matches!(resp, Message::Response(r) if r.id == format!("r-{attempt}")));
+        let resp: Value = within(native::call(&mut client, &BrowserCommand::GetUR))
+            .await
+            .unwrap();
+        assert_eq!(resp, serde_json::json!({"echo": true}));
     }
 }
 
@@ -203,9 +215,10 @@ async fn e2e_stress_tcp_100_messages() {
 
     for i in 0..100u64 {
         assert_eq!(ping(&mut client, i + 1, i).await, i);
-        let req = request(format!("s-{i}"), BrowserCommand::GetUR);
-        let resp = within(native::call(&mut client, &req)).await.unwrap();
-        assert!(matches!(resp, Message::Response(r) if r.id == format!("s-{i}")));
+        let resp: Value = within(native::call(&mut client, &BrowserCommand::GetUR))
+            .await
+            .unwrap();
+        assert_eq!(resp, serde_json::json!({"echo": true}));
     }
     assert_eq!(client.in_flight_len(), 0);
 }
@@ -227,16 +240,10 @@ async fn e2e_all_command_types_over_tcp() {
     ];
 
     for (i, cmd) in commands.into_iter().enumerate() {
-        let req = request(format!("cmd-{}", i), cmd);
-        let resp = within(native::call(&mut client, &req)).await.unwrap();
-        match resp {
-            Message::Response(r) => assert_eq!(r.id, format!("cmd-{}", i)),
-            other => panic!(
-                "Command {} expected Response, got {:?}",
-                i,
-                std::mem::discriminant(&other)
-            ),
-        }
+        let resp: Value = within(native::call(&mut client, &cmd))
+            .await
+            .unwrap_or_else(|e| panic!("command {i} ({cmd:?}): {e}"));
+        assert_eq!(resp, serde_json::json!({"echo": true}), "command {i}");
     }
 }
 

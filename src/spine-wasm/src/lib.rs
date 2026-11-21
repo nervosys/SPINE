@@ -1604,7 +1604,7 @@ mod tests {
             instructions,
             data: Vec::new(),
             render_start: 0,
-            exported_functions: HashMap::new(),
+            exported_functions: std::collections::BTreeMap::new(),
             capabilities: Vec::new(),
         }
     }

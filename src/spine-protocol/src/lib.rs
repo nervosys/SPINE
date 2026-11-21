@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod agentic;
+pub mod body;
 pub mod cbor;
 pub mod connection;
 pub mod frame;
@@ -11,12 +12,15 @@ pub mod native;
 pub mod replay;
 pub mod resource;
 pub mod tasks;
+pub mod wirefmt;
 
 pub use agentic::{
     Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, DecodeHints,
     StreamCancel, StreamData, StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken,
-    StreamUsage, ToolCall, ToolOutcome, ToolResult, TraceContext,
+    StreamUsage, ToolCall, ToolOutcome, TraceContext,
 };
+pub use body::{Reply, WireError};
+use wirefmt::reject_null;
 
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "quic")]
@@ -101,36 +105,40 @@ async fn write_header_body_inner<W: AsyncWrite + Unpin + ?Sized>(
 // MESSAGE TYPES
 // =============================================================================
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// A decoded frame body, for traces ([`replay`]) and logs.
+///
+/// This is **not** a wire body. A `REQUEST` body is a [`BrowserCommand`], a
+/// `RESPONSE` body is a [`Reply`], and a `PING` or `PONG` body is an unsigned
+/// integer token; none of them is wrapped in a `Message` on the wire. The
+/// variants exist so a recorded session can hold any of them in one type, and
+/// so [`native::decode_stream_body`] can return the body of whichever
+/// `STREAM_*` frame arrived. Nothing in the workspace produces a stream.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum Message {
-    Request(Request),
-    Response(Response),
-    /// Health check to verify connection
-    Ping {
-        timestamp: u64,
-    },
-    /// Response to health check
-    Pong {
-        timestamp: u64,
-    },
-
-    // ----- Agentic-first primitives (see crate::agentic) -----
-    /// MCP-style tool invocation request.
-    ToolCall(ToolCall),
-    /// MCP-style tool invocation result.
-    ToolResult(ToolResult),
-    /// LLM token stream opens.
+    /// A `REQUEST` body.
+    #[serde(rename = "command")]
+    Command(BrowserCommand),
+    /// A `RESPONSE` body; the result is the JSON-shaped value of D.
+    #[serde(rename = "reply")]
+    Reply(Reply<serde_json::Value>),
+    /// A `PING` token.
+    #[serde(rename = "ping")]
+    Ping { timestamp: u64 },
+    /// A `PONG` token.
+    #[serde(rename = "pong")]
+    Pong { timestamp: u64 },
+    /// A `STREAM_START` body.
+    #[serde(rename = "stream_start")]
     StreamStart(StreamStart),
-    /// One chunk of an LLM token stream.
+    /// A `STREAM_TOKEN` body.
+    #[serde(rename = "stream_token")]
     StreamToken(StreamToken),
-    /// LLM token stream closes.
+    /// A `STREAM_END` body.
+    #[serde(rename = "stream_end")]
     StreamEnd(StreamEnd),
-    /// Cooperatively cancel one in-flight stream by id (multiplex-aware).
+    /// A `STREAM_CANCEL` body.
+    #[serde(rename = "stream_cancel")]
     StreamCancel(StreamCancel),
-    /// Capability handshake query.
-    CapabilityQuery(CapabilityQuery),
-    /// Capability handshake response.
-    CapabilityAd(CapabilityAdvertisement),
 }
 
 /// Virtual DOM patch for incremental updates
@@ -152,153 +160,196 @@ pub enum VDomPatch {
     ReorderChildren { parent_id: u32, order: Vec<u32> },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// A compiled HLB program: the argument of `execute_binary`.
+///
+/// A closed struct. `data` is a CBOR byte string. `exported_functions` is a
+/// [`BTreeMap`](std::collections::BTreeMap) so two encodings of one program are
+/// identical whatever the insertion order (the encoder sorts map keys anyway,
+/// but the type now says so).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct SpineBinary {
     pub instructions: Vec<Instruction>,
+    #[serde(with = "wirefmt::bytes")]
     pub data: Vec<u8>,
     pub render_start: usize,
-    pub exported_functions: std::collections::HashMap<String, usize>,
+    pub exported_functions: std::collections::BTreeMap<String, usize>,
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// One HLB instruction. Wire names are the snake_case names in the
+/// `rename` attributes; they are spelled out because `rename_all` would
+/// split acronyms and numerals unpredictably.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub enum Instruction {
-    DefineElement {
-        id: u32,
-        tag: String,
-    },
-    SetAttribute {
-        id: u32,
-        key: String,
-        value: String,
-    },
-    AddChild {
-        parent_id: u32,
-        child_id: u32,
-    },
+    #[serde(rename = "define_element")]
+    DefineElement { id: u32, tag: String },
+    #[serde(rename = "set_attribute")]
+    SetAttribute { id: u32, key: String, value: String },
+    #[serde(rename = "add_child")]
+    AddChild { parent_id: u32, child_id: u32 },
+    #[serde(rename = "emit_event")]
     EmitEvent {
         name: String,
         payload: serde_json::Value,
     },
-    StreamLatent {
-        vector: Vec<f32>,
-    },
+    #[serde(rename = "stream_latent")]
+    StreamLatent { vector: Vec<f32> },
     /// Morph the protocol mid-stream
-    MorphProtocol {
-        seed: u64,
-    },
+    #[serde(rename = "morph_protocol")]
+    MorphProtocol { seed: u64 },
     /// Inject decoy traffic
-    Decoy {
-        noise: Vec<f32>,
-    },
+    #[serde(rename = "decoy")]
+    Decoy { noise: Vec<f32> },
     /// Declare a reactive state variable
+    #[serde(rename = "declare_state")]
     DeclareState {
         name: String,
         initial_json: serde_json::Value,
     },
     /// Update a reactive state variable
+    #[serde(rename = "update_state")]
     UpdateState {
         name: String,
         value_json: serde_json::Value,
     },
 
     // --- Control Flow & Stack Operations ---
+    #[serde(rename = "push")]
     Push(serde_json::Value),
+    #[serde(rename = "pop")]
     Pop,
+    #[serde(rename = "load")]
     Load(String),
+    #[serde(rename = "store")]
     Store(String),
+    #[serde(rename = "bin_op")]
     BinOp(ProtocolBinOp),
+    #[serde(rename = "unary_op")]
     UnaryOp(ProtocolUnaryOp),
+    #[serde(rename = "jump")]
     Jump(usize),
+    #[serde(rename = "jump_if")]
     JumpIf(usize),
+    #[serde(rename = "jump_if_not")]
     JumpIfNot(usize),
-    Call {
-        name: String,
-        num_args: usize,
-    },
+    #[serde(rename = "call")]
+    Call { name: String, num_args: usize },
+    #[serde(rename = "call_target")]
     CallTarget(usize),
+    #[serde(rename = "return")]
     Return,
 
     // --- Stack-based DOM Operations ---
-    DefineElementFromStack {
-        id: u32,
-    },
-    SetAttributeFromStack {
-        id: u32,
-        key: String,
-    },
-    AddChildFromStack {
-        parent_id: u32,
-        child_id: u32,
-    },
-    EmitEventFromStack {
-        name: String,
-    },
+    #[serde(rename = "define_element_from_stack")]
+    DefineElementFromStack { id: u32 },
+    #[serde(rename = "set_attribute_from_stack")]
+    SetAttributeFromStack { id: u32, key: String },
+    #[serde(rename = "add_child_from_stack")]
+    AddChildFromStack { parent_id: u32, child_id: u32 },
+    #[serde(rename = "emit_event_from_stack")]
+    EmitEventFromStack { name: String },
+    #[serde(rename = "define_text_from_stack")]
     DefineTextFromStack,
-    DeclareStateFromStack {
-        name: String,
-    },
-    UpdateStateFromStack {
-        name: String,
-    },
+    #[serde(rename = "declare_state_from_stack")]
+    DeclareStateFromStack { name: String },
+    #[serde(rename = "update_state_from_stack")]
+    UpdateStateFromStack { name: String },
 
     // --- Agentic Operations ---
+    #[serde(rename = "navigate_from_stack")]
     NavigateFromStack,
+    #[serde(rename = "search_from_stack")]
     SearchFromStack,
-    StoreKnowledgeFromStack {
-        tags: Vec<String>,
-    },
-    QueryKnowledgeFromStack {
-        tags: Vec<String>,
-        limit: usize,
-    },
+    #[serde(rename = "store_knowledge_from_stack")]
+    StoreKnowledgeFromStack { tags: Vec<String> },
+    #[serde(rename = "query_knowledge_from_stack")]
+    QueryKnowledgeFromStack { tags: Vec<String>, limit: usize },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolBinOp {
+    #[serde(rename = "add")]
     Add,
+    #[serde(rename = "sub")]
     Sub,
+    #[serde(rename = "mul")]
     Mul,
+    #[serde(rename = "div")]
     Div,
+    #[serde(rename = "mod")]
     Mod,
+    #[serde(rename = "eq")]
     Eq,
+    #[serde(rename = "ne")]
     Ne,
+    #[serde(rename = "lt")]
     Lt,
+    #[serde(rename = "le")]
     Le,
+    #[serde(rename = "gt")]
     Gt,
+    #[serde(rename = "ge")]
     Ge,
+    #[serde(rename = "and")]
     And,
+    #[serde(rename = "or")]
     Or,
+    #[serde(rename = "concat")]
     Concat,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolUnaryOp {
+    #[serde(rename = "not")]
     Not,
+    #[serde(rename = "neg")]
     Neg,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// The closed v1 command set: the body of a `REQUEST` (C.5 rule 7).
+///
+/// A command with fields is a single-entry map `{name: fields}`; a command
+/// without is the text string of its name. The 17 browser commands, plus
+/// `tool_call` and `capability_query` from D.1, are the whole set; a name
+/// outside it is answered with `unknown_command`. The Rust name is historical:
+/// it now holds more than browser commands.
+///
+/// Wire names are the `rename` attributes (listed in
+/// `docs/src/architecture/protocol.md`); [`COMMAND_NAMES`] lists them in
+/// declaration order.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub enum BrowserCommand {
-    Navigate {
-        url: String,
-    },
+    /// Fetch an HTTP URL from the human web into the session.
+    #[serde(rename = "navigate")]
+    Navigate { url: String },
+    /// The unified representation of the loaded page.
+    #[serde(rename = "get_ur")]
     GetUR,
+    /// The loaded page's HTML.
+    #[serde(rename = "get_raw_html")]
     GetRawHTML,
+    /// Run an HLB program in the session.
+    #[serde(rename = "execute_binary")]
     ExecuteBinary(SpineBinary),
     /// Store knowledge in the agent's long-term memory
+    #[serde(rename = "store_knowledge")]
     StoreKnowledge {
         key: String,
         value: serde_json::Value,
         tags: Vec<String>,
     },
     /// Query knowledge from the agent's long-term memory
+    #[serde(rename = "query_knowledge")]
     QueryKnowledge {
         query: String,
         tags: Vec<String>,
         limit: usize,
     },
     /// Get the capabilities of the current agentic binary
+    #[serde(rename = "get_binary_capabilities")]
     GetBinaryCapabilities,
 
     // ---- Namespace operations ----
@@ -313,9 +364,14 @@ pub enum BrowserCommand {
     /// still matches, the responder answers [`NameResolution::Unchanged`] with
     /// no record body — the ETag exchange, but with a hash that is verifiable
     /// rather than an opaque server-chosen token.
+    #[serde(rename = "resolve_name")]
     ResolveName {
         name: String,
-        #[serde(default)]
+        #[serde(
+            default,
+            with = "wirefmt::opt_byte_array",
+            skip_serializing_if = "Option::is_none"
+        )]
         if_none_match: Option<[u8; 32]>,
     },
     /// Resolve many names in one round trip.
@@ -324,63 +380,124 @@ pub enum BrowserCommand {
     /// once. Making the batch the native shape, rather than something callers
     /// rebuild out of a fan-out pool, is the single largest latency difference
     /// between this and one-URL-per-request.
-    ResolveNames {
-        names: Vec<String>,
-    },
+    #[serde(rename = "resolve_names")]
+    ResolveNames { names: Vec<String> },
     /// Find providers of a capability, without consulting a central index.
+    #[serde(rename = "find_providers")]
     FindProviders {
         capability: String,
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "reject_null",
+            skip_serializing_if = "Option::is_none"
+        )]
         limit: Option<usize>,
     },
     /// Publish a signed name record. The record carries its own signature, so
     /// the receiver needs no prior trust relationship with the publisher.
+    #[serde(rename = "publish_name")]
     PublishName {
         /// A JSON-encoded `spine_name::NameRecord`.
         record: serde_json::Value,
     },
     /// Fetch the representation a name points at, following the record's
     /// endpoints.
+    #[serde(rename = "fetch_name")]
     FetchName {
         name: String,
-        #[serde(default)]
+        #[serde(
+            default,
+            with = "wirefmt::opt_byte_array",
+            skip_serializing_if = "Option::is_none"
+        )]
         if_none_match: Option<[u8; 32]>,
     },
     /// Walk the agent web from a seed name, bounded by depth and visit count.
+    #[serde(rename = "crawl_names")]
     CrawlNames {
         seed: String,
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "reject_null",
+            skip_serializing_if = "Option::is_none"
+        )]
         max_depth: Option<u32>,
-        #[serde(default)]
+        #[serde(
+            default,
+            deserialize_with = "reject_null",
+            skip_serializing_if = "Option::is_none"
+        )]
         max_visits: Option<usize>,
     },
     /// Store verified bytes and publish their signed binding on this origin.
+    #[serde(rename = "publish_resource")]
     PublishResource {
         record: serde_json::Value,
         content_type: String,
-        #[serde(with = "serde_bytes")]
+        #[serde(with = "wirefmt::bytes")]
         data: Vec<u8>,
     },
     /// Read immutable bytes after resolving a signed content hash.
+    #[serde(rename = "read_resource")]
     ReadResource {
+        #[serde(with = "wirefmt::byte_array")]
         hash: [u8; 32],
         offset: u64,
         max_bytes: u32,
     },
     /// Local namespace identity, connectivity, and authenticated peer contacts.
+    #[serde(rename = "namespace_status")]
     NamespaceStatus,
     /// Versioned signed application call, pinned to an expected peer key.
+    #[serde(rename = "mesh_call")]
     MeshCall {
         peer_id: String,
+        #[serde(with = "wirefmt::byte_array")]
         peer_key: [u8; 32],
         payload: serde_json::Value,
     },
+
+    // ---- From D.1: the agentic primitives that are commands.
+    /// Invoke a tool: `{name, args[, trace]}`. The reply's `ok` is the tool's
+    /// content; a tool failure is an `err`.
+    #[serde(rename = "tool_call")]
+    ToolCall(ToolCall),
+    /// Ask what this origin offers: `{selector}`. The reply's `ok` is a
+    /// [`CapabilityAdvertisement`].
+    #[serde(rename = "capability_query")]
+    CapabilityQuery(CapabilityQuery),
 }
+
+/// The wire names of every [`BrowserCommand`], in declaration order. The
+/// daemon uses it to tell `unknown_command` from `invalid_request`.
+pub const COMMAND_NAMES: [&str; 19] = [
+    "navigate",
+    "get_ur",
+    "get_raw_html",
+    "execute_binary",
+    "store_knowledge",
+    "query_knowledge",
+    "get_binary_capabilities",
+    "resolve_name",
+    "resolve_names",
+    "find_providers",
+    "publish_name",
+    "fetch_name",
+    "crawl_names",
+    "publish_resource",
+    "read_resource",
+    "namespace_status",
+    "mesh_call",
+    "tool_call",
+    "capability_query",
+];
 
 /// The result of a name resolution.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub enum NameResolution {
     /// Resolved; the record is a JSON-encoded `spine_name::NameRecord`.
+    #[serde(rename = "resolved")]
     Resolved {
         record: serde_json::Value,
         /// Where the answer came from — a caller deciding whether to retry
@@ -388,15 +505,19 @@ pub enum NameResolution {
         provenance: NameProvenance,
     },
     /// The caller's `if_none_match` hash still matches, so no body was sent.
+    #[serde(rename = "unchanged")]
     Unchanged {
         /// Seconds the caller may keep treating its copy as fresh.
         ttl_secs: u32,
     },
     /// No record exists for that name.
+    #[serde(rename = "not_found")]
     NotFound { name: String },
     /// The name was malformed, or names a set rather than a single record.
+    #[serde(rename = "invalid")]
     Invalid { name: String, reason: String },
     /// A disconnected namespace or failed lookup is not an authoritative miss.
+    #[serde(rename = "unavailable")]
     Unavailable { name: String, reason: String },
 }
 
@@ -405,18 +526,23 @@ pub enum NameResolution {
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum NameProvenance {
     /// Fresh cache hit — no round trip.
+    #[serde(rename = "cache")]
     Cache,
     /// Cache hit past its TTL; usable, but a refresh is advisable.
+    #[serde(rename = "stale_cache")]
     StaleCache,
     /// Served from the responder's own store.
+    #[serde(rename = "local")]
     Local,
     /// Fetched from the network.
+    #[serde(rename = "network")]
     Network,
     /// Read out of a `host:` name, which carries its own address.
     ///
     /// Nothing attested this binding — no signature, and nobody asked. A client
     /// that treats it like any other answer has lost the namespace's trust
     /// model, so it is reported distinctly rather than folded into `Local`.
+    #[serde(rename = "address")]
     Address,
 }
 
@@ -454,19 +580,6 @@ pub enum TaskStatus {
     InProgress,
     Completed,
     Failed,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Request {
-    pub id: String,
-    pub command: BrowserCommand,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Response {
-    pub id: String,
-    pub result: Option<serde_json::Value>,
-    pub error: Option<String>,
 }
 
 // =============================================================================

@@ -20,7 +20,7 @@ There is no `research` feature. The crate has no dependency on any crate under
 `research/`. The native wire is spine-wire v1: `connection::Connection` speaks
 length-prefixed frames with a version, type, flags and request id after a
 `HELLO`/`HELLO_ACK` handshake, and `native` maps the `Message` set onto those
-frames (bodies are deterministic CBOR). There is no sealing: confidentiality
+frames (bodies are deterministic CBOR: a request is a command from a closed set of 19, a response is `{ok: ...}` or `{err: {code, message}}`; see `body` for the error codes and `wirefmt` for the byte-string helpers). There is no sealing: confidentiality
 comes from TLS or the session layer. The Chameleon latent-space key, `SpineConnection`, `connect_auto`,
 the protocol evolution framework, `TitansLatentCodec` and the pre-shared-key AES
 layer are not part of this crate: the first four are in the experimental,

@@ -1,5 +1,6 @@
 //! Portable, read-only native tools. No filesystem, network, or process access.
-use spine_protocol::{ToolCall, ToolOutcome, ToolResult};
+use spine_protocol::body::{ERR_INVALID_ARGS, ERR_PARSE_ERROR, ERR_UNSUPPORTED_TOOL};
+use spine_protocol::{ToolCall, ToolOutcome};
 
 pub fn capabilities() -> Vec<spine_protocol::Capability> {
     [("spine.html/parse","Extract the structured semantic representation of supplied HTML"),
@@ -13,18 +14,15 @@ pub fn capabilities() -> Vec<spine_protocol::Capability> {
         }).collect()
 }
 
-pub fn invoke(call: ToolCall) -> ToolResult {
+pub fn invoke(call: ToolCall) -> ToolOutcome {
     let result = (|| -> Result<serde_json::Value, (&str, &str)> {
-        if call.id.is_empty() || call.id.len() > 256 {
-            return Err(("invalid_args", "tool id must contain 1 through 256 bytes"));
-        }
         let text = call
             .args
             .get("text")
             .and_then(serde_json::Value::as_str)
-            .ok_or(("invalid_args", "text must be a string"))?;
+            .ok_or((ERR_INVALID_ARGS, "text must be a string"))?;
         if text.len() > 1024 * 1024 {
-            return Err(("invalid_args", "tool text exceeds 1 MiB"));
+            return Err((ERR_INVALID_ARGS, "tool text exceeds 1 MiB"));
         }
         match call.name.as_str() {
             "spine.content/hash" => {
@@ -34,22 +32,19 @@ pub fn invoke(call: ToolCall) -> ToolResult {
             }
             "spine.html/parse" => {
                 let parsed = spine_parser::parse_html(text)
-                    .map_err(|_| ("parse_error", "HTML parsing failed"))?;
-                serde_json::to_value(parsed).map_err(|_| ("internal", "result encoding failed"))
+                    .map_err(|_| (ERR_PARSE_ERROR, "HTML parsing failed"))?;
+                serde_json::to_value(parsed)
+                    .map_err(|_| (spine_protocol::body::ERR_INTERNAL, "result encoding failed"))
             }
-            _ => Err(("unsupported_tool", "tool is not available on this origin")),
+            _ => Err((ERR_UNSUPPORTED_TOOL, "tool is not available on this origin")),
         }
     })();
-    ToolResult {
-        id: call.id,
-        trace: call.trace,
-        outcome: match result {
-            Ok(content) => ToolOutcome::Ok { content },
-            Err((code, message)) => ToolOutcome::Err {
-                code: code.into(),
-                message: message.into(),
-                details: None,
-            },
+    match result {
+        Ok(content) => ToolOutcome::Ok { content },
+        Err((code, message)) => ToolOutcome::Err {
+            code: code.into(),
+            message: message.into(),
+            details: None,
         },
     }
 }
@@ -58,16 +53,14 @@ pub fn invoke(call: ToolCall) -> ToolResult {
 mod tests {
     use super::*;
     #[test]
-    fn tools_are_correlated_and_reject_unbounded_or_unsupported_work() {
+    fn tools_reject_unbounded_or_unsupported_work() {
         let call = |name: &str, text: &str| ToolCall {
-            id: "test".into(),
             name: name.into(),
             args: serde_json::json!({"text":text}),
             trace: None,
         };
         let result = invoke(call("spine.content/hash", "abc"));
-        assert_eq!(result.id, "test");
-        let ToolOutcome::Ok { content } = result.outcome else {
+        let ToolOutcome::Ok { content } = result else {
             panic!("hash failed")
         };
         assert_eq!(
@@ -75,12 +68,12 @@ mod tests {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert!(matches!(
-            invoke(call("shell", "abc")).outcome,
-            ToolOutcome::Err { .. }
+            invoke(call("shell", "abc")),
+            ToolOutcome::Err { ref code, .. } if code == ERR_UNSUPPORTED_TOOL
         ));
         assert!(matches!(
-            invoke(call("spine.html/parse", &"a".repeat(1024 * 1024 + 1))).outcome,
-            ToolOutcome::Err { .. }
+            invoke(call("spine.html/parse", &"a".repeat(1024 * 1024 + 1))),
+            ToolOutcome::Err { ref code, .. } if code == ERR_INVALID_ARGS
         ));
     }
 }

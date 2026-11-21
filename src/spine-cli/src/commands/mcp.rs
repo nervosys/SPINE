@@ -2,7 +2,7 @@
 use anyhow::Result;
 use clap::Args;
 use spine_agent::AgentClient;
-use spine_protocol::{CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
+use spine_protocol::{CapabilityAdvertisement, ToolCall, ToolOutcome};
 use std::path::PathBuf;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -65,15 +65,10 @@ where
         let mut client = Some(client);
         let mut server =
             spine_protocol::mcp::McpServer::new(advertisement, move |call: ToolCall| {
-                let failed = || ToolResult {
-                    id: call.id.clone(),
-                    trace: call.trace.clone(),
-                    outcome: ToolOutcome::Err {
-                        code: "native_connection_unavailable".into(),
-                        message: "Native tool connection unavailable; restart the MCP process"
-                            .into(),
-                        details: None,
-                    },
+                let failed = || ToolOutcome::Err {
+                    code: "native_connection_unavailable".into(),
+                    message: "Native tool connection unavailable; restart the MCP process".into(),
+                    details: None,
                 };
                 let Some(uri) = names.get(&call.name) else {
                     return failed();

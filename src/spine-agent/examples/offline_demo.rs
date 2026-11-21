@@ -19,7 +19,7 @@ use spine_nostd::math::{cosine_similarity_fixed, dot_product_fixed};
 use spine_nostd::types::{AgentIdBytes, FrameHeader, LatentVectorFixed};
 use spine_parser::parse_html;
 use spine_protocol::connection::Connection;
-use spine_protocol::{native, BrowserCommand, Message, Request};
+use spine_protocol::{native, BrowserCommand, Message};
 use std::time::Instant;
 
 fn demo_parser() {
@@ -109,11 +109,8 @@ fn demo_protocol() {
     let messages = vec![
         (
             "Navigate",
-            Message::Request(spine_protocol::Request {
-                id: "demo-1".into(),
-                command: spine_protocol::BrowserCommand::Navigate {
-                    url: "https://example.com".into(),
-                },
+            Message::Command(spine_protocol::BrowserCommand::Navigate {
+                url: "https://example.com".into(),
             }),
         ),
         (
@@ -171,18 +168,16 @@ fn demo_handler_duplex() {
         // Send 10 requests through the connection, answering each.
         let start = Instant::now();
         for i in 0..10u64 {
-            let request = Message::Request(Request {
-                id: i.to_string(),
-                command: BrowserCommand::GetUR,
-            });
-            let id = native::send_request(&mut client, &request).await.unwrap();
-            let frame = server.recv().await.unwrap().unwrap();
-            let msg = native::decode_request(&frame.body).unwrap();
-            assert!(matches!(msg, Message::Request(_)));
-            native::send_reply(&mut server, frame.request_id, &native::error_reply("ok"))
+            let id = native::send_command(&mut client, &BrowserCommand::GetUR)
                 .await
                 .unwrap();
-            native::await_reply(&mut client, id).await.unwrap();
+            let frame = server.recv().await.unwrap().unwrap();
+            let command = native::decode_command(&frame.body).unwrap();
+            assert_eq!(command, BrowserCommand::GetUR);
+            native::send_ok(&mut server, frame.request_id, &serde_json::json!({"i": i}))
+                .await
+                .unwrap();
+            let _: serde_json::Value = native::await_reply(&mut client, id).await.unwrap();
         }
         let elapsed = start.elapsed();
 

@@ -1,6 +1,6 @@
 //! Measure SPINE's binary wire format against UTF-8 JSON, frame by frame.
 //!
-//! Prints, for each representative agent message, the JSON body size, the
+//! Prints, for each representative frame body, the JSON body size, the
 //! spine-wire v1 body size (deterministic CBOR, and CBOR through the frame
 //! layer's zstd path), and the size ratios. This is the data behind SPINE's
 //! encoding-efficiency claim: run it and read the numbers off the wire.
@@ -11,10 +11,11 @@ use serde_json::json;
 use spine_protocol::cbor;
 use spine_protocol::frame::{encode_frame, Frame, FrameType, HEADER_LEN, MAX_FRAME};
 use spine_protocol::{
-    Capability, CapabilityAdvertisement, Message, StreamData, StreamToken, ToolCall,
+    BrowserCommand, Capability, CapabilityAdvertisement, Reply, StreamData, StreamToken, ToolCall,
 };
 
-fn row(label: &str, msg: &Message) {
+/// One body: the value that travels in a frame, not an envelope around it.
+fn row<T: serde::Serialize>(label: &str, msg: &T, frame_type: FrameType) {
     let json = serde_json::to_vec(msg).unwrap();
     // Default hot-path codec: deterministic CBOR, no compression.
     let cbor = cbor::to_vec(msg).unwrap();
@@ -22,7 +23,7 @@ fn row(label: &str, msg: &Message) {
     // compression is on and keeps the result only if it is smaller. The
     // figure is the body as it travels (frame header excluded).
     let frame = Frame {
-        frame_type: FrameType::Request,
+        frame_type,
         request_id: 1,
         body: cbor.clone(),
     };
@@ -47,10 +48,10 @@ fn main() {
         "frame", "json", "cbor", "saved", "cbor+zstd", "saved"
     );
 
+    // A REQUEST body is a command.
     row(
-        "ToolCall",
-        &Message::ToolCall(ToolCall {
-            id: "b3c1f2a4-0d8e-4c9a-9f1b-2e7d6c5a4b30".into(),
+        "tool_call",
+        &BrowserCommand::ToolCall(ToolCall {
             name: "agent.web/fetch_url".into(),
             args: json!({
                 "url": "https://example.com/api/v2/resource?id=12345&fields=title,body,author",
@@ -62,18 +63,20 @@ fn main() {
             }),
             trace: None,
         }),
+        FrameType::Request,
     );
 
+    // A STREAM_TOKEN body: the stream id is in the frame header.
     row(
         "StreamToken/text",
-        &Message::StreamToken(StreamToken {
-            id: "stream-7f3a".into(),
+        &StreamToken {
             seq: 128,
             data: StreamData::Text(
                 " The quick brown fox jumps over the lazy dog, and then keeps going.".into(),
             ),
             usage: None,
-        }),
+        },
+        FrameType::StreamToken,
     );
 
     let embedding: Vec<u8> = (0..1024u32)
@@ -81,12 +84,12 @@ fn main() {
         .collect();
     row(
         "StreamToken/emb",
-        &Message::StreamToken(StreamToken {
-            id: "stream-7f3a".into(),
+        &StreamToken {
             seq: 1,
             data: StreamData::Bytes(embedding),
             usage: None,
-        }),
+        },
+        FrameType::StreamToken,
     );
 
     let schema = json!({
@@ -104,10 +107,10 @@ fn main() {
         output_schema: json!({ "type": "object", "properties": { "status": { "type": "integer" }, "body": { "type": "string" } } }),
         embedding: None,
     };
+    // A RESPONSE body is `{ok: T}`.
     row(
         "CapabilityAd",
-        &Message::CapabilityAd(CapabilityAdvertisement {
-            id: "q-9921".into(),
+        &Reply::Ok(CapabilityAdvertisement {
             agent_id: "did:spine:ed25519:7Hk9...4Qm".into(),
             capabilities: vec![
                 cap(
@@ -120,14 +123,11 @@ fn main() {
                 ),
             ],
         }),
+        FrameType::Response,
     );
 
-    row(
-        "Ping",
-        &Message::Ping {
-            timestamp: 1_700_000_000,
-        },
-    );
+    // A PING body is the token, an unsigned integer.
+    row("Ping", &1_700_000_000u64, FrameType::Ping);
 
     println!();
     println!("Note: sizes are frame bodies; the v1 frame header adds 15 bytes.");

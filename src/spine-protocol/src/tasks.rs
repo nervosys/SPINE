@@ -46,7 +46,7 @@ pub struct TaskRecord {
     /// because the task was submitted long ago.
     #[serde(default)]
     pub completed_at: Option<u64>,
-    pub result: Option<crate::ToolResult>,
+    pub result: Option<crate::ToolOutcome>,
     pub error: Option<String>,
 }
 

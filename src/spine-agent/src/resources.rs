@@ -86,17 +86,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             record.content_hash == Some(resource_id(content_type, &data)?),
             "resource id does not match record"
         );
-        let response = self
-            .send_request(BrowserCommand::PublishResource {
-                record: serde_json::to_value(record)?,
-                content_type: content_type.into(),
-                data,
-            })
-            .await?;
-        if let Some(error) = response.error {
-            anyhow::bail!("publication: {error}");
-        }
-        response.result.context("publication returned no result")
+        // A refusal is a `NativeError::Remote` with the daemon's code
+        // (`record_expired`, `publish_failed`, ...).
+        self.send_request(BrowserCommand::PublishResource {
+            record: serde_json::to_value(record)?,
+            content_type: content_type.into(),
+            data,
+        })
+        .await
     }
 
     /// Retrieve from an already connected origin, including a TLS-connected
@@ -114,7 +111,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         let mut expected_total = None;
         let mut content_type = None;
         loop {
-            let response = tokio::time::timeout(
+            let chunk: ResourceChunk = tokio::time::timeout(
                 Duration::from_secs(30),
                 self.send_request(BrowserCommand::ReadResource {
                     hash,
@@ -124,11 +121,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             )
             .await
             .context("resource transfer timeout")??;
-            if let Some(error) = response.error {
-                anyhow::bail!("resource transfer: {error}");
-            }
-            let chunk: ResourceChunk =
-                serde_json::from_value(response.result.context("missing resource chunk")?)?;
             ensure!(
                 chunk.hash == hash && chunk.offset == data.len() as u64,
                 "resource chunk does not match request"

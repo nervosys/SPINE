@@ -9,10 +9,18 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
+use spine_protocol::body::{
+    ALL_ERROR_CODES, ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_EXECUTION_FAILED,
+    ERR_INTERNAL, ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED, ERR_LOOKUP_FAILED,
+    ERR_LOOKUP_UNAVAILABLE, ERR_MALFORMED_RECORD, ERR_MESH_CALL_FAILED, ERR_NAMESPACE_UNAVAILABLE,
+    ERR_NAVIGATION_FAILED, ERR_NO_PAGE, ERR_PUBLISH_FAILED, ERR_RATE_LIMIT, ERR_RECORD_EXPIRED,
+    ERR_RECORD_REJECTED, ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY, ERR_SESSION_EXPIRED,
+    ERR_SESSION_NOT_FOUND,
+};
 use spine_protocol::connection::{Connection, ConnectionError};
 use spine_protocol::frame::FrameType;
 use spine_protocol::native;
-use spine_protocol::{BrowserCommand, Message, Response};
+use spine_protocol::{BrowserCommand, ToolOutcome, WireError};
 use spine_transport::WebSocketStream;
 use spine_wasm::WasmRuntime;
 use std::sync::Arc;
@@ -530,15 +538,60 @@ async fn resolve_over_mesh(
     }
 }
 
+/// The `ok` value of a command's reply. Most commands answer with a JSON-shaped
+/// value; `read_resource` and `capability_query` answer with their typed
+/// results so that byte fields reach the wire as CBOR byte strings.
+enum Output {
+    Json(serde_json::Value),
+    Chunk(spine_protocol::resource::ResourceChunk),
+    Capabilities(spine_protocol::CapabilityAdvertisement),
+}
+
+impl serde::Serialize for Output {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Output::Json(value) => value.serialize(serializer),
+            Output::Chunk(chunk) => chunk.serialize(serializer),
+            Output::Capabilities(ad) => ad.serialize(serializer),
+        }
+    }
+}
+
+/// A command's answer: the `ok` value, or the `err` to send. The frame
+/// header's request id correlates it; nothing here carries an id.
+type Answer = Result<Output, WireError>;
+
+/// An `err` with a code from `spine_protocol::body`.
+fn fail(code: &str, message: String) -> WireError {
+    WireError::new(code, message)
+}
+
+/// The `err` for a failed navigation. The fetcher's failures are already
+/// stable snake_case identifiers (`outbound_address_denied`, ...); they pass
+/// through as the code.
+fn navigation_failure(error: &anyhow::Error) -> WireError {
+    let text = error.to_string();
+    if text.starts_with("outbound_") && ALL_ERROR_CODES.contains(&text.as_str()) {
+        let message = format!("the outbound request was refused or failed ({text})");
+        fail(&text, message)
+    } else {
+        fail(ERR_NAVIGATION_FAILED, text)
+    }
+}
+
 #[instrument(skip_all)]
 async fn handle_command(
     state: &Arc<BrowserState>,
     session_id: &str,
     command: BrowserCommand,
-    request_id: String,
-) -> Response {
+    request_id: u64,
+) -> Answer {
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
+    // The frame id names the request in traces; only the research build's
+    // cluster search forwards it.
+    #[cfg(not(feature = "research"))]
+    let _ = request_id;
 
     let response = match command {
         BrowserCommand::NamespaceStatus => {
@@ -559,95 +612,73 @@ async fn handle_command(
                 }
                 None => serde_json::json!({"enabled":false,"connectivity":"local_only","peers":[]}),
             };
-            Response {
-                id: request_id,
-                result: Some(result),
-                error: None,
-            }
+            Ok(Output::Json(result))
         }
         BrowserCommand::MeshCall {
             peer_id,
             peer_key,
             payload,
-        } => {
-            let result = match (&state.mesh_names, uuid::Uuid::parse_str(&peer_id)) {
-                (Some(mesh), Ok(id)) => mesh
-                    .application_call(spine_mesh::AgentId(id), peer_key, payload)
-                    .await
-                    .map_err(|e| e.to_string()),
-                (None, _) => Err("namespace is unavailable".into()),
-                (_, Err(_)) => Err("peer id must be a UUID".into()),
-            };
-            match result {
-                Ok(value) => Response {
-                    id: request_id,
-                    result: Some(value),
-                    error: None,
-                },
-                Err(error) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(error),
-                },
-            }
-        }
+        } => match (&state.mesh_names, uuid::Uuid::parse_str(&peer_id)) {
+            (Some(mesh), Ok(id)) => mesh
+                .application_call(spine_mesh::AgentId(id), peer_key, payload)
+                .await
+                .map(Output::Json)
+                .map_err(|e| fail(ERR_MESH_CALL_FAILED, e.to_string())),
+            (None, _) => Err(fail(
+                ERR_NAMESPACE_UNAVAILABLE,
+                "namespace is unavailable".into(),
+            )),
+            (_, Err(_)) => Err(fail(ERR_INVALID_PEER_ID, "peer id must be a UUID".into())),
+        },
         BrowserCommand::ReadResource {
             hash,
             offset,
             max_bytes,
-        } => {
-            match state
-                .resources
-                .read(hash, offset, max_bytes)
-                .and_then(|chunk| Ok(serde_json::to_value(chunk)?))
-            {
-                Ok(result) => Response {
-                    id: request_id,
-                    result: Some(result),
-                    error: None,
-                },
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e.to_string()),
-                },
+        } => match state.resources.read(hash, offset, max_bytes) {
+            Ok(chunk) => Ok(Output::Chunk(chunk)),
+            Err(e) => {
+                let text = e.to_string();
+                let code = if text.contains("not held by this origin") {
+                    ERR_RESOURCE_NOT_FOUND
+                } else if text.contains("chunk must be") || text.contains("offset") {
+                    ERR_INVALID_REQUEST
+                } else {
+                    ERR_INTERNAL
+                };
+                Err(fail(code, text))
             }
-        }
+        },
         BrowserCommand::PublishResource {
             record,
             content_type,
             data,
         } => {
-            let result = (|| -> Result<spine_name::NameRecord> {
-                let record: spine_name::NameRecord = serde_json::from_value(record)?;
+            let result = (|| -> Result<spine_name::NameRecord, WireError> {
+                let record: spine_name::NameRecord = serde_json::from_value(record)
+                    .map_err(|e| fail(ERR_MALFORMED_RECORD, e.to_string()))?;
                 if record.is_expired(unix_now()) {
-                    anyhow::bail!("record is expired");
+                    return Err(fail(ERR_RECORD_EXPIRED, "record is expired".into()));
                 }
-                let (hash, created) = state.resources.put_tracked(&record, &content_type, &data)?;
+                let (hash, created) = state
+                    .resources
+                    .put_tracked(&record, &content_type, &data)
+                    .map_err(|e| fail(ERR_PUBLISH_FAILED, e.to_string()))?;
                 if let Err(e) = state.names.publish(record.clone()) {
                     // Drop the blob only if this request added it; an earlier
                     // publication of the same content still refers to it.
                     if created {
                         let _ = state.resources.remove(hash);
                     }
-                    return Err(e.into());
+                    return Err(fail(ERR_RECORD_REJECTED, e.to_string()));
                 }
                 Ok(record)
             })();
             match result {
                 Ok(record) => {
                     let publication = publication_report(state, record.clone()).await;
-                    Response {
-                        id: request_id,
-                        result: Some(publication),
-                        error: None,
-                    }
+                    Ok(Output::Json(publication))
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e.to_string()),
-                },
+                Err(e) => Err(e),
             }
         }
         BrowserCommand::ResolveName {
@@ -655,22 +686,19 @@ async fn handle_command(
             if_none_match,
         } => {
             let resolution = resolve_one(state, &name, if_none_match).await;
-            Response {
-                id: request_id,
-                result: Some(serde_json::to_value(resolution).unwrap_or_default()),
-                error: None,
-            }
+            Ok(Output::Json(
+                serde_json::to_value(resolution).unwrap_or_default(),
+            ))
         }
 
         BrowserCommand::ResolveNames { names } => {
             // One round trip for the whole batch. Each name resolves
             // independently, so a single bad name never fails the others.
             if names.len() > 256 {
-                return Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("resolution batch exceeds 256 names".into()),
-                };
+                return Err(fail(
+                    ERR_BATCH_TOO_LARGE,
+                    "resolution batch exceeds 256 names".into(),
+                ));
             }
             let mut results = Vec::with_capacity(names.len());
             for batch in names.chunks(16) {
@@ -686,23 +714,13 @@ async fn handle_command(
                 for task in tasks {
                     match task.await {
                         Ok(result) => results.push(result),
-                        Err(_) => {
-                            return Response {
-                                id: request_id,
-                                result: None,
-                                error: Some("resolution task failed".into()),
-                            }
-                        }
+                        Err(_) => return Err(fail(ERR_INTERNAL, "resolution task failed".into())),
                     }
                 }
             }
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "resolutions": serde_json::to_value(&results).unwrap_or_default(),
-                })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({
+                "resolutions": serde_json::to_value(&results).unwrap_or_default(),
+            })))
         }
 
         BrowserCommand::FindProviders { capability, limit } => {
@@ -733,11 +751,10 @@ async fn handle_command(
                                     }
                                 }
                                 Err(e) => {
-                                    return Response {
-                                        id: request_id,
-                                        result: None,
-                                        error: Some(format!("capability lookup unavailable: {e}")),
-                                    }
+                                    return Err(fail(
+                                        ERR_LOOKUP_UNAVAILABLE,
+                                        format!("capability lookup unavailable: {e}"),
+                                    ))
                                 }
                             }
                         }
@@ -752,21 +769,13 @@ async fn handle_command(
                     if let Some(n) = limit {
                         providers.truncate(n);
                     }
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "capability": capability,
-                            "providers": serde_json::to_value(&providers).unwrap_or_default(),
-                            "count": providers.len(),
-                        })),
-                        error: None,
-                    }
+                    Ok(Output::Json(serde_json::json!({
+                        "capability": capability,
+                        "providers": serde_json::to_value(&providers).unwrap_or_default(),
+                        "count": providers.len(),
+                    })))
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e.to_string()),
-                },
+                Err(e) => Err(fail(ERR_LOOKUP_FAILED, e.to_string())),
             }
         }
 
@@ -776,33 +785,17 @@ async fn handle_command(
                 // record is rejected here rather than becoming servable state.
                 Ok(record) => {
                     if record.is_expired(unix_now()) {
-                        return Response {
-                            id: request_id,
-                            result: None,
-                            error: Some("record is expired".into()),
-                        };
+                        return Err(fail(ERR_RECORD_EXPIRED, "record is expired".into()));
                     }
                     match state.names.publish(record.clone()) {
                         Ok(()) => {
                             let publication = publication_report(state, record).await;
-                            Response {
-                                id: request_id,
-                                result: Some(publication),
-                                error: None,
-                            }
+                            Ok(Output::Json(publication))
                         }
-                        Err(e) => Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("record rejected: {e}")),
-                        },
+                        Err(e) => Err(fail(ERR_RECORD_REJECTED, format!("record rejected: {e}"))),
                     }
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(format!("malformed record: {e}")),
-                },
+                Err(e) => Err(fail(ERR_MALFORMED_RECORD, format!("malformed record: {e}"))),
             }
         }
 
@@ -827,14 +820,10 @@ async fn handle_command(
                 }
                 _ => Vec::new(),
             };
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "resolution": serde_json::to_value(&resolution).unwrap_or_default(),
-                    "endpoints": endpoints,
-                })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({
+                "resolution": serde_json::to_value(&resolution).unwrap_or_default(),
+                "endpoints": endpoints,
+            })))
         }
 
         BrowserCommand::CrawlNames {
@@ -874,23 +863,15 @@ async fn handle_command(
                     }
                 }
 
-                Response {
-                    id: request_id,
-                    result: Some(serde_json::json!({
-                        "visited": visited,
-                        // Reporting what was *not* walked keeps a bounded crawl
-                        // from reading as an exhaustive one.
-                        "skipped": frontier.skipped().len(),
-                        "pending": frontier.pending(),
-                    })),
-                    error: None,
-                }
+                Ok(Output::Json(serde_json::json!({
+                    "visited": visited,
+                    // Reporting what was *not* walked keeps a bounded crawl
+                    // from reading as an exhaustive one.
+                    "skipped": frontier.skipped().len(),
+                    "pending": frontier.pending(),
+                })))
             }
-            Err(e) => Response {
-                id: request_id,
-                result: None,
-                error: Some(format!("invalid seed name: {e}")),
-            },
+            Err(e) => Err(fail(ERR_INVALID_SEED, format!("invalid seed name: {e}"))),
         },
 
         BrowserCommand::Navigate { url } => {
@@ -905,7 +886,7 @@ async fn handle_command(
                                 instructions: vec![],
                                 data: vec![],
                                 render_start: 0,
-                                exported_functions: std::collections::HashMap::new(),
+                                exported_functions: std::collections::BTreeMap::new(),
                                 capabilities: vec![],
                             }
                         });
@@ -916,7 +897,7 @@ async fn handle_command(
                         instructions: vec![],
                         data: vec![],
                         render_start: 0,
-                        exported_functions: std::collections::HashMap::new(),
+                        exported_functions: std::collections::BTreeMap::new(),
                         capabilities: vec![],
                     };
 
@@ -927,25 +908,13 @@ async fn handle_command(
                         session.current_vdom = None;
                         session.cached_ur = None; // Invalidate cached UR on navigation
                     } else {
-                        return Response {
-                            id: request_id,
-                            result: None,
-                            error: Some("Session expired".into()),
-                        };
+                        return Err(fail(ERR_SESSION_EXPIRED, "Session expired".into()));
                     }
-                    Response {
-                        id: request_id,
-                        result: Some(
-                            serde_json::json!({"status": "success", "session_id": session_id}),
-                        ),
-                        error: None,
-                    }
+                    Ok(Output::Json(
+                        serde_json::json!({"status": "success", "session_id": session_id}),
+                    ))
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e.to_string()),
-                },
+                Err(e) => Err(navigation_failure(&e)),
             }
         }
         BrowserCommand::GetUR => {
@@ -959,51 +928,27 @@ async fn handle_command(
                 if let Some(ur) = &session.cached_ur {
                     let vdom_tree = session.current_vdom.as_ref().map(|v| v.to_tree());
                     let vdom_ur = session.current_vdom.as_ref().map(|v| v.to_ur());
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "parsed_ur": serde_json::to_value(ur).unwrap_or_default(),
-                            "vdom_tree": vdom_tree,
-                            "vdom_ur": vdom_ur,
-                        })),
-                        error: None,
-                    }
+                    Ok(Output::Json(serde_json::json!({
+                        "parsed_ur": serde_json::to_value(ur).unwrap_or_default(),
+                        "vdom_tree": vdom_tree,
+                        "vdom_ur": vdom_ur,
+                    })))
                 } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded in session".to_string()),
-                    }
+                    Err(fail(ERR_NO_PAGE, "No page loaded in session".to_string()))
                 }
             } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
+                Err(fail(ERR_SESSION_NOT_FOUND, "Session not found".to_string()))
             }
         }
         BrowserCommand::GetRawHTML => {
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(html) = &session.current_html {
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({ "html": html })),
-                        error: None,
-                    }
+                    Ok(Output::Json(serde_json::json!({ "html": html })))
                 } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
+                    Err(fail(ERR_NO_PAGE, "No page loaded".to_string()))
                 }
             } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
+                Err(fail(ERR_SESSION_NOT_FOUND, "Session not found".to_string()))
             }
         }
         BrowserCommand::ExecuteBinary(bin) => {
@@ -1020,11 +965,10 @@ async fn handle_command(
                         // Allowed by default for now
                     }
                     _ => {
-                        return Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("Unauthorized or unknown capability: {}", cap)),
-                        };
+                        return Err(fail(
+                            ERR_CAPABILITY_DENIED,
+                            format!("Unauthorized or unknown capability: {}", cap),
+                        ));
                     }
                 }
             }
@@ -1039,11 +983,7 @@ async fn handle_command(
             let result = match state.wasm_runtime.execute(&bin) {
                 Ok(result) => result,
                 Err(e) => {
-                    return Response {
-                        id: request_id,
-                        result: None,
-                        error: Some(format!("execution failed: {e}")),
-                    };
+                    return Err(fail(ERR_EXECUTION_FAILED, format!("execution failed: {e}")));
                 }
             };
 
@@ -1096,7 +1036,7 @@ async fn handle_command(
                         #[cfg(feature = "research")]
                         {
                             let cluster = state.cluster.lock().await;
-                            let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                            let _ = cluster.broadcast_search(query.clone(), request_id.to_string());
                         }
                         #[cfg(not(feature = "research"))]
                         let _ = query;
@@ -1146,25 +1086,21 @@ async fn handle_command(
                 }
             }
 
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "status": "executed",
-                    "stats": {
-                        "instructions_executed": result.stats.instructions_executed,
-                        "compile_time_us": result.stats.compile_time_us,
-                        "execution_time_us": result.stats.execution_time_us,
-                        "wasm_size_bytes": result.stats.wasm_size_bytes,
-                        "memory_used_bytes": result.stats.memory_used_bytes,
-                    },
-                    "elements": result.elements,
-                    "events": result.events,
-                    "actions": result.actions,
-                    "latent_streams_count": result.latent_streams.len(),
-                    "patches": patches,
-                })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({
+                "status": "executed",
+                "stats": {
+                    "instructions_executed": result.stats.instructions_executed,
+                    "compile_time_us": result.stats.compile_time_us,
+                    "execution_time_us": result.stats.execution_time_us,
+                    "wasm_size_bytes": result.stats.wasm_size_bytes,
+                    "memory_used_bytes": result.stats.memory_used_bytes,
+                },
+                "elements": result.elements,
+                "events": result.events,
+                "actions": result.actions,
+                "latent_streams_count": result.latent_streams.len(),
+                "patches": patches,
+            })))
         }
         BrowserCommand::StoreKnowledge { key, value, tags } => {
             let entry = KnowledgeEntry {
@@ -1191,11 +1127,9 @@ async fn handle_command(
             #[cfg(not(feature = "research"))]
             let _ = (key, value, tags);
 
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_stored" })),
-                error: None,
-            }
+            Ok(Output::Json(
+                serde_json::json!({ "status": "knowledge_stored" }),
+            ))
         }
         BrowserCommand::QueryKnowledge { query, tags, limit } => {
             let entries = state
@@ -1212,11 +1146,7 @@ async fn handle_command(
                 })
                 .take(limit)
                 .collect();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "results": results })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({ "results": results })))
         }
         BrowserCommand::GetBinaryCapabilities => {
             let capabilities = state
@@ -1224,12 +1154,15 @@ async fn handle_command(
                 .get(session_id)
                 .and_then(|s| s.current_binary.as_ref().map(|b| b.capabilities.clone()))
                 .unwrap_or_default();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "capabilities": capabilities })),
-                error: None,
-            }
+            Ok(Output::Json(
+                serde_json::json!({ "capabilities": capabilities }),
+            ))
         }
+        // `handle_session` answers these two before a session is involved.
+        BrowserCommand::ToolCall(_) | BrowserCommand::CapabilityQuery(_) => Err(fail(
+            ERR_INTERNAL,
+            "this command is not served by a session".into(),
+        )),
     };
 
     timer.observe_duration();
@@ -2033,15 +1966,19 @@ where
     }
 }
 
-/// Sends `message` as the `RESPONSE` to `request_id`. Returns false when the
+/// Sends `answer` as the `RESPONSE` to `request_id`. Returns false when the
 /// connection is gone. A reply that cannot be sent but leaves the connection
-/// usable (for example one over the frame limit) is replaced by an error
-/// reply, so the request id is released and the client is not left waiting.
-async fn reply<S>(conn: &mut Connection<S>, request_id: u64, message: Message) -> bool
+/// usable (for example one over the frame limit) is replaced by an `internal`
+/// error, so the request id is released and the client is not left waiting.
+async fn reply<S>(conn: &mut Connection<S>, request_id: u64, answer: Answer) -> bool
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    match native::send_reply(conn, request_id, &message).await {
+    let sent = match &answer {
+        Ok(output) => native::send_ok(conn, request_id, output).await,
+        Err(error) => native::send_err(conn, request_id, error).await,
+    };
+    match sent {
         Ok(()) => true,
         Err(e) => {
             if conn.is_finished() {
@@ -2049,10 +1986,10 @@ where
                 return false;
             }
             warn!("Response could not be sent: {e}");
-            native::send_reply(
+            native::send_err(
                 conn,
                 request_id,
-                &native::error_reply(format!("response could not be sent: {e}")),
+                &fail(ERR_INTERNAL, format!("response could not be sent: {e}")),
             )
             .await
             .is_ok()
@@ -2096,21 +2033,20 @@ where
             continue;
         }
         let request_id = frame.request_id;
-        let message = match native::decode_request(&frame.body) {
-            Ok(message) => message,
+        let command = match native::decode_command(&frame.body) {
+            Ok(command) => command,
             Err(e) => {
                 // C.7: a well-formed frame whose request cannot be served is an
-                // error response, not the end of the connection. Codes arrive
-                // with the body redesign; for now the text says what failed.
-                let text = format!("invalid request: {e}");
-                if !reply(conn, request_id, native::error_reply(text)).await {
+                // error response, not the end of the connection. The code says
+                // whether the command is unknown or its fields are wrong.
+                if !reply(conn, request_id, Err(e.to_wire())).await {
                     break;
                 }
                 continue;
             }
         };
-        match message {
-            Message::CapabilityQuery(query) => {
+        match command {
+            BrowserCommand::CapabilityQuery(query) => {
                 let capabilities = spine_core::tools::capabilities()
                     .into_iter()
                     .filter(|capability| match &query.selector {
@@ -2129,34 +2065,30 @@ where
                     None => "spine-core:local-unattested".into(),
                 };
                 let advertisement = spine_protocol::CapabilityAdvertisement {
-                    id: query.id,
                     agent_id,
                     capabilities,
                 };
-                if !reply(conn, request_id, Message::CapabilityAd(advertisement)).await {
+                if !reply(conn, request_id, Ok(Output::Capabilities(advertisement))).await {
                     break;
                 }
             }
-            Message::ToolCall(call) => {
-                let result = if state.check_rate_limit(&tool_rate.id) {
+            BrowserCommand::ToolCall(call) => {
+                let outcome = if state.check_rate_limit(&tool_rate.id) {
                     spine_core::tools::invoke(call)
                 } else {
-                    spine_protocol::ToolResult {
-                        id: call.id,
-                        trace: call.trace,
-                        outcome: spine_protocol::ToolOutcome::Err {
-                            code: "rate_limit".into(),
-                            message: "tool request rate exceeded".into(),
-                            details: None,
-                        },
+                    ToolOutcome::Err {
+                        code: ERR_RATE_LIMIT.into(),
+                        message: "tool request rate exceeded".into(),
+                        details: None,
                     }
                 };
-                if !reply(conn, request_id, Message::ToolResult(result)).await {
+                let answer = outcome.into_reply().into_result().map(Output::Json);
+                if !reply(conn, request_id, answer).await {
                     break;
                 }
             }
-            Message::Request(req) => {
-                let req_span = span!(Level::INFO, "request", request_id = %req.id);
+            command => {
+                let req_span = span!(Level::INFO, "request", request_id = request_id);
                 let _enter = req_span.enter();
                 debug!("Received request");
 
@@ -2175,11 +2107,10 @@ where
                         let _ = reply(
                             conn,
                             request_id,
-                            Message::Response(Response {
-                                id: req.id,
-                                result: None,
-                                error: Some("Server busy: maximum sessions reached".into()),
-                            }),
+                            Err(fail(
+                                ERR_SESSION_CAPACITY,
+                                "Server busy: maximum sessions reached".into(),
+                            )),
                         )
                         .await;
                         return;
@@ -2192,25 +2123,19 @@ where
                     let _ = reply(
                         conn,
                         request_id,
-                        Message::Response(Response {
-                            id: req.id,
-                            result: None,
-                            error: Some("Rate limit exceeded".to_string()),
-                        }),
+                        Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string())),
                     )
                     .await;
                     continue;
                 }
 
-                let res = handle_command(&state, &id, req.command, req.id).await;
+                let answer = handle_command(&state, &id, command, request_id).await;
 
-                if !reply(conn, request_id, Message::Response(res)).await {
+                if !reply(conn, request_id, answer).await {
                     error!("Failed to send response");
                     break;
                 }
             }
-            // `decode_request` admits only the three kinds above.
-            _ => {}
         }
     }
 }

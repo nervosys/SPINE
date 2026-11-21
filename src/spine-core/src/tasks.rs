@@ -407,7 +407,7 @@ impl TaskService {
             }
             if let Some(input) = &record.spec.input_from {
                 let dependency = self.get(&record.owner, input.task_id)?;
-                let content = match dependency.result.as_ref().map(|r| &r.outcome) {
+                let content = match dependency.result.as_ref() {
                     Some(ToolOutcome::Ok { content }) => content.pointer(&input.pointer).cloned(),
                     _ => None,
                 };
@@ -437,7 +437,6 @@ impl TaskService {
                 break;
             };
             let call = ToolCall {
-                id: record.spec.id.to_string(),
                 name: record.spec.tool.clone(),
                 args: record.spec.args,
                 trace: None,
@@ -473,7 +472,7 @@ impl TaskService {
                             MAX_RESULT / 1024
                         ));
                     } else {
-                        current.state = if matches!(result.outcome, ToolOutcome::Ok { .. }) {
+                        current.state = if matches!(result, ToolOutcome::Ok { .. }) {
                             TaskState::Completed
                         } else {
                             TaskState::Failed

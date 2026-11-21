@@ -83,7 +83,7 @@ pub fn stream_token_to_openai_chunk(
         // clients accept the v2 `tool_calls` array shape.
         StreamData::ToolCall(tc) => json!({
             "tool_calls": [{
-                "id": tc.id,
+                "id": format!("call_{stream_id}"),
                 "type": "function",
                 "function": {
                     "name": tc.name,
@@ -217,7 +217,6 @@ pub async fn chat_completions_stream(
 
     // Synthesise the StreamStart/Token/End triple from the echo body.
     let _start = StreamStart {
-        id: stream_id.clone(),
         role: StreamRole::Assistant,
         model: model.clone(),
         trace: None,
@@ -229,7 +228,6 @@ pub async fn chat_completions_stream(
         .map(|w| format!("{w} "))
         .collect();
     let end = StreamEnd {
-        id: stream_id.clone(),
         reason: StreamEndReason::Stop,
         usage: Some(spine_protocol::StreamUsage {
             input_tokens: user_msg.len() as u64,
@@ -259,7 +257,6 @@ fn sse_stream_from_tokens(
     let mut events = Vec::with_capacity(words.len() + 2);
     for (seq, word) in words.into_iter().enumerate() {
         let tok = StreamToken {
-            id: stream_id.clone(),
             seq: seq as u64,
             data: StreamData::Text(word),
             usage: None,
@@ -286,7 +283,6 @@ pub async fn capabilities() -> Json<serde_json::Value> {
     use spine_protocol::{Capability, CapabilityAdvertisement};
 
     let ad = CapabilityAdvertisement {
-        id: "static-gateway".into(),
         agent_id: "spine-gateway".into(),
         capabilities: vec![
             Capability {
@@ -386,7 +382,6 @@ mod tests {
     #[test]
     fn token_text_to_openai_chunk_shape() {
         let tok = StreamToken {
-            id: "s1".into(),
             seq: 3,
             data: StreamData::Text("hello".into()),
             usage: None,
@@ -404,7 +399,6 @@ mod tests {
     #[test]
     fn end_chunk_carries_finish_reason_and_usage() {
         let end = StreamEnd {
-            id: "s1".into(),
             reason: StreamEndReason::Length,
             usage: Some(spine_protocol::StreamUsage {
                 input_tokens: 10,
@@ -436,7 +430,6 @@ mod tests {
         ];
         for (reason, expected) in cases {
             let end = StreamEnd {
-                id: "s".into(),
                 reason,
                 usage: None,
             };
@@ -459,13 +452,11 @@ mod tests {
     #[test]
     fn tool_call_token_uses_tool_calls_delta() {
         let tc = spine_protocol::ToolCall {
-            id: "call_1".into(),
             name: "search".into(),
             args: json!({"q": "rust"}),
             trace: None,
         };
         let tok = StreamToken {
-            id: "s1".into(),
             seq: 0,
             data: StreamData::ToolCall(tc),
             usage: None,
@@ -473,7 +464,7 @@ mod tests {
         let chunk = stream_token_to_openai_chunk("s1", "m", &tok);
         let tool_calls = &chunk["choices"][0]["delta"]["tool_calls"];
         assert!(tool_calls.is_array());
-        assert_eq!(tool_calls[0]["id"], "call_1");
+        assert_eq!(tool_calls[0]["id"], "call_s1");
         assert_eq!(tool_calls[0]["function"]["name"], "search");
     }
 }

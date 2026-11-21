@@ -10,7 +10,7 @@
 //! | `tools/list` result        | [`CapabilityAdvertisement`]             |
 //! | one `Tool`                 | one [`Capability`]                      |
 //! | `tools/call` params        | [`ToolCall`]                            |
-//! | `tools/call` result        | [`ToolResult`] / [`ToolOutcome`]        |
+//! | `tools/call` result        | [`ToolOutcome`]                         |
 //!
 //! The bridge is pure data mapping plus a transport-agnostic JSON-RPC dispatcher
 //! ([`McpServer`]); wiring it to stdio or HTTP/SSE is the host's choice. The
@@ -21,7 +21,7 @@
 //! alongside the gateway's OpenAI-compatible `/v1/*` routes. Speaking MCP means
 //! every MCP-capable host is a SPINE client for free.
 
-use crate::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
+use crate::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
@@ -139,12 +139,12 @@ pub fn advertisement_to_list_tools(ad: &CapabilityAdvertisement) -> ListToolsRes
     }
 }
 
-/// Map a SPINE [`ToolResult`] to an MCP `tools/call` result.
+/// Map a SPINE [`ToolOutcome`] to an MCP `tools/call` result.
 ///
 /// A success carries the JSON value both as a `text` block (rendered JSON) and
 /// as `structuredContent`; an error sets `isError` and reports `code: message`.
-pub fn tool_result_to_call_result(result: &ToolResult) -> CallToolResult {
-    match &result.outcome {
+pub fn tool_result_to_call_result(outcome: &ToolOutcome) -> CallToolResult {
+    match outcome {
         ToolOutcome::Ok { content } => {
             let text = match content {
                 Value::String(s) => s.clone(),
@@ -172,10 +172,10 @@ pub fn tool_result_to_call_result(result: &ToolResult) -> CallToolResult {
 // MCP -> SPINE
 // ---------------------------------------------------------------------------
 
-/// Build a SPINE [`ToolCall`] from MCP `tools/call` params and a correlation id.
-pub fn call_params_to_tool_call(params: &CallToolParams, id: impl Into<String>) -> ToolCall {
+/// Build a SPINE [`ToolCall`] from MCP `tools/call` params. The JSON-RPC id
+/// stays in the JSON-RPC layer; a SPINE call is correlated by its frame.
+pub fn call_params_to_tool_call(params: &CallToolParams) -> ToolCall {
     ToolCall {
-        id: id.into(),
         name: params.name.clone(),
         args: params.arguments.clone(),
         trace: None,
@@ -297,10 +297,10 @@ pub const INVALID_PARAMS: i64 = -32602;
 /// Hold a [`CapabilityAdvertisement`] (what this agent can do) and a tool
 /// executor; feed it decoded JSON-RPC requests and it answers `initialize`,
 /// `tools/list`, and `tools/call` per the MCP contract. The executor receives
-/// the bridged [`ToolCall`] and returns a [`ToolResult`].
+/// the bridged [`ToolCall`] and returns a [`ToolOutcome`].
 pub struct McpServer<F>
 where
-    F: FnMut(ToolCall) -> ToolResult,
+    F: FnMut(ToolCall) -> ToolOutcome,
 {
     advertisement: CapabilityAdvertisement,
     executor: F,
@@ -312,7 +312,7 @@ where
 
 impl<F> McpServer<F>
 where
-    F: FnMut(ToolCall) -> ToolResult,
+    F: FnMut(ToolCall) -> ToolOutcome,
 {
     /// Build a server from an advertisement and a tool executor.
     pub fn new(advertisement: CapabilityAdvertisement, executor: F) -> Self {
@@ -361,9 +361,9 @@ where
                     {
                         return Some(JsonRpcResponse::err(id, INVALID_PARAMS, "Unknown tool"));
                     }
-                    let call = call_params_to_tool_call(&params, gen_call_id(&params));
-                    let result = (self.executor)(call);
-                    let mcp = tool_result_to_call_result(&result);
+                    let call = call_params_to_tool_call(&params);
+                    let outcome = (self.executor)(call);
+                    let mcp = tool_result_to_call_result(&outcome);
                     match serde_json::to_value(mcp) {
                         Ok(v) => JsonRpcResponse::ok(id, v),
                         Err(e) => JsonRpcResponse::err(id, INVALID_PARAMS, e.to_string()),
@@ -422,7 +422,7 @@ pub fn serve_stdio<F, R, W>(
     writer: &mut W,
 ) -> std::io::Result<()>
 where
-    F: FnMut(ToolCall) -> ToolResult,
+    F: FnMut(ToolCall) -> ToolOutcome,
     R: BufRead,
     W: Write,
 {
@@ -436,7 +436,7 @@ fn serve_stdio_with_limit<F, R, W>(
     limit: usize,
 ) -> std::io::Result<()>
 where
-    F: FnMut(ToolCall) -> ToolResult,
+    F: FnMut(ToolCall) -> ToolOutcome,
     R: BufRead,
     W: Write,
 {
@@ -470,24 +470,12 @@ where
     Ok(())
 }
 
-/// Derive a stable-ish call id from params without a clock/RNG (those are
-/// unavailable here); the tool name plus arg fingerprint is enough to correlate.
-fn gen_call_id(params: &CallToolParams) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    params.name.hash(&mut h);
-    params.arguments.to_string().hash(&mut h);
-    format!("mcp-{:016x}", h.finish())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn sample_ad() -> CapabilityAdvertisement {
         CapabilityAdvertisement {
-            id: "q1".into(),
             agent_id: "did:spine:test".into(),
             capabilities: vec![Capability {
                 uri: "agent.web/fetch_url".into(),
@@ -553,22 +541,17 @@ mod tests {
             name: "agent.web/fetch_url".into(),
             arguments: json!({"url": "https://example.com"}),
         };
-        let call = call_params_to_tool_call(&params, "abc");
-        assert_eq!(call.id, "abc");
+        let call = call_params_to_tool_call(&params);
         assert_eq!(call.name, "agent.web/fetch_url");
         assert_eq!(call.args, json!({"url": "https://example.com"}));
     }
 
     #[test]
     fn ok_result_maps_to_content_and_structured() {
-        let result = ToolResult {
-            id: "abc".into(),
-            outcome: ToolOutcome::Ok {
-                content: json!({"status": 200}),
-            },
-            trace: None,
+        let outcome = ToolOutcome::Ok {
+            content: json!({"status": 200}),
         };
-        let mcp = tool_result_to_call_result(&result);
+        let mcp = tool_result_to_call_result(&outcome);
         assert!(!mcp.is_error);
         assert_eq!(mcp.structured_content, Some(json!({"status": 200})));
         assert_eq!(mcp.content, vec![McpContent::text("{\"status\":200}")]);
@@ -576,16 +559,12 @@ mod tests {
 
     #[test]
     fn err_result_sets_is_error() {
-        let result = ToolResult {
-            id: "abc".into(),
-            outcome: ToolOutcome::Err {
-                code: "timeout".into(),
-                message: "took too long".into(),
-                details: None,
-            },
-            trace: None,
+        let outcome = ToolOutcome::Err {
+            code: "timeout".into(),
+            message: "took too long".into(),
+            details: None,
         };
-        let mcp = tool_result_to_call_result(&result);
+        let mcp = tool_result_to_call_result(&outcome);
         assert!(mcp.is_error);
         assert_eq!(
             mcp.content,
@@ -597,7 +576,6 @@ mod tests {
     fn client_roundtrip_ok() {
         // SPINE-as-client: build a request, get an MCP result back, interpret it.
         let call = ToolCall {
-            id: "x".into(),
             name: "t".into(),
             args: json!({"a": 1}),
             trace: None,
@@ -617,12 +595,8 @@ mod tests {
 
     #[test]
     fn server_dispatches_tools_list_and_call() {
-        let mut server = McpServer::new(sample_ad(), |call: ToolCall| ToolResult {
-            id: call.id,
-            outcome: ToolOutcome::Ok {
-                content: json!({"echoed": call.args}),
-            },
-            trace: None,
+        let mut server = McpServer::new(sample_ad(), |call: ToolCall| ToolOutcome::Ok {
+            content: json!({"echoed": call.args}),
         });
 
         // tools/list
@@ -653,12 +627,8 @@ mod tests {
 
     #[test]
     fn unknown_method_is_method_not_found() {
-        let mut server = McpServer::new(sample_ad(), |c: ToolCall| ToolResult {
-            id: c.id,
-            outcome: ToolOutcome::Ok {
-                content: Value::Null,
-            },
-            trace: None,
+        let mut server = McpServer::new(sample_ad(), |_: ToolCall| ToolOutcome::Ok {
+            content: Value::Null,
         });
         let req = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.into(),
@@ -672,12 +642,8 @@ mod tests {
 
     #[test]
     fn stdio_loop_drives_a_full_session() {
-        let mut server = McpServer::new(sample_ad(), |call: ToolCall| ToolResult {
-            id: call.id,
-            outcome: ToolOutcome::Ok {
-                content: json!({"echoed": call.args}),
-            },
-            trace: None,
+        let mut server = McpServer::new(sample_ad(), |call: ToolCall| ToolOutcome::Ok {
+            content: json!({"echoed": call.args}),
         });
 
         // A realistic host session: initialize, the initialized notification
@@ -722,12 +688,8 @@ mod tests {
 
     #[test]
     fn notification_without_id_is_not_answered() {
-        let mut server = McpServer::new(sample_ad(), |c: ToolCall| ToolResult {
-            id: c.id,
-            outcome: ToolOutcome::Ok {
-                content: Value::Null,
-            },
-            trace: None,
+        let mut server = McpServer::new(sample_ad(), |_: ToolCall| ToolOutcome::Ok {
+            content: Value::Null,
         });
         let note = JsonRpcRequest {
             jsonrpc: JSONRPC_VERSION.into(),

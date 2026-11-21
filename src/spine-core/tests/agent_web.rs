@@ -2,12 +2,19 @@
 use ed25519_dalek::SigningKey;
 use spine_agent::AgentClient;
 use spine_name::{content_hash, resource_id, Endpoint, NameRecord, SpineUri};
+use spine_protocol::native::remote_code;
 use spine_protocol::ToolOutcome;
 use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
 use tokio::net::TcpStream;
+
+/// The stable `err.code` of a failed call. Assertions are on this, never on
+/// the human-readable message.
+fn code_of(error: &anyhow::Error) -> &str {
+    remote_code(error).unwrap_or_else(|| panic!("not a remote error: {error:#}"))
+}
 
 // Core startup and semantic encoding are CPU-intensive. Keep process tests
 // independent of one another while still exercising real sockets/restarts.
@@ -44,11 +51,11 @@ async fn native_navigation_enforces_outbound_policy() {
         std::fs::write(dir.path().join("spine.toml"), toml::to_string(&config).unwrap()).unwrap();
         let mut node = launch(dir.path());
         let mut client = connect(&mut node, dir.path(), origin).await;
-        assert!(client.navigate("http://127.0.0.1:1/").await.unwrap_err().to_string().contains("outbound_address_denied"));
+        assert_eq!(code_of(&client.navigate("http://127.0.0.1:1/").await.unwrap_err()), "outbound_address_denied");
         client.navigate(&allowed).await.unwrap();
         assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
-        assert!(client.navigate(&allowed).await.unwrap_err().to_string().contains("outbound_redirect_denied"));
-        assert!(client.navigate(&allowed).await.unwrap_err().to_string().contains("outbound_response_limit"));
+        assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_redirect_denied");
+        assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_response_limit");
         assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
         server.await.unwrap();
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -318,7 +325,7 @@ async fn signed_mesh_tasks_dependencies_knowledge_restart_and_authorization() {
             assert_eq!(record.error, None);
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         };
-        let ToolOutcome::Ok { content } = record.result.unwrap().outcome else {
+        let ToolOutcome::Ok { content } = record.result.unwrap() else {
             panic!("dependent task failed")
         };
         let first_hex: String = content_hash(b"artifact source")
@@ -350,16 +357,19 @@ async fn signed_mesh_tasks_dependencies_knowledge_restart_and_authorization() {
             &[format!("127.0.0.1:{worker_mesh}")],
         );
         let mut outsider = connect(&mut outsider_node, outsider_dir.path(), outsider_port).await;
-        assert!(outsider
-            .mesh_call(
-                &worker_id,
-                worker_key,
-                serde_json::to_value(TaskOperation::Status { id: first.id }).unwrap()
-            )
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("not_authorized"));
+        assert_eq!(
+            code_of(
+                &outsider
+                    .mesh_call(
+                        &worker_id,
+                        worker_key,
+                        serde_json::to_value(TaskOperation::Status { id: first.id }).unwrap()
+                    )
+                    .await
+                    .unwrap_err()
+            ),
+            "not_authorized"
+        );
         drop(origin);
         drop(worker);
         worker = start_with_tasks(
@@ -475,17 +485,14 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
             )
             .await
             .unwrap();
-        assert!(matches!(
-            parsed.outcome,
-            spine_protocol::ToolOutcome::Ok { .. }
-        ));
+        assert!(matches!(parsed, spine_protocol::ToolOutcome::Ok { .. }));
         let rejected = agent
             .call_tool("shell", serde_json::json!({"text":"test"}))
             .await
             .unwrap();
         assert!(matches!(
-            rejected.outcome,
-            spine_protocol::ToolOutcome::Err { .. }
+            rejected,
+            spine_protocol::ToolOutcome::Err { ref code, .. } if code == "unsupported_tool"
         ));
         let key = SigningKey::from_bytes(&[77; 32]);
         let name = SpineUri::did(key.verifying_key().to_bytes()).with_path("/documents/example");
@@ -723,13 +730,14 @@ async fn detached_session_retention_recovers_capacity_and_does_not_resurrect() {
         let mut first = connect(&mut node, dir.path(), origin).await;
         let mut second = connect(&mut node, dir.path(), origin).await;
         let (a, b) = tokio::join!(first.get_raw_html(), second.get_raw_html());
-        let a_busy = a.unwrap_err().to_string().contains("maximum sessions");
-        let b_busy = b.unwrap_err().to_string().contains("maximum sessions");
+        let a_busy = code_of(&a.unwrap_err()) == "session_capacity";
+        let b_busy = code_of(&b.unwrap_err()) == "session_capacity";
         assert_ne!(a_busy, b_busy, "exactly one racing client must obtain the last session slot");
         let mut live = if a_busy { drop(first); second } else { drop(second); first };
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         // Connected sessions remain usable even after the retention interval.
-        assert!(!live.get_raw_html().await.unwrap_err().to_string().contains("expired"));
+        // The session is alive and has no page: not `session_expired`.
+        assert_eq!(code_of(&live.get_raw_html().await.unwrap_err()), "no_page_loaded");
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let ready = format!("http://127.0.0.1:{}/ready", config.server.metrics_port);
         let pressure = http.get(&ready).send().await.unwrap();
@@ -752,7 +760,7 @@ async fn detached_session_retention_recovers_capacity_and_does_not_resurrect() {
         let recovered: serde_json::Value = http.get(&ready).send().await.unwrap().json().await.unwrap();
         assert_eq!(recovered["sessions"], 0);
         let mut replacement = connect(&mut node, dir.path(), origin).await;
-        assert!(!replacement.get_raw_html().await.unwrap_err().to_string().contains("maximum sessions"));
+        assert_eq!(code_of(&replacement.get_raw_html().await.unwrap_err()), "no_page_loaded");
         drop(replacement);
         tokio::time::sleep(std::time::Duration::from_secs(4)).await;
         drop(node);

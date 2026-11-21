@@ -32,6 +32,27 @@ calls, `call_tool`, `capabilities` and `ping`. The latent-stream listener
 (latent encoding, session transfer, neural transmit, agentic state, autonomous
 mode) are recorded in `research/spine-protocol-research/README.md`.
 
+## Error handling
+
+Methods return `anyhow::Result`. When the daemon refuses a command it answers
+`{err: {code, message}}`, and the SDK returns a
+`spine_protocol::native::NativeError::Remote { code, message, details }`.
+Branch on the stable `code`, never on the text:
+
+```rust,ignore
+if let Err(e) = client.navigate(url).await {
+    match spine_protocol::native::remote_code(&e) {
+        Some("rate_limit") => backoff().await,
+        Some(code) => eprintln!("refused: {code}"),
+        None => return Err(e), // a connection error, not a refusal
+    }
+}
+```
+
+`call_tool` returns the tool's `ToolOutcome` (a failing tool is
+`ToolOutcome::Err`), and an error from a `mesh_call` peer's application is a
+`Remote` error with the peer's code.
+
 ## Documentation
 
 API documentation: <https://docs.rs/spine-agent>
