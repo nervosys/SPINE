@@ -14,3 +14,6 @@ description = "Deterministic CBOR (RFC 8949 section 4.2) for SPINE: the one cano
 serde.workspace = true
 thiserror.workspace = true
 ciborium = "0.2"
+
+[dev-dependencies]
+serde_bytes = "0.11"

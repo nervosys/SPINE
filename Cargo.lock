@@ -4224,6 +4224,7 @@ version = "2.0.2"
 dependencies = [
  "ciborium",
  "serde",
+ "serde_bytes",
  "thiserror 1.0.69",
 ]
 
