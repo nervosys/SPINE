@@ -319,6 +319,8 @@ Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes th
 
 **2026-11-20, pull request #49, `6b9a506` and `e716cc1`.** `6b9a506`: every job passed, including the new `research` job. `e716cc1` makes the default root build research-free (`spine-protocol` default is `quic` only; the `spine-web` facade's defaults no longer include `agentic`; both have an opt-in `research` feature). `cargo tree --workspace -e normal` at the root finds none of the fourteen research crates (`spine-nostd` and `spine-embedded` remain dev-dependencies of `spine-protocol` and `spine-agent`). Lint, docs, MSRV, audit, deny, coverage, `research` and the tests on all three platforms passed. Linux: 51 suites, 1,112 passed, 0 failed, 3 ignored, which includes the added `spine-protocol --features research` test step; the two steps were not totalled separately. Not verified: a research-off peer interoperating with a research-on peer.
 
+**2026-11-20, pull request #49, `fd1b31a`.** Resource ids now commit to the content type (`spine_name::resource_id`, domain `spine/resource-id/v1`); every publish and fetch path checks type and bytes with `verify_resource`. Lint, docs, MSRV, deny, coverage, `research` and the tests on Linux, macOS and Windows passed. The `audit` job failed again with "No vulnerabilities were found" followed by "Not Found" when updating its check run: the same intermittent failure as before, cause still unidentified. The gateway upload/download handlers and the SDK chunk loop have no unit test of their own; they are covered only by the acceptance tests.
+
 ## References
 
 - [SPINE from first principles](docs/FIRST_PRINCIPLES.md) and the layer specifications in `docs/spec/`
