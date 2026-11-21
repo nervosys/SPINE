@@ -39,7 +39,7 @@ SPINE is a headless semantic browser with adaptive encryption. It is organized a
 1. **Agent connects** via TCP, TLS, or WebSocket to spine-core server
 2. **Requests** are serialized as `Message` enum through `ProtocolHandler`
 3. **Server** fetches web content, parses to `UnifiedRepresentation`
-4. **Response** flows back through optional compression, encryption, speculation
+4. **Response** flows back through optional compression and encryption
 5. **Agent** receives structured data for processing
 
 ## Security Layers

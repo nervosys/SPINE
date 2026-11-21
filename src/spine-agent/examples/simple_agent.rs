@@ -22,42 +22,26 @@ async fn main() -> Result<()> {
     client.handler.enable_chameleon(secret);
     println!("[✓] Chameleon Protocol enabled");
 
-    // Enable speculative decoding for both directions
-    client.handler.enable_speculation(true, true);
-    println!("[✓] Speculative Decoding enabled (input + output)\n");
+    println!();
 
     // 1. Navigate to a website
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 1: Web Navigation with Speculation                    │");
+    println!("│ Phase 1: Web Navigation                                     │");
     println!("└─────────────────────────────────────────────────────────────┘");
     println!("[1] Navigating to https://example.com...");
     client.navigate("https://example.com").await?;
     println!("    ✓ Navigation complete (protocol morphed)\n");
 
-    // 2. Fetch the Unified Representation multiple times to train predictor
+    // 2. Fetch the Unified Representation several times
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 2: Training Speculative Predictor                     │");
+    println!("│ Phase 2: Repeated Unified Representation Fetches            │");
     println!("└─────────────────────────────────────────────────────────────┘");
 
     for i in 1..=3 {
-        println!(
-            "[{}] Fetching Unified Representation (training iteration)...",
-            i + 1
-        );
+        println!("[{}] Fetching Unified Representation...", i + 1);
         let ur = client.get_ur().await?;
         println!("    Page: {} | Elements: {}", ur.title, ur.elements.len());
     }
-
-    // Show speculation stats
-    let stats = client.handler.get_speculation_stats();
-    println!("\n[STATS] After training:");
-    println!("    Output predictions: {}", stats.output_predictions);
-    println!(
-        "    Output hits: {} ({:.1}% accuracy)",
-        stats.output_hits,
-        stats.output_accuracy() * 100.0
-    );
-    println!("    Bytes saved: {} bytes\n", stats.bytes_saved);
 
     // 3. Compile and Execute Advanced HLS Program with reactive state
     println!("┌─────────────────────────────────────────────────────────────┐");

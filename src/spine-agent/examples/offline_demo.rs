@@ -35,7 +35,6 @@ fn demo_parser() {
             <h2>Key Features</h2>
             <ul>
                 <li>Chameleon Protocol — latent-space cryptography</li>
-                <li>Speculative Decoding — bidirectional prediction</li>
                 <li>Unified Representation — semantic HTML extraction</li>
             </ul>
             <a href="https://github.com/nervosys/SPINE">Source Code</a>
@@ -195,13 +194,6 @@ fn demo_chameleon_duplex() {
         let msg = server.receive_message().await.unwrap();
         assert!(matches!(msg, Message::Ping { timestamp: 999 }));
         println!("  Post-morph communication: OK");
-
-        let stats = client.get_speculation_stats();
-        println!(
-            "  Speculation: {} predictions, {:.1}% accuracy",
-            stats.output_predictions,
-            stats.output_accuracy() * 100.0
-        );
     });
     println!();
 }

@@ -224,14 +224,6 @@ async fn main() -> Result<()> {
     println!("  100 fetches in {:.2}s", elapsed.as_secs_f64());
     println!("  {:.1} fetches/sec", 100.0 / elapsed.as_secs_f64());
 
-    // Speculation stats
-    let stats = client.get_speculation_stats();
-    println!("\nSpeculation Stats:");
-    println!("  Predictions: {}", stats.output_predictions);
-    println!("  Hits: {}", stats.output_hits);
-    println!("  Accuracy: {:.1}%", stats.output_accuracy() * 100.0);
-    println!("  Bytes saved: {}", stats.bytes_saved);
-
     Ok(())
 }
 "#;

@@ -13,7 +13,7 @@ description = "Agent interface for SPINE"
 [features]
 default = []
 # Research code: human-interaction pacing (`enable_human_mode`), the neural
-# protocol (`neural_protocol`, `transmit_neural`) and the Chameleon / speculation
+# protocol (`neural_protocol`, `transmit_neural`) and the Chameleon
 # APIs on `handler` (`enable_chameleon*`). Pulls in spine-human, spine-agentic and,
 # through spine-protocol, spine-neural and spine-crypto. The examples that need
 # it say so via `required-features`.

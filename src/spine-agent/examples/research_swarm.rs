@@ -5,7 +5,7 @@
 //! 2. Connects multiple agents over TCP
 //! 3. Agents collaboratively research a topic across multiple URLs
 //! 4. Results aggregated via knowledge base
-//! 5. Demonstrates Chameleon protocol, speculation, and HLS execution
+//! 5. Demonstrates Chameleon protocol and HLS execution
 //!
 //! ```
 //! # Requires a running spine-core server:
@@ -33,7 +33,6 @@ async fn research_agent(agent_id: usize, url: &str, topic: &str) -> Result<serde
         0x21, 0x21,
     ];
     client.handler.enable_chameleon_aead(secret);
-    client.handler.enable_speculation(true, true);
 
     println!("  [Agent {}] Navigating to {}...", agent_id, url);
     let start = Instant::now();
@@ -70,15 +69,6 @@ async fn research_agent(agent_id: usize, url: &str, topic: &str) -> Result<serde
             ],
         )
         .await?;
-
-    // Get speculation stats
-    let stats = client.get_speculation_stats();
-    println!(
-        "  [Agent {}] Speculation: {:.1}% output accuracy, {} bytes saved",
-        agent_id,
-        stats.output_accuracy() * 100.0,
-        stats.bytes_saved
-    );
 
     Ok(findings)
 }
@@ -201,7 +191,7 @@ async fn main() -> Result<()> {
         "║   Total time: {:.1}s                                         ║",
         elapsed.as_secs_f64()
     );
-    println!("║   Protocol: Chameleon AEAD + Speculative Decoding            ║");
+    println!("║   Protocol: Chameleon AEAD                                   ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())

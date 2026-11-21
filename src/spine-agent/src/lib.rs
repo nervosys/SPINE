@@ -19,7 +19,7 @@ pub use spine_compiler::Compiler;
 pub use spine_transport::WebSocketClientStream;
 
 pub struct AgentClient<S> {
-    /// Public handler for advanced protocol operations (Chameleon, Speculation, etc.)
+    /// Public handler for advanced protocol operations (Chameleon, etc.)
     pub handler: ProtocolHandler<S>,
     request_counter: u64,
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,
@@ -566,11 +566,6 @@ where
         Ok(())
     }
 
-    /// Get statistics about speculative decoding performance
-    pub fn get_speculation_stats(&self) -> &spine_protocol::SpeculationStats {
-        self.handler.get_speculation_stats()
-    }
-
     #[instrument(skip(self))]
     pub async fn search(&mut self, query: &str) -> anyhow::Result<serde_json::Value> {
         let res = self
@@ -1019,14 +1014,6 @@ mod tests {
         // Empty input may compile to empty binary or error depending on parser
         // Just ensure it doesn't panic
         let _ = result;
-    }
-
-    #[test]
-    fn test_agent_client_speculation_stats_type() {
-        // Verify the SpeculationStats type is accessible
-        let stats = spine_protocol::SpeculationStats::default();
-        assert_eq!(stats.output_predictions, 0);
-        assert_eq!(stats.output_hits, 0);
     }
 
     #[test]

@@ -27,7 +27,7 @@
 | Crate             | Type       | Description                                                                     |
 | ----------------- | ---------- | ------------------------------------------------------------------------------- |
 | `spine-core`      | Binary+Lib | Multi-session orchestration server with config management                       |
-| `spine-protocol`  | Library    | Message types, frame encoding, protocol handler, speculation                    |
+| `spine-protocol`  | Library    | Message types, frame encoding, protocol handler                                 |
 | `spine-parser`    | Library    | Recursive semantic HTML to Unified Representation parser                        |
 | `spine-compiler`  | Library    | HLS (SPINE Scripting) to SpineBinary compiler                                   |
 | `spine-knowledge` | Library    | Unified bioinspired memory (episodic, semantic, working, collective) with CRDTs |

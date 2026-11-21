@@ -14,11 +14,11 @@ description = "Low-latency communication protocols for SPINE"
 default = ["quic"]
 quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 # Research code, off by default: the Chameleon latent-space key
-# (`ProtocolHandler::enable_chameleon*`), the speculative predictor,
+# (`ProtocolHandler::enable_chameleon*`),
 # `SpineConnection`, the protocol evolution framework and `TitansLatentCodec`.
 # It is the only code that needs spine-neural and spine-crypto. Without it you
 # get the wire types, the codec and `ProtocolHandler` (which then has no
-# chameleon and never predicts).
+# chameleon).
 research = ["dep:spine-neural", "dep:spine-crypto"]
 
 [dependencies]

@@ -336,7 +336,7 @@ SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesiv
 ### Intelligence Layer
 
 - **`spine-neural`**: **Titans architecture** (Neural Long-Term Memory) with MIRAS variants for adaptive protocol encoding.
-- **`spine-crypto`**: **Titans-based speculative decoding**, X3DH key exchange, and quantum-resistant lattice cryptography with three security levels (Standard, Hardened, PostQuantum).
+- **`spine-crypto`**: **Titans-based message prediction** (a library only; the wire does not use it), X3DH key exchange, and quantum-resistant lattice cryptography with three security levels (Standard, Hardened, PostQuantum).
 - **`spine-recursive`**: **Recursive Language Model** for extended context retrieval (10M+ chars) via REPL environment per arXiv:2512.24601. Note: trades reasoning depth for context breadth.
 - **`spine-knowledge`**: **Unified bioinspired memory** with episodic (hippocampus), semantic (neocortex), working (prefrontal cortex), and collective (social brain) subsystems. CRDT-based distributed single-source-of-truth.
 
@@ -410,14 +410,6 @@ let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 > 5. **Efficiency**: Combines RNN-like O(1) inference speed with Transformer-like expressive power—critical for real-time agent communication.
 > 
 > This makes Titans ideal for a headless semantic browser where protocols must continuously evolve to resist fingerprinting, agents must adapt to every interaction, and security requires instant anomaly detection.
-
-### Titans-Based Speculative Decoding
-
-Uses a **TitansPredictor** with Neural Long-Term Memory to anticipate next messages, enabling:
-
-- Zero-latency delivery when predictions match
-- Anomaly detection via surprise scores
-- Adaptive learning from communication patterns
 
 ### Chameleon Protocol
 
@@ -660,22 +652,12 @@ The HLS compiler generates these instructions:
 SPINE includes advanced features for high-security and low-latency agentic communication:
 
 - **Chameleon Protocol**: A latent-space cryptographic system that evolves the protocol's "shape" per-message using neural encoders.
-- **Titans Speculative Decoding**: Message prediction using Neural Long-Term Memory to reduce perceived latency by pre-computing responses.
 - **Quantum-Resistant Keys**: Lattice-based key evolution that resists quantum computing attacks.
 - **Titans Neural Encoding**: Neural Long-Term Memory with VAE and Attention mechanisms to project web content into high-dimensional latent spaces.
 
 ## Intelligence Layer
 
 SPINE features a deep intelligence layer that optimizes for both performance and security in AI-to-AI communication.
-
-### Titans Speculative Decoding
-
-Inspired by LLM inference techniques, SPINE uses a **TitansPredictor** with Neural Long-Term Memory to anticipate the next likely messages in a protocol stream.
-
-- **Zero-Bandwidth Hits**: If a prediction is correct, the receiver reconstructs the message from its local cache, sending only a tiny confirmation hash.
-- **Latency Reduction**: The core engine can pre-compute responses for predicted requests before they even arrive.
-- **Pattern Obfuscation**: Speculative traffic makes the protocol stream appear as high-entropy noise to external observers.
-- **Anomaly Detection**: High surprise scores indicate novel or potentially malicious patterns.
 
 ### Chameleon Protocol (Moving-Target Defense)
 
@@ -942,51 +924,6 @@ client.handler.enable_chameleon_aead(secret);
 // - Evolves key material continuously
 ```
 
-### Speculative Decoding
-
-Inspired by LLM speculative decoding, SPINE predicts messages before they arrive and sends minimal confirmations when predictions match.
-
-#### How It Works
-
-1. **Output Speculation**: Before sending, check if the receiver predicted this message
-   - If **hit**: Send only a hash confirmation (8 bytes vs. kilobytes)
-   - If **miss**: Send full payload
-
-2. **Input Speculation**: Predict what the sender will send next
-   - Train on message patterns (n-grams, Markov chains)
-   - Pre-compute responses for likely requests
-   - Reduce latency by preparing before arrival
-
-3. **Adaptive Learning**: The predictor improves over time
-   - Observes message sequences
-   - Builds transition probability tables
-   - Adjusts confidence scores
-
-#### Enabling Speculation
-
-```rust
-// Enable speculative decoding for both directions
-client.handler.enable_speculation(true, true);
-
-// Check statistics
-let stats = client.handler.get_speculation_stats();
-println!("Accuracy: {:.1}%", stats.output_accuracy() * 100.0);
-println!("Bytes saved: {}", stats.bytes_saved);
-```
-
-#### Speculation Statistics
-
-```
-╔══════════════════════════════════════════════════════════════╗
-║                    Speculation Statistics                     ║
-╠══════════════════════════════════════════════════════════════╣
-║ Output Predictions: 15       | Output Hits: 12               ║
-║ Input Predictions:  15       | Input Hits:  11               ║
-║ Bytes Saved:        48KB     | Precompute Hits: 3            ║
-║ Output Accuracy:    80.0%    | Input Accuracy:  73.3%        ║
-╚══════════════════════════════════════════════════════════════╝
-```
-
 ### Traditional Encryption (Fallback)
 
 For compatibility, SPINE also supports **AES-256-GCM** encryption:
@@ -1060,12 +997,6 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 │   ├─ Knowledge Consensus (2/3)      │
 │   └─ Autonomous Planning            │
 ├─────────────────────────────────────┤
-│   Titans Speculative Decoding       │
-│   ├─ Neural Long-Term Memory        │
-│   ├─ Surprise-Gated Prediction      │
-│   ├─ Pre-computed Response Cache    │
-│   └─ Confirmation/Delta Encoding    │
-├─────────────────────────────────────┤
 │   Chameleon Layer                   │
 │   ├─ Titans Latent-Space Encoding   │
 │   ├─ Moving-Target Defense          │
@@ -1089,7 +1020,6 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 3. **Latent Representations**: Native support for streaming embeddings and high-dimensional vectors.
 4. **Moving-Target Security**: The protocol itself is a moving target—impossible to fingerprint or replay.
 5. **Implicit Encryption**: High-dimensional projections provide encryption without explicit ciphertext.
-6. **Speculative Intelligence**: Predict messages to reduce latency and bandwidth.
 
 ## Roadmap
 
@@ -1101,8 +1031,6 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Chameleon Protocol** (latent-space obfuscation over AES-256-GCM)
 - [x] **Moving-Target Defense** (dynamic protocol morphing)
 - [x] **Decoy Traffic** injection
-- [x] **Titans Speculative Decoding** (prediction-accelerated communication with NLM)
-- [x] **Bi-directional Speculation** (input + output prediction)
 - [x] **Advanced HLS Syntax** (variables, state, conditionals, loops, expressions)
 - [x] **Virtual DOM Runtime** (binary execution with UR generation)
 - [x] **WebAssembly Runtime** (HLB → WASM near-native execution)

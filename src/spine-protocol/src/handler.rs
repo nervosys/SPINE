@@ -1,14 +1,14 @@
-//! The protocol handler: morphed framing, optional AES-256-GCM, speculative
-//! framing and padding over any `AsyncRead + AsyncWrite` stream.
+//! The protocol handler: morphed framing, optional AES-256-GCM and padding
+//! over any `AsyncRead + AsyncWrite` stream.
 //!
 //! This module has no dependency on `spine-neural` or `spine-crypto`, so it
-//! builds with `--no-default-features`. The two research pieces that plug into
-//! the handler, the Chameleon latent-space key and the speculative predictor,
-//! are compiled only with the `research` feature. Without it the handler has
-//! no chameleon and uses a stand-in predictor that never predicts, so every
-//! message goes out as a `SpeculativePayload::Full` with
-//! `next_prediction_hash = 0` and `confidence = 0.0`. That is the same wire
-//! format a default handler emits, and a default peer reads it unchanged.
+//! builds with `--no-default-features`. The research piece that plugs into
+//! the handler, the Chameleon latent-space key, is compiled only with the
+//! `research` feature. Without it the handler has no chameleon.
+//!
+//! A message goes out as `wire::encode(msg)` (the `SP` header and the body),
+//! then padding, the compression flag byte, optional encryption, and the
+//! morphed frame header.
 
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
 use hmac::{Hmac, Mac};
@@ -20,47 +20,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use zstd::stream::encode_all;
 
 #[cfg(feature = "research")]
-use crate::research::{ChameleonKey, SpeculativePredictor};
+use crate::research::ChameleonKey;
 
 use super::*;
-
-/// Stand-in for the research predictor when it is compiled out. It observes
-/// nothing and predicts nothing: `predict_next` returns what the real
-/// predictor returns before it has seen any message, `(0, 0.0)`, which keeps
-/// `confidence` below the cache threshold and `next_prediction_hash` at 0.
-#[cfg(not(feature = "research"))]
-struct SpeculativePredictor {
-    output_speculation: bool,
-    input_speculation: bool,
-}
-
-#[cfg(not(feature = "research"))]
-impl SpeculativePredictor {
-    fn new() -> Self {
-        Self {
-            output_speculation: true,
-            input_speculation: true,
-        }
-    }
-
-    #[inline]
-    fn observe(&mut self, _data: &[u8], _msg_type: MessageType) {}
-
-    #[inline]
-    fn predict_next(&mut self) -> (u64, f32) {
-        (0, 0.0)
-    }
-
-    #[inline]
-    fn predict_next_data(&mut self, _length: usize) -> Vec<u8> {
-        Vec::new()
-    }
-
-    #[inline]
-    fn predict_batch(&mut self, _count: usize) -> Vec<(u64, f32)> {
-        Vec::new()
-    }
-}
 
 /// A fresh 96-bit AES-GCM nonce from the operating system's CSPRNG.
 ///
@@ -88,16 +50,6 @@ pub(crate) fn fresh_nonce() -> [u8; 12] {
     let mut nonce = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
     nonce
-}
-
-#[derive(Clone, Debug, Copy, PartialEq)]
-pub enum MessageType {
-    Request,
-    Response,
-    Event,
-    Binary,
-    Sync,
-    Unknown,
 }
 
 // =============================================================================
@@ -218,22 +170,6 @@ pub struct ProtocolHandler<S> {
     morphology: ProtocolMorphology,
     /// Enable moving-target defense
     moving_target: bool,
-    /// Speculative predictor for outgoing messages
-    output_predictor: SpeculativePredictor,
-    /// Speculative predictor for incoming messages
-    input_predictor: SpeculativePredictor,
-    /// Cache of pre-computed responses
-    precomputed_cache: Vec<(u64, Message)>,
-    /// Cache of our own predictions to reconstruct on hit
-    prediction_cache: Vec<(u64, Vec<u8>)>,
-    /// Last prediction we sent (for verification)
-    last_output_prediction: Option<u64>,
-    /// Last prediction we received (for verification)
-    last_input_prediction: Option<u64>,
-    /// Statistics for speculation accuracy
-    pub speculation_stats: SpeculationStats,
-    /// Reusable send buffer to eliminate per-message heap allocations
-    send_buf: Vec<u8>,
     /// Reusable read buffer for frame payloads
     read_buf: Vec<u8>,
     /// Reusable latent serialization buffer
@@ -245,37 +181,6 @@ pub struct ProtocolHandler<S> {
     /// then AES-GCM encrypted. Provides defense-in-depth: neural obfuscation +
     /// authenticated encryption. Requires both chameleon and cipher to be set.
     latent_aead: bool,
-}
-
-/// Statistics for tracking speculation effectiveness
-#[derive(Debug, Clone, Default)]
-pub struct SpeculationStats {
-    pub output_predictions: u64,
-    pub output_hits: u64,
-    pub output_partial_hits: u64,
-    pub input_predictions: u64,
-    pub input_hits: u64,
-    pub input_partial_hits: u64,
-    pub bytes_saved: u64,
-    pub precompute_hits: u64,
-}
-
-impl SpeculationStats {
-    pub fn output_accuracy(&self) -> f32 {
-        if self.output_predictions == 0 {
-            0.0
-        } else {
-            self.output_hits as f32 / self.output_predictions as f32
-        }
-    }
-
-    pub fn input_accuracy(&self) -> f32 {
-        if self.input_predictions == 0 {
-            0.0
-        } else {
-            self.input_hits as f32 / self.input_predictions as f32
-        }
-    }
 }
 
 impl<S> ProtocolHandler<S>
@@ -290,14 +195,6 @@ where
             chameleon: None,
             morphology: ProtocolMorphology::new(0),
             moving_target: false,
-            output_predictor: SpeculativePredictor::new(),
-            input_predictor: SpeculativePredictor::new(),
-            precomputed_cache: Vec::with_capacity(16),
-            prediction_cache: Vec::with_capacity(16),
-            last_output_prediction: None,
-            last_input_prediction: None,
-            speculation_stats: SpeculationStats::default(),
-            send_buf: Vec::with_capacity(8192),
             read_buf: Vec::with_capacity(8192),
             latent_buf: Vec::with_capacity(4096),
             compression_threshold: 64,
@@ -350,75 +247,12 @@ where
         self.latent_aead = true;
     }
 
-    /// Enable speculative decoding
-    pub fn enable_speculation(&mut self, output: bool, input: bool) {
-        self.output_predictor.output_speculation = output;
-        self.input_predictor.input_speculation = input;
-    }
-
-    /// Pre-compute a response for a predicted request
-    pub fn precompute_response(&mut self, predicted_request_hash: u64, response: Message) {
-        self.precomputed_cache
-            .push((predicted_request_hash, response));
-        // Keep cache bounded
-        if self.precomputed_cache.len() > 32 {
-            self.precomputed_cache.remove(0);
-        }
-    }
-
-    /// Check if we have a pre-computed response
-    fn get_precomputed(&mut self, request_hash: u64) -> Option<Message> {
-        if let Some(pos) = self
-            .precomputed_cache
-            .iter()
-            .position(|(h, _)| *h == request_hash)
-        {
-            self.speculation_stats.precompute_hits += 1;
-            Some(self.precomputed_cache.remove(pos).1)
-        } else {
-            None
-        }
-    }
-
     /// Hash message for key evolution
     #[inline]
     fn hash_message(data: &[u8]) -> u64 {
         let mut hasher = DefaultHasher::new();
         data.hash(&mut hasher);
         hasher.finish()
-    }
-
-    /// Classify message type for prediction
-    fn classify_message(msg: &Message) -> MessageType {
-        match msg {
-            Message::Request(_) => MessageType::Request,
-            Message::Response(_) => MessageType::Response,
-            Message::Event(_) => MessageType::Event,
-            Message::BinaryProgram(_) => MessageType::Binary,
-            Message::Sync(_) => MessageType::Sync,
-            Message::Speculative(_) => MessageType::Unknown,
-            Message::PreComputed(_) => MessageType::Response,
-            Message::LatentMessage(_) => MessageType::Unknown,
-            Message::MorphRequest { .. } => MessageType::Sync,
-            Message::Ping { .. } => MessageType::Sync,
-            Message::Pong { .. } => MessageType::Sync,
-            // Agentic primitives slot into the existing request/response/event
-            // taxonomy for purposes of speculative prediction.
-            Message::ToolCall(_) => MessageType::Request,
-            Message::ToolResult(_) => MessageType::Response,
-            Message::StreamStart(_) => MessageType::Event,
-            Message::StreamToken(_) => MessageType::Event,
-            Message::StreamEnd(_) => MessageType::Event,
-            Message::StreamCancel(_) => MessageType::Event,
-            Message::CapabilityQuery(_) => MessageType::Request,
-            Message::CapabilityAd(_) => MessageType::Response,
-            // Neural codec frames slot into the same taxonomy.
-            Message::Encoded(_) => MessageType::Binary,
-            Message::CodecAd(_) => MessageType::Response,
-            Message::CodecNegotiation(_) => MessageType::Sync,
-            Message::EmbeddingRequest(_) => MessageType::Request,
-            Message::EmbeddingResponse(_) => MessageType::Response,
-        }
     }
 
     /// Chameleon-encode (and, with latent AEAD, encrypt) an outgoing frame body.
@@ -545,117 +379,14 @@ where
     #[inline]
     fn chameleon_evolve_seed(&mut self, _seed: u64) {}
 
-    /// Send a message with speculative encoding
+    /// Send a message.
     ///
-    /// Optimized hot path: single serialization pass, buffer reuse,
-    /// adaptive compression (skipped for small payloads < threshold).
-    #[inline]
+    /// The body is `wire::encode(msg)`, then padding per the current
+    /// morphology, one flag byte (`0x01` plus zstd level 3 when the padded body
+    /// is at least `compression_threshold` bytes, `0x00` plus the raw body
+    /// otherwise), the optional chameleon or AES-GCM seal, and the morphed
+    /// frame header.
     pub async fn send_message(&mut self, msg: &Message) -> anyhow::Result<()> {
-        // Serialize message once via the binary wire codec (CBOR / CBOR+zstd).
-        self.send_buf = wire::encode(msg)?;
-        let msg_hash = Self::hash_message(&self.send_buf);
-        let msg_type = Self::classify_message(msg);
-
-        // Check if receiver predicted this message
-        let payload = if let Some(predicted_hash) = self.last_input_prediction {
-            if predicted_hash == msg_hash {
-                // Prediction hit! Send minimal confirmation (no data needed)
-                self.speculation_stats.output_hits += 1;
-                self.speculation_stats.bytes_saved += self.send_buf.len() as u64;
-                SpeculativePayload::Confirmed {
-                    confirmed_hash: msg_hash,
-                    delta: Vec::new(),
-                }
-            } else {
-                // Prediction miss — move buffer contents to avoid clone
-                SpeculativePayload::Full(std::mem::take(&mut self.send_buf))
-            }
-        } else {
-            SpeculativePayload::Full(std::mem::take(&mut self.send_buf))
-        };
-
-        // Observe for prediction (use payload data if available, else empty)
-        let observe_data: &[u8] = match &payload {
-            SpeculativePayload::Full(d) => d,
-            _ => &[],
-        };
-        self.output_predictor.observe(observe_data, msg_type);
-        let (next_prediction, confidence) = self.output_predictor.predict_next();
-
-        // Cache the predicted data for reconstruction on hit
-        if confidence > 0.5 {
-            let predicted_data = self.output_predictor.predict_next_data(observe_data.len());
-            self.prediction_cache
-                .push((next_prediction, predicted_data));
-            if self.prediction_cache.len() > 16 {
-                self.prediction_cache.remove(0);
-            }
-        }
-
-        self.last_output_prediction = Some(next_prediction);
-        self.speculation_stats.output_predictions += 1;
-
-        // Build and serialize speculative frame in one pass
-        let frame = SpeculativeFrame {
-            payload,
-            next_prediction_hash: next_prediction,
-            confidence,
-            speculation_depth: 1,
-        };
-
-        let mut data = serde_json::to_vec(&frame)?;
-
-        // Restore send_buf capacity for next call
-        if self.send_buf.capacity() == 0 {
-            self.send_buf = Vec::with_capacity(8192);
-        }
-
-        // Apply padding based on current morphology
-        data = self.apply_padding(data);
-
-        // Adaptive compression: skip zstd for tiny control payloads (< 64 bytes)
-        // For larger payloads, zstd at level 3 provides excellent ratio with low overhead.
-        // We prepend a 1-byte flag: 0x01 = compressed, 0x00 = raw
-        if data.len() >= self.compression_threshold {
-            let compressed = encode_all(&data[..], 3)?;
-            let mut flagged = Vec::with_capacity(1 + compressed.len());
-            flagged.push(0x01); // compressed flag
-            flagged.extend_from_slice(&compressed);
-            data = flagged;
-        } else {
-            data.insert(0, 0x00); // raw flag
-        }
-
-        // Chameleon encoding (research builds, if enabled)
-        if let Some(sealed) = self.chameleon_seal(&data, msg_hash)? {
-            data = sealed;
-        }
-        // Fallback to AES encryption (without Chameleon)
-        else if let Some(cipher) = &self.cipher {
-            let nonce_full = fresh_nonce();
-            let nonce = Nonce::from_slice(&nonce_full);
-            data = cipher
-                .encrypt(nonce, data.as_ref())
-                .map_err(|e| anyhow::anyhow!("Encryption error: {}", e))?;
-
-            // Prepend nonce for receiver
-            let mut with_nonce = nonce_full.to_vec();
-            with_nonce.extend(data);
-            data = with_nonce;
-        }
-
-        // Write with morphing header
-        self.write_morphed_frame(&data).await?;
-
-        // Evolve morphology AFTER writing frame to keep sender/receiver in sync
-        if self.moving_target && self.chameleon_active() {
-            self.morphology.evolve(msg_hash);
-        }
-        Ok(())
-    }
-
-    /// Send message without speculation (for bootstrapping)
-    pub async fn send_message_raw(&mut self, msg: &Message) -> anyhow::Result<()> {
         let mut data = wire::encode(msg)?;
         let msg_hash = Self::hash_message(&data);
 
@@ -679,7 +410,6 @@ where
         if let Some(sealed) = self.chameleon_seal(&data, msg_hash)? {
             data = sealed;
         } else if let Some(cipher) = &self.cipher {
-            // SECURITY: Use counter-based nonce to prevent nonce reuse
             let nonce_full = fresh_nonce();
             let nonce = Nonce::from_slice(&nonce_full);
             data = cipher
@@ -700,7 +430,13 @@ where
         Ok(())
     }
 
-    /// Receive a message with speculative decoding
+    /// Same as [`send_message`](Self::send_message). Kept as a name for the
+    /// callers that predate the removal of the speculative wrapper.
+    pub async fn send_message_raw(&mut self, msg: &Message) -> anyhow::Result<()> {
+        self.send_message(msg).await
+    }
+
+    /// Receive a message
     pub async fn receive_message(&mut self) -> anyhow::Result<Message> {
         // Read with morphing header
         let mut data = self.read_morphed_frame().await?;
@@ -733,123 +469,17 @@ where
         // Remove padding
         data = self.remove_padding(data);
 
-        // Try to parse as speculative frame
-        if let Ok(frame) = serde_json::from_slice::<SpeculativeFrame>(&data) {
-            // Store their prediction for our next send
-            self.last_input_prediction = Some(frame.next_prediction_hash);
-            self.speculation_stats.input_predictions += 1;
+        let msg: Message = wire::decode(&data)?;
 
-            // Decode payload
-            let msg_data = match frame.payload {
-                SpeculativePayload::Full(full_data) => full_data,
-                SpeculativePayload::Confirmed {
-                    confirmed_hash,
-                    delta,
-                } => {
-                    // They confirmed our prediction was correct!
-                    self.speculation_stats.input_hits += 1;
-
-                    // Reconstruct from our prediction cache
-                    if let Some(pos) = self
-                        .prediction_cache
-                        .iter()
-                        .position(|(h, _)| *h == confirmed_hash)
-                    {
-                        let (_, mut predicted_data) = self.prediction_cache.remove(pos);
-
-                        // Apply delta if any
-                        if !delta.is_empty() {
-                            // Simple XOR delta for now
-                            for (p, d) in predicted_data.iter_mut().zip(delta.iter()) {
-                                *p ^= *d;
-                            }
-                        }
-                        predicted_data
-                    } else {
-                        // Cache miss, but they confirmed it. This shouldn't happen if we're in sync.
-                        return Err(anyhow::anyhow!(
-                            "Speculation hit but prediction not in cache"
-                        ));
-                    }
-                }
-                SpeculativePayload::Partial {
-                    prefix_hash: _,
-                    prefix_len: _,
-                    suffix,
-                } => {
-                    self.speculation_stats.input_partial_hits += 1;
-                    // Would combine cached prefix with received suffix
-                    suffix
-                }
-                SpeculativePayload::Batch {
-                    predictions,
-                    fallback,
-                } => {
-                    // Check if any prediction matches our expectation
-                    if let Some(pred) = self.last_output_prediction {
-                        if predictions.contains(&pred) {
-                            self.speculation_stats.input_hits += 1;
-                        }
-                    }
-                    fallback
-                }
-            };
-
-            // Parse the actual message
-            let msg: Message = wire::decode(&msg_data)?;
-
-            // Handle proactive morphing requests from server
-            if let Message::MorphRequest { seed } = &msg {
-                self.morph_now(*seed);
-            }
-
-            // Update input predictor
-            let msg_type = Self::classify_message(&msg);
-            self.input_predictor.observe(&msg_data, msg_type);
-
-            // Evolve Chameleon key based on the decoded message
-            self.chameleon_evolve_received(&msg_data);
-
-            Ok(msg)
-        } else {
-            // Legacy message (no speculative frame)
-            let msg: Message = wire::decode(&data)?;
-
-            // Handle proactive morphing requests from server
-            if let Message::MorphRequest { seed } = &msg {
-                self.morph_now(*seed);
-            }
-
-            // Update predictor anyway
-            let msg_type = Self::classify_message(&msg);
-            self.input_predictor.observe(&data, msg_type);
-
-            self.chameleon_evolve_received(&data);
-
-            Ok(msg)
+        // Handle proactive morphing requests from server
+        if let Message::MorphRequest { seed } = &msg {
+            self.morph_now(*seed);
         }
-    }
 
-    /// Speculatively pre-compute responses for likely incoming requests
-    pub fn speculate_responses<F>(&mut self, compute_response: F)
-    where
-        F: Fn(u64) -> Option<Message>,
-    {
-        // Get batch of likely next messages
-        let predictions = self.input_predictor.predict_batch(4);
+        // Evolve Chameleon key based on the decoded message
+        self.chameleon_evolve_received(&data);
 
-        for (predicted_hash, confidence) in predictions {
-            if confidence > 0.3 {
-                if let Some(response) = compute_response(predicted_hash) {
-                    self.precompute_response(predicted_hash, response);
-                }
-            }
-        }
-    }
-
-    /// Get speculation statistics
-    pub fn get_speculation_stats(&self) -> &SpeculationStats {
-        &self.speculation_stats
+        Ok(msg)
     }
 
     /// Write frame with morphing header format (stack-allocated header, no heap alloc)
@@ -1175,48 +805,6 @@ mod tests {
                 wire::encode(&received).unwrap(),
                 wire::encode(&msg).unwrap()
             );
-        }
-    }
-
-    /// A default handler wraps every message in a `SpeculativeFrame` carrying
-    /// the whole message. Without the `research` feature the frame also
-    /// advertises no prediction.
-    #[tokio::test]
-    async fn a_default_handler_emits_a_full_speculative_frame() {
-        let (tx, mut rx) = tokio::io::duplex(64 * 1024);
-        let mut handler = ProtocolHandler::new(tx);
-        let msg = Message::Ping { timestamp: 42 };
-        handler.send_message(&msg).await.unwrap();
-
-        // Undo the framing the same way the receive path does.
-        let morph = ProtocolMorphology::new(0);
-        let mut header = vec![0u8; morph.header_size as usize];
-        rx.read_exact(&mut header).await.unwrap();
-        let len_bytes: [u8; 4] = header[..4].try_into().unwrap();
-        let len = if morph.big_endian {
-            u32::from_be_bytes(len_bytes)
-        } else {
-            u32::from_le_bytes(len_bytes)
-        } as usize;
-        let mut body = vec![0u8; len];
-        rx.read_exact(&mut body).await.unwrap();
-
-        let data = if body[0] == 0x01 {
-            wire::decode_zstd_limited(&body[1..], wire::MAX_DECODED_FRAME_BYTES).unwrap()
-        } else {
-            body[1..].to_vec()
-        };
-        let data = handler.remove_padding(data);
-
-        let frame: SpeculativeFrame = serde_json::from_slice(&data).unwrap();
-        match frame.payload {
-            SpeculativePayload::Full(bytes) => assert_eq!(bytes, wire::encode(&msg).unwrap()),
-            other => panic!("expected a Full payload, got {other:?}"),
-        }
-        assert_eq!(frame.speculation_depth, 1);
-        if cfg!(not(feature = "research")) {
-            assert_eq!(frame.next_prediction_hash, 0);
-            assert_eq!(frame.confidence, 0.0);
         }
     }
 }

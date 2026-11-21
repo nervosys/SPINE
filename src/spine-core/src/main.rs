@@ -11,8 +11,7 @@ use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
 #[cfg(feature = "research")]
 use spine_neural::NeuralLatentEncoder;
-use spine_parser::parse_html;
-use spine_protocol::{BrowserCommand, Message, PreComputedResponse, ProtocolHandler, Response};
+use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Response};
 use spine_transport::WebSocketStream;
 use spine_wasm::WasmRuntime;
 use std::sync::Arc;
@@ -1661,7 +1660,7 @@ async fn main() -> Result<()> {
     let capabilities = NodeCapabilities {
         supports_wasm: true,
         supports_chameleon: true,
-        supports_speculation: true,
+        supports_speculation: false,
         max_sessions: config.server.max_sessions,
         region: Some(config.cluster.region.clone()),
         skills: config.cluster.skills.clone(),
@@ -2725,44 +2724,6 @@ where
                         error!("Failed to stream latent vector: {}", e);
                     }
                 }
-
-                // Speculative pre-computation for likely next requests
-                let state_clone = state.clone();
-                let id_clone = id.clone();
-                handler.speculate_responses(|predicted_hash| {
-                    let session = state_clone.sessions.get(&id_clone)?;
-                    let last_cmd = session.last_command.as_ref()?;
-
-                    match last_cmd {
-                        BrowserCommand::Navigate { .. } => {
-                            // If we just navigated, the agent will likely ask for UR
-                            if let Some(html) = &session.current_html {
-                                if let Ok(ur) = parse_html(html) {
-                                    return Some(Message::PreComputed(PreComputedResponse {
-                                        request_hash: predicted_hash,
-                                        result: serde_json::to_value(ur).unwrap_or_default(),
-                                        confidence: 0.85,
-                                        alternatives: Vec::new(),
-                                    }));
-                                }
-                            }
-                        }
-                        BrowserCommand::GetUR => {
-                            // If we just got UR, the agent might want raw HTML for transpilation
-                            if let Some(html) = &session.current_html {
-                                return Some(Message::PreComputed(PreComputedResponse {
-                                    request_hash: predicted_hash,
-                                    result: serde_json::json!({ "html": html }),
-                                    confidence: 0.7,
-                                    alternatives: Vec::new(),
-                                }));
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    None
-                });
             }
             Ok(_) => {}
             Err(e) => {

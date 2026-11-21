@@ -26,10 +26,6 @@ async fn main() -> Result<()> {
     client.handler.enable_chameleon(secret);
     println!("Chameleon Protocol enabled");
 
-    // Enable speculative decoding for bandwidth savings
-    client.handler.enable_speculation(true, true);
-    println!("Speculative Decoding enabled");
-
     // Navigate — each request morphs the protocol
     client.navigate("https://example.com").await?;
     println!("Navigated (protocol morphed)");
@@ -40,13 +36,6 @@ async fn main() -> Result<()> {
     // Morph explicitly
     client.morph().await?;
     println!("Protocol morphed again");
-
-    // Check speculation stats
-    let stats = client.get_speculation_stats();
-    println!(
-        "Predictions: {}, Hits: {}, Saved: {} bytes",
-        stats.output_predictions, stats.output_hits, stats.bytes_saved
-    );
 
     Ok(())
 }

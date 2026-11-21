@@ -122,62 +122,6 @@ async fn write_header_body_inner<W: AsyncWrite + Unpin + ?Sized>(
 // research codecs are not substitutes for TLS or reviewed AEAD.
 
 // =============================================================================
-// SPECULATIVE DECODING ENGINE
-// =============================================================================
-
-/// Speculative decoding for protocol messages.
-///
-/// Inspired by LLM speculative decoding: predict the next message using a
-/// lightweight model, send the prediction hash, and if correct, only send
-/// a tiny confirmation instead of the full message.
-///
-/// Benefits:
-/// - Massive bandwidth reduction when predictions are correct
-/// - Reduced latency (receiver can pre-compute response)
-/// - Pattern obfuscation (predictions look like noise to observers)
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SpeculativeFrame {
-    /// The actual message (may be empty if prediction was correct)
-    pub payload: SpeculativePayload,
-    /// Hash of our prediction for the NEXT message we expect to receive
-    pub next_prediction_hash: u64,
-    /// Confidence score for the prediction (0.0 - 1.0)
-    pub confidence: f32,
-    /// Number of tokens/elements we're speculating ahead
-    pub speculation_depth: u8,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SpeculativePayload {
-    /// Full message (prediction miss or first message)
-    Full(Vec<u8>),
-    /// Prediction hit - just send confirmation + any delta
-    Confirmed {
-        /// Hash of the correctly predicted message
-        confirmed_hash: u64,
-        /// Any additional data not covered by prediction
-        delta: Vec<u8>,
-    },
-    /// Partial match - send only the differing portions
-    Partial {
-        /// Hash of matched prefix
-        prefix_hash: u64,
-        /// Length of matched prefix in bytes
-        prefix_len: u32,
-        /// The divergent suffix
-        suffix: Vec<u8>,
-    },
-    /// Speculative batch - multiple predicted messages
-    Batch {
-        /// Ordered predictions (most likely first)
-        predictions: Vec<u64>,
-        /// Actual message if none match
-        fallback: Vec<u8>,
-    },
-}
-
-// =============================================================================
 // LATENT SPACE CRYPTOGRAPHY
 // =============================================================================
 
@@ -280,12 +224,6 @@ pub enum Message {
     BinaryProgram(SpineBinary),
     /// Latent-encoded message (implicit encryption)
     LatentMessage(LatentVector),
-    /// Protocol synchronization (for moving-target alignment)
-    Sync(SyncPayload),
-    /// Speculative frame (prediction-accelerated message)
-    Speculative(SpeculativeFrame),
-    /// Pre-computed response (receiver sends this when prediction matched)
-    PreComputed(PreComputedResponse),
     /// Server-initiated request to morph the protocol
     MorphRequest {
         seed: u64,
@@ -330,19 +268,6 @@ pub enum Message {
     EmbeddingResponse(EmbeddingResponse),
 }
 
-/// Pre-computed response that was speculatively prepared
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct PreComputedResponse {
-    /// Hash of the request this responds to
-    pub request_hash: u64,
-    /// The pre-computed result
-    pub result: serde_json::Value,
-    /// Confidence that this is the right response
-    pub confidence: f32,
-    /// Alternative responses if primary is rejected
-    pub alternatives: Vec<(u64, serde_json::Value)>,
-}
-
 /// Virtual DOM patch for incremental updates
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VDomPatch {
@@ -360,15 +285,6 @@ pub enum VDomPatch {
     RemoveChild { parent_id: u32, child_id: u32 },
     /// Reorder children
     ReorderChildren { parent_id: u32, order: Vec<u32> },
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SyncPayload {
-    pub epoch: u64,
-    pub morphology_hash: u64,
-    pub challenge: Vec<f32>,
-    /// Predictor state sync (for speculative decoding alignment)
-    pub predictor_state: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

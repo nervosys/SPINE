@@ -91,22 +91,6 @@ async fn single_bench(addr: &str, iterations: usize) -> Result<()> {
         );
     }
 
-    // ── Speculation Stats ──
-    eprintln!();
-    eprintln!("{}", "═══ Speculation ═══".bold());
-    let stats = client.get_speculation_stats();
-    eprintln!("  Output predictions: {}", stats.output_predictions);
-    eprintln!(
-        "  Output accuracy:   {:.1}%",
-        stats.output_accuracy() * 100.0
-    );
-    eprintln!("  Input predictions:  {}", stats.input_predictions);
-    eprintln!(
-        "  Input accuracy:    {:.1}%",
-        stats.input_accuracy() * 100.0
-    );
-    eprintln!("  Bytes saved:        {}", stats.bytes_saved);
-
     eprintln!();
     eprintln!("{} Benchmark complete", "✓".green().bold());
     Ok(())

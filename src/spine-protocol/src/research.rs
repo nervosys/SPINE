@@ -1,18 +1,15 @@
 //! Research-only protocol machinery, compiled when the `research` feature is on.
 //!
-//! Everything here is experimental: the Chameleon latent-space key, the
-//! speculative predictor, `SpineConnection`, and the protocol evolution
-//! framework. It is the only part of the crate that needs `spine-neural` and
-//! `spine-crypto`. The wire types, the codec and `ProtocolHandler` (which
-//! plugs the chameleon and the predictor in when this feature is on) do not
-//! depend on it, so `--no-default-features` builds without either crate. With
-//! the feature on, every item below is re-exported from the crate root, so
-//! public paths are unchanged.
+//! Everything here is experimental: the Chameleon latent-space key,
+//! `SpineConnection`, and the protocol evolution framework. It is the only
+//! part of the crate that needs `spine-neural` and `spine-crypto`. The wire
+//! types, the codec and `ProtocolHandler` (which plugs the chameleon in when
+//! this feature is on) do not depend on it, so `--no-default-features` builds
+//! without either crate. With the feature on, every item below is re-exported
+//! from the crate root, so public paths are unchanged.
 
 use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
-use spine_crypto::{
-    LatticeParams, QuantumSpeculativeProtocol, TransformerConfig, TransformerPredictor,
-};
+use spine_crypto::{LatticeParams, QuantumSpeculativeProtocol, TransformerConfig};
 use spine_neural::{MirasNeuralEncoder, MirasVariant, NeuralEncoderConfig, NeuralLatentEncoder};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
@@ -52,149 +49,6 @@ fn chameleon_seed(secret: &[u8; 32]) -> u64 {
     hk.expand(b"spine-chameleon-seed", &mut bytes)
         .expect("HKDF expand into 8 bytes cannot fail");
     u64::from_le_bytes(bytes)
-}
-
-/// Prediction model for speculative decoding
-#[derive(Clone)]
-pub struct SpeculativePredictor {
-    /// Transformer-based predictor
-    transformer: TransformerPredictor,
-    /// Recent message history for pattern learning
-    history: VecDeque<MessagePattern>,
-    /// Maximum history size
-    max_history: usize,
-    /// Sequence predictor state
-    sequence_state: u64,
-    /// Enable speculative output (sending predictions)
-    pub(crate) output_speculation: bool,
-    /// Enable speculative input (pre-computing responses)
-    pub(crate) input_speculation: bool,
-}
-
-#[derive(Clone, Debug)]
-struct MessagePattern {
-    hash: u64,
-    _message_type: MessageType,
-    _size: usize,
-    /// Stack-allocated fixed signature (no heap allocation per message)
-    _latent_signature: Option<[f32; 8]>,
-}
-
-impl SpeculativePredictor {
-    pub fn new() -> Self {
-        let config = TransformerConfig {
-            embed_dim: 64,
-            num_heads: 4,
-            num_layers: 4,
-            ff_dim: 128,
-            max_seq_len: 128,
-            memory_size: 32, // Titans persistent memory tokens
-            seed: 42,
-        };
-        Self {
-            transformer: TransformerPredictor::new(config),
-            history: VecDeque::with_capacity(64),
-            max_history: 64,
-            sequence_state: 0,
-            output_speculation: true,
-            input_speculation: true,
-        }
-    }
-
-    /// Record an observed message and update the prediction model
-    pub fn observe(&mut self, data: &[u8], msg_type: MessageType) {
-        let hash = Self::hash_data(data);
-        let pattern = MessagePattern {
-            hash,
-            _message_type: msg_type,
-            _size: data.len(),
-            _latent_signature: self.extract_latent_signature(data),
-        };
-
-        // Update transformer
-        self.transformer.observe(data);
-
-        // Add to history
-        self.history.push_back(pattern);
-        if self.history.len() > self.max_history {
-            self.history.pop_front();
-        }
-
-        // Update sequence state (chaotic mixing)
-        self.sequence_state = self
-            .sequence_state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(hash);
-    }
-
-    /// Predict the next message hash with confidence
-    pub fn predict_next(&mut self) -> (u64, f32) {
-        if self.history.is_empty() {
-            return (0, 0.0);
-        }
-
-        // Predict a sequence of bytes (e.g., 32 bytes for a compact message or header)
-        let predicted_data = self.transformer.predict_sequence(32, true);
-        let hash = Self::hash_data(&predicted_data);
-
-        // For now, we use a fixed confidence from the first byte prediction
-        let (_, prob) = self.transformer.predict_next();
-
-        (hash, prob)
-    }
-
-    /// Predict the next message data
-    pub fn predict_next_data(&mut self, length: usize) -> Vec<u8> {
-        self.transformer.predict_sequence(length, true)
-    }
-
-    /// Predict multiple possible next messages (for batch speculation)
-    pub fn predict_batch(&mut self, _count: usize) -> Vec<(u64, f32)> {
-        let (byte, prob) = self.predict_next();
-        vec![(byte, prob)]
-    }
-
-    /// Check if a message matches our prediction
-    pub fn verify_prediction(&self, data: &[u8], predicted_hash: u64) -> bool {
-        Self::hash_data(data) == predicted_hash
-    }
-
-    /// Compute prefix match length for partial speculation
-    pub fn compute_prefix_match(&self, data: &[u8], predicted_data: &[u8]) -> usize {
-        data.iter()
-            .zip(predicted_data.iter())
-            .take_while(|(a, b)| a == b)
-            .count()
-    }
-
-    fn hash_data(data: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    fn extract_latent_signature(&self, data: &[u8]) -> Option<[f32; 8]> {
-        // Extract a compact signature from the data for similarity matching
-        if data.len() < 32 {
-            return None;
-        }
-
-        // Stack-allocated fixed signature: first 8 floats from data
-        let mut sig = [0.0f32; 8];
-        for (i, chunk) in data.chunks(4).take(8).enumerate() {
-            if chunk.len() == 4 {
-                sig[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            }
-        }
-
-        Some(sig)
-    }
-}
-
-impl Default for SpeculativePredictor {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// Dynamic transformation matrix that evolves with each message.
@@ -429,13 +283,6 @@ struct ProtocolHandlerState {
     chameleon: Option<ChameleonKey>,
     morphology: ProtocolMorphology,
     moving_target: bool,
-    output_predictor: SpeculativePredictor,
-    input_predictor: SpeculativePredictor,
-    precomputed_cache: Vec<(u64, Message)>,
-    prediction_cache: Vec<(u64, Vec<u8>)>,
-    last_output_prediction: Option<u64>,
-    last_input_prediction: Option<u64>,
-    pub speculation_stats: SpeculationStats,
     /// Latent-space AEAD mode (M2)
     latent_aead: bool,
 }
@@ -587,13 +434,6 @@ impl ProtocolHandlerState {
             chameleon: None,
             morphology: ProtocolMorphology::new(0),
             moving_target: false,
-            output_predictor: SpeculativePredictor::new(),
-            input_predictor: SpeculativePredictor::new(),
-            precomputed_cache: Vec::with_capacity(16),
-            prediction_cache: Vec::with_capacity(16),
-            last_output_prediction: None,
-            last_input_prediction: None,
-            speculation_stats: SpeculationStats::default(),
             latent_aead: false,
         }
     }
@@ -920,20 +760,6 @@ mod tests {
             let vector = key.encode(b"Test message");
             assert!(!vector.components.is_empty());
         }
-    }
-
-    #[test]
-    fn test_speculative_predictor() {
-        let mut predictor = SpeculativePredictor::new();
-
-        // Observe some messages
-        predictor.observe(b"GET /api/users", MessageType::Request);
-        predictor.observe(b"200 OK", MessageType::Response);
-        predictor.observe(b"GET /api/posts", MessageType::Request);
-
-        // Get prediction
-        let (hash, confidence) = predictor.predict_next();
-        assert!(hash != 0 || confidence >= 0.0);
     }
 
     /// The derivation has to be a function of the secret alone, or two peers

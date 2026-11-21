@@ -11,9 +11,6 @@ pub enum Message {
     Event(Event),
     BinaryProgram(SpineBinary),
     LatentMessage(LatentVector),
-    Sync(SyncPayload),
-    Speculative(SpeculativeFrame),
-    PreComputed(PreComputedResponse),
     MorphRequest { seed: u64 },
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
@@ -42,14 +39,6 @@ Adaptive compression using a 1-byte flag protocol:
 - Payloads < 64 bytes are sent raw (compression overhead exceeds savings)
 - Larger payloads use zstd compression
 - Stack-allocated `[u8; 16]` headers avoid heap allocation
-
-## Speculation
-
-The protocol supports speculative message prediction:
-- Bidirectional prediction with Titans architecture
-- Pre-computed responses sent before request arrives
-- Surprise-gated learning adjusts predictions over time
-- Speculation hits eliminate round-trip latency entirely
 
 ## Transport Options
 

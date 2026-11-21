@@ -13,7 +13,7 @@ SPINE is a headless semantic browser and native communication stack designed for
 │  • spine-agent: High-level SDK for AI applications  │
 └────────────────────┬─────────────────────────────────────┘
                      │
-                     │ Chameleon Protocol + Speculative Decoding
+                     │ Chameleon Protocol
                      │
 ┌────────────────────▼─────────────────────────────────────┐
 │                  Protocol Layer                          │
@@ -176,12 +176,6 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 - **Latent-Space Cryptography**: Messages are projected into a high-dimensional latent space using `spine-neural`.
 - **Moving-Target Defense**: The protocol "morphs" its encoding scheme periodically to resist traffic analysis.
 - **Quantum-Resistant**: Uses Ring-LWE lattice-based cryptography from `spine-crypto` for key evolution.
-
-**Speculative Decoding**:
-
-- **Titans Prediction**: Uses a `TitansPredictor` with Neural Long-Term Memory to predict the next bytes of a message before they are fully received.
-- **Anomaly Detection**: Surprise scores identify novel or malicious patterns.
-- **Latency Reduction**: Allows the agent to begin processing responses while they are still in transit.
 
 **Message Format**:
 
@@ -370,7 +364,7 @@ This is essential for:
 
 **Key Features**:
 
-- **TitansPredictor**: Neural Long-Term Memory for byte-level speculative decoding with unbounded context.
+- **TitansPredictor**: Neural Long-Term Memory for byte-level message prediction with unbounded context (a library; the wire does not use it).
 - **Anomaly Detection**: Surprise-gated updates identify novel or malicious message patterns.
 - **Quantum-Resistant Keys**: Ring-LWE lattice cryptography for post-quantum security.
 - **Key Evolution**: Hash-chain based forward secrecy.
@@ -532,14 +526,6 @@ pub struct ExecutionResult {
 
 ## Advanced Features
 
-### Titans Speculative Decoding
-
-SPINE reduces perceived latency by predicting the next likely messages in a sequence using Neural Long-Term Memory.
-1. The `TitansPredictor` analyzes historical message patterns with persistent memory.
-2. The `ProtocolHandler` pre-computes responses for predicted requests.
-3. If the agent's next request matches a prediction, the response is served with zero-bandwidth reconstruction from the local cache.
-4. High surprise scores trigger anomaly alerts for security monitoring.
-
 ### MIRAS-Adaptive Encoding
 
 The MIRAS framework (Memory, Inference, Retrieval, and Storage) provides **anomaly detection + pattern adaptation** variants that automatically adapt to traffic patterns:
@@ -681,8 +667,8 @@ The traditional web was designed for humans: point, click, read, scroll. SPINE i
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2: Latent Communication                                  │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
-│  │ Chameleon   │ │ Speculative │ │ Neural      │               │
-│  │ Protocol    │ │ Decoding    │ │ Encoding    │               │
+│  │ Chameleon   │ │ Zstd        │ │ Neural      │               │
+│  │ Protocol    │ │ Compression │ │ Encoding    │               │
 │  └─────────────┘ └─────────────┘ └─────────────┘               │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: Transport                                             │
@@ -724,7 +710,7 @@ Agents maintain persistent knowledge with embedding-based retrieval for similari
 | --------------- | --------------- | ---------------------------------------------- |
 | Transport       | spine-protocol  | QUIC/TCP with Chameleon encryption             |
 | Neural Encoding | spine-neural    | VAE + MIRAS latent projections                 |
-| Prediction      | spine-crypto    | Titans predictor for speculative communication |
+| Prediction      | spine-crypto    | Titans predictor (library only, not on the wire) |
 | Planning        | spine-compiler  | HLS→HLB for executable plans                   |
 | Knowledge       | spine-cluster   | Distributed knowledge synchronization          |
 

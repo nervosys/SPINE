@@ -17,9 +17,7 @@ async fn main() -> Result<()> {
     client.handler.enable_chameleon(secret);
     println!("[✓] Chameleon Protocol enabled");
 
-    // Enable speculative decoding
-    client.handler.enable_speculation(true, true);
-    println!("[✓] Speculative Decoding enabled\n");
+    println!();
 
     println!("[1] Compiling autonomous HLS program...\n");
 

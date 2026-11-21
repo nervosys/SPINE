@@ -1046,27 +1046,6 @@ impl eframe::App for SpineBrowser {
             ui.horizontal(|ui| {
                 ui.label(format!("Status: {}", self.status));
                 ui.separator();
-
-                if let Ok(agent_lock) = self.agent.try_lock() {
-                    if let Some(agent) = agent_lock.as_ref() {
-                        let agent: &AgentClient<tokio::net::TcpStream> = agent;
-                        let stats = agent.handler.speculation_stats.clone();
-                        ui.label(format!(
-                            "Speculation: Hits: {} / Preds: {} ({:.1}%)",
-                            stats.output_hits,
-                            stats.output_predictions,
-                            if stats.output_predictions > 0 {
-                                (stats.output_hits as f32 / stats.output_predictions as f32) * 100.0
-                            } else {
-                                0.0
-                            }
-                        ));
-                        ui.separator();
-                        ui.label(format!("Bandwidth Saved: {} bytes", stats.bytes_saved));
-                    }
-                }
-
-                ui.separator();
                 ui.label(format!("History: {} pages", self.history.len()));
                 ui.separator();
                 ui.label("Capabilities:");

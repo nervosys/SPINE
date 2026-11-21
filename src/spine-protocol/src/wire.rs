@@ -58,7 +58,7 @@ pub const WIRE_VERSION: u8 = 1;
 pub const HEADER_LEN: usize = 8;
 /// Maximum serialized message body, before any optional compression.
 pub const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
-/// Maximum decoded outer speculative frame (JSON expands byte arrays).
+/// Maximum decoded frame body after the handler's zstd layer.
 pub const MAX_DECODED_FRAME_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum frame carried by native TCP or a native transport stream.
 pub const MAX_TRANSPORT_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -351,11 +351,9 @@ mod tests {
     fn encode_never_compresses_but_encode_compressed_can() {
         // A large, compressible payload: plain `encode` stays CBOR (fast path);
         // `encode_compressed` selects CBOR+zstd and `decode` reads both.
-        let big = Message::Sync(crate::SyncPayload {
-            epoch: 1,
-            morphology_hash: 2,
-            challenge: vec![0.5; 2048],
-            predictor_state: None,
+        let big = Message::Event(crate::Event {
+            name: "large".to_string(),
+            data: serde_json::json!({ "payload": "x".repeat(8192) }),
         });
         let plain = encode(&big).unwrap();
         assert_eq!(plain[3], FORMAT_CBOR, "encode must never auto-compress");

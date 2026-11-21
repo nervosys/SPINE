@@ -18,14 +18,12 @@ API documentation: <https://docs.rs/spine-protocol>
 - `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
 - `research` (off by default): research code that needs `spine-neural` and
   `spine-crypto`: `ChameleonKey` (and `ProtocolHandler::enable_chameleon` and
-  `enable_chameleon_aead`), the speculative predictor, `SpineConnection`,
+  `enable_chameleon_aead`), `SpineConnection`,
   `connect_auto`, the protocol evolution framework and `TitansLatentCodec`.
   Enable it with `spine-protocol = { version = "2", features = ["research"] }`.
   Without it you get the wire types, the wire codec (`wire`), `Message`,
   `BrowserCommand`, the task types and `ProtocolHandler` with neither research
-  crate in the tree; the handler never predicts, so it sends full frames only,
-  and a research peer reads them unchanged. Through 2.0.2 this feature was on by
-  default.
+  crate in the tree. Through 2.0.2 this feature was on by default.
 
 ## Workspace dependencies
 
