@@ -64,23 +64,19 @@ set -uo pipefail
 # tests now report a "test result:" line of their own. Re-measure and tighten
 # this on the next full run.
 #
-# 72 -> 43: the research crates moved to the separate `research/` workspace, so
+# 72 -> 45: the research crates moved to the separate `research/` workspace, so
 # this script (which runs at the repository root) no longer sees their suites.
-# NOT MEASURED. Derived: counting test targets from `cargo metadata` (2 per lib
-# crate -- unit tests and doctests each print a "test result:" line -- plus 1
-# per bin and 1 per tests/*.rs file) gives 46 for the 18 root members and 29 for
-# the 14 research crates, 75 in all against the measured floor of 72. So the new
-# floor is the old measured floor minus the research share: 72 - 29 = 43.
-# Re-measure from CI and tighten.
+# Measured: the Linux CI run on a580b33 reported 45 suites, 993 passed,
+# 0 failed, 3 ignored for the root workspace.
 #
 # `research/` is not covered by this script; run it there with
 # `cd research && cargo test --workspace --exclude spine-browser --lib --tests`.
-EXPECTED_SUITES_MIN=43
+EXPECTED_SUITES_MIN=45
 # 5 -> 3: all five ignored tests are `ignore`-fenced doctests. Two (research)
 # left with the move: research/spine-cluster/src/marketplace.rs:27 and
 # research/spine-recursive/src/lib.rs:49. Three remain at the root:
 # src/spine-protocol/src/replay.rs:21 and src/spine-transport/src/websocket.rs
-# lines 25 and 31. Assumes those modules are compiled in the default build.
+# lines 25 and 31. Confirmed by the same run.
 EXPECTED_IGNORED=3
 EXPECTED_TOTAL="${1:-}"
 

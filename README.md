@@ -783,8 +783,7 @@ cargo build --release              # the stack (repository root)
 ```bash
 scripts/verify.sh              # tests + Clippy of the root workspace, and checks the run finished
 ```
-
-The `1418` total this command used to take is stale: the root workspace no
+The root workspace total measured on the Linux CI run for `a580b33` is 993 passed, 0 failed, 3 ignored across 45 suites; the older `1418` figure included the research crates.
 longer runs the research crates' tests. Re-measure it before passing a total.
 Research tests run separately: `cd research && cargo test --workspace --exclude spine-browser`.
 

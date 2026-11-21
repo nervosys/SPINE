@@ -314,6 +314,8 @@ Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes th
 
 **2026-11-20, pull request #49, `62138e3`.** Every job passed with the SDK research-free by default (`spine-agent`: human mode and `transmit_neural` behind `research`; eight examples need the feature; `spine-cli` and `spine-compiler` take `spine-protocol` without research). `bc25f4f` (CI pending) does the same for `spine-gateway`: the Titans codec is behind `research`; without it `POST /v1/embeddings` answers 503 "no codecs registered" and the codec list is empty. After these, `cargo tree` shows no research crate reachable from `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway` or `spine-mesh` in their default builds. `spine-web` and the research-side crates `spine-cluster`, `spine-grpc`, `spine-human` still enable `spine-protocol/research`, which keeps the research code compiled and tested in the workspace run until it moves out.
 
+**2026-11-20, pull request #49, `a580b33`.** The fourteen research crates moved to a separate workspace under `research/`. Root workspace: lint, docs, MSRV, audit, deny, coverage and the Linux and macOS tests passed (Linux: 45 suites, 993 passed, 0 failed, 3 ignored). The new `research` CI job failed on one compile error: the `spine-recursive` bench needs criterion's `async_tokio`, previously enabled only through feature unification with `spine-stream` and `spine-transport`. Fixed in `46698c5` (CI pending).
+
 ## References
 
 - [SPINE from first principles](docs/FIRST_PRINCIPLES.md) and the layer specifications in `docs/spec/`
