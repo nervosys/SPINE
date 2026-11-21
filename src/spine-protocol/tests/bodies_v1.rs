@@ -588,7 +588,8 @@ fn every_ok_and_err_shape_roundtrips_both_ways() {
     }
 }
 
-/// The typed results decode from the same bytes as the JSON-shaped ones.
+/// The typed results decode from the same bytes as the JSON-shaped ones,
+/// except where a result carries byte strings.
 #[test]
 fn typed_results_agree_with_the_json_shaped_ones() {
     let chunk = ResourceChunk {
@@ -637,7 +638,12 @@ fn typed_results_agree_with_the_json_shaped_ones() {
         let loose = native::decode_reply::<Value>(&body).unwrap();
         assert_eq!(cbor::to_vec(&loose).unwrap(), body);
     }
-    check(&chunk);
+    // A result with byte-string fields has no JSON-shaped reading: CBOR byte
+    // strings are not a JSON value, so such results are only read typed.
+    let body = cbor::to_vec(&Reply::Ok(&chunk)).unwrap();
+    let typed = native::decode_reply::<ResourceChunk>(&body).unwrap();
+    assert_eq!(typed.into_result().unwrap(), chunk);
+    assert!(native::decode_reply::<Value>(&body).is_err());
     check(&advertisement);
     for resolution in &resolutions {
         check(resolution);
