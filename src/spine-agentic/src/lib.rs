@@ -65,13 +65,11 @@ pub mod consensus;
 pub mod contract;
 pub mod federation;
 pub mod lifecycle;
-pub mod mesh_quic;
 pub mod ontology_vocab;
 pub mod policy;
 pub mod replay;
 pub mod sandbox;
 pub mod scheduler;
-pub mod signed_frame;
 pub mod stigmergy;
 pub mod topology;
 pub mod tracing;
@@ -81,7 +79,9 @@ pub mod workflow;
 // The production mesh stack lives in `spine-mesh`; re-exported so the existing
 // `spine_agentic::mesh::..` and `spine_agentic::AgentId` paths keep resolving.
 pub use spine_mesh::AgentId;
-pub use spine_mesh::{identity, mesh, mesh_tcp, mesh_ws, naming, naming_mesh};
+pub use spine_mesh::{
+    identity, mesh, mesh_quic, mesh_tcp, mesh_ws, naming, naming_mesh, signed_frame,
+};
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};

@@ -466,7 +466,7 @@ linked to, referred to, or found without already knowing where it lived.
       TCP and WebSocket share one code path and only connection establishment
       differs. WebSocket traverses the proxies and firewalls that drop bare TCP,
       and is the only transport a browser-resident agent can open at all.
-- [x] **QUIC transport** (`spine-agentic::mesh_quic`): deliberately *not* the
+- [x] **QUIC transport** (`spine-mesh::mesh_quic`): deliberately *not* the
       byte-pipe path — one connection per peer, one bidirectional stream per
       exchange, so concurrent lookups cannot head-of-line block one another.
       Confidentiality from QUIC's TLS 1.3; mesh-identity authentication from a

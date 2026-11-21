@@ -3,11 +3,12 @@
 //! The production agent-mesh stack: Ed25519 agent identities ([`identity`]),
 //! the signed mesh envelope and node ([`mesh`]), the signed name-record layer
 //! ([`naming`]) and its mesh RPC ([`naming_mesh`]), and the authenticated TCP
-//! and WebSocket transports ([`mesh_tcp`], [`mesh_ws`]).
+//! and WebSocket transports ([`mesh_tcp`], [`mesh_ws`]), the QUIC transport
+//! ([`mesh_quic`]) and the per-message signed frame ([`signed_frame`]).
 //!
-//! The QUIC transport and the signed-frame codec stay in `spine-agentic`
-//! because they need `spine-protocol`, which still depends on research crates.
-//! `spine-agentic` re-exports everything here, so existing
+//! `spine-protocol` is used without its `research` feature, so no research
+//! crate is in this crate's dependency tree. `spine-agentic` re-exports
+//! everything here, so existing
 //! `spine_agentic::mesh::..` paths keep working.
 
 // Allow dead code for extensive public API surface designed for future use
@@ -19,10 +20,12 @@ use uuid::Uuid;
 
 pub mod identity;
 pub mod mesh;
+pub mod mesh_quic;
 pub mod mesh_tcp;
 pub mod mesh_ws;
 pub mod naming;
 pub mod naming_mesh;
+pub mod signed_frame;
 
 /// Unique identifier for an agent in the agentic web
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

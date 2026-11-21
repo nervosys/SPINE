@@ -9,9 +9,10 @@ how the pieces fit together and the
 [CHANGELOG](https://github.com/nervosys/SPINE/blob/master/CHANGELOG.md) for
 what changed in this release.
 
-The QUIC mesh transport and the signed-frame codec remain in `spine-agentic`
-because they need `spine-protocol`, which still depends on research crates.
-`spine-agentic` re-exports this crate's modules and `AgentId`.
+The QUIC mesh transport and the signed-frame codec live here too. They use
+`spine-protocol` without its `research` feature, so `spine-neural` and
+`spine-crypto` are not in this crate's dependency tree. `spine-agentic`
+re-exports this crate's modules and `AgentId`.
 
 ## Documentation
 

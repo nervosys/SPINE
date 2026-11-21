@@ -18,11 +18,10 @@ API documentation: <https://docs.rs/spine-agentic>
 - `spine-compiler`
 - `spine-crypto`
 - `spine-knowledge`
+- `spine-mesh`
 - `spine-name`
 - `spine-neural`
 - `spine-session`
-- `spine-protocol`
-- `spine-transport`
 - `spine-wasm`
 
 ## License

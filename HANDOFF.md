@@ -127,7 +127,7 @@ Every file below is new except the four marked *(edited)*.
 | `src/spine-mesh/src/naming.rs` | 992 | `Lookup` state machine, `NameService`. |
 | `src/spine-mesh/src/naming_mesh.rs` | 695 | The live driver and the two-routing-space bridge. |
 | `src/spine-session/src/handshake.rs` | 715 | ML-KEM + Ed25519 channel. Read the module docs first. |
-| `src/spine-agentic/src/mesh_quic.rs` | 595 | Stream-per-exchange QUIC. |
+| `src/spine-mesh/src/mesh_quic.rs` | 595 | Stream-per-exchange QUIC. |
 | `src/spine-mesh/src/mesh_ws.rs` | 444 | WebSocket establishment. |
 | `src/spine-parser/src/lib.rs` | *(edited)* | `Element::AgentLink`, `agent_links()`. |
 | `src/spine-protocol/src/lib.rs` | *(edited)* | Namespace commands, `NameResolution`. |

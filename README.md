@@ -334,8 +334,8 @@ SPINE is composed of 28 specialized crates organized into a cohesive bioinspired
 
 - **`spine-agent`**: High-level SDK for building AI agents that can navigate, parse, and execute on the SPINE stack.
 - **`spine-name`**: The namespace — the `spine://` URI scheme, self-certifying `did:`/`blob:`/`cap:` authorities, signed name records, the 256-bit DHT keyspace, the resolver cache, and the typed link graph with its crawl frontier.
-- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities. Re-exports the `spine-mesh` stack (`naming`, `naming_mesh`, `mesh_tcp`, `mesh_ws`, `identity`, `mesh`) and hosts the parts that still need research-linked crates: `mesh_quic` (stream-per-exchange multiplexing) and `signed_frame`, which stay here because they need `spine-protocol`, which still depends on research crates.
-- **`spine-mesh`**: the production mesh stack — Ed25519 identities, signed mesh envelopes, signed name records with their mesh RPC, and the authenticated TCP and WebSocket transports. Depends only on `spine-name`, `spine-session` and `spine-transport`; `spine-agentic` re-exports it.
+- **`spine-agentic`**: Advanced agentic AI framework with swarm intelligence, cognitive architectures, and adversarial capabilities. Re-exports the `spine-mesh` stack (`naming`, `naming_mesh`, `mesh_tcp`, `mesh_ws`, `mesh_quic`, `signed_frame`, `identity`, `mesh`).
+- **`spine-mesh`**: the production mesh stack — Ed25519 identities, signed mesh envelopes, signed name records with their mesh RPC, and the authenticated TCP, WebSocket and QUIC (stream-per-exchange) transports and the per-message signed frame. Depends on `spine-name`, `spine-session`, `spine-transport` and `spine-protocol` without its `research` feature, so no research crate is in its tree; `spine-agentic` re-exports it.
 - **`spine-session`**: the `handshake` — the authenticated, forward-secret channel the mesh runs over (ML-KEM-768 + Ed25519). No dependency on any other workspace crate; `spine-crypto` re-exports it as `spine_crypto::handshake`.
 - **`spine-crypto`**: X3DH, RLWE lattice keys, and ML-KEM (FIPS 203) research primitives.
 - **`spine-cluster`**: Distributed coordination layer with skill-based routing, consensus voting, and swarm plan orchestration.
@@ -1406,8 +1406,8 @@ column sums to the workspace total.
 
 | Crate           | Tests | Description                                                   |
 | --------------- | ----- | ------------------------------------------------------------- |
-| spine-agentic   | 258*  | Lifecycle, sandbox, scheduler, contracts, QUIC mesh, swarm    |
-| spine-mesh      | 168*  | Identity, mesh envelope/node, naming, TCP/WebSocket transport |
+| spine-agentic   | 244*  | Lifecycle, sandbox, scheduler, contracts, swarm               |
+| spine-mesh      | 182*  | Identity, mesh envelope/node, naming, TCP/WS/QUIC, signed frame |
 | spine-protocol  | 148   | Chameleon protocol, AEAD, chaos, integration, property        |
 | spine-name      | 113   | The `spine://` namespace: URIs, records, keyspace, resolution |
 | spine-transport | 85    | Zero-copy I/O, BBR, connection pooling, property              |
@@ -1439,7 +1439,7 @@ column sums to the workspace total.
 | spine-web       | 0     | Umbrella facade crate (re-exports only)                       |
 | spine-browser   | 0     | Cross-platform GUI browser (egui)                             |
 
-\* `spine-agentic` (258) and `spine-mesh` (168) are from the Linux CI run on `6e47224`, which reported those two unit-test suites; before the split `spine-agentic` was listed at 392. The other rows and the 1,418 total date from the last full local run and have not been re-measured, so the column does not currently sum to the total.
+\* `spine-agentic` (258) and `spine-mesh` (168) are from the Linux CI run on `6e47224`, which reported those two unit-test suites; before the split `spine-agentic` was listed at 392. Moving `mesh_quic` and `signed_frame` into `spine-mesh` then shifted 14 tests (9 `#[tokio::test]` and 5 `#[test]` attributes), so the table now shows 244 and 182; that adjustment is an attribute count pending the next CI run. The other rows and the 1,418 total date from the last full local run and have not been re-measured, so the column does not currently sum to the total.
 
 ### Benchmarks
 

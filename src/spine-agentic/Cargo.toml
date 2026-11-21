@@ -26,11 +26,9 @@ ed25519-dalek.workspace = true
 spine-neural = { path = "../spine-neural", version = "2.0.2" }
 spine-crypto = { path = "../spine-crypto", version = "2.0.2" }
 spine-mesh = { path = "../spine-mesh", version = "2.0.2" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
 spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 spine-knowledge = { path = "../spine-knowledge", version = "2.0.2" }
 spine-name = { path = "../spine-name", version = "2.0.2" }
-spine-transport = { path = "../spine-transport", version = "2.0.2" }
 # Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
 # Default-on so the runtime executes out of the box; disable default-features to
 # drop the wasmtime dependency (Action::Execute then returns an honest error,
@@ -45,8 +43,6 @@ petgraph = "0.6"
 url = { version = "2", features = ["serde"] }
 regex = "1.10"
 futures = "0.3"
-quinn = "0.11"
-rustls.workspace = true
 async-trait = "0.1"
 
 [features]

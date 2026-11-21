@@ -55,6 +55,9 @@ jobs:
       - name: Clippy (spine-core without research code)
         run: cargo clippy -p spine-core --no-default-features --all-targets -- -D warnings
 
+      - name: Clippy (spine-mesh alone)
+        run: cargo clippy -p spine-mesh --all-targets -- -D warnings
+
   # ── Security Audit ─────────────────────────────────────────────────────────
   audit:
     runs-on: ubuntu-latest
