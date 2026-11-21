@@ -34,9 +34,10 @@ type Conn = Connection<DuplexStream>;
 async fn connection_pair() -> (Conn, Conn) {
     let (client, server) = duplex(64 * 1024);
     let (client, server) = within(async {
+        let config = native::local_config();
         tokio::join!(
             Connection::client_handshake(client, native::client_hello(), LIMIT),
-            Connection::server_handshake(server, &native::local_config(), LIMIT)
+            Connection::server_handshake(server, &config, LIMIT)
         )
     })
     .await;

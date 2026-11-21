@@ -38,9 +38,10 @@ type Conn = Connection<DuplexStream>;
 async fn pair(buffer: usize) -> (Conn, Conn) {
     let (a, b) = duplex(buffer);
     let (client, server) = within(async {
+        let config = native::local_config();
         tokio::join!(
             Connection::client_handshake(a, native::client_hello(), LIMIT),
-            Connection::server_handshake(b, &native::local_config(), LIMIT)
+            Connection::server_handshake(b, &config, LIMIT)
         )
     })
     .await;
@@ -108,10 +109,8 @@ async fn chaos_connection_drop_mid_session() {
     // A few exchanges succeed.
     for i in 0..3u64 {
         let (reply, _) = within(async {
-            tokio::join!(
-                native::call(&mut client, &ping_request(i)),
-                serve_one(&mut server)
-            )
+            let request = ping_request(i);
+            tokio::join!(native::call(&mut client, &request), serve_one(&mut server))
         })
         .await;
         reply.unwrap();
@@ -233,10 +232,8 @@ async fn chaos_rapid_reconnection() {
         let (mut client, mut server) = pair(4096).await;
 
         let (reply, request) = within(async {
-            tokio::join!(
-                native::call(&mut client, &ping_request(42)),
-                serve_one(&mut server)
-            )
+            let request = ping_request(42);
+            tokio::join!(native::call(&mut client, &request), serve_one(&mut server))
         })
         .await;
         reply.unwrap();
@@ -256,10 +253,8 @@ async fn chaos_many_small_messages() {
     // exchanges, each checked.
     for i in 0..1000u64 {
         let (reply, request) = within(async {
-            tokio::join!(
-                native::call(&mut client, &ping_request(i)),
-                serve_one(&mut server)
-            )
+            let request = ping_request(i);
+            tokio::join!(native::call(&mut client, &request), serve_one(&mut server))
         })
         .await;
         reply.unwrap();
@@ -323,10 +318,8 @@ async fn chaos_large_payload() {
         "{error:?}"
     );
     let (reply, _) = within(async {
-        tokio::join!(
-            native::call(&mut client, &ping_request(5)),
-            serve_one(&mut server)
-        )
+        let request = ping_request(5);
+        tokio::join!(native::call(&mut client, &request), serve_one(&mut server))
     })
     .await;
     reply.unwrap();
@@ -486,8 +479,9 @@ proptest! {
 
             for i in 0..msg_count as u64 {
                 let (reply, request) = within(async {
+                    let request = ping_request(i);
                     tokio::join!(
-                        native::call(&mut client, &ping_request(i)),
+                        native::call(&mut client, &request),
                         serve_one(&mut server)
                     )
                 })
