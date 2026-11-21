@@ -1182,7 +1182,12 @@ pub async fn pump(mut inbound: mpsc::Receiver<Inbound>, resolver: Arc<MeshNameRe
         let now = resolver.now();
         let reply = item.reply.clone();
         resolver
-            .handle_envelope_with_reply(&item.envelope, now, Some(&reply))
+            .handle_envelope_from_peer(
+                &item.envelope,
+                now,
+                Some(&reply),
+                item.reply.authenticated_peer(),
+            )
             .await;
     }
 }

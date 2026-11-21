@@ -964,19 +964,43 @@ impl NameService {
     /// such lookup, or the sender was not asked or has already answered. That is
     /// what keeps one peer from counting more than once toward a lookup's
     /// quorum. Otherwise returns the next wave, empty when the lookup is done.
+    ///
+    /// `from` is taken at its word: it is an unauthenticated agent id. Anything
+    /// reading envelopes off the wire must verify the sender first and use
+    /// [`NameService::on_response_from_keys`] (as the mesh resolver does).
     pub fn on_response_from(
         &mut self,
         from: AgentId,
         response: &ResolveResponse,
     ) -> Option<Vec<NodeInfo>> {
-        let keys: Vec<NameKey> = self
-            .peers
+        let keys = self.keys_for_agent(from);
+        self.on_response_from_keys(&keys, response)
+    }
+
+    /// Every keyspace position this node has recorded for a mesh identity.
+    ///
+    /// An agent id is only a label: nothing ties it to a key except whoever told
+    /// us the pairing (a hello or ack, a registration, or an unsigned referral).
+    /// A caller that needs to know the sender must verify the envelope signature
+    /// against one of these keys, not trust the label.
+    pub fn keys_for_agent(&self, agent: AgentId) -> Vec<NameKey> {
+        self.peers
             .iter()
-            .filter(|(_, slot)| slot.agent == from)
+            .filter(|(_, slot)| slot.agent == agent)
             .map(|(key, _)| *key)
-            .collect();
+            .collect()
+    }
+
+    /// Like [`NameService::on_response_from`], for a response whose sender has
+    /// been *proven* to hold each of `keys` (the envelope verified against them).
+    /// Only those keys can satisfy a pending request.
+    pub fn on_response_from_keys(
+        &mut self,
+        keys: &[NameKey],
+        response: &ResolveResponse,
+    ) -> Option<Vec<NodeInfo>> {
         let lookup = self.lookups.get_mut(&response.request_id)?;
-        if !lookup.on_response_from(&keys, response) {
+        if !lookup.on_response_from(keys, response) {
             return None;
         }
         self.learn_referrals(&response.closer);

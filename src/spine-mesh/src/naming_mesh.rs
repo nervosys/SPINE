@@ -167,6 +167,11 @@ pub struct ResolverMetrics {
     /// with these records or with the peers that sent them, so a rise here means
     /// something quite different from a rise in forgeries.
     pub announcements_declined: u64,
+    /// Envelopes dropped because their claimed sender could not be bound to a
+    /// key this node holds for it (bad signature, an unknown agent id, or a
+    /// signature by a key other than the connection's authenticated peer).
+    /// Counts unsigned or forged `NameResolveResponse`s in particular.
+    pub envelopes_unauthenticated: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -963,12 +968,50 @@ impl MeshNameResolver {
         now: u64,
         reply: Option<&dyn NameTransport>,
     ) -> bool {
+        self.handle_envelope_from_peer(envelope, now, reply, None)
+            .await
+    }
+
+    /// The key `envelope` provably came from, if any.
+    ///
+    /// `envelope.from` is an unauthenticated label: an agent id is not derived
+    /// from a key. The only thing that binds it is the pairing this node itself
+    /// recorded (registration, hello, ack), so the sender is whoever signed the
+    /// envelope with a key recorded for that agent id. When the connection has an
+    /// authenticated peer key `peer`, that key must be the signer too, so an
+    /// envelope signed by a different (even known) key is refused here.
+    async fn authenticate_sender(
+        &self,
+        envelope: &MeshEnvelope,
+        peer: Option<[u8; 32]>,
+    ) -> Option<NameKey> {
+        let keys = self.service.lock().await.keys_for_agent(envelope.from);
+        keys.into_iter().find(|key| {
+            peer.is_none_or(|p| &p == key.as_bytes())
+                && MeshNode::verify_carried_key(envelope, key.as_bytes())
+        })
+    }
+
+    /// Process an inbound envelope that arrived on a connection whose peer, if
+    /// the transport authenticated one, is `peer` (its session key).
+    ///
+    /// Handlers whose decision depends on *who* sent an envelope check the
+    /// envelope signature against the key recorded for `envelope.from`, and
+    /// against `peer` where there is one; see the trust table in the crate README.
+    pub async fn handle_envelope_from_peer(
+        &self,
+        envelope: &MeshEnvelope,
+        now: u64,
+        reply: Option<&dyn NameTransport>,
+        peer: Option<[u8; 32]>,
+    ) -> bool {
         match &envelope.payload {
             MeshPayload::Application(message) => {
                 if message.recipient != *self.node.agent_id()
                     || &message.recipient_key != self.local_key().as_bytes()
                     || !matches!(envelope.to, MeshTarget::Agent(id) if id == *self.node.agent_id())
                     || !MeshNode::verify_carried_key(envelope, &message.public_key)
+                    || peer.is_some_and(|p| p != message.public_key)
                     || serde_json::to_vec(&message.data).map_or(true, |v| v.len() > 2 * 1024 * 1024)
                 {
                     return true;
@@ -985,6 +1028,19 @@ impl MeshNameResolver {
                         }
                     }
                 } else {
+                    // Without a connection to answer on, the response is routed to
+                    // `envelope.from` through the address book, so that label must
+                    // be bound to the signing key; otherwise a valid key could point
+                    // replies at any agent id.
+                    if reply.is_none()
+                        && self
+                            .authenticate_sender(envelope, Some(message.public_key))
+                            .await
+                            .is_none()
+                    {
+                        self.metrics.lock().await.envelopes_unauthenticated += 1;
+                        return true;
+                    }
                     // Requests only: a response is matched to a waiter above,
                     // which is removed on first use. The signature is already
                     // verified, so unsigned traffic cannot fill the table.
@@ -1046,6 +1102,10 @@ impl MeshNameResolver {
                 true
             }
             MeshPayload::NameAnnounce(announced) => {
+                // Relaying a validly signed record is legitimate: a record is
+                // self-certifying, so nothing here depends on who delivered it,
+                // and `envelope.from` is deliberately never consulted (no
+                // admission, rate or reputation decision keys on it).
                 // accept_announcement verifies and applies admission control, so
                 // a forgery is counted and dropped rather than becoming servable
                 // state, and a record for a key this node has no business
@@ -1085,7 +1145,16 @@ impl MeshNameResolver {
             }
 
             MeshPayload::NameResolveResponse(response) => {
-                self.absorb_response(envelope.from, response).await;
+                // Whether this is the answer to a question we asked depends on
+                // who sent it, and `from` alone is a claim anyone can make. The
+                // `closer` referrals inside are unsigned and steer the walk, so
+                // the envelope must verify against a key recorded for the asked
+                // peer (and against the connection's authenticated key).
+                let Some(signer) = self.authenticate_sender(envelope, peer).await else {
+                    self.metrics.lock().await.envelopes_unauthenticated += 1;
+                    return true;
+                };
+                self.absorb_response(signer, response).await;
                 true
             }
 
@@ -1093,7 +1162,9 @@ impl MeshNameResolver {
                 // The sender is unknown by construction, so the only thing that
                 // makes this more than an assertion is the signature over the
                 // key the hello carries.
-                if !MeshNode::verify_carried_key(envelope, &hello.public_key) {
+                if !MeshNode::verify_carried_key(envelope, &hello.public_key)
+                    || peer.is_some_and(|p| p != hello.public_key)
+                {
                     self.metrics.lock().await.greetings_rejected += 1;
                     return true;
                 }
@@ -1124,7 +1195,9 @@ impl MeshNameResolver {
             }
 
             MeshPayload::NameHelloAck(ack) => {
-                if !MeshNode::verify_carried_key(envelope, &ack.public_key) {
+                if !MeshNode::verify_carried_key(envelope, &ack.public_key)
+                    || peer.is_some_and(|p| p != ack.public_key)
+                {
                     self.metrics.lock().await.greetings_rejected += 1;
                     return true;
                 }
@@ -1181,14 +1254,14 @@ impl MeshNameResolver {
     }
 
     /// Feed a response into its lookup and continue or finish it.
-    async fn absorb_response(&self, from: AgentId, response: &ResolveResponse) {
+    async fn absorb_response(&self, signer: NameKey, response: &ResolveResponse) {
         let request_id = response.request_id;
 
         let (next_wave, done) = {
             let mut service = self.service.lock().await;
             // A response from a peer that was not asked, or that already
             // answered, is dropped: it must not count toward the quorum.
-            let Some(wave) = service.on_response_from(from, response) else {
+            let Some(wave) = service.on_response_from_keys(&[signer], response) else {
                 return;
             };
             let done = service.lookup_outcome(request_id).is_some();
@@ -1305,6 +1378,18 @@ mod application_tests {
                 })),
             )
             .unwrap();
+        // Without a connection to answer on, the reply is routed by agent id, so
+        // a sender this node holds no key for is refused rather than answered.
+        resolver.handle_envelope(&envelope, resolver.now()).await;
+        assert_eq!(capture.0.lock().unwrap().len(), 0);
+        assert_eq!(resolver.metrics().await.envelopes_unauthenticated, 1);
+        resolver
+            .register_peer(
+                &sender_public,
+                vec!["127.0.0.1:9440".into()],
+                resolver.now(),
+            )
+            .await;
         resolver.handle_envelope(&envelope, resolver.now()).await;
         assert_eq!(capture.0.lock().unwrap().len(), 1);
         let mut invalid = envelope.clone();
@@ -2266,5 +2351,189 @@ mod tests {
             .endpoints
             .iter()
             .all(|e| e.len() <= crate::naming::MAX_ENDPOINT_BYTES));
+    }
+
+    // ───────────── sender binding ─────────────
+
+    /// An envelope claiming to come from `victim`, validly signed by a different
+    /// key: `from` is covered by the signature, so this is the best a forger can
+    /// do without the victim's key.
+    fn impostor_envelope(victim: AgentId, to: AgentId, payload: MeshPayload) -> MeshEnvelope {
+        let impostor = MeshNode::new(
+            SigningIdentity::from_agent_id(victim, "impostor"),
+            MeshConfig::default(),
+        );
+        impostor
+            .create_envelope(crate::mesh::MeshTarget::Agent(to), payload)
+            .unwrap()
+    }
+
+    /// Wait (bounded) for an envelope queued for `agent`, and take it.
+    async fn next_for(h: &Harness, agent: &AgentId) -> MeshEnvelope {
+        for _ in 0..64 {
+            let mut got = h.board.drain(agent);
+            if !got.is_empty() {
+                return got.remove(0);
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("nothing was queued for the agent");
+    }
+
+    /// `closer` referrals are unsigned and steer the walk, so a response only
+    /// counts when it verifiably comes from the peer that was asked.
+    #[tokio::test]
+    async fn a_response_is_absorbed_only_from_the_peer_that_was_asked() {
+        let h = Harness::new(3);
+        let rec = record(1, &[]);
+        h.nodes[1].publish_local(rec.clone()).await.unwrap();
+        h.introduce(0, 1).await;
+        let asker = *h.nodes[0].node.agent_id();
+        let asked = *h.nodes[1].node.agent_id();
+
+        let seeker = h.nodes[0].clone();
+        let name = rec.name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve(&name).await });
+
+        let request = next_for(&h, &asked).await;
+        let MeshPayload::NameResolveRequest(req) = &request.payload else {
+            panic!("expected a request, got {:?}", request.payload);
+        };
+        let answer = h.nodes[1].service.lock().await.handle_request(req, NOW);
+        let genuine = h.nodes[1]
+            .node
+            .name_resolve_response(asker, answer)
+            .unwrap();
+
+        // 1. Valid signature, but by a key other than the asked peer's.
+        let empty =
+            MeshPayload::NameResolveResponse(Box::new(ResolveResponse::empty(req.request_id)));
+        let forged = impostor_envelope(asked, asker, empty);
+        assert!(h.nodes[0].handle_envelope(&forged, NOW).await);
+        // 2. No signature at all.
+        let mut unsigned = genuine.clone();
+        unsigned.signature = Vec::new();
+        assert!(h.nodes[0].handle_envelope(&unsigned, NOW).await);
+        // 3. The genuine envelope altered after signing.
+        let mut tampered = genuine.clone();
+        if let MeshPayload::NameResolveResponse(r) = &mut tampered.payload {
+            r.record = None;
+        }
+        assert!(h.nodes[0].handle_envelope(&tampered, NOW).await);
+        // 4. Signed by the right key, but delivered on a connection
+        //    authenticated as somebody else.
+        let other_key = *h.nodes[2].local_key().as_bytes();
+        assert!(
+            h.nodes[0]
+                .handle_envelope_from_peer(&genuine, NOW, None, Some(other_key))
+                .await
+        );
+
+        assert_eq!(h.nodes[0].metrics().await.envelopes_unauthenticated, 4);
+        assert_eq!(
+            h.nodes[0].pending_lookups(),
+            1,
+            "none of the forgeries answered the lookup"
+        );
+
+        // The genuine answer, on the connection of the peer that was asked.
+        let asked_key = *h.nodes[1].local_key().as_bytes();
+        h.nodes[0]
+            .handle_envelope_from_peer(&genuine, NOW, None, Some(asked_key))
+            .await;
+        let found = tokio::time::timeout(Duration::from_secs(5), lookup)
+            .await
+            .expect("lookup hung")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found, rec);
+        assert_eq!(h.nodes[0].metrics().await.envelopes_unauthenticated, 4);
+    }
+
+    /// A hello or ack on an authenticated connection must carry the key the
+    /// connection was authenticated with, or a peer could introduce itself under
+    /// a key some other session proved.
+    #[tokio::test]
+    async fn a_hello_or_ack_must_carry_the_key_of_its_connection() {
+        let h = Harness::new(3);
+        let other_key = *h.nodes[2].local_key().as_bytes();
+
+        let hello = h.nodes[0].node.name_hello(vec!["n0:9440".into()]).unwrap();
+        assert!(
+            h.nodes[1]
+                .handle_envelope_from_peer(&hello, NOW, None, Some(other_key))
+                .await
+        );
+        assert_eq!(h.nodes[1].peer_count().await, 0);
+        assert_eq!(h.nodes[1].metrics().await.greetings_rejected, 1);
+        assert!(h.board.is_empty(), "a mismatched hello gets no answer");
+
+        let own_key = *h.nodes[0].local_key().as_bytes();
+        h.nodes[1]
+            .handle_envelope_from_peer(&hello, NOW, None, Some(own_key))
+            .await;
+        assert_eq!(h.nodes[1].peer_count().await, 1);
+        assert!(!h.board.is_empty(), "the matching hello is answered");
+
+        let ack = h.nodes[1]
+            .node
+            .name_hello_ack(*h.nodes[0].node.agent_id(), Vec::new(), Vec::new())
+            .unwrap();
+        assert!(
+            h.nodes[0]
+                .handle_envelope_from_peer(&ack, NOW, None, Some(other_key))
+                .await
+        );
+        assert_eq!(h.nodes[0].peer_count().await, 0);
+        assert_eq!(h.nodes[0].metrics().await.greetings_rejected, 1);
+    }
+
+    /// An application request answered by agent id (no connection to reply on)
+    /// needs `from` bound to the signing key, and on an authenticated connection
+    /// the signing key must be the connection's.
+    #[tokio::test]
+    async fn an_application_request_is_bound_to_its_sender() {
+        let h = Harness::new(3);
+        h.introduce(1, 0).await;
+        let n1 = *h.nodes[1].node.agent_id();
+        let key0 = *h.nodes[0].local_key().as_bytes();
+        let key1 = *h.nodes[1].local_key().as_bytes();
+        let request = |public_key: [u8; 32]| {
+            MeshPayload::Application(Box::new(ApplicationMessage {
+                public_key,
+                recipient: n1,
+                recipient_key: key1,
+                request_id: Uuid::new_v4(),
+                response: false,
+                data: serde_json::json!({}),
+            }))
+        };
+        let envelope = h.nodes[0]
+            .node
+            .create_envelope(crate::mesh::MeshTarget::Agent(n1), request(key0))
+            .unwrap();
+
+        // Signed by the right key, delivered on another peer's connection.
+        let other_key = *h.nodes[2].local_key().as_bytes();
+        h.nodes[1]
+            .handle_envelope_from_peer(&envelope, NOW, None, Some(other_key))
+            .await;
+        assert!(h.board.is_empty());
+
+        // A validly signed request claiming node 0's agent id from another key.
+        let impostor = SigningIdentity::from_agent_id(*h.nodes[0].node.agent_id(), "impostor");
+        let impostor_key = *impostor.public_key();
+        let forged = MeshNode::new(impostor, MeshConfig::default())
+            .create_envelope(crate::mesh::MeshTarget::Agent(n1), request(impostor_key))
+            .unwrap();
+        h.nodes[1].handle_envelope(&forged, NOW).await;
+        assert!(h.board.is_empty(), "a forged `from` is not answered");
+        assert_eq!(h.nodes[1].metrics().await.envelopes_unauthenticated, 1);
+
+        // The genuine request is answered.
+        h.nodes[1]
+            .handle_envelope_from_peer(&envelope, NOW, None, Some(key0))
+            .await;
+        assert!(!h.board.is_empty());
     }
 }
