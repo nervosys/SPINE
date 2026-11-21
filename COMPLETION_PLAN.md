@@ -160,11 +160,11 @@ Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source 
   - [x] `frame-codec`: the 15-byte frame header, limits and bounded decompression, additive. Done in `f556e26`.
   - [x] `hello-close`: `HELLO`, `HELLO_ACK`, `CLOSE`; delete the unused `negotiation.rs`. Done in `ce795e6` and `eb46c69`~1 (clippy fix).
   - [x] `drop-speculation`: remove `SpeculativeFrame`, the predictors and `Message::{Speculative, PreComputed, Sync}`. Done in `eb46c69`.
-  - [ ] `drop-morphology`: remove morphology, padding, `MorphRequest`, `BrowserCommand::Morph` and the daemon's 30 s morph monitor.
-  - [ ] `relocate-research`: move or delete `research.rs`, the chameleon hooks and the PSK AES layer; drop the `research` feature of `spine-protocol`.
+  - [x] `drop-morphology`: remove morphology, padding, `MorphRequest`, `BrowserCommand::Morph` and the daemon's 30 s morph monitor. Done in `838d363`.
+  - [x] `relocate-research`: move or delete `research.rs`, the chameleon hooks and the PSK AES layer; drop the `research` feature of `spine-protocol`. Done in `254e642`: research code is in `research/spine-protocol-research`; PSK AES and chameleon hooks are gone from the handler.
   - [ ] `trim-commands`: delete 13 `BrowserCommand` variants and move 5 to an extension.
   - [ ] `trim-messages`: delete 6 `Message` variants and move 6 to an extension.
-  - [ ] `connection`: a `Connection` type over the frame codec with handshake and request ids, additive.
+  - [x] `connection`: a `Connection` type over the frame codec with handshake and request ids, additive. Done in `53a982c`.
   - [ ] `cutover`: daemon and SDK switch to the new wire; delete `ProtocolHandler` and the `SP` header.
   - [ ] `bodies-v1`: header ids replace body ids, `{ok}`/`{err}` responses with codes, closed structs, deterministic bodies.
   - [ ] `signed-frame`: delete or re-point `spine-mesh/src/signed_frame.rs`.
@@ -339,6 +339,8 @@ Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes th
 **2026-11-21, pull request #49, `319647f`.** Fair-share task eviction: lint, docs, MSRV, audit, deny, coverage, `research` and the Linux and macOS tests passed (Windows not read before the next push). `docs/spec/00-wire.md` added: as-built native wire, proposed `spine-wire v1`, and a 14-step migration. Findings from that review, verified against the source where noted: `ExecuteBinary` aborted the release daemon when a client program failed to run (`.expect` with `panic = "abort"`; verified and fixed in the following commit); the daemon morphs every session every 30 s in all builds, with an all-zero evolution key and the seed in clear when no chameleon is set (not verified by me); research-flavoured `Message` variants are dropped silently so a client times out (not verified by me); `Search`, `Click` and `Type` are stubs; `signed_frame.rs` and `negotiation.rs` have no caller on any wire; the QUIC listener has no conforming client.
 
 **2026-11-21, pull request #49, `eb46c69`.** Wire migration steps 1 to 4 (`docs/spec/00-wire.md`, section F). Lint in every feature configuration, docs, MSRV, coverage, `research` and the tests on Linux, macOS and Windows passed. `cbor.rs` (deterministic CBOR scanner, encoder, decoder) and `frame.rs` (15-byte header, limits, bounded zstd) compiled and passed on first push; `hello.rs` needed one clippy fix in a test helper. The speculative layer is removed (about 1,000 lines); `send_message` now emits what `send_message_raw` did. None of the new modules has a caller in the daemon or SDK yet. `e3e5a2d` (failed `ExecuteBinary` no longer aborts the daemon) passed all jobs. A literal NUL byte had entered `CHANGELOG.md` with `fd1b31a` and made git treat it as binary; replaced in `300e595`.
+
+**2026-11-21, pull request #49, `53a982c`, `838d363`, `254e642`.** Wire migration steps 9, 5 and 6. `53a982c` (connection layer, additive) and `838d363` (morphology, padding and `Morph` removed; fixed 5-byte frame header) passed every job; the Linux test job for `838d363` first failed with an HTTP 403 downloading `protoc` and passed on re-run. `254e642`: `spine-protocol` has no `research` feature and no dependency on any research crate; lint, docs, MSRV, coverage, `research` and the Linux and macOS tests passed (Windows not read before this entry). The production handler is now `SP` body, flag byte with zstd at 64 bytes or more, 5-byte frame, no sealing. Not built by any job: the Go binding, `spine.h`, `spine-browser`, the fuzz crate. `supports_chameleon: true` in `spine-core/src/main.rs` is now a stale capability flag.
 
 ## References
 
