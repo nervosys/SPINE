@@ -39,6 +39,13 @@ pub struct TaskRecord {
     pub spec: TaskSpec,
     pub state: TaskState,
     pub created_at: u64,
+    /// Unix seconds at which the task first became terminal (`Completed`,
+    /// `Failed` or `Cancelled`); `None` while pending or running, and for
+    /// records written before this field existed. The worker uses it to order
+    /// eviction, so a result is not evicted ahead of older finished work just
+    /// because the task was submitted long ago.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
     pub result: Option<crate::ToolResult>,
     pub error: Option<String>,
 }

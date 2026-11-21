@@ -201,7 +201,7 @@ Defined in `src/spine-protocol/src/tasks.rs`; implemented in `src/spine-core/src
 
 `TaskSpec { id: UUID, tool: string, args: json, dependencies: list of UUID (default empty), input_from: optional TaskInput, timeout_secs: u32 }`, unknown fields denied (`protocol/tasks.rs:13-25`).
 `TaskInput { task_id: UUID, pointer: string }`, a JSON pointer into a dependency's successful result content (`protocol/tasks.rs:5-11`).
-`TaskRecord { owner: [u8;32], spec, state, created_at: u64 (Unix seconds), result: optional ToolResult, error: optional string }` (`protocol/tasks.rs:36-44`).
+`TaskRecord { owner: [u8;32], spec, state, created_at: u64 (Unix seconds), completed_at: optional u64 (Unix seconds when the task first became terminal; absent in older records), result: optional ToolResult, error: optional string }` (`protocol/tasks.rs:36-44`).
 `TaskState` is `Pending`, `Running`, `Completed`, `Failed`, `Cancelled`, serialised as those names (`protocol/tasks.rs:27-34`).
 
 The caller supplies the task `id`. There is no server-assigned id and no caller-supplied idempotency key beyond that id.
@@ -212,7 +212,7 @@ The caller supplies the task `id`. There is no server-assigned id and no caller-
 
 1. Validate the spec (`core/tasks.rs:83-118`): `tool` must be `spine.html/parse` or `spine.content/hash`; `timeout_secs` 1 to 300; at most 16 dependencies; no self-dependency; `args` a JSON object of at most 64 KiB serialised; if `input_from` is set its `task_id` must be in `dependencies` and `pointer` at most 256 bytes.
 2. If a record exists under this owner and id: return it when the specs are equal, else fail with `task id conflicts with an existing specification`. This check precedes the capacity check, so a duplicate succeeds even when the store is full.
-3. Fail if the store already holds 256 tasks (count over all owners and states).
+3. Fail if the owner already holds 64 pending or running tasks. If the store holds 256 tasks (all owners, all states), evict one terminal task by the policy in 4.8, or fail with `task store capacity reached` when none is evictable.
 4. Each dependency must already exist under the same owner, else the lookup fails (`task not found for this owner`). With the self-reference rule, this makes the graph acyclic.
 5. Persist a `Pending` record with `created_at = now`, add it to the pending set, and return the record.
 
@@ -240,7 +240,7 @@ Dependency data flow: when `input_from` resolves, the pointed-to value replaces 
 
 ### 4.5 Ownership
 
-The owner is the verified caller key (`tasks.rs:173-175`). Storage keys are the 32 owner bytes followed by the 16 id bytes (`tasks.rs:34-36`), and every read, cancel and dependency lookup uses the caller's own key (`tasks.rs:119-125`, `tasks.rs:184-193`). One owner cannot read, cancel or depend on another's tasks. The store and capacity limits are global, not per owner.
+The owner is the verified caller key (`tasks.rs:173-175`). Storage keys are the 32 owner bytes followed by the 16 id bytes (`tasks.rs:34-36`), and every read, cancel and dependency lookup uses the caller's own key (`tasks.rs:119-125`, `tasks.rs:184-193`). One owner cannot read, cancel or depend on another's tasks. The 256-task store limit is global; an owner's pending and running tasks are capped at 64, and eviction at capacity is fair-share (4.8).
 
 ### 4.6 Scheduling, deadlines, cancellation
 
@@ -270,7 +270,7 @@ On startup (`tasks.rs:46-81`): scan all records; refuse to start if more than 25
 | Outgoing concurrent RPCs per node | 64 | `naming_mesh.rs:315` |
 | Starts per tick | 16, tick 100 ms | `tasks.rs:286`, `tasks.rs:340` |
 
-Nothing removes a task from storage (the only calls are `put`, `tasks.rs:127-131`). After 256 tasks have been admitted, every new `submit` fails with `task store capacity reached` unless it duplicates an existing one.
+Eviction when the store is full. A terminal task is a candidate only if no pending or running task of the same owner (and not the task being admitted) lists it as a dependency. Owners are ranked by entries held (any state), most first, ties to the smaller owner key. A submitting owner that already holds 64 or more entries may evict only its own candidates and is refused otherwise; any other submitter evicts from the highest-ranked owner that has a candidate. The victim is that owner's candidate with the earliest `completed_at` (`created_at` if absent), ties broken by earlier `created_at` then smaller task id. One owner therefore cannot displace another's finished results once it holds its share, and a task that finished recently is not evicted ahead of older finished work. If no victim exists, `submit` fails with `task store capacity reached`. Duplicate submissions still succeed when the store is full.
 
 ## 5. Immutable knowledge entries
 
@@ -279,7 +279,7 @@ Operations `knowledge_put` and `knowledge_get` (`tasks.rs:194-219`), stored in n
 - Key: 1 to 256 bytes; the storage key is the 32-byte owner key followed by the key bytes (`tasks.rs:37-43`). Entries are visible only to the key that wrote them.
 - Value: any JSON value whose serialisation is at most 64 KiB (`tasks.rs:196-197`).
 - Put on a new key stores the value. Put on an existing key succeeds only if the serialised bytes are identical; otherwise it fails with `knowledge key already holds different content; use a new versioned key` (`tasks.rs:198-204`). Equality is byte equality of `serde_json` output, so object key order does not vary (sorted maps, see 3.3).
-- Capacity: 256 entries in total across all owners, checked on first insertion (`tasks.rs:205-209`). There is no delete.
+- Capacity: 64 entries per owner and 256 in total, checked on first insertion; a new key over either limit is refused with a distinct error (`knowledge owner quota reached` or `knowledge worker capacity reached`). Entries are never evicted and there is no delete. Residual exposure (Stage 6, authority and admission cost): owner keys are free to mint, so four allowed identities can fill the worker total.
 - Get returns the stored JSON value directly (not wrapped), or fails with `knowledge not found for this owner` (`tasks.rs:213-219`).
 
 Entries carry no signature, hash, timestamp or author field beyond the implicit owner key in the storage key. Nothing links an entry to a task or a resource; the quickstart suggests storing a JSON descriptor by convention (`docs/AGENT_WEB_QUICKSTART.md`, "Durable work over the signed mesh").
