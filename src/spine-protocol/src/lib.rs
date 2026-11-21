@@ -3,7 +3,7 @@
 
 pub mod agentic;
 pub mod body;
-pub mod cbor;
+pub use spine_cbor as cbor;
 pub mod connection;
 pub mod frame;
 pub mod hello;

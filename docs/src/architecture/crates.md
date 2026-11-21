@@ -1,10 +1,10 @@
 # Crate Map
 
 The repository has two Cargo workspaces. The root workspace (`src/*`) holds the
-18 crates that make up the stack. The `research/` workspace holds experimental
+19 crates that make up the stack. The `research/` workspace holds experimental
 crates that are not built with the root workspace and are not on the native wire.
 
-## Root Workspace (18 crates)
+## Root Workspace (19 crates)
 
 ### Interfaces
 
@@ -27,6 +27,7 @@ crates that are not built with the root workspace and are not on the native wire
 | ----------------- | ---------- | ------------------------------------------------------------------------------- |
 | `spine-core`      | Binary+Lib | The daemon: sessions, command dispatch, configuration, outbound fetch policy    |
 | `spine-protocol`  | Library    | spine-wire v1: frames, deterministic CBOR, `HELLO`/`HELLO_ACK`, `Connection`, command and error types |
+| `spine-cbor`      | Library    | Deterministic CBOR (RFC 8949 section 4.2): `to_vec`, `from_slice`, `check_deterministic`; re-exported as `spine_protocol::cbor` |
 | `spine-parser`    | Library    | Semantic HTML to Unified Representation parser, structured extraction           |
 | `spine-compiler`  | Library    | HLS (SPINE Scripting) to SpineBinary compiler                                   |
 | `spine-wasm`      | Library    | WebAssembly runtime (wasmtime) for HLS execution                                |

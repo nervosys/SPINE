@@ -1,0 +1,16 @@
+[package]
+name = "spine-cbor"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Deterministic CBOR (RFC 8949 section 4.2) for SPINE: the one canonical encoding shared by the wire and signed structures"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+ciborium = "0.2"

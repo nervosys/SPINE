@@ -29,6 +29,7 @@ zstd = "0.13"
 # Compact, self-describing binary wire codec (RFC 8949 CBOR). Handles
 # serde_json::Value natively (unlike bincode/postcard, which need deserialize_any).
 ciborium = "0.2"
+spine-cbor = { path = "../spine-cbor", version = "2.0.2" }
 uuid = { version = "1", features = ["v4", "serde"] }
 rustls.workspace = true
 
