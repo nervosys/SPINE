@@ -1,3 +1,6 @@
+# HISTORICAL one-shot patch script (checked 2026-11-21). Its edits were applied long ago;
+# re-running it can overwrite later changes to the files it targets. Not part of any build or CI job.
+# It also rewrites test counts in docs; those counts predate the spine-wire v1 migration.
 """Update docs for Phase 20: Agent Ontology System."""
 import re
 

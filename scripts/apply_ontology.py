@@ -1,3 +1,5 @@
+# HISTORICAL one-shot patch script (checked 2026-11-21). Its edits were applied long ago;
+# re-running it can overwrite later changes to the files it targets. Not part of any build or CI job.
 """Phase 20: Agent Ontology System for SPINE.
 
 Adds ontology-based agent discovery with cryptographic + neural hash privacy controls.
