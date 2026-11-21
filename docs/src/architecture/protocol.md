@@ -119,6 +119,9 @@ no setting.
 | Transport | Port | Use Case                 |
 | --------- | ---- | ------------------------ |
 | TCP       | 8080 | Default, lowest latency  |
-| TLS       | 8080 | Encrypted, production    |
-| WebSocket | 8081 | Browser/polyglot clients |
-| QUIC      | 8082 | Feature-gated, UDP-based |
+| TLS       | 8080 | Encrypted, production (optional mutual TLS) |
+| WebSocket | 8081 | Browser/polyglot clients (ws and wss) |
+| QUIC      | 8082 | Only when `spine-core` is built with `--features quic` (off by default) |
+
+The wire itself is not encrypted. Confidentiality and authentication on the
+native path come from TLS only; see [Security](./security.md).

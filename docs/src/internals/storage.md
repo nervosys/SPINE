@@ -22,22 +22,23 @@ pub trait StorageBackend: Send + Sync {
 | Backend  | Feature   | Use Case                     | Durability |
 | -------- | --------- | ---------------------------- | ---------- |
 | InMemory | (default) | Testing, ephemeral workloads | None       |
-| SQLite   | `sqlite`  | Single-node production       | WAL        |
-| RocksDB  | `rocksdb` | High-throughput workloads    | LSM-tree   |
+| SQLite   | `sqlite` (default) | Single-node production | WAL        |
+| RocksDB  | `rocksdb-backend` | High-throughput workloads    | LSM-tree   |
 
 ## TypedStorage
 
 Generic wrapper providing `serde` serialization over any backend:
 
 ```rust
-let typed: TypedStorage<MyConfig> = TypedStorage::new(backend, "configs");
+let typed = TypedStorage::new(backend, "configs");
 typed.put("key1", &my_config)?;
 let config: Option<MyConfig> = typed.get("key1")?;
 ```
 
 ## PersistentKnowledge
 
-Adapter integrating `StorageBackend` with `spine-knowledge`:
+Adapter integrating `StorageBackend` with `spine-knowledge` (research,
+`research/spine-knowledge`; `spine-storage` itself is in the root workspace):
 
 - Episodes stored in `"episodes"` namespace
 - Concepts in `"concepts"` namespace  

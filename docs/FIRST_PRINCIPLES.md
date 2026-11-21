@@ -4,6 +4,7 @@ Revised 2026-11-20. The goal is fixed: **an entirely new web stack for AI agents
 
 This is an assessment and a recommendation. It draws on the repository as of `completion/agent-web`.
 
+**Status note, 2026-11-21.** Parts of the assessment below have since been acted on; the text itself describes the repository as of 2026-11-20 and is kept as written. The native wire is now spine-wire v1 (`docs/spec/00-wire.md`): length-prefixed frames, deterministic CBOR bodies, a `HELLO` / `HELLO_ACK` handshake, a closed set of 19 commands, `{ok}` / `{err}` replies. The earlier wire's morphing, padding, speculation and Chameleon / pre-shared-key encryption layers were removed, and its confidentiality now comes from TLS only. The research crates (`spine-neural`, `spine-recursive`, `spine-cluster`, `spine-human`, `spine-mechgen`, `spine-kernel`, `spine-gpu`, `spine-k8s`, `spine-browser`, `spine-agentic`, `spine-knowledge`, `spine-crypto`, `spine-nostd`, `spine-embedded` and the research protocol code) moved to a separate `research/` workspace, which settles decision 2 below in favour of the recommendation; the root workspace has 18 crates. Figures such as the line and crate counts below, and the dependency-vulnerability count, were not re-measured. The authority layer, name life cycle, provenance tagging and the other recommendations remain open.
 ## Conclusion
 
 A clean slate removes one constraint, compatibility. It does not remove the question of what a web for agents has to do differently from a web for people. Judged on that question, SPINE today has the right foundations in two layers, a gap where the most important layer should be, and a large amount of code that is not part of a web stack at all.
@@ -61,7 +62,7 @@ Two things sit outside the stack on purpose.
 
 ## What this means for the code
 
-The workspace is about 122,000 lines of Rust in 30 crates.
+As of 2026-11-20 the workspace was about 122,000 lines of Rust in 30 crates (not re-measured since the research crates moved out).
 
 - **The stack:** `spine-protocol`, `spine-transport`, `spine-stream` (layer 1); `spine-name` (2); a new authority crate (3); `spine-core` resources, `spine-storage`, `spine-cache` (4); the signed RPC and task parts of `spine-agentic` and `spine-core` (5); the naming mesh (6); `spine-wasm`, `spine-compiler` (7); `spine-web`, `spine-agent`, `spine-cli` as the client surface.
 - **Edge:** `spine-parser` and the outbound policy (gateway); `spine-gateway`, `spine-grpc`, the MCP adapter (bridges).

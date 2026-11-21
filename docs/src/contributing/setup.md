@@ -26,6 +26,9 @@ cargo test --workspace
 # Specific crate
 cargo test -p spine-protocol
 
+# Experimental crates are a separate workspace
+cd research && cargo test
+
 # With output
 cargo test --workspace -- --nocapture
 ```
@@ -57,6 +60,9 @@ cargo fuzz run fuzz_parse_html -- -max_total_time=60
 cargo fuzz run fuzz_frame_decode -- -max_total_time=60
 cargo fuzz run fuzz_message_deser -- -max_total_time=60
 cargo fuzz run fuzz_frame_header -- -max_total_time=60
+cargo fuzz run fuzz_negotiation -- -max_total_time=60
+cargo fuzz run fuzz_hls_compile -- -max_total_time=60
+cargo fuzz run fuzz_semver_parse -- -max_total_time=60
 ```
 
 ## Documentation

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,10 +181,10 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="formal-verification"><a class="header" href="#formal-verification">Formal Verification</a></h1>
-<p>SPINE uses multiple formal verification techniques to ensure correctness of critical components.</p>
+<p>SPINE keeps several formal models and audit documents under <code>formal/</code>. Most of them model research code or an earlier design, not the deployed path. The deployed constructions are the native wire (spine-wire v1, TLS only for confidentiality; no model here covers it) and the mesh handshake in <code>spine-session</code>, which is custom cryptography without external review. These artifacts were not updated when the wire changed on 2026-11-21.</p>
 <h2 id="tla--protocol-model-checking"><a class="header" href="#tla--protocol-model-checking">TLA+ — Protocol Model Checking</a></h2>
-<p><strong>File</strong>: <code>formal/tla/ChameleonProtocol.tla</code></p>
-<p>Models the Chameleon Protocol state machine with:</p>
+<p><strong>Mesh routing</strong>: <code>formal/tla/MeshRouting.tla</code> models TTL, shortest-path routing, gossip discovery and deduplication in the mesh.</p>
+<p><strong>Chameleon (research)</strong>: <code>formal/tla/ChameleonProtocol.tla</code> models the Chameleon Protocol state machine (experimental code in <code>research/spine-protocol-research</code>, not on the native wire) with:</p>
 <ul>
 <li>Epoch monotonicity invariant</li>
 <li>Synchronized evolution between peers</li>
@@ -192,9 +192,9 @@
 <li>Decoy message generation</li>
 </ul>
 <p>Verified with TLC model checker (<code>ChameleonProtocol_MC.tla</code> configuration).</p>
-<h2 id="tamarin-prover--key-exchange"><a class="header" href="#tamarin-prover--key-exchange">Tamarin Prover — Key Exchange</a></h2>
+<h2 id="tamarin-prover--key-exchange-research-design"><a class="header" href="#tamarin-prover--key-exchange-research-design">Tamarin Prover — Key Exchange (research design)</a></h2>
 <p><strong>File</strong>: <code>formal/tamarin/SpineKeyExchange.spthy</code></p>
-<p>Models the X3DH + RLWE key exchange with 10 security lemmas:</p>
+<p>Models an X3DH + RLWE hybrid key exchange, which is not the deployed mesh handshake (that is ML-KEM-768 with Ed25519 in <code>spine-session</code>). The model has 10 lemmas:</p>
 <ul>
 <li>Session key secrecy</li>
 <li>Perfect forward secrecy (PFS)</li>
@@ -202,7 +202,7 @@
 <li>Three security levels: Standard, Hardened, PostQuantum</li>
 </ul>
 <h2 id="kani--bounded-model-checking"><a class="header" href="#kani--bounded-model-checking">Kani — Bounded Model Checking</a></h2>
-<p><strong>File</strong>: <code>src/spine-kernel/src/kani_harnesses.rs</code></p>
+<p><strong>File</strong>: <code>research/spine-kernel/src/kani_harnesses.rs</code> (research crate)</p>
 <p>15 verification harnesses for unsafe Rust code:</p>
 <ul>
 <li><strong>Allocators</strong>: BumpAllocator, SlabAllocator, ArenaAllocator bounds</li>
@@ -210,9 +210,9 @@
 <li><strong>Ring buffers</strong>: SPSC/MPSC wraparound, capacity limits</li>
 <li><strong>SIMD</strong>: Dot product numerical bounds</li>
 </ul>
-<h2 id="cryptographic-audit"><a class="header" href="#cryptographic-audit">Cryptographic Audit</a></h2>
+<h2 id="cryptographic-audit-historical-internal"><a class="header" href="#cryptographic-audit-historical-internal">Cryptographic Audit (historical, internal)</a></h2>
 <p><strong>File</strong>: <code>formal/audit/CRYPTO_AUDIT.md</code></p>
-<p>13 findings across severity levels:</p>
+<p>An internal audit dated 2026-02-16 of the crypto code as it then stood, which included the PSK AES-GCM, <code>ChameleonKey</code> and <code>ProtocolMorphology</code> code that has since been removed from <code>spine-protocol</code>. It is not an external review and does not cover <code>spine-session</code>. 13 findings across severity levels:</p>
 <ul>
 <li>2 Critical (RLWE KEM, XOR cipher) — <strong>remediated</strong></li>
 <li>4 High (key evolution, SeqLock, ABA, mmap) — <strong>remediated</strong></li>
@@ -231,7 +231,7 @@
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../contributing/setup.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../internals/ontology.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -245,7 +245,7 @@
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../contributing/setup.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../internals/ontology.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

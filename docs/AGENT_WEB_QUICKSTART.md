@@ -1,6 +1,6 @@
 # Local agent-web workflow
 
-SPINE is a Rust stack for software agents: it turns HTML into structured semantic data, carries agent messages and tools over native frames, resolves signed `spine://` names through a mesh, and exposes HTTP, MCP, and gRPC bridges. Names identify publishers and capabilities; signed content hashes bind retrieved bytes to their publisher.
+SPINE is a Rust stack for software agents: it turns HTML into structured semantic data, carries agent commands and tool calls over the native wire (spine-wire v1: framed deterministic CBOR), resolves signed `spine://` names through a mesh, and exposes HTTP, MCP, and gRPC bridges. Names identify publishers and capabilities; signed content hashes bind retrieved bytes to their publisher.
 
 This guide covers the portable implementation in this checkout. Read [completion status](COMPLETION_STATUS.md) for validation evidence and outstanding release gates. These changes are local source changes, not a published release.
 
@@ -50,9 +50,9 @@ maintain_secs = 60
 seeds = ["127.0.0.1:9440"]
 ```
 
-Start a `spine-core` process in each directory. The origin listener uses TCP on the configured port, WebSocket on port + 1, and QUIC on port + 2 when enabled. The legacy cluster listener uses port + 1000. Mesh peers use a separate encrypted listener. DNS bootstrap is optional: set `dns_seeds = ["seed.example.org:9440"]`; DNS supplies addresses, and the mesh handshake verifies identities carried by responders. A self-signed identity is not an operator trust anchor; task calls explicitly pin the expected peer public key.
+Start a `spine-core` process in each directory. The origin listener uses TCP on the configured port, WebSocket on port + 1, and QUIC on port + 2 when enabled. A cluster listener at port + `cluster.port_offset` exists only when `spine-core` is built with the `research` feature. Mesh peers use a separate encrypted listener. DNS bootstrap is optional: set `dns_seeds = ["seed.example.org:9440"]`; DNS supplies addresses, and the mesh handshake verifies identities carried by responders. A self-signed identity is not an operator trust anchor; task calls explicitly pin the expected peer public key.
 
-These examples use trusted local TCP clients. For remote origins, configure TLS with real certificates and connect through the Rust SDK's `connect_tls` / `connect_mtls` methods. Missing required certificate files cause startup to fail. Native TCP and WSS honor the same explicitly configured mTLS policy; see the connection limits and auxiliary listener boundaries in [native operations](NATIVE_OPERATIONS.md#connection-and-tls-policy). The `name` CLI workflow currently uses plain TCP; do not treat it as a confidential remote transport. The custom mesh handshake still requires independent review before production claims.
+These examples use trusted local TCP clients. For remote origins, configure TLS with real certificates and connect through the Rust SDK's `connect_tls` method (pass a client certificate and key for mutual TLS). TLS is the only source of confidentiality and authentication on the native wire. Missing required certificate files cause startup to fail. Native TCP and WSS honor the same explicitly configured mTLS policy; see the connection limits and auxiliary listener boundaries in [native operations](NATIVE_OPERATIONS.md#connection-and-tls-policy). The `name` CLI workflow currently uses plain TCP; do not treat it as a confidential remote transport. The custom mesh handshake still requires independent review before production claims.
 
 ## Publish and fetch a resource
 
@@ -99,7 +99,7 @@ For remote models through IronGate, set `IRONGATE_URL` to its base (for example 
 
 ## Native tools
 
-`AgentClient::capabilities` queries versioned tool schemas and permissions; `call_tool` sends real native `ToolCall` / `ToolResult` messages with correlation IDs. The portable origin implements `spine.html/parse` and `spine.content/hash`, each accepting `{ "text": "..." }` with a 1 MiB text limit. Tools have no filesystem, network, or process access and are subject to connection-specific rate limits. Unknown tools return `unsupported_tool`. Calls are serialized, have a 30 second SDK deadline, and are never replayed automatically; reconnect after a timeout.
+`AgentClient::capabilities` queries versioned tool schemas and permissions; `call_tool` sends real `tool_call` commands and returns a `ToolOutcome`; the frame's request id is the correlation id. The portable origin implements `spine.html/parse` and `spine.content/hash`, each accepting `{ "text": "..." }` with a 1 MiB text limit. Tools have no filesystem, network, or process access and are subject to connection-specific rate limits. Unknown tools return `unsupported_tool`. Calls are serialized, have a 30 second SDK deadline, and are never replayed automatically; reconnect after a timeout.
 
 ## Durable work over the signed mesh
 
@@ -135,7 +135,7 @@ Allocate fresh UUIDs for new work. An identical submission with the same owner, 
 
 To share knowledge, save a JSON artifact descriptor in `artifact.json`, then call `knowledge-put artifact-v1 artifact.json` and `knowledge-get artifact-v1` with the same address options. Knowledge is owner scoped and immutable; publish changed content under a new versioned key. Resource artifacts remain signed content-addressed publications retrievable through the separate resource API.
 
-Limits: 256 stored tasks and 256 knowledge keys per worker, 16 dependencies per task, 64 KiB arguments/knowledge, 256 KiB task result, deadlines from 1 to 300 seconds, and 64 concurrent outgoing mesh RPCs with a 30-second timeout. Task RPC requires encrypted TCP: its recipient key pins the handshake, pooled sockets must match that authenticated peer, and inbound task signatures must match the connection's authenticated caller. Plaintext, unpinned bootstrap delivery, WebSocket, and QUIC application sends are refused. Only hashing and HTML parsing are permitted. Unsupported legacy swarm/delegation/planning commands return `unsupported_legacy_swarm`; their previous simulated execution is removed. Arbitrary agent planning, shell execution, and model-driven task execution remain experimental.
+Limits: 256 stored tasks and 256 knowledge keys per worker, 16 dependencies per task, 64 KiB arguments/knowledge, 256 KiB task result, deadlines from 1 to 300 seconds, and 64 concurrent outgoing mesh RPCs with a 30-second timeout. Task RPC requires encrypted TCP: its recipient key pins the handshake, pooled sockets must match that authenticated peer, and inbound task signatures must match the connection's authenticated caller. Plaintext, unpinned bootstrap delivery, WebSocket, and QUIC application sends are refused. Only hashing and HTML parsing are permitted. The earlier swarm, delegation and planning commands no longer exist on the wire: the command set is closed at 19 (see [Protocol](src/architecture/protocol.md)), and a request naming anything else is answered `unknown_command`. Arbitrary agent planning, shell execution, and model-driven task execution remain experimental.
 
 ## Backup, restart, and validation
 
@@ -155,7 +155,7 @@ cargo deny check advisories licenses
 
 The process-level tests exercise discovery, capability schemas, native tools, multi-chunk resource integrity, publisher restart and renewal, managed shutdown, and three-node signed task coordination. They complete dependent tasks, reject an unauthorized peer and incorrect recipient key, and restore tasks and knowledge after forced worker restart. They do not establish hardware performance, production tenancy isolation, public-network availability, or an independent cryptographic review. See [native operations](NATIVE_OPERATIONS.md) for archive installation, deployment, backups, and coordinated upgrades.
 
-For complete retained validation logs, set `SPINE_VERIFY_LOG_DIR` to a local directory and run `bash scripts/verify.sh 1450` (use Git Bash on Windows). The script writes separate `tests.log`, `clippy.log`, and `fmt.log` files. Test totals must be updated when tests are deliberately added, and logs should remain local.
+For complete retained validation logs, set `SPINE_VERIFY_LOG_DIR` to a local directory and run `bash scripts/verify.sh` (use Git Bash on Windows; an optional argument is the expected total of passed tests, which you must measure on your own run). The script writes separate `tests.log`, `clippy.log`, and `fmt.log` files. If you pass an expected total, update it when tests are deliberately added. Logs should remain local.
 
 
 ### Use an MCP client

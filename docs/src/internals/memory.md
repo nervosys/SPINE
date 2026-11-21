@@ -2,6 +2,8 @@
 
 `spine-knowledge` provides a unified bioinspired memory architecture.
 
+**Research.** `spine-knowledge` and the MIRAS variants in `spine-crypto` live in the separate `research/` workspace. The daemon does not use them: the native `store_knowledge` and `query_knowledge` commands work on a per-session key/value store (see [Knowledge Base](../sdk/knowledge.md)).
+
 ## Subsystems
 
 ### Episodic Memory (Hippocampus)

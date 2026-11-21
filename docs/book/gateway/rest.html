@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -210,9 +210,6 @@
 }
 </code></pre>
 <h4 id="get-apisessionsidhtml--get-raw-html"><a class="header" href="#get-apisessionsidhtml--get-raw-html"><code>GET /api/sessions/{id}/html</code> — Get raw HTML</a></h4>
-<h4 id="post-apisessionsidsearch--search"><a class="header" href="#post-apisessionsidsearch--search"><code>POST /api/sessions/{id}/search</code> — Search</a></h4>
-<pre><code class="language-json">{ "query": "rust programming" }
-</code></pre>
 <h4 id="get-apisessionsidping--ping"><a class="header" href="#get-apisessionsidping--ping"><code>GET /api/sessions/{id}/ping</code> — Ping</a></h4>
 <p>Response: <code>{ "round_trip_ms": 2 }</code></p>
 <h3 id="compute"><a class="header" href="#compute">Compute</a></h3>
@@ -234,6 +231,28 @@
   "capabilities": []
 }
 </code></pre>
+<h3 id="namespace-and-agentic-routes"><a class="header" href="#namespace-and-agentic-routes">Namespace and agentic routes</a></h3>
+<p>Beyond the session API above, the gateway also serves (see Swagger UI for schemas):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Route</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>POST /v1/chat/completions</code></td><td>OpenAI-compatible chat completions, streamed as SSE</td></tr>
+<tr><td><code>GET /v1/agentic/capabilities</code></td><td>Capability discovery</td></tr>
+<tr><td><code>POST /v1/embeddings</code>, <code>GET /v1/agentic/codecs</code></td><td>Embeddings and codec catalog (the codec catalog comes from <code>spine-protocol-research</code>)</td></tr>
+<tr><td><code>GET</code>/<code>POST /v1/names/resolve</code></td><td>Resolve one name or a batch</td></tr>
+<tr><td><code>GET /v1/names/providers</code></td><td>Find providers of a capability</td></tr>
+<tr><td><code>POST /v1/names/publish</code></td><td>Publish a signed name record</td></tr>
+<tr><td><code>GET /v1/names/endpoints</code></td><td>Fetch a name’s endpoints</td></tr>
+<tr><td><code>GET /v1/names/crawl</code></td><td>Crawl names from a seed</td></tr>
+<tr><td><code>GET</code>/<code>POST /v1/resources</code></td><td>Download or upload a signed resource</td></tr>
+</tbody>
+</table>
+</div>
+<p>The gateway reaches a daemon over the native wire (spine-wire v1) through
+<code>spine-agent</code>; the REST side is plain HTTP unless you terminate TLS in front of it.</p>
 <h3 id="operations"><a class="header" href="#operations">Operations</a></h3>
 <h4 id="get-health"><a class="header" href="#get-health"><code>GET /health</code></a></h4>
 <pre><code class="language-json">{ "status": "ok", "uptime_secs": 3600, "active_sessions": 12 }

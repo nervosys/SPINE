@@ -1,6 +1,8 @@
 # Observability & Debugging
 
-SPINE provides comprehensive observability tools for monitoring, debugging, and analyzing agent behavior.
+SPINE provides observability tools for monitoring, debugging, and analyzing agent behavior.
+
+**Research.** Distributed tracing, the replay debugger, the swarm visualizer and anomaly detection described here are in `research/spine-agentic` (`tracing.rs`, `replay.rs`, `visualizer.rs`, `anomaly.rs`), a separate workspace. The Grafana dashboard and Prometheus config in `deploy/` are separate from that code. The native `tool_call` command carries an optional `trace` field.
 
 ## Distributed Tracing
 

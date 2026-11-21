@@ -87,6 +87,25 @@ Response:
 }
 ```
 
+### Namespace and agentic routes
+
+Beyond the session API above, the gateway also serves (see Swagger UI for schemas):
+
+| Route | Purpose |
+| --- | --- |
+| `POST /v1/chat/completions` | OpenAI-compatible chat completions, streamed as SSE |
+| `GET /v1/agentic/capabilities` | Capability discovery |
+| `POST /v1/embeddings`, `GET /v1/agentic/codecs` | Embeddings and codec catalog (the codec catalog comes from `spine-protocol-research`) |
+| `GET`/`POST /v1/names/resolve` | Resolve one name or a batch |
+| `GET /v1/names/providers` | Find providers of a capability |
+| `POST /v1/names/publish` | Publish a signed name record |
+| `GET /v1/names/endpoints` | Fetch a name's endpoints |
+| `GET /v1/names/crawl` | Crawl names from a seed |
+| `GET`/`POST /v1/resources` | Download or upload a signed resource |
+
+The gateway reaches a daemon over the native wire (spine-wire v1) through
+`spine-agent`; the REST side is plain HTTP unless you terminate TLS in front of it.
+
 ### Operations
 
 #### `GET /health`

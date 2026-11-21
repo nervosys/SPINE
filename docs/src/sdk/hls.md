@@ -74,5 +74,5 @@ match Compiler::compile("let x = 1 + 2; x") {
 | `instructions`       | `Vec<Instruction>`       | Compiled bytecode             |
 | `data`               | `Vec<u8>`                | Static data section           |
 | `render_start`       | `usize`                  | Entry point for rendering     |
-| `exported_functions` | `HashMap<String, usize>` | Named function entries        |
+| `exported_functions` | `BTreeMap<String, usize>` | Named function entries       |
 | `capabilities`       | `Vec<String>`            | Required runtime capabilities |

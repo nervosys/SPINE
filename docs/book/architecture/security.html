@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -182,48 +182,34 @@
                     <main>
                         <h1 id="security"><a class="header" href="#security">Security</a></h1>
 <p>See <a href="https://github.com/nervosys/SPINE/blob/master/THREAT_MODEL.md">THREAT_MODEL.md</a> for the full threat model.</p>
-<h2 id="security-levels"><a class="header" href="#security-levels">Security Levels</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Level</th><th>Key Exchange</th><th>Encryption</th><th>Use Case</th></tr>
-</thead>
-<tbody>
-<tr><td>Standard</td><td>X25519</td><td>AES-256-GCM</td><td>General use</td></tr>
-<tr><td>Hardened</td><td>X25519 + RLWE</td><td>AES-256-GCM + lattice</td><td>High security</td></tr>
-<tr><td>PostQuantum</td><td>RLWE-only</td><td>Lattice-based</td><td>Quantum adversaries</td></tr>
-</tbody>
-</table>
-</div>
-<h2 id="x3dh-key-exchange"><a class="header" href="#x3dh-key-exchange">X3DH Key Exchange</a></h2>
-<p>Initial trust establishment uses the Extended Triple Diffie-Hellman protocol:</p>
-<ol>
-<li>Identity keys (long-term)</li>
-<li>Signed pre-keys (medium-term)</li>
-<li>One-time pre-keys (single-use)</li>
-</ol>
-<p>No pre-shared secrets required.</p>
-<h2 id="chameleon-protocol"><a class="header" href="#chameleon-protocol">Chameleon Protocol</a></h2>
-<p>Moving-target defense using latent-space cryptography:</p>
-<ul>
-<li>Keys evolve per-message based on VAE-encoded traffic patterns</li>
-<li>Active attackers cannot distinguish protocol from background noise</li>
-<li>Forward secrecy via key evolution</li>
-</ul>
-<h2 id="sybil-resistance"><a class="header" href="#sybil-resistance">Sybil Resistance</a></h2>
-<p>Decentralized trust without central authority:</p>
-<ul>
-<li><strong>Stake-weighted voting</strong> — Influence proportional to commitment</li>
-<li><strong>Node reputation</strong> — Earned through honest behavior</li>
-<li><strong>Proof-of-work for identity</strong> — Computational cost prevents mass identity creation</li>
-</ul>
-<h2 id="rlwe-lattice-cryptography"><a class="header" href="#rlwe-lattice-cryptography">RLWE Lattice Cryptography</a></h2>
-<p>Post-quantum key exchange using Ring Learning With Errors:</p>
-<ul>
-<li>Based on hardness of shortest vector problem</li>
-<li>Forward-secure key evolution</li>
-<li>12 comprehensive security tests</li>
-</ul>
+<h2 id="native-client-wire"><a class="header" href="#native-client-wire">Native Client Wire</a></h2>
+<p>The native wire between an agent and the <code>spine-core</code> daemon is spine-wire v1
+(<a href="./protocol.html">Protocol</a>). It does no encryption of its own. <strong>Confidentiality
+and authentication on this path come from TLS only</strong>, with optional mutual TLS
+for client certificates. A plain TCP or WebSocket connection is plaintext.</p>
+<p>There is no SPINE-level encryption, obfuscation, morphing, padding,
+pre-shared-key AES-GCM, post-quantum protection or traffic-analysis resistance
+on the native wire. The wire’s contribution to security is structural: bounded
+frames (64 KiB before <code>HELLO</code>, 16 MiB after), strictly deterministic CBOR bodies
+that reject malformed input, and closed command and error sets.</p>
+<p>The daemon applies an outbound fetch policy to <code>navigate</code> (the <code>outbound_*</code>
+error codes), a per-IP connection limit, and a <code>HELLO</code> timeout.</p>
+<h2 id="mesh-path"><a class="header" href="#mesh-path">Mesh Path</a></h2>
+<p>Node-to-node mesh traffic is a different protocol. <code>spine-session</code> performs a
+signed ephemeral ML-KEM-768 exchange with Ed25519 identity signatures and
+derives AES-256-GCM session keys, giving forward secrecy per connection. Mesh
+envelopes and name records are independently signed with Ed25519, so authorship
+can be checked without trusting the transport. The session handshake is custom
+cryptography that has not had external cryptographic review. Details and limits
+are in the <code>spine-session</code> crate documentation and <code>THREAT_MODEL.md</code>.</p>
+<h2 id="research-not-deployed"><a class="header" href="#research-not-deployed">Research (not deployed)</a></h2>
+<p>The following exist only in the separate <code>research/</code> workspace and are not in the
+native wire or the mesh handshake: the Chameleon latent-space key and latent
+AEAD (<code>research/spine-protocol-research</code>), the custom RLWE key exchange
+(<code>research/spine-crypto</code>), an X3DH example (<code>research/spine-agentic</code>), and
+stake-weighted Sybil resistance (<code>research/spine-cluster</code>). They are
+experimental and unreviewed. The earlier “security levels” table (Standard,
+Hardened, PostQuantum) described this research code, not a deployed feature.</p>
 
                     </main>
 

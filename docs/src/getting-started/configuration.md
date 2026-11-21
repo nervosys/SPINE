@@ -1,6 +1,6 @@
 # Configuration
 
-SPINE uses layered configuration: `spine.toml` → environment variables → defaults.
+SPINE uses layered configuration. From highest priority to lowest: environment variables, `spine.toml`, built-in defaults.
 
 ## Configuration File
 
@@ -20,14 +20,16 @@ hello_timeout_secs = 10
 session_watchdog_secs = 600
 persistence_interval_secs = 60
 shutdown_timeout_secs = 30
+allow_unauthenticated_remote = false
 
 [tls]
 enabled = false
-cert_path = "certs/server.crt"
-key_path = "certs/server.key"
-ca_path = "certs/ca.crt"
+cert_path = "certs/cert.pem"
+key_path = "certs/key.pem"
+ca_path = "certs/ca.pem"
+mutual_tls = false
 
-[cluster]
+[cluster]            # used only when built with the `research` feature
 port_offset = 100
 region = "us-east"
 skills = ["search", "analysis"]
@@ -39,14 +41,26 @@ level = "info"      # trace, debug, info, warn, error
 
 ## Environment Variables
 
-Override any setting via environment variables prefixed with `SPINE_`:
+Common settings can be overridden with environment variables:
 
 ```bash
-export SPINE_SERVER_HOST=0.0.0.0
-export SPINE_SERVER_PORT=9000
-export SPINE_TLS_ENABLED=true
-export SPINE_LOGGING_LEVEL=debug
+export SPINE_HOST=0.0.0.0
+export SPINE_PORT=9000
+export SPINE_TLS=true
+export SPINE_TLS_MTLS=true
+export SPINE_LOG_LEVEL=debug
 ```
+
+Others include `SPINE_METRICS_PORT`, `SPINE_MAX_SESSIONS`, `SPINE_TLS_CERT`, `SPINE_TLS_KEY`, `SPINE_TLS_CA`, `SPINE_HELLO_TIMEOUT`, `SPINE_IDLE_TIMEOUT`, `SPINE_SHUTDOWN_TIMEOUT` and `SPINE_CONFIG_PATH` (an alternative config file path). See `src/spine-core/src/config.rs` for the full list.
+
+## Exposing the Daemon
+
+The native server has no per-client authorization: any connected client can
+publish names and resources and call tools. A non-loopback `server.host` is
+refused at startup unless `tls.mutual_tls` is on or
+`server.allow_unauthenticated_remote` is set, which states that the network
+itself is trusted. TLS is the only source of confidentiality and
+authentication on the native wire.
 
 ## Loading Config in Code
 
@@ -66,6 +80,7 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 | `server.max_sessions`      | `1000`      |
 | `server.idle_timeout_secs` | `300`       |
 | `server.hello_timeout_secs` | `10`      |
+| `server.allow_unauthenticated_remote` | `false` |
 | `tls.enabled`              | `false`     |
 | `logging.format`           | `pretty`    |
 | `logging.level`            | `info`      |

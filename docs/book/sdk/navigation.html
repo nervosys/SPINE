@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -223,6 +223,7 @@ for element in &amp;ur.elements {
 <tr><td><code>Text(String)</code></td><td>Text content</td><td>Paragraph text</td></tr>
 <tr><td><code>Heading { level, text }</code></td><td><code>u8</code>, <code>String</code></td><td><code>&lt;h1&gt;</code> through <code>&lt;h6&gt;</code></td></tr>
 <tr><td><code>Link { text, url }</code></td><td><code>String</code>, <code>String</code></td><td>Hyperlinks</td></tr>
+<tr><td><code>AgentLink { text, target, rel, capabilities }</code></td><td><code>String</code>, <code>String</code>, <code>String</code>, <code>Vec&lt;String&gt;</code></td><td>Link to a <code>spine://</code> name</td></tr>
 <tr><td><code>Button { text, action_id }</code></td><td><code>String</code>, <code>String</code></td><td>Interactive buttons</td></tr>
 <tr><td><code>Input { label, input_type, id }</code></td><td><code>String</code> × 3</td><td>Form inputs</td></tr>
 <tr><td><code>Image { alt, src }</code></td><td><code>String</code>, <code>String</code></td><td>Images</td></tr>
@@ -236,22 +237,9 @@ for element in &amp;ur.elements {
 </span><span class="boring">fn main() {
 </span>let html = client.get_raw_html().await?;
 <span class="boring">}</span></code></pre>
-<h2 id="interaction"><a class="header" href="#interaction">Interaction</a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Click an element
-client.click("submit-button").await?;
-
-// Type into a field
-client.type_text("search-input", "hello world").await?;
-<span class="boring">}</span></code></pre>
-<h2 id="latent-vectors"><a class="header" href="#latent-vectors">Latent Vectors</a></h2>
-<p>Extract neural embeddings of page content:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let latent = client.get_latent_ur(256).await?;
-// latent: Vec&lt;f32&gt; of dimension 256
-<span class="boring">}</span></code></pre>
+<p>Both <code>get_ur</code> and <code>get_raw_html</code> need a loaded page. Without a prior
+<code>navigate</code> the daemon answers <code>no_page_loaded</code>; see
+<a href="./connecting.html#errors">Connecting</a> for how to read the code.</p>
 
                     </main>
 

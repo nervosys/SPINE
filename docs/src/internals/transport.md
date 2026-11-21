@@ -2,7 +2,14 @@
 
 ## Architecture
 
-`spine-transport` provides high-performance I/O with composable plugins:
+`spine-transport` provides high-performance I/O with composable plugins. It
+supplies the socket pieces the native wire runs over (WebSocket bridge, QUIC
+stream) and its own `FrameCodec` (12-byte header, a different format). It is not the
+spine-wire v1 codec: that is `spine_protocol::frame` (15-byte header). The transport
+crate adds no encryption to the native path; TLS does that.
+
+Figures below were measured on earlier builds, before the native wire became
+spine-wire v1 (2026-11-21), and have not been re-measured.
 
 ```rust
 use spine_transport::{TransportPlugin, MetricsPlugin, RateLimiterPlugin};
@@ -23,9 +30,11 @@ Plugins form an ordered pipeline (forward on send, reverse on receive):
 Custom plugins implement the `TransportPlugin` trait:
 
 ```rust
-pub trait TransportPlugin: Send + Sync {
-    fn on_send(&self, data: &mut Vec<u8>) -> Result<()>;
-    fn on_recv(&self, data: &mut Vec<u8>) -> Result<()>;
+pub trait TransportPlugin: Send + Sync + fmt::Debug {
+    fn name(&self) -> &str;
+    fn on_send(&self, frame: &mut Frame) -> TransportResult<()> { Ok(()) }
+    fn on_recv(&self, frame: &mut Frame) -> TransportResult<()> { Ok(()) }
+    // plus on_connect, on_disconnect and is_enabled, all with defaults
 }
 ```
 
@@ -38,17 +47,18 @@ Bottleneck Bandwidth and RTT-based congestion control:
 
 ## Zero-Copy I/O
 
-- Frame decode via `bytes::Bytes` slicing (30% faster)
+- Frame decode via `bytes::Bytes` slicing
 - Buffer reuse pool for send/read/latent buffers
-- Stack-allocated frame headers (`[u8; 16]`)
+- Stack-allocated frame headers
 
 ## WebSocket Bridge
 
 Client and server WebSocket adapters:
 
 ```rust
-use spine_transport::WebSocketClientStream;
+use spine_transport::{WebSocketBridge, WebSocketClientStream};
 
 // Used internally by AgentClient::connect_ws()
-let stream = WebSocketClientStream::connect("ws://localhost:8081").await?;
+let bridge = WebSocketBridge::connect("ws://localhost:8081").await?;
+let stream = WebSocketClientStream::new(bridge);
 ```

@@ -36,6 +36,7 @@ The `UnifiedRepresentation` contains:
 | `Text(String)`                    | Text content             | Paragraph text        |
 | `Heading { level, text }`         | `u8`, `String`           | `<h1>` through `<h6>` |
 | `Link { text, url }`              | `String`, `String`       | Hyperlinks            |
+| `AgentLink { text, target, rel, capabilities }` | `String`, `String`, `String`, `Vec<String>` | Link to a `spine://` name |
 | `Button { text, action_id }`      | `String`, `String`       | Interactive buttons   |
 | `Input { label, input_type, id }` | `String` × 3             | Form inputs           |
 | `Image { alt, src }`              | `String`, `String`       | Images                |
@@ -47,3 +48,7 @@ The `UnifiedRepresentation` contains:
 ```rust
 let html = client.get_raw_html().await?;
 ```
+
+Both `get_ur` and `get_raw_html` need a loaded page. Without a prior
+`navigate` the daemon answers `no_page_loaded`; see
+[Connecting](./connecting.md#errors) for how to read the code.

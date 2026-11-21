@@ -1,13 +1,14 @@
 # Mesh Networking
 
-SPINE agents can form peer-to-peer mesh networks for decentralized communication.
+SPINE agents can form peer-to-peer mesh networks for decentralized communication. The code is the `spine-mesh` crate; the handshake it runs is `spine-session`. This is a separate protocol from the native client wire (spine-wire v1, which has no mesh handshake and takes its confidentiality from TLS); the daemon reaches the mesh through the `mesh_call` and `*_name` commands.
 
 ## Overview
 
 The mesh networking layer provides:
 
 - **Ed25519 signing identity**: Cryptographic agent identity with fingerprinting
-- **Peer-to-peer connections**: Direct TCP connections between agents
+- **Peer-to-peer connections**: Direct TCP, WebSocket and QUIC connections between agents, plaintext or with the encrypted `spine-session` handshake (ML-KEM-768 and Ed25519, AES-256-GCM frames; custom cryptography without external review)
+- **Name records**: Signed name records and their lookup RPC (`spine-name`, `naming_mesh`)
 - **Multi-hop routing**: Shortest-path message forwarding with TTL
 - **Gossip protocol**: Peer announcement propagation for network discovery
 - **Message deduplication**: Ring buffer preventing routing loops
@@ -21,7 +22,7 @@ The mesh networking layer provides:
 | `MeshNode` | Network node with peer management and routing |
 | `MeshEnvelope` | Signed message container with source, target, hops, TTL |
 | `MeshTarget` | Destination: Agent(id), Broadcast, Capability(name) |
-| `MeshPayload` | 9 message variants (Data, Query, Discovery, Gossip, etc.) |
+| `MeshPayload` | Message variants: agent messages, peer gossip, ping/pong, route request/response, knowledge sync, swarm invite/response, name records and resolution, and versioned application RPC |
 
 ## Routing
 
@@ -39,4 +40,4 @@ Nodes periodically broadcast `PeerAnnouncement` messages containing their identi
 
 ## Signature Verification
 
-Every `MeshEnvelope` is signed by the sender using Ed25519. Recipients verify the signature against the sender's public key from the trusted key store, rejecting messages from unknown or banned peers.
+Every `MeshEnvelope` is signed by the sender using Ed25519. Recipients verify the signature against the sender's public key from the trusted key store, rejecting messages from unknown or banned peers. The signature covers the id, sender, target, timestamp and payload; `ttl` and `hops` are rewritten by forwarders and are not signed, so treat them as advisory.

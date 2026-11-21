@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,52 +181,117 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="protocol"><a class="header" href="#protocol">Protocol</a></h1>
-<h2 id="message-format"><a class="header" href="#message-format">Message Format</a></h2>
-<p>All communication uses the <code>Message</code> enum, serialized with serde:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub enum Message {
-    Request(Request),
-    Response(Response),
-    Event(Event),
-    BinaryProgram(SpineBinary),
-    LatentMessage(LatentVector),
-    Sync(SyncPayload),
-    Speculative(SpeculativeFrame),
-    PreComputed(PreComputedResponse),
-    MorphRequest { seed: u64 },
-    Ping { timestamp: u64 },
-    Pong { timestamp: u64 },
-}
-<span class="boring">}</span></code></pre>
+<h2 id="bodies"><a class="header" href="#bodies">Bodies</a></h2>
+<p>The body of a frame is one deterministic CBOR item (<code>docs/spec/00-wire.md</code> C.3).
+The frame header’s request id is the only correlation id; no body carries one.</p>
+<p>A <code>REQUEST</code> body is a command from a closed set of 19. A command without
+fields is the text of its name (<code>"get_ur"</code>); a command with fields is a
+single-entry map <code>{name: fields}</code>. A name outside the set is <code>unknown_command</code>;
+a known name with a defect (an unknown field, a wrong type, a present <code>null</code>
+for an optional field, a non-deterministic encoding) is <code>invalid_request</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Name</th><th>Fields</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigate</code></td><td><code>url</code></td></tr>
+<tr><td><code>get_ur</code></td><td>none</td></tr>
+<tr><td><code>get_raw_html</code></td><td>none</td></tr>
+<tr><td><code>execute_binary</code></td><td>a <code>SpineBinary</code></td></tr>
+<tr><td><code>store_knowledge</code></td><td><code>key</code>, <code>value</code>, <code>tags</code></td></tr>
+<tr><td><code>query_knowledge</code></td><td><code>query</code>, <code>tags</code>, <code>limit</code></td></tr>
+<tr><td><code>get_binary_capabilities</code></td><td>none</td></tr>
+<tr><td><code>resolve_name</code></td><td><code>name</code>, <code>if_none_match</code> (optional byte string, 32 bytes)</td></tr>
+<tr><td><code>resolve_names</code></td><td><code>names</code></td></tr>
+<tr><td><code>find_providers</code></td><td><code>capability</code>, <code>limit</code> (optional)</td></tr>
+<tr><td><code>publish_name</code></td><td><code>record</code></td></tr>
+<tr><td><code>fetch_name</code></td><td><code>name</code>, <code>if_none_match</code> (optional byte string, 32 bytes)</td></tr>
+<tr><td><code>crawl_names</code></td><td><code>seed</code>, <code>max_depth</code> (optional), <code>max_visits</code> (optional)</td></tr>
+<tr><td><code>publish_resource</code></td><td><code>record</code>, <code>content_type</code>, <code>data</code> (byte string)</td></tr>
+<tr><td><code>read_resource</code></td><td><code>hash</code> (byte string, 32 bytes), <code>offset</code>, <code>max_bytes</code></td></tr>
+<tr><td><code>namespace_status</code></td><td>none</td></tr>
+<tr><td><code>mesh_call</code></td><td><code>peer_id</code>, <code>peer_key</code> (byte string, 32 bytes), <code>payload</code></td></tr>
+<tr><td><code>tool_call</code></td><td><code>name</code>, <code>args</code>, <code>trace</code> (optional)</td></tr>
+<tr><td><code>capability_query</code></td><td><code>selector</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>A <code>RESPONSE</code> body is a single-entry map: <code>{ok: result}</code> on success or
+<code>{err: {code, message[, details]}}</code> on failure. The result’s shape depends on
+the command; <code>read_resource</code> answers a <code>ResourceChunk</code> whose <code>hash</code> and <code>data</code>
+are byte strings, <code>capability_query</code> answers a capability advertisement
+(<code>agent_id</code>, <code>capabilities</code>) and <code>tool_call</code> answers the tool’s content.</p>
+<p>Every body struct rejects unknown fields. Optional fields are omitted when
+absent. Byte fields are CBOR byte strings, never arrays of integers. A
+<code>serde_json::Value</code> field stays a value and is encoded as CBOR, with integer and
+float widths as in C.5.</p>
+<h3 id="error-codes"><a class="header" href="#error-codes">Error codes</a></h3>
+<p><code>spine_protocol::body</code> holds the constants (<code>ERR_*</code>) and <code>ALL_ERROR_CODES</code>.
+Clients branch on <code>code</code>; <code>message</code> is for people.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Code</th><th>Raised when</th></tr>
+</thead>
+<tbody>
+<tr><td><code>overloaded</code></td><td>the connection already has <code>max_inflight</code> requests in flight</td></tr>
+<tr><td><code>unknown_command</code></td><td>the body names a command outside the set</td></tr>
+<tr><td><code>invalid_request</code></td><td>the body is a known command with a defect</td></tr>
+<tr><td><code>internal</code></td><td>the daemon failed in a way the client cannot fix</td></tr>
+<tr><td><code>rate_limit</code></td><td>the session’s or the connection’s request rate was exceeded</td></tr>
+<tr><td><code>session_capacity</code></td><td>the daemon holds its maximum number of sessions</td></tr>
+<tr><td><code>session_not_found</code>, <code>session_expired</code></td><td>the session is gone or timed out</td></tr>
+<tr><td><code>no_page_loaded</code></td><td>a page command arrived before <code>navigate</code></td></tr>
+<tr><td><code>navigation_failed</code></td><td>the page could not be loaded (see <code>outbound_*</code>)</td></tr>
+<tr><td><code>capability_denied</code></td><td>the session lacks a capability the command needs</td></tr>
+<tr><td><code>execution_failed</code></td><td>a binary failed to run</td></tr>
+<tr><td><code>namespace_unavailable</code></td><td>no namespace or mesh is configured</td></tr>
+<tr><td><code>invalid_peer_id</code>, <code>mesh_call_failed</code></td><td>a <code>mesh_call</code> target is malformed or the call failed</td></tr>
+<tr><td><code>batch_too_large</code></td><td><code>resolve_names</code> exceeded its limit</td></tr>
+<tr><td><code>lookup_failed</code>, <code>lookup_unavailable</code></td><td>provider lookup failed or is not configured</td></tr>
+<tr><td><code>record_expired</code>, <code>malformed_record</code>, <code>record_rejected</code>, <code>publish_failed</code></td><td>a published record or resource was refused</td></tr>
+<tr><td><code>resource_not_found</code></td><td>no resource has the requested hash</td></tr>
+<tr><td><code>invalid_seed</code></td><td>a crawl seed is not a valid name</td></tr>
+<tr><td><code>invalid_args</code>, <code>unsupported_tool</code>, <code>parse_error</code></td><td>a <code>tool_call</code> failed</td></tr>
+<tr><td><code>outbound_*</code></td><td>the daemon’s outbound HTTP policy refused or failed a fetch: <code>disabled</code>, <code>address_denied</code>, <code>scheme_denied</code>, <code>credentials_denied</code>, <code>fragment_denied</code>, <code>redirect_denied</code>, <code>encoding_denied</code>, <code>response_limit</code>, <code>busy</code>, <code>timeout</code>, <code>invalid_url</code>, <code>invalid_host</code>, <code>invalid_port</code>, <code>dns_failed</code>, <code>client_failed</code>, <code>request_failed</code>, <code>body_failed</code>, <code>invalid_utf8</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The SDK returns an error as <code>NativeError::Remote { code, message, details }</code>
+inside <code>anyhow::Error</code>; use <code>spine_protocol::native::remote_code</code>.</p>
 <h2 id="frame-format"><a class="header" href="#frame-format">Frame Format</a></h2>
-<p>Messages are framed with a 16-byte header:</p>
-<pre><code>┌──────────┬──────────┬───────────┬───────────┐
-│ Length(4) │ Type(1)  │ Flags(1)  │ Padding(10)│
-└──────────┴──────────┴───────────┴───────────┘
-│                 Payload                       │
-└───────────────────────────────────────────────┘
+<p>The native wire is spine-wire v1 (specified in <code>docs/spec/00-wire.md</code>). Every
+frame has a fixed 15-byte header, all integers big-endian:</p>
+<pre><code>┌────────────┬─────────┬──────────┬──────────┬────────────────┬──────┐
+│ Length (4) │ Ver (1) │ Type (1) │ Flags(1) │ Request id (8) │ Body │
+└────────────┴─────────┴──────────┴──────────┴────────────────┴──────┘
 </code></pre>
 <ul>
-<li><strong>Length</strong>: 4 bytes, big-endian, payload size</li>
-<li><strong>Type</strong>: Message discriminant</li>
-<li><strong>Flags</strong>: <code>0x01</code> = zstd compressed, <code>0x00</code> = raw</li>
+<li><strong>Length</strong>: bytes after this field, <code>11 + len(body)</code>, at most the negotiated
+maximum (16 MiB; 64 KiB before the handshake completes)</li>
+<li><strong>Ver</strong>: <code>1</code></li>
+<li><strong>Type</strong>: <code>HELLO</code>, <code>HELLO_ACK</code>, <code>CLOSE</code>, <code>PING</code>, <code>PONG</code>, <code>REQUEST</code>,
+<code>RESPONSE</code>, <code>STREAM_*</code> and <code>EXT</code></li>
+<li><strong>Flags</strong>: bit 0 means the body is zstd compressed; other bits must be zero</li>
+<li><strong>Request id</strong>: correlates a <code>RESPONSE</code> with its <code>REQUEST</code>; a <code>PING</code> and its
+<code>PONG</code> share one</li>
+<li><strong>Body</strong>: exactly one deterministic CBOR item</li>
 </ul>
+<p>A connection starts with <code>HELLO</code> from the client and <code>HELLO_ACK</code> from the
+server; nothing else may be sent first. The daemon closes a connection that has
+not sent <code>HELLO</code> within <code>server.hello_timeout_secs</code> (default 10 seconds) with
+<code>CLOSE(timeout)</code>. A violation ends the connection with a <code>CLOSE</code> code
+(<code>malformed_frame</code>, <code>frame_too_large</code>, <code>protocol_violation</code>, …).</p>
+<p>The current daemon runs one request per connection at a time
+(<code>max_inflight = 1</code>). A command travels as a <code>REQUEST</code>; the daemon’s reply
+travels as the <code>RESPONSE</code> with the same request id. <code>Ping</code> and <code>Pong</code> are the
+<code>PING</code> and <code>PONG</code> frames, whose body is an unsigned integer token.</p>
 <h2 id="compression"><a class="header" href="#compression">Compression</a></h2>
-<p>Adaptive compression using a 1-byte flag protocol:</p>
-<ul>
-<li>Payloads &lt; 64 bytes are sent raw (compression overhead exceeds savings)</li>
-<li>Larger payloads use zstd compression</li>
-<li>Stack-allocated <code>[u8; 16]</code> headers avoid heap allocation</li>
-</ul>
-<h2 id="speculation"><a class="header" href="#speculation">Speculation</a></h2>
-<p>The protocol supports speculative message prediction:</p>
-<ul>
-<li>Bidirectional prediction with Titans architecture</li>
-<li>Pre-computed responses sent before request arrives</li>
-<li>Surprise-gated learning adjusts predictions over time</li>
-<li>Speculation hits eliminate round-trip latency entirely</li>
-</ul>
+<p>Compression is off unless the sender turns it on. A body of at least 1 KiB is
+then compressed with zstd when that makes it smaller, and the compressed flag
+is set in the header. Smaller bodies are never compressed. The receiver needs
+no setting.</p>
 <h2 id="transport-options"><a class="header" href="#transport-options">Transport Options</a></h2>
 <div class="table-wrapper">
 <table>
@@ -235,12 +300,14 @@
 </thead>
 <tbody>
 <tr><td>TCP</td><td>8080</td><td>Default, lowest latency</td></tr>
-<tr><td>TLS</td><td>8080</td><td>Encrypted, production</td></tr>
-<tr><td>WebSocket</td><td>8081</td><td>Browser/polyglot clients</td></tr>
-<tr><td>QUIC</td><td>8082</td><td>Feature-gated, UDP-based</td></tr>
+<tr><td>TLS</td><td>8080</td><td>Encrypted, production (optional mutual TLS)</td></tr>
+<tr><td>WebSocket</td><td>8081</td><td>Browser/polyglot clients (ws and wss)</td></tr>
+<tr><td>QUIC</td><td>8082</td><td>Only when <code>spine-core</code> is built with <code>--features quic</code> (off by default)</td></tr>
 </tbody>
 </table>
 </div>
+<p>The wire itself is not encrypted. Confidentiality and authentication on the
+native path come from TLS only; see <a href="./security.html">Security</a>.</p>
 
                     </main>
 
