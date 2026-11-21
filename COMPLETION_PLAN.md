@@ -155,7 +155,7 @@ Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source 
 - [ ] Generate test vectors: keys, names, signing bytes, signatures, record hashes, chunk hashes. The existing tests contain none beyond RFC 4648 strings.
 - [ ] Resolve everything marked Undetermined in the five specification files.
 - [ ] Decide the licence for the specification and vectors (account holder).
-- [ ] Native client to daemon wire: `docs/spec/00-wire.md` records the wire as built (part A), requirements (B), a proposed "spine-wire v1" frame (C), the v1 message set (D), the fate of morphology, chameleon and speculation (E), the migration steps below (F) and open questions for the owner (G). Nothing in it is implemented. Steps, each to leave CI green:
+- [x] Native client to daemon wire: `docs/spec/00-wire.md` records the wire as built (part A), requirements (B), a proposed "spine-wire v1" frame (C), the v1 message set (D), the fate of morphology, chameleon and speculation (E), the migration steps below (F) and open questions for the owner (G). Nothing in it is implemented. Steps, each to leave CI green: All fourteen steps done and CI-verified as of `c4439cb` (2026-11-21); reconciling the spec text with the implementation is tracked separately below.
   - [x] `cbor-core`: deterministic CBOR encoder and validator in `spine-protocol`, additive. Done in `68109a0`.
   - [x] `frame-codec`: the 15-byte frame header, limits and bounded decompression, additive. Done in `f556e26`.
   - [x] `hello-close`: `HELLO`, `HELLO_ACK`, `CLOSE`; delete the unused `negotiation.rs`. Done in `ce795e6` and `eb46c69`~1 (clippy fix).
@@ -170,6 +170,7 @@ Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source 
   - [x] `signed-frame`: delete or re-point `spine-mesh/src/signed_frame.rs`. Done in `96ae4b5`: deleted, no callers.
   - [x] `bindings-scripts-docs`: Go, FFI, Python, the browser extension, `scripts/smoke_candidate.py` and the documents that describe the old wire. Done in `c4439cb` and the four commits before it.
   - [x] `conformance-vectors`: hex vectors for every frame and error row, checked by an independent decoder. Done in `68810d6` and its clippy fix.
+- [ ] Reconcile `docs/spec/00-wire.md` with the implementation: make part C normative as implemented, resolve the nine divergences flagged in `00-wire.vectors.json`, and move the as-built description of the old wire to a history appendix.
 
 ## Stage 6. Layer 3: authority
 
