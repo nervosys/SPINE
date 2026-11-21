@@ -1170,12 +1170,11 @@ mod tests {
         // guards against a reader that waits for bytes that never come.
         let got =
             tokio::time::timeout(std::time::Duration::from_millis(500), b.receive_message()).await;
-        match got {
-            Ok(Ok(received)) => assert_ne!(
+        if let Ok(Ok(received)) = got {
+            assert_ne!(
                 wire::encode(&received).unwrap(),
                 wire::encode(&msg).unwrap()
-            ),
-            Ok(Err(_)) | Err(_) => {}
+            );
         }
     }
 
