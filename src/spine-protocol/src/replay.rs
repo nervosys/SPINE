@@ -353,7 +353,6 @@ impl ReplayVerifier {
 
     /// Replay against a live ProtocolHandler, comparing received messages
     /// to what was recorded.
-    #[cfg(feature = "research")]
     pub async fn replay_sends<S>(
         &self,
         handler: &mut crate::ProtocolHandler<S>,

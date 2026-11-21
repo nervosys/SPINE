@@ -14,10 +14,10 @@ description = "Low-latency communication protocols for SPINE"
 default = ["quic", "research"]
 quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
 # Research code: the Chameleon latent-space key, the speculative predictor,
-# `ProtocolHandler`, `SpineConnection`, the protocol evolution framework and
-# `TitansLatentCodec`. It is the only code that needs spine-neural and
-# spine-crypto. Build with `--no-default-features` (plus `quic` if wanted) for
-# the wire types and codec alone.
+# `SpineConnection`, the protocol evolution framework and `TitansLatentCodec`.
+# It is the only code that needs spine-neural and spine-crypto. Build with
+# `--no-default-features` (plus `quic` if wanted) for the wire types, the codec
+# and `ProtocolHandler` (which then has no chameleon and never predicts).
 research = ["dep:spine-neural", "dep:spine-crypto"]
 
 [dependencies]
@@ -90,14 +90,11 @@ required-features = ["research"]
 [[test]]
 name = "chaos"
 path = "tests/chaos.rs"
-required-features = ["research"]
 
 [[test]]
 name = "e2e_protocol"
 path = "tests/e2e_protocol.rs"
-required-features = ["research"]
 
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
-required-features = ["research"]

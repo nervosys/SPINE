@@ -17,11 +17,13 @@ API documentation: <https://docs.rs/spine-protocol>
 
 - `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
 - `research` (default): research code that needs `spine-neural` and
-  `spine-crypto`: `ChameleonKey`, the speculative predictor, protocol
-  morphing, `ProtocolHandler`, `SpineConnection`, the protocol evolution
+  `spine-crypto`: `ChameleonKey` (and `ProtocolHandler::enable_chameleon`),
+  the speculative predictor, `SpineConnection`, the protocol evolution
   framework and `TitansLatentCodec`. Build with `--no-default-features` to get
-  the wire types, the wire codec (`wire`), `Message`, `BrowserCommand` and the
-  task types without either research crate.
+  the wire types, the wire codec (`wire`), `Message`, `BrowserCommand`, the
+  task types and `ProtocolHandler` without either research crate. Without the
+  feature the handler never predicts, so it sends full frames only; a default
+  peer reads them unchanged.
 
 ## Workspace dependencies
 

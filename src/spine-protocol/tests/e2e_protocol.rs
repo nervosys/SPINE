@@ -245,6 +245,7 @@ async fn e2e_encrypted_multiple_messages() {
 /// NOTE: Chameleon uses neural latent-space encoding which is inherently lossy,
 /// so full roundtrip decode is not expected to produce identical data. This test
 /// verifies the protocol mechanics (framing, encryption, morphology) are sound.
+#[cfg(feature = "research")]
 #[tokio::test]
 async fn e2e_chameleon_tcp_send_path() {
     let secret: [u8; 32] = [0xCA; 32];

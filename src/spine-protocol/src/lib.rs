@@ -10,6 +10,9 @@ pub mod resource;
 pub mod tasks;
 pub mod wire;
 
+mod handler;
+pub use handler::*;
+
 #[cfg(feature = "research")]
 mod research;
 #[cfg(feature = "research")]

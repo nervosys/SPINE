@@ -162,6 +162,7 @@ async fn protocol_encrypted_multiple_messages() {
 
 // ========== CHAMELEON PROTOCOL ==========
 
+#[cfg(feature = "research")]
 #[tokio::test]
 async fn protocol_chameleon_encoding() {
     // ChameleonKey uses neural latent-space encoding (inherently lossy)
