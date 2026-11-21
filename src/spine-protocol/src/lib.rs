@@ -4,6 +4,7 @@
 pub mod agentic;
 pub mod agentic_codec;
 pub mod cbor;
+pub mod connection;
 pub mod frame;
 pub mod hello;
 pub mod mcp;
