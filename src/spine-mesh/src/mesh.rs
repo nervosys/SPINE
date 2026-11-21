@@ -38,7 +38,7 @@ use tokio::sync::{mpsc, RwLock};
 use uuid::Uuid;
 
 /// Domain-separation prefix for mesh envelope signatures.
-const ENVELOPE_SIG_DOMAIN: &[u8] = b"spine-mesh-envelope-v2\0";
+const ENVELOPE_SIG_DOMAIN: &[u8] = b"spine-mesh-envelope-v3\0";
 
 // ──────────────────────────── Configuration ────────────────────────────
 
@@ -163,9 +163,11 @@ pub struct MeshEnvelope {
     /// The message payload.
     pub payload: MeshPayload,
     /// Ed25519 signature by the originator over the bytes produced by
-    /// [`MeshNode::signature_data`]: a domain-separation prefix, then `id`,
-    /// `from`, `to`, `timestamp` and `payload`, with `to` and `payload` (JSON)
-    /// length-prefixed so the encoding is unambiguous.
+    /// [`MeshNode::signature_data`]: a domain-separation prefix, then the
+    /// deterministic CBOR (`spine-cbor`) of one array holding `id`, `from`,
+    /// `to`, the timestamp and `payload`. The bytes are a function of the
+    /// values, not of any JSON text, so the JSON wire form may be re-formatted
+    /// in transit without invalidating the signature.
     ///
     /// `ttl` and `hops` are deliberately NOT covered: forwarders legitimately
     /// rewrite them at every hop, so the originator cannot sign them. They are
@@ -833,7 +835,8 @@ impl MeshNode {
     }
 
     /// Check an envelope's signature against `public_key`. Returns false if the
-    /// signed bytes cannot be built (serialisation failure) or the signature is bad.
+    /// signed bytes cannot be built (encoding failure) or the signature is bad.
+    /// Only the v3 form verifies; there is no fallback to earlier encodings.
     fn verify_envelope(public_key: &[u8], envelope: &MeshEnvelope) -> bool {
         match Self::signature_data(
             &envelope.id,
@@ -851,13 +854,14 @@ impl MeshNode {
 
     /// Create a signed mesh envelope for a message.
     ///
-    /// Fails if the destination or payload cannot be serialised for signing.
+    /// Fails if the envelope cannot be encoded for signing (see
+    /// [`MeshNode::signature_data`]); nothing is signed in that case.
     pub fn create_envelope(&self, to: MeshTarget, payload: MeshPayload) -> Result<MeshEnvelope> {
         let id = Uuid::new_v4();
         let from = self.identity.agent_id;
         let timestamp = Utc::now();
 
-        // Sign (domain || id || from || to || timestamp || payload).
+        // Sign (domain || CBOR [id, from, to, timestamp, payload]).
         let sig_data = Self::signature_data(&id, &from, &to, &timestamp, &payload)?;
         let signature = self.identity.sign(&sig_data).to_vec();
 
@@ -1027,15 +1031,49 @@ impl MeshNode {
         dedup.prune(300); // 5 minute window
     }
 
-    /// Compute the bytes an envelope signature covers:
+    /// Compute the bytes an envelope signature covers (signature v3):
     ///
-    /// `"spine-mesh-envelope-v2\0"` || id (16 bytes) || from (16 bytes) ||
-    /// len(to_json) as u64 BE || to_json || timestamp seconds (i64 BE) ||
-    /// timestamp subsecond nanos (u32 BE) || len(payload_json) as u64 BE ||
-    /// payload_json.
+    /// `"spine-mesh-envelope-v3\0"` followed by the deterministic CBOR
+    /// (`spine_cbor::to_vec`, RFC 8949 section 4.2, no tags, depth at most 32)
+    /// of a single six-element array:
     ///
-    /// Errors if `to` or `payload` cannot be serialised; callers must never sign
-    /// or accept a signature over a partial encoding.
+    /// ```text
+    /// [ id (bstr, 16), from (bstr, 16), to, timestamp_secs (int),
+    ///   timestamp_nanos (uint), payload ]
+    /// ```
+    ///
+    /// `to` and `payload` are whatever serde produces for `MeshTarget` and
+    /// `MeshPayload` under ciborium's non-human-readable serializer. The bytes
+    /// need only be a pure function of the values, which they are; the shapes
+    /// that result are:
+    ///
+    /// - structs are maps with text keys; a field skipped by
+    ///   `skip_serializing_if` has no key; map keys sort by their encodings;
+    /// - enums are externally tagged: a unit variant is its name as text
+    ///   (`"Broadcast"`, `"PeerQuery"`), any other variant is a one-entry map
+    ///   from the variant name (`{"Ping": 7}`, `{"RouteRequest": {"target": ..}}`);
+    /// - `Uuid` (and so `AgentId`, a newtype over it) is a 16-byte bstr,
+    ///   because it is not human-readable here (JSON has the hyphenated text);
+    /// - `[u8; 32]` (public keys, `content_hash`) is an array of 32 unsigned
+    ///   integers, not a bstr (serde treats arrays as tuples);
+    /// - `SocketAddr` is `{"V4": [[a, b, c, d], port]}` or `{"V6": [[16 ints],
+    ///   port]}`, not the text form;
+    /// - `NameKey`, the `NameRecord` signature (`sig_bytes`) and `SpineUri` are
+    ///   text (base32 or the canonical URI), as in JSON;
+    /// - `Option::None` is `null`, `Some(x)` is `x`; `BTreeMap` is a map;
+    /// - `serde_json::Value`: null, bool, text, array and map as themselves;
+    ///   numbers are an unsigned or negative integer when stored as `u64` or
+    ///   `i64`, otherwise a float in the shortest of binary16, binary32 and
+    ///   binary64 that preserves it (`-0.0` is `f9 8000`). An integer outside
+    ///   `i64`/`u64` is already an `f64` once parsed, and is encoded as one.
+    ///   `1` and `1.0` therefore differ, as they do in JSON text.
+    ///
+    /// No chrono type occurs inside a payload; the envelope timestamp is split
+    /// into integers here instead of being left to chrono's string form.
+    ///
+    /// Errors if the encoding fails (nesting deeper than 32, or a value serde
+    /// cannot express); callers must never sign or accept a signature over a
+    /// fallback or partial encoding.
     fn signature_data(
         id: &Uuid,
         from: &AgentId,
@@ -1043,23 +1081,28 @@ impl MeshNode {
         timestamp: &DateTime<Utc>,
         payload: &MeshPayload,
     ) -> Result<Vec<u8>> {
-        let to_bytes = serde_json::to_vec(to)
-            .map_err(|e| anyhow::anyhow!("cannot serialise envelope destination: {e}"))?;
-        let payload_bytes = serde_json::to_vec(payload)
-            .map_err(|e| anyhow::anyhow!("cannot serialise envelope payload: {e}"))?;
+        /// A byte string, written as a CBOR bstr whatever the serializer.
+        struct Bstr<'a>(&'a [u8]);
+        impl Serialize for Bstr<'_> {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_bytes(self.0)
+            }
+        }
 
-        let mut data = Vec::with_capacity(
-            ENVELOPE_SIG_DOMAIN.len() + 64 + to_bytes.len() + payload_bytes.len(),
+        let body = (
+            Bstr(id.as_bytes()),
+            Bstr(from.0.as_bytes()),
+            to,
+            timestamp.timestamp(),
+            timestamp.timestamp_subsec_nanos(),
+            payload,
         );
+        let cbor = spine_cbor::to_vec(&body)
+            .map_err(|e| anyhow::anyhow!("cannot encode envelope for signing: {e}"))?;
+
+        let mut data = Vec::with_capacity(ENVELOPE_SIG_DOMAIN.len() + cbor.len());
         data.extend_from_slice(ENVELOPE_SIG_DOMAIN);
-        data.extend_from_slice(id.as_bytes());
-        data.extend_from_slice(from.0.as_bytes());
-        data.extend_from_slice(&(to_bytes.len() as u64).to_be_bytes());
-        data.extend_from_slice(&to_bytes);
-        data.extend_from_slice(&timestamp.timestamp().to_be_bytes());
-        data.extend_from_slice(&timestamp.timestamp_subsec_nanos().to_be_bytes());
-        data.extend_from_slice(&(payload_bytes.len() as u64).to_be_bytes());
-        data.extend_from_slice(&payload_bytes);
+        data.extend_from_slice(&cbor);
         Ok(data)
     }
 
@@ -1635,5 +1678,442 @@ mod tests {
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].0, sender_id);
         assert_eq!(routes[0].1.next_hop, relay_id);
+    }
+
+    // ───────────────── Envelope signature v3 (deterministic CBOR) ─────────────────
+
+    fn name_record() -> spine_name::NameRecord {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let name = spine_name::SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = spine_name::NameRecord::new(name, 3, 1_700_000_000)
+            .unwrap()
+            .with_ttl(3600)
+            .with_endpoint(spine_name::Endpoint::new("tcp", "10.0.0.9:9440"))
+            .with_capability("search");
+        rec.content_hash = Some([7u8; 32]);
+        rec.meta.insert("title".into(), "a record".into());
+        rec.links.push(
+            spine_name::Link::new(spine_name::Rel::Child, spine_name::SpineUri::did([1u8; 32]))
+                .with_title("child")
+                .with_capability("index"),
+        );
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    fn keyspace_peer() -> crate::naming::KeyspacePeer {
+        crate::naming::KeyspacePeer {
+            info: spine_name::NodeInfo::new(
+                spine_name::NameKey::of(b"peer"),
+                vec!["10.0.0.1:9440".into()],
+                5,
+            ),
+            agent_id: AgentId::new(),
+        }
+    }
+
+    /// One value of every `MeshPayload` variant.
+    fn every_payload() -> Vec<MeshPayload> {
+        let rec = name_record();
+        vec![
+            MeshPayload::AgentMessage(AgentMessageCompact {
+                id: Uuid::new_v4(),
+                from: AgentId::new(),
+                to: AgentId::new(),
+                content_type: "text/plain".into(),
+                content_data: serde_json::json!({"k": [1, -2, 2.5, null, "s", true]}),
+                reply_to: Some(Uuid::new_v4()),
+                thread_id: None,
+            }),
+            MeshPayload::PeerAnnounce(vec![
+                PeerAnnouncement {
+                    agent_id: AgentId::new(),
+                    addr: "10.0.0.1:9000".parse().unwrap(),
+                    capabilities: vec!["scraper".into()],
+                    hop_count: 1,
+                },
+                PeerAnnouncement {
+                    agent_id: AgentId::new(),
+                    addr: "[2001:db8::1]:9001".parse().unwrap(),
+                    capabilities: vec![],
+                    hop_count: 2,
+                },
+            ]),
+            MeshPayload::PeerQuery,
+            MeshPayload::Ping(u64::MAX),
+            MeshPayload::Pong(0),
+            MeshPayload::RouteRequest {
+                target: AgentId::new(),
+            },
+            MeshPayload::RouteResponse {
+                target: AgentId::new(),
+                route: vec![AgentId::new(), AgentId::new()],
+            },
+            MeshPayload::KnowledgeSync {
+                topic: "topic".into(),
+                entries: vec![
+                    serde_json::json!({"b": 1, "a": {"c": [0.5]}}),
+                    serde_json::json!(null),
+                ],
+            },
+            MeshPayload::SwarmInvite {
+                swarm_id: Uuid::new_v4(),
+                task_description: "do it".into(),
+                required_capabilities: vec!["x".into(), "y".into()],
+            },
+            MeshPayload::SwarmResponse {
+                swarm_id: Uuid::new_v4(),
+                accepted: false,
+                reason: Some("busy".into()),
+            },
+            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(rec.clone()))),
+            MeshPayload::NameResolveRequest(crate::naming::ResolveRequest {
+                request_id: 11,
+                query: crate::naming::ResolveQuery::Capability("search".into()),
+            }),
+            MeshPayload::NameResolveResponse(Box::new(crate::naming::ResolveResponse {
+                request_id: 11,
+                record: Some(rec.clone()),
+                providers: vec![rec],
+                closer: vec![keyspace_peer()],
+            })),
+            MeshPayload::NameHello(crate::naming::NameHello {
+                public_key: [3u8; 32],
+                endpoints: vec!["10.0.0.3:9440".into()],
+            }),
+            MeshPayload::NameHelloAck(Box::new(crate::naming::NameHelloAck {
+                public_key: [4u8; 32],
+                endpoints: vec!["10.0.0.4:9440".into()],
+                closer: vec![keyspace_peer()],
+            })),
+            MeshPayload::Application(Box::new(ApplicationMessage {
+                public_key: [5u8; 32],
+                recipient: AgentId::new(),
+                recipient_key: [6u8; 32],
+                request_id: Uuid::new_v4(),
+                response: true,
+                data: serde_json::json!({"a": [1, 2.5, null, "x"], "b": {"c": true}}),
+            })),
+        ]
+    }
+
+    /// Exhaustive on purpose: adding a `MeshPayload` variant stops this
+    /// compiling until `every_payload` is taught about it.
+    fn payload_index(p: &MeshPayload) -> usize {
+        match p {
+            MeshPayload::AgentMessage(_) => 0,
+            MeshPayload::PeerAnnounce(_) => 1,
+            MeshPayload::PeerQuery => 2,
+            MeshPayload::Ping(_) => 3,
+            MeshPayload::Pong(_) => 4,
+            MeshPayload::RouteRequest { .. } => 5,
+            MeshPayload::RouteResponse { .. } => 6,
+            MeshPayload::KnowledgeSync { .. } => 7,
+            MeshPayload::SwarmInvite { .. } => 8,
+            MeshPayload::SwarmResponse { .. } => 9,
+            MeshPayload::NameAnnounce(_) => 10,
+            MeshPayload::NameResolveRequest(_) => 11,
+            MeshPayload::NameResolveResponse(_) => 12,
+            MeshPayload::NameHello(_) => 13,
+            MeshPayload::NameHelloAck(_) => 14,
+            MeshPayload::Application(_) => 15,
+        }
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn every_payload_variant_is_constructed() {
+        let mut seen: Vec<usize> = every_payload().iter().map(payload_index).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..16).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn signer_and_verifier_agree_for_every_payload_variant() {
+        let node = MeshNode::new(test_identity("v3-all"), test_config());
+        let key = *node.identity.public_key();
+        for payload in every_payload() {
+            let index = payload_index(&payload);
+            let envelope = node
+                .create_envelope(MeshTarget::Capability("cap".into()), payload)
+                .unwrap();
+            assert!(
+                MeshNode::verify_carried_key(&envelope, &key),
+                "variant {index} does not verify"
+            );
+
+            // The receiver holds the struct it parsed from the JSON wire, not
+            // the sender's value; it must re-encode to the same bytes.
+            let wire = serde_json::to_vec(&envelope).unwrap();
+            let received: MeshEnvelope = serde_json::from_slice(&wire).unwrap();
+            assert!(
+                MeshNode::verify_carried_key(&received, &key),
+                "variant {index} does not verify after the JSON wire"
+            );
+        }
+    }
+
+    #[test]
+    fn every_signed_field_is_covered() {
+        let node = MeshNode::new(test_identity("v3-tamper"), test_config());
+        let key = *node.identity.public_key();
+        let envelope = node
+            .create_envelope(MeshTarget::Agent(AgentId::new()), MeshPayload::Ping(5))
+            .unwrap();
+        assert!(MeshNode::verify_carried_key(&envelope, &key));
+
+        let mut bad = envelope.clone();
+        bad.id = Uuid::new_v4();
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "id");
+
+        let mut bad = envelope.clone();
+        bad.from = AgentId::new();
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "from");
+
+        let mut bad = envelope.clone();
+        bad.to = MeshTarget::Capability("x".into());
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "to");
+
+        let mut bad = envelope.clone();
+        bad.timestamp += chrono::Duration::seconds(1);
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "timestamp secs");
+
+        let mut bad = envelope.clone();
+        bad.timestamp += chrono::Duration::nanoseconds(1);
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "timestamp nanos");
+
+        let mut bad = envelope.clone();
+        bad.payload = MeshPayload::Ping(6);
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "payload value");
+
+        let mut bad = envelope.clone();
+        bad.payload = MeshPayload::Pong(5);
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "payload variant");
+
+        let mut bad = envelope.clone();
+        bad.signature[0] ^= 1;
+        assert!(!MeshNode::verify_carried_key(&bad, &key), "signature");
+
+        // ttl and hops are not signed.
+        let mut relayed = envelope.clone();
+        relayed.ttl = 1;
+        relayed.hops.push(AgentId::new());
+        relayed.hops.push(AgentId::new());
+        assert!(MeshNode::verify_carried_key(&relayed, &key));
+
+        // A different key does not verify.
+        let other = test_identity("somebody-else-entirely");
+        assert!(!MeshNode::verify_carried_key(&envelope, other.public_key()));
+    }
+
+    #[test]
+    fn the_signed_bytes_do_not_depend_on_json_text_formatting() {
+        let a: serde_json::Value =
+            serde_json::from_str(r#"{"b": 1, "a": [2.50, {"y": null, "x": "s"}]}"#).unwrap();
+        let b: serde_json::Value =
+            serde_json::from_str("{\"a\":[2.5,{\"x\":\"s\",\"y\":null}],\n\"b\":1}").unwrap();
+        let id = Uuid::from_bytes([1; 16]);
+        let from = AgentId(Uuid::from_bytes([2; 16]));
+        let ts = DateTime::from_timestamp(1_700_000_000, 5).unwrap();
+        let bytes = |entries: Vec<serde_json::Value>| {
+            MeshNode::signature_data(
+                &id,
+                &from,
+                &MeshTarget::Broadcast,
+                &ts,
+                &MeshPayload::KnowledgeSync {
+                    topic: "t".into(),
+                    entries,
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(bytes(vec![a]), bytes(vec![b]));
+    }
+
+    #[test]
+    fn awkward_floats_survive_the_json_wire_and_still_verify() {
+        let node = MeshNode::new(test_identity("v3-floats"), test_config());
+        let key = *node.identity.public_key();
+        let sum = 0.1_f64 + 0.2_f64;
+        let mut values = vec![
+            serde_json::json!(sum),
+            serde_json::json!(1e-7),
+            serde_json::json!(5e-324),
+            serde_json::json!(f64::MAX),
+            serde_json::json!(-0.0),
+            serde_json::json!(f64::MIN_POSITIVE),
+            serde_json::json!(1.0),
+            serde_json::json!(u64::MAX),
+            serde_json::json!(i64::MIN),
+        ];
+        // Integers outside i64/u64 parse as floats, on the sender as well as
+        // on the receiver.
+        values.push(serde_json::from_str("18446744073709551616").unwrap());
+        values.push(serde_json::from_str("-9223372036854775809").unwrap());
+        values.push(serde_json::from_str("123456789012345678901234567890").unwrap());
+        assert!(values[9].is_f64() && values[10].is_f64() && values[11].is_f64());
+
+        let envelope = node
+            .create_envelope(
+                MeshTarget::Broadcast,
+                MeshPayload::KnowledgeSync {
+                    topic: "floats".into(),
+                    entries: values,
+                },
+            )
+            .unwrap();
+        assert!(MeshNode::verify_carried_key(&envelope, &key));
+
+        let wire = serde_json::to_vec(&envelope).unwrap();
+        let received: MeshEnvelope = serde_json::from_slice(&wire).unwrap();
+        assert!(MeshNode::verify_carried_key(&received, &key));
+        // Sender and receiver hold the same bytes.
+        let signed = |e: &MeshEnvelope| {
+            MeshNode::signature_data(&e.id, &e.from, &e.to, &e.timestamp, &e.payload).unwrap()
+        };
+        assert_eq!(signed(&envelope), signed(&received));
+    }
+
+    #[test]
+    fn an_unencodable_envelope_is_neither_signed_nor_verified() {
+        let node = MeshNode::new(test_identity("v3-deep"), test_config());
+        let key = *node.identity.public_key();
+
+        // Nesting beyond spine_cbor::MAX_DEPTH cannot be encoded.
+        let mut deep = serde_json::Value::Null;
+        for _ in 0..40 {
+            deep = serde_json::Value::Array(vec![deep]);
+        }
+        let payload = MeshPayload::KnowledgeSync {
+            topic: "deep".into(),
+            entries: vec![deep],
+        };
+
+        assert!(node
+            .create_envelope(MeshTarget::Broadcast, payload.clone())
+            .is_err());
+        assert_eq!(node.stats().messages_sent, 0);
+
+        let forged = MeshEnvelope {
+            id: Uuid::new_v4(),
+            from: *node.agent_id(),
+            to: MeshTarget::Broadcast,
+            ttl: 4,
+            hops: vec![],
+            payload,
+            signature: vec![0u8; 64],
+            timestamp: Utc::now(),
+        };
+        assert!(!MeshNode::verify_carried_key(&forged, &key));
+    }
+
+    /// The v2 signed bytes, as the previous release built them from JSON text.
+    fn v2_signature_data(e: &MeshEnvelope) -> Vec<u8> {
+        let to = serde_json::to_vec(&e.to).unwrap();
+        let payload = serde_json::to_vec(&e.payload).unwrap();
+        let mut d = b"spine-mesh-envelope-v2\0".to_vec();
+        d.extend_from_slice(e.id.as_bytes());
+        d.extend_from_slice(e.from.0.as_bytes());
+        d.extend_from_slice(&(to.len() as u64).to_be_bytes());
+        d.extend_from_slice(&to);
+        d.extend_from_slice(&e.timestamp.timestamp().to_be_bytes());
+        d.extend_from_slice(&e.timestamp.timestamp_subsec_nanos().to_be_bytes());
+        d.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        d.extend_from_slice(&payload);
+        d
+    }
+
+    #[tokio::test]
+    async fn a_v2_signed_envelope_is_refused() {
+        let sender = test_identity("v2-sender");
+        let sender_node = MeshNode::new(sender.clone(), test_config());
+        let receiver = test_identity("v2-receiver");
+        let receiver_id = receiver.agent_id;
+        let receiver_node = MeshNode::new(receiver, test_config());
+        receiver_node.trust_key(sender.agent_id, sender.public_key().to_vec());
+
+        let mut envelope = sender_node
+            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(1))
+            .unwrap();
+        envelope.signature = sender.sign(&v2_signature_data(&envelope)).to_vec();
+
+        assert!(!MeshNode::verify_carried_key(
+            &envelope,
+            sender.public_key()
+        ));
+        let action = receiver_node.process_envelope(envelope).await.unwrap();
+        assert!(matches!(action, MeshAction::Drop(_)));
+    }
+
+    /// GOLDEN VECTORS. The expected hex below was derived BY HAND from the
+    /// CBOR rules (RFC 8949 section 4.2) with a short standard-library Python
+    /// script, and has NOT been confirmed by running Rust: the first CI run
+    /// confirms or refutes it. Layout, for the first vector:
+    ///
+    /// ```text
+    /// 7370696e652d6d6573682d656e76656c6f70652d763300  "spine-mesh-envelope-v3\0"
+    /// 86                                              array(6)
+    /// 50 101112131415161718191a1b1c1d1e1f             id, bstr(16)
+    /// 50 202122232425262728292a2b2c2d2e2f             from, bstr(16)
+    /// 69 42726f616463617374                           to: text(9) "Broadcast"
+    /// 1a 6553f100                                     secs 1700000000
+    /// 1a 075bcd15                                     nanos 123456789
+    /// 69 5065657251756572 79                          payload: text(9) "PeerQuery"
+    /// ```
+    ///
+    /// The second vector has `to` = `{"Agent": bstr(16)}` and payload
+    /// `{"Ping": 1000}` (`a1 64 "Ping" 19 03e8`).
+    #[test]
+    fn golden_signature_data() {
+        let id = Uuid::from_bytes(std::array::from_fn(|i| 0x10 + i as u8));
+        let from = AgentId(Uuid::from_bytes(std::array::from_fn(|i| 0x20 + i as u8)));
+        let ts = DateTime::from_timestamp(1_700_000_000, 123_456_789).unwrap();
+
+        let broadcast = MeshNode::signature_data(
+            &id,
+            &from,
+            &MeshTarget::Broadcast,
+            &ts,
+            &MeshPayload::PeerQuery,
+        )
+        .unwrap();
+        assert_eq!(
+            hex_of(&broadcast),
+            "7370696e652d6d6573682d656e76656c6f70652d7633008650101112131415161718191a1b1c1d1e1f\
+             50202122232425262728292a2b2c2d2e2f6942726f6164636173741a6553f1001a075bcd1569506565725175657279"
+        );
+
+        let direct = MeshNode::signature_data(
+            &id,
+            &from,
+            &MeshTarget::Agent(from),
+            &ts,
+            &MeshPayload::Ping(1000),
+        )
+        .unwrap();
+        assert_eq!(
+            hex_of(&direct),
+            "7370696e652d6d6573682d656e76656c6f70652d7633008650101112131415161718191a1b1c1d1e1f\
+             50202122232425262728292a2b2c2d2e2fa1654167656e7450202122232425262728292a2b2c2d2e2f\
+             1a6553f1001a075bcd15a16450696e671903e8"
+        );
+
+        // A fixed seed signs those bytes and its public key verifies them.
+        let identity = SigningIdentity::from_seed("golden", [42u8; 32]);
+        let sig = identity.sign(&broadcast);
+        assert!(crate::identity::Ed25519Keypair::verify(
+            identity.public_key(),
+            &broadcast,
+            &sig
+        ));
+        assert!(!crate::identity::Ed25519Keypair::verify(
+            identity.public_key(),
+            &direct,
+            &sig
+        ));
     }
 }

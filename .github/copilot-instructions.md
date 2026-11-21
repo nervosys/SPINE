@@ -285,7 +285,7 @@
 
 ### Phase 21: Agent Mesh Networking ✅
 
-- [x] **Ed25519 signing identity**: `Ed25519Keypair`, `SigningIdentity`, `SignedEnvelope`, `PublicIdentity` with fingerprint
+- [x] **Ed25519 signing identity**: `Ed25519Keypair`, `SigningIdentity`, `PublicIdentity` with fingerprint
 - [x] **Peer-to-peer mesh**: `MeshNode` with connection management, peer discovery, multi-hop routing
 - [x] **Routing table**: Shortest-path selection, stale route pruning, route learning from message hops
 - [x] **Gossip protocol**: `PeerAnnouncement` propagation, max_peers enforcement, banned peer filtering

@@ -155,7 +155,7 @@ Cross-crate imports: grepped `spine_agentic` across src/, fuzz/. Modules not lis
 
 | Module | Lines | Purpose | Class | Imports from this crate | Imported by (modules) | Imported by (crates) | Tests |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| identity.rs | 443 | Ed25519 keypair, `SigningIdentity`, `PublicIdentity`, `SignedEnvelope` (uses ed25519-dalek directly) | STACK | AgentId | mesh, mesh_tcp, mesh_ws, mesh_quic, naming_mesh, signed_frame, lib.rs:2824 (`AgentDID`) | spine-core src/namespace.rs:38 | 13 |
+| identity.rs | 443 | Ed25519 keypair, `SigningIdentity`, `PublicIdentity` (uses ed25519-dalek directly) | STACK | AgentId | mesh, mesh_tcp, mesh_ws, mesh_quic, naming_mesh, signed_frame, lib.rs:2824 (`AgentDID`) | spine-core src/namespace.rs:38 | 13 |
 | mesh.rs | 1,411 | `MeshNode`, signed `MeshEnvelope`, routing table, dedup, peer state; `MeshPayload` carries name-resolution and `Application` RPC variants (181-236) | STACK | identity, naming (types at 220-230), AgentId; spine_name (630-661) | naming_mesh, mesh_tcp, mesh_ws, mesh_quic | spine-core src/namespace.rs:39 | 24 |
 | naming.rs | 1,590 | Kademlia-style name-lookup state machines (`NameService`, `Lookup`, `ResolveRequest`) over spine-name | STACK | spine_name, AgentId | mesh (payload types), naming_mesh | none directly | 34 |
 | naming_mesh.rs | 1,968 | Drives name resolution over a live mesh; `MeshNameResolver`, `NameTransport`, `MeshApplication` (the signed-RPC application trait, line 46), bootstrap, replication, maintenance | STACK | identity, mesh, naming, spine_name | mesh_tcp, mesh_ws, mesh_quic | spine-core src/namespace.rs:41, 53, 125; src/main.rs:176, 525; src/tasks.rs:353 | 28 |

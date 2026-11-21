@@ -61,7 +61,13 @@ debug = true         # Debug info for flamegraphs
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip: a mesh envelope signature covers the CBOR form of every
+# serde_json::Value in its payload, and a Value crosses the JSON wire as text.
+# Without this feature serde_json's fast float parser can return an f64 one
+# ulp away from the one that was printed, so the receiver would re-encode
+# different bytes and reject a genuine signature. The cost is a slower, exact
+# float parse; no new dependency.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 anyhow = "1.0"
 thiserror = "1.0"
 log = "0.4"

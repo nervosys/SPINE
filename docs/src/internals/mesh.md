@@ -40,4 +40,4 @@ Nodes periodically broadcast `PeerAnnouncement` messages containing their identi
 
 ## Signature Verification
 
-Every `MeshEnvelope` is signed by the sender using Ed25519. Recipients verify the signature against the sender's public key from the trusted key store, rejecting messages from unknown or banned peers. The signature covers the id, sender, target, timestamp and payload; `ttl` and `hops` are rewritten by forwarders and are not signed, so treat them as advisory.
+Every `MeshEnvelope` is signed by the sender using Ed25519. Recipients verify the signature against the sender's public key from the trusted key store, rejecting messages from unknown or banned peers. The signature (v3) covers the domain string `spine-mesh-envelope-v3` and the deterministic CBOR (`spine-cbor`) of the array `[id, from, to, timestamp_secs, timestamp_nanos, payload]`, so the signed bytes depend on the values and not on JSON text formatting; an envelope signed under an earlier version does not verify; `ttl` and `hops` are rewritten by forwarders and are not signed, so treat them as advisory.

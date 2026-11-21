@@ -4515,6 +4515,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spine-cbor",
  "spine-name",
  "spine-protocol",
  "spine-session",

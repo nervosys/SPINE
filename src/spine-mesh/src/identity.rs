@@ -188,19 +188,6 @@ impl SigningIdentity {
         Ed25519Keypair::verify(self.public_key(), message, signature)
     }
 
-    /// Sign a serializable message, returning a `SignedEnvelope`.
-    pub fn sign_message<T: Serialize>(&self, payload: &T) -> anyhow::Result<SignedEnvelope> {
-        let data = serde_json::to_vec(payload)?;
-        let signature = self.sign(&data);
-        Ok(SignedEnvelope {
-            signer: self.agent_id,
-            public_key: self.public_key().to_vec(),
-            payload: data,
-            signature: signature.to_vec(),
-            timestamp: Utc::now(),
-        })
-    }
-
     /// Export the public identity (safe to share).
     pub fn public_identity(&self) -> PublicIdentity {
         PublicIdentity {
@@ -209,41 +196,6 @@ impl SigningIdentity {
             name: self.name.clone(),
             created_at: self.created_at,
         }
-    }
-}
-
-/// A signed message envelope with non-repudiation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SignedEnvelope {
-    /// Who signed this message
-    pub signer: AgentId,
-    /// The signer's public key
-    pub public_key: Vec<u8>,
-    /// The serialized payload bytes
-    pub payload: Vec<u8>,
-    /// Ed25519 signature over `payload`
-    pub signature: Vec<u8>,
-    /// When the message was signed
-    pub timestamp: DateTime<Utc>,
-}
-
-impl SignedEnvelope {
-    /// Verify the signature on this envelope.
-    pub fn verify(&self) -> bool {
-        Ed25519Keypair::verify(&self.public_key, &self.payload, &self.signature)
-    }
-
-    /// Deserialize the payload into a typed value (after verification).
-    pub fn open<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<T> {
-        if !self.verify() {
-            anyhow::bail!("signature verification failed");
-        }
-        Ok(serde_json::from_slice(&self.payload)?)
-    }
-
-    /// Deserialize the payload without verification (use when already verified).
-    pub fn payload<T: for<'de> Deserialize<'de>>(&self) -> anyhow::Result<T> {
-        Ok(serde_json::from_slice(&self.payload)?)
     }
 }
 
@@ -344,33 +296,6 @@ mod tests {
         let msg = b"important agent command";
         let sig = id.sign(msg);
         assert!(id.verify(msg, &sig));
-    }
-
-    #[test]
-    fn test_signed_envelope() {
-        let id = SigningIdentity::new("envelope-test");
-        let payload = serde_json::json!({
-            "action": "navigate",
-            "url": "https://example.com"
-        });
-
-        let envelope = id.sign_message(&payload).unwrap();
-        assert!(envelope.verify());
-
-        // Deserialize payload
-        let recovered: serde_json::Value = envelope.open().unwrap();
-        assert_eq!(recovered["action"], "navigate");
-    }
-
-    #[test]
-    fn test_signed_envelope_reject_tampered() {
-        let id = SigningIdentity::new("tamper-test");
-        let payload = "original data";
-        let mut envelope = id.sign_message(&payload).unwrap();
-
-        // Tamper with payload
-        envelope.payload = serde_json::to_vec(&"tampered data").unwrap();
-        assert!(!envelope.verify());
     }
 
     #[test]
