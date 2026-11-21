@@ -1123,6 +1123,62 @@ mod tests {
         }
     }
 
+    /// Both ends morph with the same seed at the same point in the stream, then
+    /// keep talking in both directions.
+    #[tokio::test]
+    async fn handlers_stay_in_sync_when_both_morph_with_one_seed() {
+        let (a_stream, b_stream) = tokio::io::duplex(64 * 1024);
+        let mut a = ProtocolHandler::new(a_stream);
+        let mut b = ProtocolHandler::new(b_stream);
+        let (small, large) = sample_messages();
+
+        a.send_message(&small).await.unwrap();
+        b.receive_message().await.unwrap();
+
+        // Seed 5 moves the framing from the default 5-byte big-endian header
+        // to an 11-byte little-endian one.
+        a.morph_now(5);
+        b.morph_now(5);
+
+        for msg in [&small, &large] {
+            let expected = wire::encode(msg).unwrap();
+
+            a.send_message(msg).await.unwrap();
+            let got = b.receive_message().await.unwrap();
+            assert_eq!(wire::encode(&got).unwrap(), expected);
+
+            b.send_message(msg).await.unwrap();
+            let got = a.receive_message().await.unwrap();
+            assert_eq!(wire::encode(&got).unwrap(), expected);
+        }
+    }
+
+    /// If only the sender morphs, the receiver reads the next frame with the
+    /// old header layout and cannot recover the message.
+    #[tokio::test]
+    async fn a_receiver_that_did_not_morph_cannot_read_the_next_frame() {
+        let (a_stream, b_stream) = tokio::io::duplex(64 * 1024);
+        let mut a = ProtocolHandler::new(a_stream);
+        let mut b = ProtocolHandler::new(b_stream);
+        let msg = Message::Ping { timestamp: 7 };
+
+        a.morph_now(5);
+        a.send_message(&msg).await.unwrap();
+
+        // The old 5-byte big-endian header reads the new little-endian length
+        // as a size over the frame limit, so this errors; the timeout only
+        // guards against a reader that waits for bytes that never come.
+        let got =
+            tokio::time::timeout(std::time::Duration::from_millis(500), b.receive_message()).await;
+        match got {
+            Ok(Ok(received)) => assert_ne!(
+                wire::encode(&received).unwrap(),
+                wire::encode(&msg).unwrap()
+            ),
+            Ok(Err(_)) | Err(_) => {}
+        }
+    }
+
     /// A default handler wraps every message in a `SpeculativeFrame` carrying
     /// the whole message. Without the `research` feature the frame also
     /// advertises no prediction.

@@ -535,11 +535,22 @@ where
     /// A daemon built without the `research` feature still morphs the framing in
     /// its connection loop, but its command dispatcher answers
     /// `unsupported_without_research`; the full command needs the `research` feature.
+    ///
+    /// The daemon sends its response under the old framing and morphs right
+    /// after; this reads the response, takes the seed from it and morphs the
+    /// local handler with that seed so both ends switch together.
     pub async fn morph(&mut self) -> anyhow::Result<()> {
         let res = self.send_request(BrowserCommand::Morph).await?;
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
+        let seed = res
+            .result
+            .as_ref()
+            .and_then(|result| result.get("seed"))
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(|| anyhow::anyhow!("morph response carried no seed"))?;
+        self.handler.morph_now(seed);
         Ok(())
     }
 

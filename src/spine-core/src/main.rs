@@ -2649,14 +2649,17 @@ where
                     }
                 }
 
-                // Handle the command
+                // Handle the command. A `Morph` command answers under the OLD
+                // framing (the client reads it before it switches) and the
+                // daemon morphs only after that send completes, so both ends
+                // switch at the same point in the stream.
+                let mut pending_morph: Option<u64> = None;
                 let (res, latent_to_stream) = if let BrowserCommand::Morph = req.command {
                     let seed = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_nanos() as u64;
-                    handler.morph_now(seed);
-                    PROTOCOL_MORPHS.inc();
+                    pending_morph = Some(seed);
                     (
                         Response {
                             id: req.id,
@@ -2681,8 +2684,20 @@ where
                     (res, latent)
                 };
 
-                if let Err(e) = handler.send_message(&Message::Response(res)).await {
-                    error!("Failed to send response: {}", e);
+                match handler.send_message(&Message::Response(res)).await {
+                    Ok(()) => {
+                        if let Some(seed) = pending_morph {
+                            handler.morph_now(seed);
+                            PROTOCOL_MORPHS.inc();
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to send response: {}", e);
+                        if pending_morph.is_some() {
+                            // The peer never saw the seed: framing is unrecoverable.
+                            break;
+                        }
+                    }
                 }
 
                 // Stream any latent vectors produced
