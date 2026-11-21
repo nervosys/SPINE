@@ -4,7 +4,7 @@
 //!
 //! - `spine init` — Scaffold a new SPINE project with config and examples
 //! - `spine connect <addr>` — Connect to a SPINE server and start interactive session
-//! - `spine query <subcommand>` — Send queries (navigate, search, knowledge)
+//! - `spine query <subcommand>` — Send queries (navigate, knowledge, html, exec)
 //! - `spine deploy` — Start a SPINE server from config
 //! - `spine benchmark <addr>` — Run performance benchmarks against a server
 //! - `spine status <addr>` — Check server health and metrics
@@ -180,16 +180,6 @@ enum QueryAction {
         format: String,
     },
 
-    /// Search the semantic web
-    Search {
-        /// Search query
-        query: String,
-
-        /// Server address
-        #[arg(short, long, default_value = "127.0.0.1:8080")]
-        addr: String,
-    },
-
     /// Store knowledge
     Store {
         /// Key
@@ -298,7 +288,6 @@ async fn main() -> Result<()> {
             QueryAction::Navigate { url, addr, format } => {
                 commands::query::navigate(addr, url, format).await
             }
-            QueryAction::Search { query, addr } => commands::query::search(addr, query).await,
             QueryAction::Store {
                 key,
                 value,

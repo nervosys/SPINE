@@ -1,8 +1,6 @@
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
-#[cfg(feature = "research")]
-use spine_human::HumanInteractionEngine;
 use spine_parser::UnifiedRepresentation;
 use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
 use std::sync::Arc;
@@ -24,10 +22,6 @@ pub struct AgentClient<S> {
     request_counter: u64,
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,
     event_tx: Option<mpsc::Sender<spine_protocol::Event>>,
-    #[cfg(feature = "research")]
-    human_engine: Option<HumanInteractionEngine>,
-    #[cfg(feature = "research")]
-    pub neural_protocol: Option<spine_agentic::NeuralProtocol>,
 }
 
 impl AgentClient<TcpStream> {
@@ -42,10 +36,6 @@ impl AgentClient<TcpStream> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
-            #[cfg(feature = "research")]
-            human_engine: None,
-            #[cfg(feature = "research")]
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
 
@@ -174,10 +164,6 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
-            #[cfg(feature = "research")]
-            human_engine: None,
-            #[cfg(feature = "research")]
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
 
@@ -228,10 +214,6 @@ impl AgentClient<spine_transport::WebSocketClientStream> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
-            #[cfg(feature = "research")]
-            human_engine: None,
-            #[cfg(feature = "research")]
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
 }
@@ -240,12 +222,6 @@ impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    /// Enable human-like interaction patterns (needs the `research` feature)
-    #[cfg(feature = "research")]
-    pub fn enable_human_mode(&mut self, engine: HumanInteractionEngine) {
-        self.human_engine = Some(engine);
-    }
-
     pub async fn start_listener(
         &mut self,
     ) -> (
@@ -429,57 +405,6 @@ where
         Ok(html)
     }
 
-    pub async fn click(&mut self, element_id: &str) -> anyhow::Result<()> {
-        #[cfg(feature = "research")]
-        if let Some(engine) = &self.human_engine {
-            // Simulate reaction time
-            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
-
-            // Simulate mouse movement (simplified for now, just a delay)
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-            // Simulate click duration
-            tokio::time::sleep(engine.simulate_click_duration()).await;
-        }
-
-        let res = self
-            .send_request(BrowserCommand::Click {
-                element_id: element_id.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn type_text(&mut self, element_id: &str, text: &str) -> anyhow::Result<()> {
-        #[cfg(feature = "research")]
-        if let Some(engine) = &self.human_engine {
-            // Simulate reaction time
-            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
-
-            let delays = engine.generate_typing_delays(text);
-            for (i, _c) in text.chars().enumerate() {
-                // In a real implementation, we might send each character individually
-                // but for now we'll just sleep and then send the whole text at the end
-                // or send it character by character if the protocol supports it.
-                tokio::time::sleep(delays[i]).await;
-            }
-        }
-
-        let res = self
-            .send_request(BrowserCommand::Type {
-                element_id: element_id.to_string(),
-                text: text.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
     pub async fn execute_binary(
         &mut self,
         binary: SpineBinary,
@@ -512,22 +437,6 @@ where
         Ok(result)
     }
 
-    /// Request a latent representation of the current page.
-    ///
-    /// Needs a daemon built with the `research` feature; a research-free daemon
-    /// answers with an `unsupported_without_research` error.
-    pub async fn get_latent_ur(&mut self, dimensions: usize) -> anyhow::Result<Vec<f32>> {
-        let res = self
-            .send_request(BrowserCommand::GetLatentUR { dimensions })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let latent: Vec<f32> =
-            serde_json::from_value(res.result.unwrap_or_default()["latent_vector"].clone())?;
-        Ok(latent)
-    }
-
     /// Subscribe to latent streams from the core
     pub async fn subscribe_latent(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<f32>>> {
         if let Some(_tx) = &self.latent_tx {
@@ -539,58 +448,6 @@ where
         let (tx, rx) = mpsc::channel(100);
         self.latent_tx = Some(tx);
         Ok(rx)
-    }
-
-    #[instrument(skip(self))]
-    pub async fn search(&mut self, query: &str) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::Search {
-                query: query.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
-    }
-
-    /// Transfer the session to another cluster node.
-    ///
-    /// Needs a daemon built with the `research` feature; a research-free daemon
-    /// answers with an `unsupported_without_research` error.
-    pub async fn transfer_session(&mut self, target_node_id: uuid::Uuid) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::TransferSession { target_node_id })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn handle_event(
-        &mut self,
-        element_id: u32,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> anyhow::Result<Vec<spine_protocol::VDomPatch>> {
-        let res = self
-            .send_request(BrowserCommand::HandleEvent {
-                element_id,
-                event_name: event_name.to_string(),
-                payload,
-            })
-            .await?;
-
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-
-        let patches: Vec<spine_protocol::VDomPatch> = serde_json::from_value(
-            res.result.unwrap_or(serde_json::json!({"patches": []}))["patches"].clone(),
-        )?;
-
-        Ok(patches)
     }
 
     pub async fn store_knowledge(
@@ -635,28 +492,6 @@ where
         Ok(results)
     }
 
-    pub async fn delete_knowledge(&mut self, key: &str) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::DeleteKnowledge {
-                key: key.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn get_history(&mut self) -> anyhow::Result<Vec<BrowserCommand>> {
-        let res = self.send_request(BrowserCommand::GetSessionHistory).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let history: Vec<BrowserCommand> =
-            serde_json::from_value(res.result.unwrap_or_default()["history"].clone())?;
-        Ok(history)
-    }
-
     #[instrument(skip(self))]
     pub async fn ping(&mut self) -> anyhow::Result<u64> {
         let now = std::time::SystemTime::now()
@@ -680,168 +515,16 @@ where
         }
     }
 
-    pub async fn get_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
-        let res = self.send_request(BrowserCommand::GetCapabilities).await?;
+    pub async fn get_binary_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
+        let res = self
+            .send_request(BrowserCommand::GetBinaryCapabilities)
+            .await?;
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
         let capabilities: Vec<String> =
             serde_json::from_value(res.result.unwrap_or_default()["capabilities"].clone())?;
         Ok(capabilities)
-    }
-
-    pub async fn set_autonomous_mode(&mut self, enabled: bool) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SetAutonomousMode { enabled })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn swarm_search(&mut self, query: &str, depth: usize) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SwarmSearch {
-                query: query.to_string(),
-                depth,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn delegate_task(
-        &mut self,
-        task: &str,
-        target_agent_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::DelegateTask {
-                task: task.to_string(),
-                target_agent_id,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn propose_knowledge(
-        &mut self,
-        key: &str,
-        value: serde_json::Value,
-        tags: Vec<String>,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::ProposeKnowledge {
-                key: key.to_string(),
-                value,
-                tags,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn create_swarm_plan(&mut self, goal: &str) -> anyhow::Result<uuid::Uuid> {
-        let res = self
-            .send_request(BrowserCommand::CreateSwarmPlan {
-                goal: goal.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let plan_id = res
-            .result
-            .and_then(|v| {
-                v.get("plan_id")
-                    .and_then(|id| id.as_str())
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
-            })
-            .ok_or_else(|| anyhow::anyhow!("Missing plan_id in response"))?;
-        Ok(plan_id)
-    }
-
-    pub async fn execute_plan_task(
-        &mut self,
-        plan_id: uuid::Uuid,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::ExecutePlanTask { plan_id, task_id })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    /// Transmit data over the neural protocol.
-    ///
-    /// Needs a daemon built with the `research` feature; a research-free daemon
-    /// answers with an `unsupported_without_research` error. The method itself
-    /// needs the SDK's `research` feature, for its argument and result types.
-    #[cfg(feature = "research")]
-    pub async fn transmit_neural(
-        &mut self,
-        data: &[u8],
-        domain: spine_agentic::ProtocolDomain,
-    ) -> anyhow::Result<spine_agentic::TransmissionResult> {
-        let domain_str = format!("{:?}", domain);
-        let res = self
-            .send_request(BrowserCommand::NeuralTransmit {
-                data: data.to_vec(),
-                domain: domain_str,
-            })
-            .await?;
-
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-
-        let stats = res
-            .result
-            .and_then(|v| serde_json::from_value::<spine_agentic::TransmissionResult>(v).ok())
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse transmission results"))?;
-        Ok(stats)
-    }
-
-    /// Fetch the agentic runtime state.
-    ///
-    /// Needs a daemon built with the `research` feature; a research-free daemon
-    /// answers with an `unsupported_without_research` error.
-    pub async fn get_agentic_state(&mut self) -> anyhow::Result<serde_json::Value> {
-        let res = self.send_request(BrowserCommand::GetAgenticState).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
-    }
-
-    pub async fn send_speech_act(
-        &mut self,
-        target_id: uuid::Uuid,
-        performative: &str,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SendSpeechAct {
-                target_id,
-                performative: performative.to_string(),
-                content: content.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
     }
 
     // ---- Namespace ----
@@ -1010,7 +693,7 @@ mod tests {
         // Test that Request/Response types work correctly
         let req = Request {
             id: "1".to_string(),
-            command: BrowserCommand::GetCapabilities,
+            command: BrowserCommand::GetBinaryCapabilities,
         };
         let json = serde_json::to_string(&req).unwrap();
         let deserialized: Request = serde_json::from_str(&json).unwrap();

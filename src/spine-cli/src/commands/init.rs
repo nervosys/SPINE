@@ -151,39 +151,6 @@ async fn main() -> Result<()> {
 }
 "#;
 
-const EXAMPLE_SWARM: &str = r#"//! Swarm intelligence example
-//!
-//! Creates a collaborative plan and delegates tasks across agents.
-
-use spine_agent::AgentClient;
-use anyhow::Result;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    env_logger::init();
-
-    let mut client = AgentClient::connect("127.0.0.1:8080").await?;
-
-    // Enable autonomous mode
-    client.set_autonomous_mode(true).await?;
-    println!("Autonomous mode enabled");
-
-    // Create a swarm plan
-    let plan_id = client.create_swarm_plan("Research and summarize AI news").await?;
-    println!("Created plan: {}", plan_id);
-
-    // Initiate a swarm search
-    client.swarm_search("latest AI developments 2026", 3).await?;
-    println!("Swarm search initiated");
-
-    // Check agentic state
-    let state = client.get_agentic_state().await?;
-    println!("Agent state: {}", serde_json::to_string_pretty(&state)?);
-
-    Ok(())
-}
-"#;
-
 const EXAMPLE_BENCHMARK: &str = r#"//! Benchmark example
 //!
 //! Measures latency and throughput of a SPINE server.
@@ -299,7 +266,6 @@ log = "0.4"
         let examples_dir = path.join("examples");
         std::fs::create_dir_all(&examples_dir)?;
         std::fs::write(examples_dir.join("knowledge.rs"), EXAMPLE_KNOWLEDGE)?;
-        std::fs::write(examples_dir.join("swarm.rs"), EXAMPLE_SWARM)?;
         std::fs::write(examples_dir.join("benchmark.rs"), EXAMPLE_BENCHMARK)?;
         eprintln!("  {} Created examples/", "✓".green());
     }

@@ -6,25 +6,9 @@ The neural protocol enables learned message encoding using the Titans architectu
 
 ## Neural Transmission
 
-`transmit_neural` and the `ProtocolDomain` type exist only when `spine-agent` is built with its `research` feature (`cargo add spine-agent --features research`).
-
-```rust
-use spine_agentic::ProtocolDomain;
-
-let result = client.transmit_neural(
-    b"important data payload",
-    ProtocolDomain::Text,
-).await?;
-println!("Transmitted: {:?}", result);
-```
-
-## Protocol Domains
-
-| Domain   | Description                     |
-| -------- | ------------------------------- |
-| `Text`   | Natural language content        |
-| `Code`   | Source code and structured data |
-| `Binary` | Binary data and files           |
+The `transmit_neural` call, the latent-page command and the agentic-state
+command are not part of the core protocol. They are recorded as extension
+candidates in `research/spine-protocol-research/README.md`.
 
 ## Latent Vector Subscription
 

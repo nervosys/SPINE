@@ -30,7 +30,6 @@ REPL commands:
 | `nav <url>`      | Navigate to URL            |
 | `ur`             | Get Unified Representation |
 | `html`           | Get raw HTML               |
-| `search <query>` | Search                     |
 | `ping`           | Measure latency            |
 | `exec <script>`  | Execute HLS script         |
 | `caps`           | List server capabilities   |
@@ -43,7 +42,6 @@ One-shot queries:
 
 ```bash
 spine query 127.0.0.1:8080 navigate --url https://example.com
-spine query 127.0.0.1:8080 search --query "rust async"
 spine query 127.0.0.1:8080 ping --count 5
 spine query 127.0.0.1:8080 html --url https://example.com --format text
 spine query 127.0.0.1:8080 exec --script "let x = 42; x"

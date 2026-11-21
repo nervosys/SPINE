@@ -60,37 +60,6 @@ async fn single_bench(addr: &str, iterations: usize) -> Result<()> {
         elapsed.as_secs_f64(),
         iterations as f64 / elapsed.as_secs_f64()
     );
-
-    // ── Latent Vector ──
-    eprintln!();
-    eprintln!("{}", "═══ Latent Vector ═══".bold());
-    // The latent encode needs a daemon built with the `research` feature; a
-    // research-free daemon answers `unsupported_without_research`.
-    let start = Instant::now();
-    let mut latent_done = 0usize;
-    let mut latent_unsupported = None;
-    for _ in 0..iterations.min(50) {
-        match client.get_latent_ur(256).await {
-            Ok(_) => latent_done += 1,
-            Err(e) if e.to_string().starts_with("unsupported_without_research") => {
-                latent_unsupported = Some(e.to_string());
-                break;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    let elapsed = start.elapsed();
-    if let Some(msg) = latent_unsupported {
-        eprintln!("  skipped: {msg}");
-    } else {
-        eprintln!(
-            "  {} encodes in {:.3}s → {:.1} encodes/sec",
-            latent_done,
-            elapsed.as_secs_f64(),
-            latent_done as f64 / elapsed.as_secs_f64()
-        );
-    }
-
     eprintln!();
     eprintln!("{} Benchmark complete", "✓".green().bold());
     Ok(())

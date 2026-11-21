@@ -17,10 +17,8 @@ spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-features = false }
 spine-mesh = { path = "../spine-mesh", version = "2.0.2" }
 spine-wasm = { path = "../spine-wasm", version = "2.0.2" }
-spine-neural = { path = "../../research/spine-neural", version = "2.0.2", optional = true }
 spine-human = { path = "../../research/spine-human", version = "2.0.2", optional = true }
 spine-cluster = { path = "../../research/spine-cluster", version = "2.0.2", optional = true }
-spine-agentic = { path = "../../research/spine-agentic", version = "2.0.2", optional = true }
 spine-transport = { path = "../spine-transport", version = "2.0.2" }
 tokio.workspace = true
 serde.workspace = true
@@ -59,12 +57,10 @@ spine-agent = { path = "../spine-agent", version = "2.0.2" }
 
 [features]
 default = []
-# Off by default. Cluster swarm, latent and neural-transmit commands, agentic state and
-# the human transpiler. spine-wasm is the execution layer, not research.
+# Off by default. The cluster node and its event listener, and the human transpiler.
+# spine-wasm is the execution layer, not research.
 research = [
-    "dep:spine-agentic",
     "dep:spine-cluster",
-    "dep:spine-neural",
     "dep:spine-human",
 ]
 quic = ["spine-protocol/quic"]

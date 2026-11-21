@@ -194,8 +194,8 @@ async fn chaos_large_payload() {
     let large_data = "x".repeat(100_000);
     let msg = Message::Request(Request {
         id: "large-1".into(),
-        command: BrowserCommand::Search {
-            query: large_data.clone(),
+        command: BrowserCommand::Navigate {
+            url: large_data.clone(),
         },
     });
 
@@ -205,8 +205,8 @@ async fn chaos_large_payload() {
     match received {
         Message::Request(r) => {
             assert_eq!(r.id, "large-1");
-            if let BrowserCommand::Search { query } = r.command {
-                assert_eq!(query.len(), 100_000);
+            if let BrowserCommand::Navigate { url } = r.command {
+                assert_eq!(url.len(), 100_000);
             } else {
                 panic!("wrong command type");
             }
@@ -286,7 +286,7 @@ proptest! {
             // Test Request with arbitrary query
             let msg = Message::Request(Request {
                 id: id.clone(),
-                command: BrowserCommand::Search { query: query.clone() },
+                command: BrowserCommand::Navigate { url: query.clone() },
             });
             client.send_message_raw(&msg).await.unwrap();
             let received = server.receive_message().await.unwrap();

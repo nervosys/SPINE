@@ -461,23 +461,6 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
         );
         let mut agent = connect(&mut second, second_dir.path(), second_port).await;
         assert_eq!(agent.capabilities().await.unwrap().capabilities.len(), 2);
-        assert!(agent
-            .send_speech_act(uuid::Uuid::new_v4(), "inform", "private speech")
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported_speech_act"));
-        assert!(agent
-            .delegate_task("private task", None)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("unsupported_legacy_swarm"));
-        assert!(agent.create_swarm_plan("private goal").await.is_err());
-        assert!(agent
-            .execute_plan_task(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
-            .await
-            .is_err());
         eprintln!("resource acceptance: native operations connected");
         let parsed = agent
             .call_tool(

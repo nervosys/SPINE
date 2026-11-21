@@ -111,12 +111,10 @@ match command {
         // Execute HLB instructions using spine-wasm
         // Return execution result
     }
-    Click { element_id } => {
-        // Simulate user interaction
+    StoreKnowledge { key, value, tags } => {
+        // Append to the session's knowledge entries
     }
-    Type { element_id, text } => {
-        // Simulate typing
-    }
+    // ... QueryKnowledge, GetBinaryCapabilities and the namespace commands
 }
 ```
 
@@ -1253,7 +1251,7 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **Axum Router**: RESTful endpoints for sessions, navigation, search, HLS execution
+- **Axum Router**: RESTful endpoints for sessions, navigation, HLS execution
 - **Swagger UI**: Auto-generated interactive API docs via utoipa
 - **Health Endpoints**: /health, /ready, /metrics for production monitoring
 
@@ -1277,7 +1275,7 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
+- **Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, execute_hls, ping, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
 - **C Header**: `include/spine.h` with full documentation
 - **Thread-Local Error Handling**: `spine_last_error()` for retrieving error messages
 - **Build Targets**: `cdylib` (.so/.dylib/.dll) and `staticlib` (.a/.lib)
@@ -1290,6 +1288,6 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, Search, ExecuteHLS, Ping, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
+- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, ExecuteHLS, Ping, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
 - **Offline Functions**: ParseHTML, CompileHLS, Version (no server needed)
 - **Go-Native Types**: UnifiedRepresentation, Element, SpineBinary, ExecutionResult

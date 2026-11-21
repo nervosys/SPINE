@@ -16,11 +16,11 @@ Run the gateway with `SPINE_CONFIG_PATH` selecting `examples/gateway.toml`, and 
 
 ## Build with research features
 
-`spine-core` has a `research` cargo feature, off by default. The default daemon (`cargo build -p spine-core`) has no cluster swarm node or event listener, no latent encoder (`GetLatentUR`), no neural protocol (`NeuralTransmit`), no agentic runtime (`GetAgenticState`), no session transfer between cluster nodes (`TransferSession`), no autonomous reasoning loop and no human HTML-to-HLB transpile on `Navigate`. The WASM execution layer is not part of this feature. The `[cluster]` configuration section is still parsed and is ignored without the feature.
+`spine-core` has a `research` cargo feature, off by default. The default daemon (`cargo build -p spine-core`) has no cluster node or event listener and no human HTML-to-HLB transpile on `Navigate`. The WASM execution layer is not part of this feature. The `[cluster]` configuration section is still parsed and is ignored without the feature. The latent encoder, neural protocol, agentic runtime, session transfer and autonomous loop that used to sit behind it are not in the daemon in any build; they are recorded in `research/spine-protocol-research/README.md`.
 
 To get a research daemon, build with `cargo build -p spine-core --features research`. `spine-cli` forwards the feature (`--features spine-cli/research`) so one build can produce both binaries, because `spine deploy` runs the sibling `spine-core` binary; `scripts/deploy.sh` (local cluster) builds with it.
 
-Without the feature, `GetLatentUR`, `TransferSession`, `NeuralTransmit`, and `GetAgenticState` return an error response beginning `unsupported_without_research`, the same way retired swarm commands answer `unsupported_legacy_swarm`; the SDK surfaces it as an `Err` with that message. `Navigate` still fetches and stores the page but stores an empty HLB binary, as it does when transpilation fails. `Search` and `StoreKnowledge` stay local; `Search` reports `"distributed": false` and `"status": "local_only"` (with the feature it reports `true` and `"searching_cluster"`). `spine benchmark` skips its latent-vector measurement when the daemon answers `unsupported_without_research`.
+Without the feature, `Navigate` still fetches and stores the page but stores an empty HLB binary, as it does when transpilation fails. `StoreKnowledge` stays local to the session. The `spine-core` binary has no command that answers `unsupported_without_research`; the retired swarm and speech-act commands no longer exist in the command set, so a client cannot construct them.
 
 ## Connection and TLS policy
 

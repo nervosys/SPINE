@@ -5829,7 +5829,6 @@ dependencies = [
  "serde_json",
  "spine-agentic",
  "spine-compiler",
- "spine-human",
  "spine-name",
  "spine-parser",
  "spine-protocol",
@@ -5885,13 +5884,11 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-agent",
- "spine-agentic",
  "spine-cluster",
  "spine-human",
  "spine-protocol",
  "spine-wasm",
  "tokio",
- "uuid",
 ]
 
 [[package]]

@@ -45,10 +45,6 @@ async fn main() -> anyhow::Result<()> {
     let ur = client.get_ur().await?;
     println!("Title: {}", ur.title);
 
-    // Search
-    let results = client.search("rust programming").await?;
-    println!("Results: {}", results);
-
     Ok(())
 }
 ```

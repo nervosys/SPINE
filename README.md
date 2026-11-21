@@ -74,7 +74,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
 - **Long-Term Memory**: Persistent knowledge base with tagging, querying, and cross-cluster synchronization.
 
-The adaptive-protocol, latent, cluster-swarm and human-transpile features are in the `spine-core` daemon only when it is built with `--features research`; the default daemon is research-free (see [docs/NATIVE_OPERATIONS.md](docs/NATIVE_OPERATIONS.md)).
+The cluster-node and human-transpile features are in the `spine-core` daemon only when it is built with `--features research`; the default daemon is research-free (see [docs/NATIVE_OPERATIONS.md](docs/NATIVE_OPERATIONS.md)).
 
 ## The Namespace: `spine://`
 
@@ -458,15 +458,7 @@ let tasks = vec![
 
 ### Knowledge Consensus Protocol
 
-Agents can propose knowledge to the cluster. A **2/3 majority vote** is required for consensus:
-
-```rust
-// Propose a fact
-client.propose_knowledge("quantum_threat", json!("High"), vec!["security"]).await?;
-
-// Cluster votes automatically based on confidence
-// If consensus reached, knowledge is committed to all nodes
-```
+Cluster nodes (`research/spine-cluster`) can propose knowledge to each other. A **2/3 majority vote** is required for consensus. This runs between nodes only: there is no client command for it, and the old `ProposeKnowledge` command was removed from the SDK and daemon (it was refused in every build).
 
 ### Long-Term Memory
 
@@ -735,7 +727,7 @@ cargo build --release -p spine-core
 ./target/release/spine-core
 ```
 
-The default `spine-core` is built without the `research` feature: cluster swarm, `GetLatentUR`, `TransferSession`, `NeuralTransmit` and `GetAgenticState` are compiled out and answer `unsupported_without_research`, and `Search` is local only. Add `--features research` to the `cargo build` line for them. See [Build with research features](docs/NATIVE_OPERATIONS.md#build-with-research-features).
+The default `spine-core` is built without the `research` feature: the cluster node and its event listener and the human transpile on `Navigate` are compiled out. Add `--features research` to the `cargo build` line for them. See [Build with research features](docs/NATIVE_OPERATIONS.md#build-with-research-features).
 
 ### Environment Variables
 
@@ -847,7 +839,7 @@ cargo run --example knowledgeable_agent -p spine-agent
 
 ### Simple Agent Example
 
-The simple_agent example uses human mode, so it needs the SDK's `research` feature (`--features research`, as above). The default `spine-agent` build has no research crate in its tree. The simple_agent example will:
+The simple_agent example is built with the SDK's `research` feature (`--features research`, as above); the default `spine-agent` build has no research crate in its tree. The simple_agent example will:
 
 1. Connect to the core with encryption enabled
 2. Navigate to `https://example.com`
@@ -1000,10 +992,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Distributed Swarm Intelligence** (skill-based routing, DAG dependencies)
 - [x] **Knowledge Consensus Protocol** (2/3 majority voting across cluster)
 - [x] **Long-Term Memory** (persistent knowledge base with tags)
-- [x] **Autonomous Agent Loop** (ReasoningEngine with plan execution)
-- [x] **Session History & Audit Trail** (full command logging)
 - [x] **Capability Enforcement** (permission-based HLB execution)
-- [x] **Swarm Planning API** (CreateSwarmPlan, ExecutePlanTask)
 - [x] **HLS Memory Operations** (remember, query_memory, reason)
 - [x] **Social Network Swarms** (hierarchical, small-world, scale-free, modular topologies)
 - [x] **Collaborative Roles** (coordinator, executor, expert, validator, innovator, mediator)

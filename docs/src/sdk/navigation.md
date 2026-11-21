@@ -47,22 +47,3 @@ The `UnifiedRepresentation` contains:
 ```rust
 let html = client.get_raw_html().await?;
 ```
-
-## Interaction
-
-```rust
-// Click an element
-client.click("submit-button").await?;
-
-// Type into a field
-client.type_text("search-input", "hello world").await?;
-```
-
-## Latent Vectors
-
-Extract neural embeddings of page content. This needs a daemon built with the `research` feature (`cargo build -p spine-core --features research`); the default daemon answers `unsupported_without_research`:
-
-```rust
-let latent = client.get_latent_ur(256).await?;
-// latent: Vec<f32> of dimension 256
-```

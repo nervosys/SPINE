@@ -152,28 +152,6 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// Click an element by ID.
-    fn click(&self, element_id: &str) -> PyResult<()> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.click(element_id))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
-    /// Type text into an element.
-    fn type_text(&self, element_id: &str, text: &str) -> PyResult<()> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.type_text(element_id, text))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
     /// Execute an HLS script and return the result as JSON string.
     fn execute_hls(&self, script: &str) -> PyResult<String> {
         let mut client = self
@@ -182,29 +160,6 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let result = runtime()
             .block_on(client.execute_hls(script))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(serde_json::to_string(&result).unwrap_or_default())
-    }
-
-    /// Get latent vector representation of current page.
-    fn get_latent_ur(&self, dimensions: usize) -> PyResult<Vec<f32>> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.get_latent_ur(dimensions))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
-    /// Search across the web.
-    fn search(&self, query: &str) -> PyResult<String> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let result = runtime()
-            .block_on(client.search(query))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(serde_json::to_string(&result).unwrap_or_default())
     }
@@ -227,7 +182,7 @@ impl PyClient {
             .lock()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         runtime()
-            .block_on(client.get_capabilities())
+            .block_on(client.get_binary_capabilities())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 

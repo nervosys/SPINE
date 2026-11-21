@@ -9,8 +9,6 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
-#[cfg(feature = "research")]
-use spine_neural::NeuralLatentEncoder;
 use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Response};
 use spine_transport::WebSocketStream;
 use spine_wasm::WasmRuntime;
@@ -43,15 +41,10 @@ struct Session {
     /// Cached parsed UnifiedRepresentation (invalidated on navigation)
     #[serde(skip)]
     cached_ur: Option<spine_parser::UnifiedRepresentation>,
-    last_command: Option<BrowserCommand>,
     /// Reactive state variables
     state: std::collections::HashMap<String, serde_json::Value>,
     /// Current HLB binary for reactivity
     current_binary: Option<spine_protocol::SpineBinary>,
-    /// Command history for this session
-    history: Vec<BrowserCommand>,
-    /// Whether the agent is in autonomous mode
-    autonomous_mode: bool,
     /// Last detach/import time. Zero is a legacy record granted one retention interval.
     #[serde(default)]
     retained_at: u64,
@@ -66,11 +59,8 @@ impl Session {
             current_html: None,
             current_vdom: None,
             cached_ur: None,
-            last_command: None,
             state: std::collections::HashMap::new(),
             current_binary: None,
-            history: Vec::new(),
-            autonomous_mode: false,
             retained_at: unix_now(),
             detached_since: Some(std::time::Instant::now()),
         }
@@ -149,20 +139,12 @@ struct BrowserState {
     #[cfg(feature = "research")]
     plans: DashMap<Uuid, spine_protocol::SwarmPlan>,
     fetcher: outbound::Fetcher,
-    /// RwLock allows concurrent encoder reads (multiple sessions encoding in parallel)
-    #[cfg(feature = "research")]
-    encoder: tokio::sync::RwLock<NeuralLatentEncoder>,
     #[cfg(feature = "research")]
     cluster: Mutex<ClusterNode>,
-    #[cfg(feature = "research")]
-    agentic_runtime: Arc<spine_agentic::AgenticWebRuntime>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
     /// Cached WasmRuntime (expensive to create, safe to reuse)
     wasm_runtime: spine_wasm::WasmRuntime,
-    /// Cached NeuralProtocol per domain (avoids re-allocating neural weights per request)
-    #[cfg(feature = "research")]
-    neural_protocols: DashMap<String, spine_agentic::NeuralProtocol>,
     /// Shared native connection admission, including unfinished handshakes.
     connections: Arc<spine_core::connections::ConnectionBudget>,
     /// Server start time for uptime calculation
@@ -555,22 +537,6 @@ async fn handle_command(
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
 
-    // Record command in history
-    if !matches!(
-        command,
-        BrowserCommand::PublishResource { .. }
-            | BrowserCommand::ReadResource { .. }
-            | BrowserCommand::MeshCall { .. }
-    ) {
-        if let Some(mut session) = state.sessions.get_mut(session_id) {
-            if session.history.len() >= 1024 {
-                session.history.remove(0);
-            }
-            session.history.push(command.clone());
-            session.last_command = Some(command.clone());
-        }
-    }
-
     let mut latent_to_stream = Vec::new();
     let response = match command {
         BrowserCommand::NamespaceStatus => {
@@ -942,7 +908,6 @@ async fn handle_command(
         BrowserCommand::Navigate { url } => {
             match state.fetcher.fetch_text(&url).await {
                 Ok(html) => {
-
                     // Transpile HTML to HLB for agentic interaction
                     #[cfg(feature = "research")]
                     let hlb = spine_human::HumanTranspiler::transpile(&html, "", "")
@@ -974,7 +939,14 @@ async fn handle_command(
                         session.current_vdom = None;
                         session.cached_ur = None; // Invalidate cached UR on navigation
                     } else {
-                        return (Response { id: request_id, result: None, error: Some("Session expired".into()) }, Vec::new());
+                        return (
+                            Response {
+                                id: request_id,
+                                result: None,
+                                error: Some("Session expired".into()),
+                            },
+                            Vec::new(),
+                        );
                     }
                     Response {
                         id: request_id,
@@ -1134,12 +1106,11 @@ async fn handle_command(
                         let sid_clone = session_id.to_string();
                         tokio::spawn(async move {
                             if let Ok(html) = state_clone.fetcher.fetch_text(&url_clone).await {
-                                    if let Some(mut session) =
-                                        state_clone.sessions.get_mut(&sid_clone)
-                                    {
-                                        session.current_url = Some(url_clone);
-                                        session.current_html = Some(html);
-                                    }
+                                if let Some(mut session) = state_clone.sessions.get_mut(&sid_clone)
+                                {
+                                    session.current_url = Some(url_clone);
+                                    session.current_html = Some(html);
+                                }
                             }
                         });
                     }
@@ -1193,21 +1164,6 @@ async fn handle_command(
                     }
                     spine_wasm::WasmAction::Reason(query) => {
                         info!("WASM requested reasoning");
-                        #[cfg(feature = "research")]
-                        if let Some(mut session) = state.sessions.get_mut(session_id) {
-                            if let Some(html) = &session.current_html {
-                                if let Ok(ur) = spine_parser::parse_html(html) {
-                                    let engine = spine_human::ReasoningEngine::new();
-                                    let _plan = engine.create_plan(query, &ur);
-                                    info!("Reasoning plan created");
-                                    // Store the plan in session history or state for the agent to see
-                                    session.history.push(BrowserCommand::Navigate {
-                                        url: format!("reasoning://{}", query),
-                                    });
-                                }
-                            }
-                        }
-                        #[cfg(not(feature = "research"))]
                         let _ = query;
                     }
                 }
@@ -1231,215 +1187,6 @@ async fn handle_command(
                     "patches": patches,
                 })),
                 error: None,
-            }
-        }
-        BrowserCommand::HandleEvent {
-            element_id: _element_id,
-            event_name,
-            payload: _payload,
-        } => {
-            if let Some(mut session) = state.sessions.get_mut(session_id) {
-                let bin = session.current_binary.clone();
-                if let Some(bin) = bin {
-                    if let Some(&pc) = bin.exported_functions.get(&event_name) {
-                        let mut runtime = vdom::HlbRuntime::new();
-                        // Load session state into runtime
-                        for (k, v) in &session.state {
-                            runtime.state.insert(k.clone(), v.clone());
-                        }
-
-                        // Execute handler
-                        let _handler_result = runtime.execute(&bin, pc);
-
-                        // Update session state from runtime
-                        for (k, v) in &runtime.state {
-                            session.state.insert(k.clone(), v.clone());
-                        }
-
-                        // Re-render from render_start
-                        let render_result = runtime.execute(&bin, bin.render_start);
-
-                        // Compute patches
-                        let new_vdom = render_result.vdom;
-                        let mut patches = Vec::new();
-                        if let Some(old_vdom) = &session.current_vdom {
-                            patches = new_vdom.diff(old_vdom);
-                        }
-                        session.current_vdom = Some(new_vdom);
-
-                        Response {
-                            id: request_id,
-                            result: Some(serde_json::json!({
-                                "status": "event_handled",
-                                "patches": patches,
-                                "events": render_result.events,
-                            })),
-                            error: None,
-                        }
-                    } else {
-                        Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("Handler not found for event: {}", event_name)),
-                        }
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No binary loaded in session".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::Click { element_id } => {
-            println!("Clicking element: {}", element_id);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "clicked" })),
-                error: None,
-            }
-        }
-        BrowserCommand::Type { element_id, text } => {
-            println!("Typing '{}' into element: {}", text, element_id);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "typed" })),
-                error: None,
-            }
-        }
-        #[cfg(feature = "research")]
-        BrowserCommand::GetLatentUR { dimensions } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(html) = &session.current_html {
-                    match spine_parser::parse_html(html) {
-                        Ok(ur) => {
-                            let ur_json = serde_json::to_string(&ur).unwrap_or_default();
-                            let mut encoder = state.encoder.write().await;
-                            let latent_vector = encoder.encode(ur_json.as_bytes());
-                            Response {
-                                id: request_id,
-                                result: Some(serde_json::json!({
-                                    "ur": ur,
-                                    "latent_vector": latent_vector,
-                                    "dimensions": dimensions,
-                                    "status": "encoded"
-                                })),
-                                error: None,
-                            }
-                        }
-                        Err(e) => Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(e.to_string()),
-                        },
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::Search { query } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(_html) = &session.current_html {
-                    // Local search
-                    let local_results = serde_json::json!([
-                        { "text": "Found relevant content locally...", "relevance": 0.92 }
-                    ]);
-
-                    // Broadcast to cluster for distributed search
-                    #[cfg(feature = "research")]
-                    {
-                        let cluster = state.cluster.lock().await;
-                        let _ = cluster.broadcast_search(query.clone(), request_id.clone());
-                    }
-
-                    // Without the research feature there is no cluster: the search
-                    // is local only, and says so.
-                    let distributed = cfg!(feature = "research");
-                    let search_status = if distributed {
-                        "searching_cluster"
-                    } else {
-                        "local_only"
-                    };
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "query": query,
-                            "local_results": local_results,
-                            "distributed": distributed,
-                            "status": search_status
-                        })),
-                        error: None,
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        #[cfg(feature = "research")]
-        BrowserCommand::TransferSession { target_node_id } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                match serde_json::to_vec(&*session) {
-                    Ok(data) => {
-                        let cluster = state.cluster.lock().await;
-                        if let Err(e) = cluster
-                            .send_session_data(session_id.to_string(), data)
-                            .await
-                        {
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some(format!("Transfer failed: {}", e)),
-                            }
-                        } else {
-                            Response {
-                                id: request_id,
-                                result: Some(
-                                    serde_json::json!({ "status": "transferred", "target": target_node_id }),
-                                ),
-                                error: None,
-                            }
-                        }
-                    }
-                    Err(e) => Response {
-                        id: request_id,
-                        result: None,
-                        error: Some(format!("Serialization failed: {}", e)),
-                    },
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
             }
         }
         BrowserCommand::StoreKnowledge { key, value, tags } => {
@@ -1494,29 +1241,7 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::DeleteKnowledge { key } => {
-            if let Some(mut entries) = state.knowledge_base.get_mut(session_id) {
-                entries.retain(|e| e.key != key);
-            }
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_deleted" })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetSessionHistory => {
-            let history = state
-                .sessions
-                .get(session_id)
-                .map(|s| s.history.clone())
-                .unwrap_or_default();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "history": history })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetCapabilities => {
+        BrowserCommand::GetBinaryCapabilities => {
             let capabilities = state
                 .sessions
                 .get(session_id)
@@ -1528,91 +1253,6 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::SetAutonomousMode { enabled } => {
-            if let Some(mut session) = state.sessions.get_mut(session_id) {
-                session.autonomous_mode = enabled;
-                Response {
-                    id: request_id,
-                    result: Some(
-                        serde_json::json!({ "status": "autonomous_mode_set", "enabled": enabled }),
-                    ),
-                    error: None,
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::SwarmSearch { .. }
-        | BrowserCommand::DelegateTask { .. }
-        | BrowserCommand::ProposeKnowledge { .. }
-        | BrowserCommand::CreateSwarmPlan { .. }
-        | BrowserCommand::ExecutePlanTask { .. } => Response {
-            id: request_id,
-            result: None,
-            error: Some("unsupported_legacy_swarm: use the signed spine.tasks v1 API for bounded read-only work".into()),
-        },
-        #[cfg(feature = "research")]
-        BrowserCommand::NeuralTransmit { data, domain } => {
-            let domain_enum = match domain.as_str() {
-                "RealTime" => spine_agentic::ProtocolDomain::RealTime,
-                "BulkData" => spine_agentic::ProtocolDomain::BulkData,
-                "SecureControl" => spine_agentic::ProtocolDomain::SecureControl,
-                "IoT" => spine_agentic::ProtocolDomain::IoT,
-                _ => spine_agentic::ProtocolDomain::BulkData,
-            };
-
-            let mut protocol = state
-                .neural_protocols
-                .entry(domain.clone())
-                .or_insert_with(|| spine_agentic::NeuralProtocol::new(1000.0, 5.0));
-            match protocol.transmit(&data, domain_enum).await {
-                Ok(stats) => Response {
-                    id: request_id,
-                    result: Some(serde_json::to_value(stats).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e),
-                },
-            }
-        }
-        #[cfg(feature = "research")]
-        BrowserCommand::GetAgenticState => {
-            let runtime = state.agentic_runtime.clone();
-            let profile = runtime.profile();
-            let variant = profile.miras_variant.clone();
-
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "miras_variant": variant,
-                    "surprise_level": null,
-                    "agent_id": profile.id,
-                    "trust_level": format!("{:?}", profile.trust_level),
-                })),
-                error: None,
-            }
-        }
-        #[cfg(not(feature = "research"))]
-        BrowserCommand::GetLatentUR { .. }
-        | BrowserCommand::TransferSession { .. }
-        | BrowserCommand::NeuralTransmit { .. }
-        | BrowserCommand::GetAgenticState => Response {
-            id: request_id,
-            result: None,
-            error: Some("unsupported_without_research: this daemon was built without the `research` feature".into()),
-        },
-        BrowserCommand::SendSpeechAct { .. } => Response {
-            id: request_id,
-            result: None,
-            error: Some("unsupported_speech_act: no speech transport handler is configured".into()),
-        },
     };
 
     timer.observe_duration();
@@ -1640,7 +1280,7 @@ async fn main() -> Result<()> {
     #[cfg(feature = "research")]
     let capabilities = NodeCapabilities {
         supports_wasm: true,
-        supports_chameleon: true,
+        supports_chameleon: false,
         supports_speculation: false,
         max_sessions: config.server.max_sessions,
         region: Some(config.cluster.region.clone()),
@@ -1651,19 +1291,6 @@ async fn main() -> Result<()> {
     let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
     #[cfg(feature = "research")]
     cluster_node.start().await?;
-
-    #[cfg(feature = "research")]
-    let profile = spine_agentic::AgentProfile::new("SPINE Core Agent")
-        .with_capabilities(vec![
-            spine_agentic::AgentCapability::Navigation,
-            spine_agentic::AgentCapability::ContentExtraction,
-            spine_agentic::AgentCapability::AgentCommunication,
-            spine_agentic::AgentCapability::KnowledgeManagement,
-            spine_agentic::AgentCapability::SwarmParticipation,
-        ])
-        .with_trust(spine_agentic::TrustLevel::Core);
-    #[cfg(feature = "research")]
-    let agentic_runtime = Arc::new(spine_agentic::AgenticWebRuntime::new(profile));
 
     // Join the namespace before serving, so the first client request already has
     // a mesh to route through. A node that cannot reach a seed still starts: it
@@ -1715,15 +1342,9 @@ async fn main() -> Result<()> {
         plans: DashMap::new(),
         fetcher: outbound::Fetcher::new(config.outbound.clone())?,
         #[cfg(feature = "research")]
-        encoder: tokio::sync::RwLock::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)),
-        #[cfg(feature = "research")]
         cluster: Mutex::new(cluster_node),
-        #[cfg(feature = "research")]
-        agentic_runtime,
         rate_limits: DashMap::new(),
         wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
-        #[cfg(feature = "research")]
-        neural_protocols: DashMap::new(),
         connections: spine_core::connections::ConnectionBudget::new(
             config.server.max_connections,
             config.server.max_connections_per_ip,
@@ -1847,11 +1468,11 @@ async fn main() -> Result<()> {
                 html.push_str("<style>body{font-family:sans-serif;padding:20px;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} th{background-color:#f2f2f2;}</style>");
                 html.push_str("</head><body><h1>SPINE Session Monitor</h1>");
                 html.push_str(&format!("<p>Active Sessions: {}</p>", state.sessions.len()));
-                html.push_str("<table><tr><th>Session ID</th><th>Autonomous</th></tr>");
+                html.push_str("<table><tr><th>Session ID</th></tr>");
                 for entry in state.sessions.iter() {
-                    let (id, session) = entry.pair();
+                    let id = entry.key();
                     let safe_id=id.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;");
-                    html.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>",safe_id,session.autonomous_mode));
+                    html.push_str(&format!("<tr><td>{}</td></tr>",safe_id));
                 }
                 html.push_str("</table></body></html>");
                 axum::response::Html(html)
@@ -2152,68 +1773,6 @@ async fn main() -> Result<()> {
                     }
                 }
                 _ => {}
-            }
-        }
-    });
-
-    // Start autonomous agent loop (plans with the research reasoning engine)
-    #[cfg(feature = "research")]
-    let agent_state = state.clone();
-    #[cfg(feature = "research")]
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-
-            // 2. Autonomous Session Loop
-            for mut entry in agent_state.sessions.iter_mut() {
-                let session_id = entry.key().clone();
-                let session = entry.value_mut();
-
-                if session.autonomous_mode {
-                    if let Some(html) = &session.current_html {
-                        match spine_parser::parse_html(html) {
-                            Ok(ur) => {
-                                let engine = spine_human::ReasoningEngine::new();
-                                let plan = engine.create_plan("Explore and find search", &ur);
-
-                                if let Some(best_action) = plan.steps.first() {
-                                    if plan.estimated_success > 0.7 {
-                                        info!("Autonomous agent in session {} executing plan step: {}", session_id, best_action.action_type);
-
-                                        // Execute the action
-                                        match best_action.action_type.as_str() {
-                                            "Search" | "Authenticate" => {
-                                                if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(
-                                                        spine_protocol::BrowserCommand::Click {
-                                                            element_id: target_id.clone(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            "InputSearch" => {
-                                                if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(
-                                                        spine_protocol::BrowserCommand::Type {
-                                                            element_id: target_id.clone(),
-                                                            text: "SPINE Browser".to_string(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => warn!(
-                                "Failed to parse HTML for autonomous session {}: {}",
-                                session_id, e
-                            ),
-                        }
-                    }
-                }
             }
         }
     });
@@ -2604,17 +2163,7 @@ where
                 }
 
                 let (res, latent_to_stream) =
-                    handle_command(&state, &id, req.command.clone(), req.id).await;
-                if !matches!(
-                    req.command,
-                    BrowserCommand::PublishResource { .. }
-                        | BrowserCommand::ReadResource { .. }
-                        | BrowserCommand::MeshCall { .. }
-                ) {
-                    if let Some(mut session) = state.sessions.get_mut(&id) {
-                        session.last_command = Some(req.command);
-                    }
-                }
+                    handle_command(&state, &id, req.command, req.id).await;
 
                 if let Err(e) = handler.send_message(&Message::Response(res)).await {
                     error!("Failed to send response: {}", e);

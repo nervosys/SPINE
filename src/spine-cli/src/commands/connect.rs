@@ -96,10 +96,6 @@ async fn interactive_session(client: &mut AgentClient<TcpStream>) -> Result<()> 
                 Ok(html) => println!("{}", html),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
             },
-            Cmd::Search(q) => match client.search(&q).await {
-                Ok(val) => println!("{}", serde_json::to_string_pretty(&val)?),
-                Err(e) => eprintln!("  {} {}", "✗".red(), e),
-            },
             Cmd::Ping => match client.ping().await {
                 Ok(ms) => eprintln!("  pong: {}ms", ms),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
@@ -108,7 +104,7 @@ async fn interactive_session(client: &mut AgentClient<TcpStream>) -> Result<()> 
                 Ok(result) => println!("{:?}", result),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
             },
-            Cmd::Capabilities => match client.get_capabilities().await {
+            Cmd::Capabilities => match client.get_binary_capabilities().await {
                 Ok(caps) => {
                     println!("Capabilities:");
                     for c in &caps {
@@ -217,7 +213,6 @@ enum Cmd {
     Navigate(String),
     Ur,
     Html,
-    Search(String),
     Ping,
     Exec(String),
     Capabilities,
@@ -238,13 +233,6 @@ fn handle_command(line: &str) -> Cmd {
         }
         "ur" | "get" => Cmd::Ur,
         "html" | "raw" => Cmd::Html,
-        "search" | "find" => {
-            if parts.len() > 1 {
-                Cmd::Search(parts[1].to_string())
-            } else {
-                Cmd::Unknown("search requires a query".into())
-            }
-        }
         "ping" => Cmd::Ping,
         "exec" | "run" => {
             if parts.len() > 1 {
@@ -269,7 +257,6 @@ fn print_help() {
         "ur".cyan()
     );
     eprintln!("  {}                 Get raw HTML", "html".cyan());
-    eprintln!("  {}       Search the semantic web", "search <q>".cyan());
     eprintln!("  {}                 Ping the server", "ping".cyan());
     eprintln!("  {}         Execute HLS script", "exec <code>".cyan());
     eprintln!("  {}                 Server capabilities", "caps".cyan());

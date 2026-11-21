@@ -76,7 +76,6 @@ async fn test_init_creates_examples() {
     spine_cli_test_helpers::run_init(path.clone(), None, false, true).await;
 
     assert!(path.join("examples/knowledge.rs").exists());
-    assert!(path.join("examples/swarm.rs").exists());
     assert!(path.join("examples/benchmark.rs").exists());
 }
 
@@ -276,7 +275,6 @@ log = "0.4"
             let examples_dir = path.join("examples");
             std::fs::create_dir_all(&examples_dir).unwrap();
             std::fs::write(examples_dir.join("knowledge.rs"), "// knowledge example").unwrap();
-            std::fs::write(examples_dir.join("swarm.rs"), "// swarm example").unwrap();
             std::fs::write(examples_dir.join("benchmark.rs"), "// benchmark example").unwrap();
         }
     }

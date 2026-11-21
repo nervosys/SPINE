@@ -35,12 +35,8 @@ async fn main() -> Result<()> {
 
     // 3. Compile and Execute Advanced HLS Program with reactive state
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 3: Reactive State & Human Interaction Demo            │");
+    println!("│ Phase 3: Reactive State                                      │");
     println!("└─────────────────────────────────────────────────────────────┘");
-
-    // Enable human-like interaction patterns
-    client.enable_human_mode(spine_human::HumanInteractionEngine::default());
-    println!("[✓] Human Interaction Engine enabled (60 WPM, 250ms reaction)\n");
 
     println!("[5] Compiling reactive HLS program...\n");
 
@@ -80,37 +76,6 @@ async fn main() -> Result<()> {
     println!("[6] Executing binary on remote browser...");
     let _ = client.execute_binary(binary).await?;
     println!("    ✓ Execution complete. Initial VDOM generated.\n");
-
-    // 4. Simulate human interaction triggering reactive updates
-    println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 4: Human-like Interaction & Reactive Updates          │");
-    println!("└─────────────────────────────────────────────────────────────┘");
-
-    println!("[7] Simulating human click on 'Increment' button (ID: 10)...");
-    // In our VM, the button might have ID 10 (increment-btn)
-    let patches = client
-        .handle_event(10, "click", serde_json::Value::Null)
-        .await?;
-
-    println!(
-        "    ✓ Event handled. Received {} VDOM patches:",
-        patches.len()
-    );
-    for (i, patch) in patches.iter().enumerate() {
-        println!("      [{}] {:?}", i + 1, patch);
-    }
-
-    println!("\n[8] Simulating human typing in search field...");
-    client.type_text("search-input", "SPINE Protocol").await?;
-    println!("    ✓ Typing complete with realistic delays.\n");
-
-    // 5. Distributed Search across the cluster
-    println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ Phase 5: Distributed Cluster Search                         │");
-    println!("└─────────────────────────────────────────────────────────────┘");
-    println!("[9] Performing distributed search for 'Protocol'...");
-    let search_results = client.search("Protocol").await?;
-    println!("    ✓ Search complete. Results: {}\n", search_results);
 
     println!("[DONE] SPINE Agent demonstration complete.");
     Ok(())

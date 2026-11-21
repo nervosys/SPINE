@@ -81,21 +81,6 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("\n[3] Simulating event loop...");
-    // In a real scenario, the agent would listen for events and re-execute
-    // For this demo, we'll just trigger the 'Click' event to move to the next step
-
-    println!("[4] Clicking 'Simulate Result Found' button...");
-    let patches = client
-        .handle_event(0, "click", serde_json::json!({}))
-        .await?;
-
-    // handle_event returns Vec<VDomPatch>
-    println!(
-        "    ✓ Event handled. Received {} VDOM patches.",
-        patches.len()
-    );
-
     println!("\n[DONE] Autonomous agent demo complete.");
     Ok(())
 }

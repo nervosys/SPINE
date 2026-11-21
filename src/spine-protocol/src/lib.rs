@@ -405,32 +405,7 @@ pub enum BrowserCommand {
     },
     GetUR,
     GetRawHTML,
-    Click {
-        element_id: String,
-    },
-    Type {
-        element_id: String,
-        text: String,
-    },
     ExecuteBinary(SpineBinary),
-    /// Handle an event in the current session
-    HandleEvent {
-        element_id: u32,
-        event_name: String,
-        payload: serde_json::Value,
-    },
-    /// Request latent-encoded response
-    GetLatentUR {
-        dimensions: usize,
-    },
-    /// Semantic search in the current page
-    Search {
-        query: String,
-    },
-    /// Transfer session to another node
-    TransferSession {
-        target_node_id: Uuid,
-    },
     /// Store knowledge in the agent's long-term memory
     StoreKnowledge {
         key: String,
@@ -443,56 +418,8 @@ pub enum BrowserCommand {
         tags: Vec<String>,
         limit: usize,
     },
-    /// Delete knowledge from the agent's long-term memory
-    DeleteKnowledge {
-        key: String,
-    },
-    /// Get the history of commands in this session
-    GetSessionHistory,
     /// Get the capabilities of the current agentic binary
-    GetCapabilities,
-    /// Enable or disable autonomous mode for the agent
-    SetAutonomousMode {
-        enabled: bool,
-    },
-    /// Perform a swarm search across the cluster
-    SwarmSearch {
-        query: String,
-        depth: usize,
-    },
-    /// Delegate a task to another agent in the cluster
-    DelegateTask {
-        task: String,
-        target_agent_id: Option<Uuid>,
-    },
-    /// Propose knowledge to the cluster for consensus
-    ProposeKnowledge {
-        key: String,
-        value: serde_json::Value,
-        tags: Vec<String>,
-    },
-    /// Create a swarm plan for a high-level goal
-    CreateSwarmPlan {
-        goal: String,
-    },
-    /// Execute a specific task within a swarm plan
-    ExecutePlanTask {
-        plan_id: Uuid,
-        task_id: Uuid,
-    },
-    /// Transmit data using the neural protocol
-    NeuralTransmit {
-        data: Vec<u8>,
-        domain: String,
-    },
-    /// Get the full agentic state (memory, speech acts, etc.)
-    GetAgenticState,
-    /// Send a speech act to another agent
-    SendSpeechAct {
-        target_id: Uuid,
-        performative: String,
-        content: String,
-    },
+    GetBinaryCapabilities,
 
     // ---- Namespace operations ----
     //

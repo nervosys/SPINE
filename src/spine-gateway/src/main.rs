@@ -1,7 +1,7 @@
 //! # SPINE Gateway
 //!
 //! OpenAPI REST gateway exposing SPINE agentic web APIs to non-Rust clients.
-//! Provides session management, navigation, search, HLS execution, and health
+//! Provides session management, navigation, HLS execution, and health
 //! endpoints with auto-generated Swagger UI.
 //!
 //! Also bridges SPINE's native agentic frame types
@@ -51,7 +51,6 @@ use tracing::instrument;
         navigate,
         get_ur,
         get_html,
-        search,
         execute_hls,
         ping_session,
         parse_html_endpoint,
@@ -68,9 +67,9 @@ use tracing::instrument;
         names::download_resource,
     ),
     components(schemas(
-        CreateSessionReq, SessionInfo, NavigateReq, SearchReq,
+        CreateSessionReq, SessionInfo, NavigateReq,
         ExecuteHlsReq, ParseHtmlReq, CompileReq,
-        UrResponse, HtmlResponse, SearchResponse,
+        UrResponse, HtmlResponse,
         ExecResponse, PingResponse, ParseResponse,
         CompileResponse, HealthResponse, ReadyResponse,
         ErrorResponse,
@@ -164,11 +163,6 @@ struct NavigateReq {
 }
 
 #[derive(Deserialize, ToSchema)]
-struct SearchReq {
-    query: String,
-}
-
-#[derive(Deserialize, ToSchema)]
 struct ExecuteHlsReq {
     script: String,
 }
@@ -194,11 +188,6 @@ struct UrResponse {
 #[derive(Serialize, ToSchema)]
 struct HtmlResponse {
     html: String,
-}
-
-#[derive(Serialize, ToSchema)]
-struct SearchResponse {
-    results: serde_json::Value,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -403,34 +392,6 @@ async fn get_html(
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
     Ok(Json(HtmlResponse { html }))
-}
-
-/// Search across the web
-#[utoipa::path(
-    post, path = "/api/sessions/{id}/search",
-    tag = "browse",
-    params(("id" = Uuid, Path, description = "Session UUID")),
-    request_body = SearchReq,
-    responses(
-        (status = 200, body = SearchResponse),
-        (status = 404, body = ErrorResponse),
-        (status = 502, body = ErrorResponse),
-    )
-)]
-#[instrument(skip_all, fields(id = %id))]
-async fn search(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<Uuid>,
-    Json(req): Json<SearchReq>,
-) -> Result<Json<SearchResponse>, (StatusCode, Json<ErrorResponse>)> {
-    state.requests_total.fetch_add(1, Ordering::Relaxed);
-    let session = get_session(&state, id)?;
-    let mut client = session.lock().await;
-    let results = client
-        .search(&req.query)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
-    Ok(Json(SearchResponse { results }))
 }
 
 /// Execute an HLS script
@@ -650,7 +611,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/sessions/:id/navigate", post(navigate))
         .route("/api/sessions/:id/ur", get(get_ur))
         .route("/api/sessions/:id/html", get(get_html))
-        .route("/api/sessions/:id/search", post(search))
         .route("/api/sessions/:id/ping", get(ping_session))
         // Compute
         .route("/api/sessions/:id/execute", post(execute_hls))
@@ -825,13 +785,6 @@ mod tests {
         let json = r#"{"url":"https://example.com"}"#;
         let req: NavigateReq = serde_json::from_str(json).unwrap();
         assert_eq!(req.url, "https://example.com");
-    }
-
-    #[test]
-    fn test_search_req_deserialization() {
-        let json = r#"{"query":"rust programming"}"#;
-        let req: SearchReq = serde_json::from_str(json).unwrap();
-        assert_eq!(req.query, "rust programming");
     }
 
     #[test]

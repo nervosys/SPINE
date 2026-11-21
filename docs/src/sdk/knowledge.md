@@ -24,23 +24,8 @@ let results = client.query_knowledge(
 ).await?;
 ```
 
-### Delete
-
-```rust
-client.delete_knowledge("rust-homepage").await?;
-```
-
-### Propose (Distributed)
-
-In cluster mode, propose knowledge for consensus:
-
-```rust
-client.propose_knowledge(
-    "shared-finding",
-    serde_json::json!({"discovery": "important pattern"}),
-    vec!["research".into()],
-).await?;
-```
+The knowledge base is per session on the daemon. There is no delete command in
+the core set; entries go when the session expires.
 
 ## Memory Subsystems
 

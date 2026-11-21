@@ -195,12 +195,7 @@ async fn e2e_all_command_types_over_tcp() {
         },
         BrowserCommand::GetUR,
         BrowserCommand::GetRawHTML,
-        BrowserCommand::GetCapabilities,
-        BrowserCommand::GetSessionHistory,
-        BrowserCommand::Search {
-            query: "test".into(),
-        },
-        BrowserCommand::GetLatentUR { dimensions: 64 },
+        BrowserCommand::GetBinaryCapabilities,
     ];
 
     for (i, cmd) in commands.into_iter().enumerate() {

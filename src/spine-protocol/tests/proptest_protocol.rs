@@ -25,14 +25,7 @@ fn arb_browser_command() -> impl Strategy<Value = BrowserCommand> {
     prop_oneof![
         "\\PC*".prop_map(|url| BrowserCommand::Navigate { url }),
         Just(BrowserCommand::GetUR),
-        "\\PC*".prop_map(|id| BrowserCommand::Click { element_id: id }),
-        ("\\PC*", "\\PC*").prop_map(|(id, text)| BrowserCommand::Type {
-            element_id: id,
-            text,
-        }),
-        "\\PC*".prop_map(|q| BrowserCommand::Search { query: q }),
         Just(BrowserCommand::GetRawHTML),
-        (1usize..512).prop_map(|d| BrowserCommand::GetLatentUR { dimensions: d }),
     ]
 }
 

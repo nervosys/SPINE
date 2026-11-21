@@ -157,18 +157,7 @@ async fn protocol_all_command_types() {
             url: "https://test.com".into(),
         },
         BrowserCommand::GetUR,
-        BrowserCommand::Click {
-            element_id: "btn-1".into(),
-        },
-        BrowserCommand::Type {
-            element_id: "input-1".into(),
-            text: "hello".into(),
-        },
-        BrowserCommand::Search {
-            query: "test".into(),
-        },
         BrowserCommand::GetRawHTML,
-        BrowserCommand::GetLatentUR { dimensions: 128 },
     ];
 
     for (i, cmd) in commands.into_iter().enumerate() {

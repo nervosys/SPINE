@@ -18,7 +18,7 @@ SPINE is a headless semantic browser with adaptive encryption. It is organized a
 │   spine-cli · spine-gateway · spine-browser                  │
 ├─────────────────────────────────────────────────────────────┤
 │                      Agent SDK                               │
-│   spine-agent (connect, navigate, search, execute, swarm)    │
+│   spine-agent (connect, navigate, execute, knowledge)        │
 ├─────────────────────────────────────────────────────────────┤
 │                   Agentic Intelligence                       │
 │   spine-agentic (neural protocols, swarm, social cognition)  │

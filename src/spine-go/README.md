@@ -97,7 +97,6 @@ go test -v ./...
 | `Client.Navigate(url)`                      | Navigate to a URL                  |
 | `Client.GetUR()`                            | Get Unified Representation         |
 | `Client.GetRawHTML()`                       | Get raw HTML                       |
-| `Client.Search(query)`                      | Search the web                     |
 | `Client.ExecuteHLS(script)`                 | Execute HLS script                 |
 | `Client.Ping()`                             | Ping server (returns RTT ms)       |
 | `Client.GetCapabilities()`                  | Get server capabilities            |
