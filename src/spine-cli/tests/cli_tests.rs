@@ -39,7 +39,7 @@ fn name_create_signs_content_and_refuses_to_overwrite_owner_files() {
     record.verify().unwrap();
     assert_eq!(
         record.content_hash,
-        Some(spine_name::content_hash(b"signed bytes"))
+        Some(spine_name::resource_id("application/octet-stream", b"signed bytes").unwrap())
     );
     assert!(String::from_utf8(output.stdout)
         .unwrap()

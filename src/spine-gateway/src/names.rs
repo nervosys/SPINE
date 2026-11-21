@@ -94,14 +94,18 @@ pub async fn upload_resource(
     record
         .verify()
         .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid resource signature"))?;
-    if req.data.len() > spine_protocol::resource::MAX_RESOURCE_BYTES
-        || record.content_hash != Some(spine_name::content_hash(&req.data))
-    {
+    if req.data.len() > spine_protocol::resource::MAX_RESOURCE_BYTES {
+        return Err(err(StatusCode::BAD_REQUEST, "resource is too large"));
+    }
+    let Some(id) = record.content_hash else {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "resource size or signed content hash is invalid",
+            "record carries no signed resource id",
         ));
-    }
+    };
+    // The id commits to the content type as well as the bytes.
+    spine_name::verify_resource(&id, &req.content_type, &req.data)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     let value = with_origin(&state, move |client| {
         let (record, content_type, data) =
             (record.clone(), req.content_type.clone(), req.data.clone());
@@ -136,6 +140,8 @@ pub async fn download_resource(
             if validator.is_some() && record.content_hash == validator {
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
             }
+            // `read_resource` verifies the id over type and bytes, so the
+            // header below is the signed content type, not a peer's claim.
             let resource = client.read_resource(record).await?;
             let mut response = resource.data.into_response();
             let headers = response.headers_mut();

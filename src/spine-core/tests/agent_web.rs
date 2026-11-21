@@ -1,7 +1,7 @@
 //! Acceptance test over separate core processes and real encrypted mesh sockets.
 use ed25519_dalek::SigningKey;
 use spine_agent::AgentClient;
-use spine_name::{content_hash, Endpoint, NameRecord, SpineUri};
+use spine_name::{content_hash, resource_id, Endpoint, NameRecord, SpineUri};
 use spine_protocol::ToolOutcome;
 use std::{
     path::Path,
@@ -173,7 +173,7 @@ async fn managed_shutdown_drains_and_keeps_published_bytes() {
                 .as_secs(),
         )
         .unwrap()
-        .with_content_hash(content_hash(b"graceful bytes"));
+        .with_content_hash(resource_id("text/plain", b"graceful bytes").unwrap());
         record.sign(&key).unwrap();
         client
             .publish_resource(&record, "text/plain", b"graceful bytes".to_vec())
@@ -509,7 +509,7 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
             .unwrap()
             .with_capability("test.documents")
             .with_endpoint(Endpoint::new("tcp", format!("127.0.0.1:{first_port}")))
-            .with_content_hash(content_hash(&bytes));
+            .with_content_hash(resource_id("application/octet-stream", &bytes).unwrap());
         record.sign(&key).unwrap();
         origin
             .publish_resource(&record, "application/octet-stream", bytes.clone())

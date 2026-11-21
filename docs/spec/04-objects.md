@@ -23,12 +23,12 @@ Two surfaces expose resources. The native surface is `BrowserCommand` over the n
 
 ### 2.1 What an object is today
 
-There is no general object type. Content is an opaque byte string identified by its SHA-256 hash, plus a signed record that names it. The two halves are stored and moved separately.
+There is no general object type. Content is an opaque byte string identified by a resource id (SHA-256 over its content type and bytes, section 2.6), plus a signed record that names it. The two halves are stored and moved separately.
 
 | Half | Type | Where defined | Contents |
 | --- | --- | --- | --- |
 | Binding | `NameRecord` | `spine-name/src/record.rs:53-85` | name, sequence, TTL, endpoints, capabilities, content hash, links, metadata, signature |
-| Bytes | `Blob` | `spine-core/src/resources.rs:12-16` | `content_type` string and `data` bytes, stored under the content hash |
+| Bytes | `Blob` | `spine-core/src/resources.rs:12-16` | `content_type` string and `data` bytes, stored under the resource id |
 
 ### 2.2 `NameRecord` fields
 
@@ -40,7 +40,7 @@ There is no general object type. Content is an opaque byte string identified by 
 | `published_at` | u64 | Unix seconds. |
 | `endpoints` | list of `Endpoint {transport, address, priority: u8}` | Where to reach the resource (`record.rs:26-34`). Lower `priority` is tried first (`record.rs:308-313`). |
 | `capabilities` | list of string | Lower-cased terms indexed by the store (`record.rs:174-177`). |
-| `content_hash` | optional 32 bytes | SHA-256 of the representation (`record.rs:73-74`, hash function at `spine-name/src/lib.rs:92-96`). This is the cache validator. |
+| `content_hash` | optional 32 bytes | For a resource record, the resource id of the representation (section 2.6: SHA-256 over content type and bytes). This is the cache validator. |
 | `links` | list of `Link` | Typed edges (section 5). |
 | `meta` | map string to string | Free-form. No key is defined or interpreted anywhere in the files read. |
 | `signature` | bytes (64) | Ed25519 over `signing_bytes()`; serialized as base32 (`record.rs:322-335`). |
@@ -62,7 +62,20 @@ Name authorities (`spine-name/src/uri.rs:35-48`): `did:` (Ed25519 key, base32), 
 
 Not covered by the signature: a link's `title` and `capabilities` (`link.rs:99-106` versus `record.rs:232-238`). They can be altered in transit without invalidating the record. The code comments describe them as hints (`link.rs:102-103`).
 
-Not part of the record at all: `content_type`. It travels only in the transfer messages and in the origin's store, so no signature covers it (section 3.5).
+`content_type` is not a record field, but for a resource record it is covered by the signature indirectly: the signed `content_hash` is the resource id, which commits to the content type (section 2.6).
+
+### 2.6 Resource id (content type bound into identity)
+
+Resolved: the content type used to be covered by neither the hash nor any signature, so a serving peer could relabel verified bytes. The id of a resource is now computed by one function, `spine_name::resource_id(content_type, bytes)`, used by every publisher (SDK, CLI, gateway, origin) and every verifier (`spine_name::verify_resource`):
+
+```
+id = SHA-256( RESOURCE_ID_DOMAIN
+           || u32_be(len(content_type)) || content_type
+           || u64_be(len(bytes))        || bytes )
+RESOURCE_ID_DOMAIN = "spine/resource-id/v1" followed by one zero byte (21 bytes)
+```
+
+`content_type` is the UTF-8 (ASCII) bytes of the string. Length prefixes make the encoding unambiguous, so moving a byte across the type/data boundary changes the id. The domain constant keeps a resource id from colliding with the plain `content_hash` of the same bytes. Content types are exact-match canonical, not normalised: 1 to 256 bytes of printable ASCII (0x20 to 0x7e), no uppercase letters, no leading or trailing space; anything else is `NameError::InvalidContentType`. A type or bytes that differ from what the id commits to is `NameError::ResourceIdMismatch`. The plain `content_hash` (SHA-256 of bytes) remains for `blob:` names and the `spine.content/hash` tool only; it is not a resource id.
 
 Verification (`record.rs:269-282`) uses the public key inside the `did:` name; there is no other trust anchor. The signing key must match the name (`record.rs:254-265`).
 
@@ -103,7 +116,7 @@ Origin processing (`main.rs:630-659`), in order:
 
 1. Deserialize `record` as `NameRecord`; failure is an error.
 2. Refuse if `record.is_expired(now)` with `record is expired`.
-3. `ResourceStore::put` (`resources.rs:31-67`): verify the record signature; refuse data over 8 MiB; refuse an invalid content type; compute SHA-256 of `data` and refuse unless it equals `record.content_hash`; if a blob under that hash already exists, return success without examining the new `content_type`; otherwise check the 256 MiB quota and write the blob under namespace `spine-resources-v1`, key = the 32 hash bytes.
+3. `ResourceStore::put` (`resources.rs:31-67`): verify the record signature; refuse data over 8 MiB; refuse an invalid content type; require `record.content_hash` and check `verify_resource(id, content_type, data)` (invalid type: `InvalidContentType`; wrong bytes or type: `ResourceIdMismatch`); if a blob under that id already exists, return success (the id fixes the type, so there is nothing to ignore); otherwise check the 256 MiB quota and write the blob under namespace `spine-resources-v2`, key = the 32 id bytes.
 4. `LocalResolver::publish` (`resolver.rs:195-248`): verify, compare against the stored record for the name, enforce capacity, persist the record, then replace the in-memory copy.
 5. Replicate: if a mesh is present, `mesh.publish(record)` and report counts (`main.rs:395-421`).
 
@@ -123,7 +136,7 @@ Origin processing (`main.rs:608-629`, `resources.rs:69-96`):
 
 1. `max_bytes` must be in 1 to 65,536, else error `chunk must be 1 through 65536 bytes`.
 2. Load the blob; absent gives `resource not held by this origin`.
-3. Decode the stored JSON, require `data.len() <= 8 MiB` and `SHA-256(data) == hash`, else `stored resource failed integrity check`. This runs on every chunk request, over the whole blob.
+3. Decode the stored JSON, require `data.len() <= 8 MiB` and `verify_resource(hash, stored content_type, data)`, else `stored resource failed integrity check` (a relabelled stored blob fails here). This runs on every chunk request, over the whole blob.
 4. `offset` must be at most `data.len()`, else `offset beyond resource`. An offset equal to the length yields an empty final chunk.
 5. Return `ResourceChunk { hash, offset, total_bytes, content_type, data, complete }` where `data` is up to `max_bytes` bytes from `offset` and `complete` is true when the chunk reaches the end (`spine-protocol/src/resource.rs:9-18`).
 
@@ -141,7 +154,7 @@ Origin processing (`main.rs:608-629`, `resources.rs:69-96`):
 - `complete` is true exactly when received bytes equal `total_bytes`;
 - a non-final chunk carries at least one byte.
 
-After the final chunk it requires `SHA-256(data) == record.content_hash`. The result is `RetrievedResource { record, content_type, data }` (`resources.rs:13-18`).
+After the final chunk it requires `verify_resource(record.content_hash, content_type, data)`, so the peer-supplied content type is accepted only if it is the one the signed id commits to (`resource integrity check failed`, caused by `ResourceIdMismatch`). The gateway's `GET /v1/resources` goes through `read_resource` and sets `Content-Type` from the verified value. The result is `RetrievedResource { record, content_type, data }` (`resources.rs:13-18`).
 
 `fetch_resource(name)` (`resources.rs:125-159`): resolve the name, verify the record signature and expiry, then try each endpoint in priority order whose `transport` is exactly `tcp`. Each attempt is a new plaintext TCP connection with a 10 second connect timeout, followed by `read_resource`. The first success returns; failures are collected into one error. No outbound address policy is applied to the endpoints (`docs/NATIVE_OPERATIONS.md`, "Configure outbound navigation": the policy does not govern signed mesh resource endpoints).
 
@@ -150,8 +163,8 @@ After the final chunk it requires `SHA-256(data) == record.content_hash`. The re
 | Item | Signed | By | Verified by |
 | --- | --- | --- | --- |
 | Name-to-hash binding (`NameRecord`) | Yes | The `did:` key in the name | Origin on publish (`resources.rs:32`, `resolver.rs:196`); client on read and fetch |
-| Content bytes | No signature; bound by hash equality to the signed `content_hash` | Not applicable | Client after the last chunk (`resources.rs:111-114`); origin on every read (`resources.rs:79-82`) |
-| `content_type` | No | Not applicable | Not verifiable. The origin supplies it; the first publisher of a hash fixes it (`resources.rs:46-48`) |
+| Content bytes | No signature; bound by the resource id in the signed `content_hash` | Not applicable | Client after the last chunk; origin on put and on every read |
+| `content_type` | No signature of its own; committed to by the resource id in the signed `content_hash` (section 2.6) | Not applicable | Same checks as the bytes: origin on put and read, client after the last chunk, gateway on upload |
 | `ResourceChunk` and `Response` | No | Not applicable | Integrity relies on the hash check only; the native connection is unauthenticated unless TLS or mTLS is configured |
 | Link `title` and `capabilities` | No | Not applicable | Not verifiable |
 
@@ -164,8 +177,8 @@ Errors are returned as `Response.error` text; there is no error code field. The 
 | Malformed or unsigned record | `serde` error, or `NameError::BadSignature` (`record.rs:269-282`) |
 | Expired record | `record is expired` (`main.rs:637-639`) |
 | Over 8 MiB | `resource exceeds 8 MiB` (`resources.rs:33`) |
-| Invalid content type | `invalid content type` (`resources.rs:34-38`) |
-| Hash mismatch | `resource differs from signed content hash` (`resources.rs:41-44`) |
+| Invalid content type | `NameError::InvalidContentType` |
+| Id mismatch (wrong bytes or content type) | `NameError::ResourceIdMismatch` |
 | Quota | `resource store quota exceeded` (`resources.rs:61-64`) |
 | Stale record | `StalePublication` via `NameError` (`resolver.rs:200`) |
 | Bad chunk size | `chunk must be 1 through 65536 bytes` (`resources.rs:70-73`) |
@@ -194,7 +207,7 @@ All three use one backend instance chosen at startup (`main.rs:1592-1628`): SQLi
 | Namespace string | Contents | Writer |
 | --- | --- | --- |
 | `spine-name-publishers-v1` | Records published at this node, key = canonical name | `resolver.rs:233-235` |
-| `spine-resources-v1` | `Blob` JSON, key = 32 hash bytes | `resources.rs:9`, `resources.rs:65` |
+| `spine-resources-v2` | `Blob` JSON, key = 32-byte resource id | `resources.rs:9`, `resources.rs:65` |
 | `spine-tasks-v1`, `spine-task-knowledge-v1` | Layer 5 state | see `05-interaction.md` |
 
 Session state is separate: a JSON manifest `spine-sessions-v1.json` written atomically with a 64 MiB limit (`docs/NATIVE_OPERATIONS.md`, "Monitor and stop"; code in `spine-core/src/session_store.rs`, not read in detail). It holds navigation sessions and per-session knowledge, not resources.
@@ -291,7 +304,7 @@ Schemas are identified by a free-form `name` string held in an in-process regist
 
 Target: `docs/FIRST_PRINCIPLES.md` line 42. Each item states the as-built position.
 
-- [ ] **Schema-identified typed objects.** Not present. A resource is bytes plus a free-text `content_type`, which is unsigned (section 3.4). `NameRecord` has no schema or type identifier field (`record.rs:53-85`). Extraction schemas are named by a local string and are not part of any record (section 6.4).
+- [ ] **Schema-identified typed objects.** Not present. A resource is bytes plus a `content_type` that is bound into the resource id (section 2.6) but is otherwise a free-text label. `NameRecord` has no schema or type identifier field (`record.rs:53-85`). Extraction schemas are named by a local string and are not part of any record (section 6.4).
 - [ ] **Object graph.** Partial. Records carry typed `links` (section 5) and the frontier can traverse them, but links are unauthenticated hints in two fields, the relation set is closed except for `Other`, no relation is checked against content, and `CrawlNames` reads only the local store.
 - [ ] **Provenance label carried to the caller.** Absent. `NameProvenance` describes a lookup, not content (section 3.6). `ResourceChunk`, `RetrievedResource`, `UnifiedRepresentation`, `GetUR` and the `spine.html/parse` result carry no source name, signer, signed-or-unsigned flag or fetch origin (`resource.rs:9-18`, `resources.rs:13-18`, `lib.rs:30-35`, `main.rs:969-977`). `Navigate` stores fetched HTML in the session and returns only `status` and `session_id` (`main.rs:943-948`).
 - [ ] **Declared token size.** Absent. The only declared size is `total_bytes` in bytes, delivered inside chunks after the first request (`resource.rs:13`). The record has no size field and no token estimate.
@@ -303,7 +316,7 @@ Further defects and unsafe properties found while reading (not in the requested 
 
 - [ ] **Unauthenticated publication.** Any native client can publish a name and bytes signed by any key it holds, and can fill the 256 MiB store, with no way to remove the data afterwards (section 2.5, section 3.1).
 - [ ] **Orphaned blobs.** A failed name publication leaves its blob stored (section 3.1).
-- [ ] **First publisher fixes `content_type`.** A later publication of the same bytes with a different content type is accepted and ignored (`resources.rs:46-48`).
+- [x] **Unsigned `content_type`.** Resolved by the resource id (section 2.6): a different type is a different id, and every fetch path verifies it.
 - [ ] **No bounds on record fields** (section 2.5).
 - [ ] **Unsigned link metadata** (section 2.3).
 - [ ] **Client dials publisher-chosen addresses over plaintext TCP** with no outbound policy (section 3.3).

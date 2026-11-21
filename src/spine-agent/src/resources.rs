@@ -1,7 +1,7 @@
 //! Resolution followed by bounded transfer and end-to-end content validation.
 use crate::AgentClient;
 use anyhow::{ensure, Context, Result};
-use spine_name::{content_hash, NameRecord};
+use spine_name::{resource_id, verify_resource, NameRecord};
 use spine_protocol::{
     resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK},
     BrowserCommand, NameResolution,
@@ -59,6 +59,13 @@ pub fn is_restricted_destination(ip: IpAddr) -> bool {
     }
 }
 
+/// Final end-to-end check of a downloaded resource against the signed id. The
+/// content type came from the serving peer, so it is trusted only through this
+/// check: the id commits to both the type and the bytes.
+fn check_assembled(hash: &[u8; 32], content_type: &str, data: &[u8]) -> Result<()> {
+    verify_resource(hash, content_type, data).context("resource integrity check failed")
+}
+
 #[derive(Debug)]
 pub struct RetrievedResource {
     pub record: NameRecord,
@@ -76,8 +83,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         record.verify()?;
         ensure!(data.len() <= MAX_RESOURCE_BYTES, "resource exceeds 8 MiB");
         ensure!(
-            record.content_hash == Some(content_hash(&data)),
-            "content hash does not match record"
+            record.content_hash == Some(resource_id(content_type, &data)?),
+            "resource id does not match record"
         );
         let response = self
             .send_request(BrowserCommand::PublishResource {
@@ -157,14 +164,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             }
             ensure!(!chunk.data.is_empty(), "resource transfer made no progress");
         }
-        ensure!(
-            content_hash(&data) == hash,
-            "resource integrity check failed"
-        );
+        // The id commits to the content type as well as the bytes, so a peer
+        // that relabels verified bytes fails here.
+        let content_type = content_type.unwrap_or_default();
+        check_assembled(&hash, &content_type, &data)?;
         Ok(RetrievedResource {
             record,
             data,
-            content_type: content_type.unwrap_or_default(),
+            content_type,
         })
     }
 
@@ -250,6 +257,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relabelled_resource_fails_the_final_check() {
+        let id = resource_id("text/plain", b"served bytes").unwrap();
+        assert!(check_assembled(&id, "text/plain", b"served bytes").is_ok());
+        let err = check_assembled(&id, "text/html", b"served bytes").unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<spine_name::NameError>(),
+            Some(&spine_name::NameError::ResourceIdMismatch)
+        );
+        let err = check_assembled(&id, "", b"served bytes").unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<spine_name::NameError>(),
+            Some(&spine_name::NameError::InvalidContentType)
+        );
+    }
 
     fn restricted(s: &str) -> bool {
         is_restricted_destination(s.parse().unwrap())

@@ -1,12 +1,12 @@
 //! Persistent immutable resource bytes, addressed by the hash in a signed name.
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
-use spine_name::{content_hash, NameRecord};
+use spine_name::{verify_resource, NameRecord};
 use spine_protocol::resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK};
 use spine_storage::StorageBackend;
 use std::sync::{Arc, Mutex};
 
-const NAMESPACE: &str = "spine-resources-v1";
+const NAMESPACE: &str = "spine-resources-v2";
 const MAX_STORED_BYTES: usize = 256 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
@@ -75,17 +75,13 @@ impl ResourceStore {
     ) -> Result<([u8; 32], bool)> {
         record.verify()?;
         ensure!(data.len() <= MAX_RESOURCE_BYTES, "resource exceeds 8 MiB");
-        ensure!(
-            !content_type.is_empty()
-                && content_type.len() <= 256
-                && content_type.bytes().all(|b| (32..127).contains(&b)),
-            "invalid content type"
-        );
-        let hash = content_hash(data);
-        ensure!(
-            record.content_hash == Some(hash),
-            "resource differs from signed content hash"
-        );
+        // The signed record carries the resource id, which commits to the
+        // content type as well as the bytes. Invalid types and id mismatches
+        // are distinct errors.
+        let hash = record
+            .content_hash
+            .context("record carries no signed resource id")?;
+        verify_resource(&hash, content_type, data)?;
         let _write = self.writes.lock().unwrap();
         if self.backend.exists(NAMESPACE, &hash)? {
             return Ok((hash, false));
@@ -134,9 +130,11 @@ impl ResourceStore {
             .context("resource not held by this origin")?;
         let blob: Blob = serde_json::from_slice(&stored)?;
         ensure!(
-            blob.data.len() <= MAX_RESOURCE_BYTES && content_hash(&blob.data) == hash,
+            blob.data.len() <= MAX_RESOURCE_BYTES,
             "stored resource failed integrity check"
         );
+        verify_resource(&hash, &blob.content_type, &blob.data)
+            .context("stored resource failed integrity check")?;
         let blob = Arc::new(blob);
         *self.verified.lock().unwrap() = Some((hash, blob.clone()));
         Ok(blob)
@@ -168,7 +166,7 @@ impl ResourceStore {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use spine_name::SpineUri;
+    use spine_name::{resource_id, SpineUri};
 
     #[test]
     fn signed_resources_survive_restart_and_reject_corruption() {
@@ -181,7 +179,7 @@ mod tests {
         };
         let key = SigningKey::from_bytes(&[7; 32]);
         let bytes = b"a named resource";
-        let hash = content_hash(bytes);
+        let hash = resource_id("text/plain", bytes).unwrap();
         let mut record = NameRecord::new(SpineUri::did(key.verifying_key().to_bytes()), 1, 100)
             .unwrap()
             .with_content_hash(hash);
@@ -221,9 +219,37 @@ mod tests {
         let key = SigningKey::from_bytes(&[9; 32]);
         let mut record = NameRecord::new(SpineUri::did(key.verifying_key().to_bytes()), 1, 100)
             .unwrap()
-            .with_content_hash(content_hash(bytes));
+            .with_content_hash(resource_id("text/plain", bytes).unwrap());
         record.sign(&key).unwrap();
         record
+    }
+
+    #[test]
+    fn a_substituted_content_type_is_rejected_on_put_and_on_read() {
+        let store = ResourceStore::new(Arc::new(spine_storage::InMemoryBackend::new()));
+        let bytes = b"typed bytes";
+        let record = signed(bytes);
+        let err = store.put(&record, "text/html", bytes).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<spine_name::NameError>(),
+            Some(&spine_name::NameError::ResourceIdMismatch)
+        );
+        let err = store.put(&record, "Text/Plain", bytes).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<spine_name::NameError>(),
+            Some(&spine_name::NameError::InvalidContentType)
+        );
+        let hash = store.put(&record, "text/plain", bytes).unwrap();
+        assert_eq!(store.read(hash, 0, 64).unwrap().content_type, "text/plain");
+        // Relabel the stored blob: right bytes, different type.
+        let relabelled = serde_json::to_vec(&serde_json::json!({
+            "content_type": "text/html",
+            "data": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes),
+        }))
+        .unwrap();
+        store.backend.put(NAMESPACE, &hash, &relabelled).unwrap();
+        let fresh = ResourceStore::new(store.backend.clone());
+        assert!(fresh.read(hash, 0, 64).is_err());
     }
 
     #[test]

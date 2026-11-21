@@ -3,7 +3,7 @@ use anyhow::{ensure, Context, Result};
 use clap::Subcommand;
 use ed25519_dalek::SigningKey;
 use spine_agent::AgentClient;
-use spine_name::{content_hash, Endpoint, NameRecord, SpineUri};
+use spine_name::{resource_id, Endpoint, NameRecord, SpineUri};
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -28,6 +28,9 @@ pub enum NameAction {
         capability: Vec<String>,
         #[arg(long)]
         resource: Option<PathBuf>,
+        /// Content type signed into the resource id; `upload` must use the same one.
+        #[arg(long, default_value = "application/octet-stream")]
+        content_type: String,
         #[arg(long, default_value_t = 3600)]
         ttl: u32,
     },
@@ -117,6 +120,7 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
         path,
         capability,
         resource,
+        content_type,
         ttl,
     } = action
     {
@@ -139,7 +143,8 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
             record = record.with_capability(term);
         }
         if let Some(resource) = resource {
-            record = record.with_content_hash(content_hash(&std::fs::read(resource)?));
+            record =
+                record.with_content_hash(resource_id(&content_type, &std::fs::read(resource)?)?);
         }
         record.sign(&signing)?;
         create_file(&output, &serde_json::to_vec_pretty(&record)?, false)?;
