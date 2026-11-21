@@ -317,6 +317,8 @@ Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes th
 
 **2026-11-20, pull request #49, `a580b33`.** The fourteen research crates moved to a separate workspace under `research/`. Root workspace: lint, docs, MSRV, audit, deny, coverage and the Linux and macOS tests passed (Linux: 45 suites, 993 passed, 0 failed, 3 ignored). The new `research` CI job failed on one compile error: the `spine-recursive` bench needs criterion's `async_tokio`, previously enabled only through feature unification with `spine-stream` and `spine-transport`. Fixed in `46698c5` (CI pending).
 
+**2026-11-20, pull request #49, `6b9a506` and `e716cc1`.** `6b9a506`: every job passed, including the new `research` job. `e716cc1` makes the default root build research-free (`spine-protocol` default is `quic` only; the `spine-web` facade's defaults no longer include `agentic`; both have an opt-in `research` feature). `cargo tree --workspace -e normal` at the root finds none of the fourteen research crates (`spine-nostd` and `spine-embedded` remain dev-dependencies of `spine-protocol` and `spine-agent`). Lint, docs, MSRV, audit, deny, coverage, `research` and the tests on all three platforms passed. Linux: 51 suites, 1,112 passed, 0 failed, 3 ignored, which includes the added `spine-protocol --features research` test step; the two steps were not totalled separately. Not verified: a research-off peer interoperating with a research-on peer.
+
 ## References
 
 - [SPINE from first principles](docs/FIRST_PRINCIPLES.md) and the layer specifications in `docs/spec/`
