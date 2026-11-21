@@ -163,11 +163,7 @@ fn demo_handler_duplex() {
                 native::client_hello(),
                 native::DEFAULT_HELLO_DEADLINE
             ),
-            Connection::server_handshake(
-                server_io,
-                &config,
-                native::DEFAULT_HELLO_DEADLINE
-            )
+            Connection::server_handshake(server_io, &config, native::DEFAULT_HELLO_DEADLINE)
         );
         let mut client = client.unwrap();
         let mut server = server.unwrap();

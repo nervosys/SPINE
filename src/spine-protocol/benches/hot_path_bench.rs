@@ -72,11 +72,7 @@ async fn connection_pair() -> (
             native::client_hello(),
             native::DEFAULT_HELLO_DEADLINE
         ),
-        Connection::server_handshake(
-            server_io,
-            &config,
-            native::DEFAULT_HELLO_DEADLINE
-        )
+        Connection::server_handshake(server_io, &config, native::DEFAULT_HELLO_DEADLINE)
     );
     (client.unwrap(), server.unwrap())
 }
