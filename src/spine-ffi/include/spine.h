@@ -31,7 +31,9 @@ extern "C"
      * Client lifecycle
      * -------------------------------------------------------------------------- */
 
-    /* Connect to a SPINE server over TCP. Returns opaque handle, or NULL on error. */
+    /* Connect to a SPINE daemon over plain TCP and complete the spine-wire v1 HELLO
+     * handshake. Returns opaque handle, or NULL on error. There is no TLS variant
+     * in this ABI. */
     void *spine_connect(const char *addr);
 
     /* Disconnect and free a client handle. */
@@ -72,7 +74,8 @@ extern "C"
      * Capabilities
      * -------------------------------------------------------------------------- */
 
-    /* Get server capabilities as JSON array. Returns owned string. */
+    /* Get the daemon's binary-executor capabilities (get_binary_capabilities) as a
+     * JSON array of strings, or NULL on error. Owned string (free with spine_free_string). */
     char *spine_get_capabilities(void *handle);
 
     /* --------------------------------------------------------------------------

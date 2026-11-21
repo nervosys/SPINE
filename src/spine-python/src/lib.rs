@@ -2,6 +2,13 @@
 //!
 //! Python bindings for the SPINE agentic web stack using PyO3.
 //!
+//! `Client` wraps `spine_agent::AgentClient` (spine-wire v1, plain TCP; there
+//! is no TLS entry point here yet). When the daemon answers a command with an
+//! error, the raised `RuntimeError` text is `"<code>: <message>"` (the
+//! `NativeError::Remote` display); branch on the code before the colon, not on
+//! the message. `get_capabilities` returns the binary-executor capabilities
+//! (`get_binary_capabilities`), not the full capability advertisement.
+//!
 //! ## Usage
 //!
 //! ```python
@@ -175,7 +182,7 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// Get server capabilities.
+    /// Get the daemon's binary-executor capabilities (not the full advertisement).
     fn get_capabilities(&self) -> PyResult<Vec<String>> {
         let mut client = self
             .client
@@ -262,7 +269,7 @@ fn compile_hls(source: &str) -> PyResult<PySpineBinary> {
 // Module definition
 // ---------------------------------------------------------------------------
 
-/// SPINE: A headless semantic browser with adaptive encryption for AI agents.
+/// SPINE: a headless semantic browser for AI agents.
 #[pymodule]
 fn spine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;
