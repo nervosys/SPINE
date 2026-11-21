@@ -156,10 +156,10 @@ Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source 
 - [ ] Resolve everything marked Undetermined in the five specification files.
 - [ ] Decide the licence for the specification and vectors (account holder).
 - [ ] Native client to daemon wire: `docs/spec/00-wire.md` records the wire as built (part A), requirements (B), a proposed "spine-wire v1" frame (C), the v1 message set (D), the fate of morphology, chameleon and speculation (E), the migration steps below (F) and open questions for the owner (G). Nothing in it is implemented. Steps, each to leave CI green:
-  - [ ] `cbor-core`: deterministic CBOR encoder and validator in `spine-protocol`, additive.
-  - [ ] `frame-codec`: the 15-byte frame header, limits and bounded decompression, additive.
-  - [ ] `hello-close`: `HELLO`, `HELLO_ACK`, `CLOSE`; delete the unused `negotiation.rs`.
-  - [ ] `drop-speculation`: remove `SpeculativeFrame`, the predictors and `Message::{Speculative, PreComputed, Sync}`.
+  - [x] `cbor-core`: deterministic CBOR encoder and validator in `spine-protocol`, additive. Done in `68109a0`.
+  - [x] `frame-codec`: the 15-byte frame header, limits and bounded decompression, additive. Done in `f556e26`.
+  - [x] `hello-close`: `HELLO`, `HELLO_ACK`, `CLOSE`; delete the unused `negotiation.rs`. Done in `ce795e6` and `eb46c69`~1 (clippy fix).
+  - [x] `drop-speculation`: remove `SpeculativeFrame`, the predictors and `Message::{Speculative, PreComputed, Sync}`. Done in `eb46c69`.
   - [ ] `drop-morphology`: remove morphology, padding, `MorphRequest`, `BrowserCommand::Morph` and the daemon's 30 s morph monitor.
   - [ ] `relocate-research`: move or delete `research.rs`, the chameleon hooks and the PSK AES layer; drop the `research` feature of `spine-protocol`.
   - [ ] `trim-commands`: delete 13 `BrowserCommand` variants and move 5 to an extension.
@@ -337,6 +337,8 @@ Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes th
 **2026-11-20, pull request #49, `fd1b31a`.** Resource ids now commit to the content type (`spine_name::resource_id`, domain `spine/resource-id/v1`); every publish and fetch path checks type and bytes with `verify_resource`. Lint, docs, MSRV, deny, coverage, `research` and the tests on Linux, macOS and Windows passed. The `audit` job failed again with "No vulnerabilities were found" followed by "Not Found" when updating its check run: the same intermittent failure as before, cause still unidentified. The gateway upload/download handlers and the SDK chunk loop have no unit test of their own; they are covered only by the acceptance tests.
 
 **2026-11-21, pull request #49, `319647f`.** Fair-share task eviction: lint, docs, MSRV, audit, deny, coverage, `research` and the Linux and macOS tests passed (Windows not read before the next push). `docs/spec/00-wire.md` added: as-built native wire, proposed `spine-wire v1`, and a 14-step migration. Findings from that review, verified against the source where noted: `ExecuteBinary` aborted the release daemon when a client program failed to run (`.expect` with `panic = "abort"`; verified and fixed in the following commit); the daemon morphs every session every 30 s in all builds, with an all-zero evolution key and the seed in clear when no chameleon is set (not verified by me); research-flavoured `Message` variants are dropped silently so a client times out (not verified by me); `Search`, `Click` and `Type` are stubs; `signed_frame.rs` and `negotiation.rs` have no caller on any wire; the QUIC listener has no conforming client.
+
+**2026-11-21, pull request #49, `eb46c69`.** Wire migration steps 1 to 4 (`docs/spec/00-wire.md`, section F). Lint in every feature configuration, docs, MSRV, coverage, `research` and the tests on Linux, macOS and Windows passed. `cbor.rs` (deterministic CBOR scanner, encoder, decoder) and `frame.rs` (15-byte header, limits, bounded zstd) compiled and passed on first push; `hello.rs` needed one clippy fix in a test helper. The speculative layer is removed (about 1,000 lines); `send_message` now emits what `send_message_raw` did. None of the new modules has a caller in the daemon or SDK yet. `e3e5a2d` (failed `ExecuteBinary` no longer aborts the daemon) passed all jobs. A literal NUL byte had entered `CHANGELOG.md` with `fd1b31a` and made git treat it as binary; replaced in `300e595`.
 
 ## References
 
