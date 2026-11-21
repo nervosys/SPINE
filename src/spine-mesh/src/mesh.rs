@@ -34,7 +34,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 /// Domain-separation prefix for mesh envelope signatures.
@@ -598,33 +598,23 @@ pub struct MeshNode {
     routing: Arc<RwLock<RoutingTable>>,
     /// Message deduplication tracker.
     dedup: Arc<RwLock<MessageDedup>>,
-    /// Channel for locally-delivered messages.
-    inbox_tx: mpsc::Sender<MeshEnvelope>,
-    /// Receive end for delivered messages.
-    inbox_rx: Option<mpsc::Receiver<MeshEnvelope>>,
     /// Whether the node is running.
     running: Arc<AtomicBool>,
     /// Statistics.
     stats: Arc<MeshStats>,
-    /// Trusted public keys (AgentId → public key).
-    trusted_keys: Arc<DashMap<AgentId, Vec<u8>>>,
 }
 
 impl MeshNode {
     /// Create a new mesh node with the given identity and configuration.
     pub fn new(identity: SigningIdentity, config: MeshConfig) -> Self {
-        let (inbox_tx, inbox_rx) = mpsc::channel(1024);
         Self {
             identity: Arc::new(identity),
             config,
             peers: Arc::new(DashMap::new()),
             routing: Arc::new(RwLock::new(RoutingTable::new())),
             dedup: Arc::new(RwLock::new(MessageDedup::new(10_000))),
-            inbox_tx,
-            inbox_rx: Some(inbox_rx),
             running: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(MeshStats::new()),
-            trusted_keys: Arc::new(DashMap::new()),
         }
     }
 
@@ -656,11 +646,6 @@ impl MeshNode {
             .count()
     }
 
-    /// Take the inbox receiver (can only be called once).
-    pub fn take_inbox(&mut self) -> Option<mpsc::Receiver<MeshEnvelope>> {
-        self.inbox_rx.take()
-    }
-
     /// Register a peer address for direct connection.
     pub fn add_peer(&self, agent_id: AgentId, addr: SocketAddr) {
         if agent_id == self.identity.agent_id {
@@ -669,11 +654,6 @@ impl MeshNode {
         if !self.peers.contains_key(&agent_id) {
             self.peers.insert(agent_id, PeerInfo::new(agent_id, addr));
         }
-    }
-
-    /// Trust a peer's public key (for signature verification).
-    pub fn trust_key(&self, agent_id: AgentId, public_key: Vec<u8>) {
-        self.trusted_keys.insert(agent_id, public_key);
     }
 
     /// Mark a peer as connected.
@@ -825,9 +805,7 @@ impl MeshNode {
     /// Verify an envelope against a key carried *in the envelope itself*, rather
     /// than one already trusted for its sender.
     ///
-    /// [`MeshNode::process_envelope`] can only check signatures from senders
-    /// whose keys it already holds, which is exactly the situation bootstrap does
-    /// not have. Checking against the carried key still proves something worth
+    /// Bootstrap has no key on record for the sender yet. Checking against the carried key still proves something worth
     /// having: the sender holds the private half, so it cannot claim a keyspace
     /// position it is unable to sign for.
     pub fn verify_carried_key(envelope: &MeshEnvelope, public_key: &[u8; 32]) -> bool {
@@ -877,65 +855,6 @@ impl MeshNode {
             signature,
             timestamp,
         })
-    }
-
-    /// Process an incoming envelope: verify, route, or deliver.
-    pub async fn process_envelope(&self, envelope: MeshEnvelope) -> Result<MeshAction> {
-        // 1. Check TTL
-        if envelope.ttl == 0 {
-            self.stats.messages_dropped.fetch_add(1, Ordering::Relaxed);
-            return Ok(MeshAction::Drop("TTL expired".into()));
-        }
-
-        // 2. Dedup check
-        {
-            let mut dedup = self.dedup.write().await;
-            if dedup.check_and_insert(envelope.id) {
-                return Ok(MeshAction::Drop("duplicate message".into()));
-            }
-        }
-
-        // 3. Verify signature (if we know the sender's key)
-        if let Some(key) = self.trusted_keys.get(&envelope.from) {
-            if !Self::verify_envelope(&key, &envelope) {
-                self.stats.messages_dropped.fetch_add(1, Ordering::Relaxed);
-                return Ok(MeshAction::Drop("invalid signature".into()));
-            }
-        }
-
-        // 4. Update routing table from hops
-        if !envelope.hops.is_empty() {
-            let mut routing = self.routing.write().await;
-            // The first hop tells us how to reach the sender
-            let next_hop = envelope.hops.last().cloned().unwrap_or(envelope.from);
-            routing.update(envelope.from, next_hop, envelope.hops.len() as u8, 0);
-        }
-
-        // 5. Determine if this is for us
-        let is_for_us = match &envelope.to {
-            MeshTarget::Agent(target) => *target == self.identity.agent_id,
-            MeshTarget::Broadcast => true, // broadcasts are always delivered locally
-            MeshTarget::Capability(_) => true, // deliver locally, let the agent decide
-        };
-
-        if is_for_us {
-            self.stats
-                .messages_delivered
-                .fetch_add(1, Ordering::Relaxed);
-
-            // Also forward broadcasts (but not direct messages)
-            if matches!(envelope.to, MeshTarget::Broadcast) {
-                return Ok(MeshAction::DeliverAndForward(envelope));
-            }
-
-            // Deliver to local inbox
-            let _ = self.inbox_tx.send(envelope.clone()).await;
-            return Ok(MeshAction::Deliver(envelope));
-        }
-
-        // 6. Route to next hop
-        self.stats.messages_routed.fetch_add(1, Ordering::Relaxed);
-        Ok(MeshAction::Forward(envelope))
     }
 
     /// Prepare an envelope for forwarding (decrement TTL, add our ID to hops).
@@ -1117,19 +1036,6 @@ impl MeshNode {
     }
 }
 
-/// Action to take after processing a mesh envelope.
-#[derive(Debug)]
-pub enum MeshAction {
-    /// Deliver the message to the local agent.
-    Deliver(MeshEnvelope),
-    /// Forward the message to the next hop.
-    Forward(MeshEnvelope),
-    /// Deliver locally AND forward to other peers (for broadcasts).
-    DeliverAndForward(MeshEnvelope),
-    /// Drop the message with a reason.
-    Drop(String),
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1277,112 +1183,24 @@ mod tests {
         assert_eq!(envelope.hops.len(), 1);
     }
 
-    #[tokio::test]
-    async fn test_process_envelope_deliver() {
-        let id = test_identity("receiver");
-        let receiver_id = id.agent_id;
-        let node = MeshNode::new(id, test_config());
-
-        // Create envelope addressed to this node
-        let sender_id = test_identity("sender");
-        let sender_node = MeshNode::new(sender_id, test_config());
-        let envelope = sender_node
-            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(999))
-            .unwrap();
-
-        let action = node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Deliver(_)));
-
-        let stats = node.stats();
-        assert_eq!(stats.messages_delivered, 1);
-    }
-
-    #[tokio::test]
-    async fn test_process_envelope_forward() {
-        let node = MeshNode::new(test_identity("router"), test_config());
-        let target = AgentId::new(); // Not us
-
-        let sender_node = MeshNode::new(test_identity("sender"), test_config());
-        let envelope = sender_node
-            .create_envelope(MeshTarget::Agent(target), MeshPayload::Ping(111))
-            .unwrap();
-
-        let action = node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Forward(_)));
-
-        assert_eq!(node.stats().messages_routed, 1);
-    }
-
-    #[tokio::test]
-    async fn test_process_envelope_ttl_expired() {
-        let node = MeshNode::new(test_identity("ttl-test"), test_config());
-
-        let envelope = MeshEnvelope {
-            id: Uuid::new_v4(),
-            from: AgentId::new(),
-            to: MeshTarget::Agent(AgentId::new()),
-            ttl: 0, // expired
-            hops: vec![],
-            payload: MeshPayload::Ping(0),
-            signature: vec![0u8; 64],
-            timestamp: Utc::now(),
-        };
-
-        let action = node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Drop(_)));
-        assert_eq!(node.stats().messages_dropped, 1);
-    }
-
-    #[tokio::test]
-    async fn test_process_envelope_dedup() {
-        let node = MeshNode::new(test_identity("dedup-test"), test_config());
-
-        let envelope = MeshEnvelope {
-            id: Uuid::new_v4(),
-            from: AgentId::new(),
-            to: MeshTarget::Agent(AgentId::new()),
-            ttl: 4,
-            hops: vec![],
-            payload: MeshPayload::Ping(42),
-            signature: vec![0u8; 64],
-            timestamp: Utc::now(),
-        };
-
-        // First time: forward
-        let action = node.process_envelope(envelope.clone()).await.unwrap();
-        assert!(matches!(action, MeshAction::Forward(_)));
-
-        // Second time: drop (duplicate)
-        let action = node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Drop(_)));
-    }
-
-    #[tokio::test]
-    async fn test_signature_verification() {
+    #[test]
+    fn a_tampered_envelope_fails_verification() {
         let sender = test_identity("sig-sender");
-        let sender_node = MeshNode::new(sender.clone(), test_config());
+        let key = *sender.public_key();
+        let sender_node = MeshNode::new(sender, test_config());
+        let receiver_id = AgentId::new();
 
-        let receiver = test_identity("sig-receiver");
-        let receiver_id = receiver.agent_id;
-        let receiver_node = MeshNode::new(receiver, test_config());
-
-        // Trust the sender's key
-        receiver_node.trust_key(sender.agent_id, sender.public_key().to_vec());
-
-        // Valid envelope
         let envelope = sender_node
             .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77))
             .unwrap();
-        let action = receiver_node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Deliver(_)));
+        assert!(MeshNode::verify_carried_key(&envelope, &key));
 
-        // Tampered envelope — change the payload after signing
-        let mut bad_envelope = sender_node
-            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(77))
-            .unwrap();
-        bad_envelope.payload = MeshPayload::Ping(99); // tamper
-        let action = receiver_node.process_envelope(bad_envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Drop(_)));
+        let mut bad = envelope.clone();
+        bad.payload = MeshPayload::Ping(99);
+        assert!(!MeshNode::verify_carried_key(&bad, &key));
+
+        let other = test_identity("sig-other-key");
+        assert!(!MeshNode::verify_carried_key(&envelope, other.public_key()));
     }
 
     #[test]
@@ -1625,20 +1443,6 @@ mod tests {
         assert_eq!(hop.unwrap(), relay);
     }
 
-    #[tokio::test]
-    async fn test_broadcast_deliver_and_forward() {
-        let node = MeshNode::new(test_identity("broadcast"), test_config());
-
-        let sender = test_identity("broadcaster");
-        let sender_node = MeshNode::new(sender, test_config());
-        let envelope = sender_node
-            .create_envelope(MeshTarget::Broadcast, MeshPayload::Ping(0))
-            .unwrap();
-
-        let action = node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::DeliverAndForward(_)));
-    }
-
     #[test]
     fn test_mesh_stats_snapshot() {
         let node = MeshNode::new(test_identity("stats"), test_config());
@@ -1648,36 +1452,6 @@ mod tests {
         assert_eq!(snap.messages_delivered, 0);
         assert_eq!(snap.messages_dropped, 0);
         assert_eq!(snap.peers_connected, 0);
-    }
-
-    #[tokio::test]
-    async fn test_routing_from_hops() {
-        let id = test_identity("learner");
-        let learner_id = id.agent_id;
-        let node = MeshNode::new(id, test_config());
-
-        let sender_id = AgentId::new();
-        let relay_id = AgentId::new();
-
-        // Envelope that passed through relay_id to get to us
-        let envelope = MeshEnvelope {
-            id: Uuid::new_v4(),
-            from: sender_id,
-            to: MeshTarget::Agent(learner_id),
-            ttl: 2,
-            hops: vec![sender_id, relay_id],
-            payload: MeshPayload::Ping(0),
-            signature: vec![0u8; 64],
-            timestamp: Utc::now(),
-        };
-
-        node.process_envelope(envelope).await.unwrap();
-
-        // Node should have learned a route to sender via relay
-        let routes = node.routes().await;
-        assert_eq!(routes.len(), 1);
-        assert_eq!(routes[0].0, sender_id);
-        assert_eq!(routes[0].1.next_hop, relay_id);
     }
 
     // ───────────────── Envelope signature v3 (deterministic CBOR) ─────────────────
@@ -2027,17 +1801,13 @@ mod tests {
         d
     }
 
-    #[tokio::test]
-    async fn a_v2_signed_envelope_is_refused() {
+    #[test]
+    fn a_v2_signed_envelope_is_refused() {
         let sender = test_identity("v2-sender");
         let sender_node = MeshNode::new(sender.clone(), test_config());
-        let receiver = test_identity("v2-receiver");
-        let receiver_id = receiver.agent_id;
-        let receiver_node = MeshNode::new(receiver, test_config());
-        receiver_node.trust_key(sender.agent_id, sender.public_key().to_vec());
 
         let mut envelope = sender_node
-            .create_envelope(MeshTarget::Agent(receiver_id), MeshPayload::Ping(1))
+            .create_envelope(MeshTarget::Agent(AgentId::new()), MeshPayload::Ping(1))
             .unwrap();
         envelope.signature = sender.sign(&v2_signature_data(&envelope)).to_vec();
 
@@ -2045,8 +1815,6 @@ mod tests {
             &envelope,
             sender.public_key()
         ));
-        let action = receiver_node.process_envelope(envelope).await.unwrap();
-        assert!(matches!(action, MeshAction::Drop(_)));
     }
 
     /// GOLDEN VECTORS. The expected hex below was derived BY HAND from the
