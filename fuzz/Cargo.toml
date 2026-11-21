@@ -45,3 +45,8 @@ doc = false
 name = "fuzz_frame_header"
 path = "fuzz_targets/fuzz_frame_header.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_negotiation"
+path = "fuzz_targets/fuzz_negotiation.rs"
+doc = false

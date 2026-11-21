@@ -391,7 +391,7 @@
 ### Phase 38: Cross-Cutting Enhancements $([char]0x2714)
 
 - [x] **Workflow orchestration** (`research/spine-agentic/src/workflow.rs`): DAG-based multi-step agent pipelines with StepKind (10 variants), WorkflowBuilder with cycle detection, WorkflowEngine with start/complete/fail/cancel/pause, event log, SHA-256 definition hashing, templates
-- [x] **Protocol version negotiation** (`src/spine-protocol/src/negotiation.rs`): VersionOffer/VersionResponse handshake, 13 ProtocolFeature variants, feature intersection, magic bytes (SPNE), length-prefixed serialization
+- [x] **Protocol version negotiation** (`src/spine-protocol/src/hello.rs`): HELLO/HELLO_ACK/CLOSE bodies and `negotiate` for the native wire v1 (replaced the unused JSON `negotiation.rs`)
 - [x] **Structured tracing migration**: Replaced all `log::` macros with `tracing::` across 8 files (spine-agent, spine-agentic, spine-cluster, spine-core, spine-gateway, spine-gpu, spine-protocol, spine-transport)
 - [x] **Cross-language FFI integration tests**: 16 new tests (roundtrip, error propagation, memory safety, concurrent access, UTF-8/Unicode, large payloads)
 - [x] **Benchmarks CI job**: Criterion benchmarks in CI with github-action-benchmark regression detection, 150% alert threshold

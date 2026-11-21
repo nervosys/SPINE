@@ -1,46 +1,44 @@
-# Protocol Version Negotiation
+# Protocol Negotiation
 
-SPINE includes a version negotiation handshake to ensure client and server agree on protocol features.
+The native wire (spine-wire v1, specified in `docs/spec/00-wire.md`) opens with
+one round trip: the client sends `HELLO`, the server answers `HELLO_ACK`.
+The code is `spine_protocol::hello`. It is not yet used by the daemon or the
+SDK; the frame codec and body encoding it builds on are `spine_protocol::frame`
+and `spine_protocol::cbor`.
 
-## Overview
+The earlier JSON `VersionOffer` / `VersionResponse` handshake and its 13
+`ProtocolFeature` variants had no caller on any wire and were removed.
 
-When a connection opens, the client sends a `VersionOffer` containing its supported protocol version and feature set. The server responds with a `VersionResponse` indicating acceptance (with the intersection of features) or rejection.
+## Bodies
 
-## Wire Format
+Bodies are deterministic CBOR maps with text keys. `HELLO` and `HELLO_ACK` are
+open (unknown keys are ignored); `CLOSE` is closed.
 
-```text
-Client → Server:  [SPNE magic (4 bytes)] [length (4 bytes)] [JSON VersionOffer]
-Server → Client:  [SPNE magic (4 bytes)] [length (4 bytes)] [JSON VersionResponse]
-```
+| Frame | Keys |
+|-------|------|
+| `HELLO` | `versions` (strictly ascending, not empty), `max_frame` (1024 to 16,777,216), `extensions` (no duplicates), `agent` (optional, at most 128 bytes) |
+| `HELLO_ACK` | `version`, `max_frame`, `max_inflight` (at least 1), `extensions`, `agent` (optional) |
+| `CLOSE` | `code`, `message`, `supported` (optional, for `unsupported_version`) |
 
-## Protocol Features
+## Rules
 
-13 negotiable `ProtocolFeature` variants:
-
-| Feature | Description |
-|---------|-------------|
-| Compression | zstd adaptive compression |
-| Encryption | AES-256-GCM AEAD |
-| Chameleon | Moving-target latent-space protocol |
-| Speculation | Bidirectional message prediction |
-| LatentBinary | Binary latent vector encoding |
-| Streaming | Reactive stream multiplexing |
-| ZeroCopy | Zero-copy frame I/O |
-| BatchFrames | Frame batching/coalescing |
-| WebSocket | WebSocket transport support |
-| Quic | QUIC transport support |
-| PostQuantum | Post-quantum (RLWE/ML-KEM) cryptography |
-| NeuralProtocol | Neural protocol evolution |
-| PluginPipeline | Transport plugin system |
+- The server selects the highest version both sides support. If there is none
+  it sends `CLOSE` with `unsupported_version` and its `supported` list.
+- `max_frame` is the smaller of the client's and the server's limit.
+- `extensions` in the acknowledgement are the offered extensions the server
+  supports, in the client's offered order; the position is the extension index.
 
 ## Usage
 
 ```rust,ignore
-use spine_protocol::negotiation::{negotiate_client, negotiate_server};
+use spine_protocol::hello::{negotiate, Hello, LocalConfig};
 
-// Client side
-let accepted_features = negotiate_client(&mut stream, my_features).await?;
-
-// Server side  
-let client_features = negotiate_server(&mut stream, supported_features).await?;
+// Server side: frame is the first frame read from the peer.
+let hello = Hello::from_frame(&frame)?;
+let ack = negotiate(&hello, &LocalConfig::default())?;
+let reply = ack.to_frame()?;
+// Client side, after reading the acknowledgement:
+// ack.validate_against(&hello)?;
 ```
+
+An `Err(Close)` is the body to send in a `CLOSE` frame before closing.
