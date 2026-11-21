@@ -1083,10 +1083,21 @@ async fn handle_command(
                 session.current_binary = Some(bin.clone());
             }
 
-            let result = state
-                .wasm_runtime
-                .execute(&bin)
-                .expect("Failed to execute HLB in WASM");
+            // A program that fails to compile, instantiate or run is the
+            // client's error, not the daemon's: answer it and keep serving.
+            let result = match state.wasm_runtime.execute(&bin) {
+                Ok(result) => result,
+                Err(e) => {
+                    return (
+                        Response {
+                            id: request_id,
+                            result: None,
+                            error: Some(format!("execution failed: {e}")),
+                        },
+                        Vec::new(),
+                    );
+                }
+            };
 
             latent_to_stream = result.latent_streams.clone();
 
