@@ -33,7 +33,7 @@ reqwest = { version = "0.12", features = [
 # Internal dependencies
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 tokio-test = "0.4"
 
 [[bench]]
