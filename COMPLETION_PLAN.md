@@ -155,6 +155,21 @@ Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source 
 - [ ] Generate test vectors: keys, names, signing bytes, signatures, record hashes, chunk hashes. The existing tests contain none beyond RFC 4648 strings.
 - [ ] Resolve everything marked Undetermined in the five specification files.
 - [ ] Decide the licence for the specification and vectors (account holder).
+- [ ] Native client to daemon wire: `docs/spec/00-wire.md` records the wire as built (part A), requirements (B), a proposed "spine-wire v1" frame (C), the v1 message set (D), the fate of morphology, chameleon and speculation (E), the migration steps below (F) and open questions for the owner (G). Nothing in it is implemented. Steps, each to leave CI green:
+  - [ ] `cbor-core`: deterministic CBOR encoder and validator in `spine-protocol`, additive.
+  - [ ] `frame-codec`: the 15-byte frame header, limits and bounded decompression, additive.
+  - [ ] `hello-close`: `HELLO`, `HELLO_ACK`, `CLOSE`; delete the unused `negotiation.rs`.
+  - [ ] `drop-speculation`: remove `SpeculativeFrame`, the predictors and `Message::{Speculative, PreComputed, Sync}`.
+  - [ ] `drop-morphology`: remove morphology, padding, `MorphRequest`, `BrowserCommand::Morph` and the daemon's 30 s morph monitor.
+  - [ ] `relocate-research`: move or delete `research.rs`, the chameleon hooks and the PSK AES layer; drop the `research` feature of `spine-protocol`.
+  - [ ] `trim-commands`: delete 13 `BrowserCommand` variants and move 5 to an extension.
+  - [ ] `trim-messages`: delete 6 `Message` variants and move 6 to an extension.
+  - [ ] `connection`: a `Connection` type over the frame codec with handshake and request ids, additive.
+  - [ ] `cutover`: daemon and SDK switch to the new wire; delete `ProtocolHandler` and the `SP` header.
+  - [ ] `bodies-v1`: header ids replace body ids, `{ok}`/`{err}` responses with codes, closed structs, deterministic bodies.
+  - [ ] `signed-frame`: delete or re-point `spine-mesh/src/signed_frame.rs`.
+  - [ ] `bindings-scripts-docs`: Go, FFI, Python, the browser extension, `scripts/smoke_candidate.py` and the documents that describe the old wire.
+  - [ ] `conformance-vectors`: hex vectors for every frame and error row, checked by an independent decoder.
 
 ## Stage 6. Layer 3: authority
 
