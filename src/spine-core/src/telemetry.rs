@@ -26,11 +26,6 @@ lazy_static! {
     )
     .buckets(vec![0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0]))
     .unwrap();
-    pub static ref PROTOCOL_MORPHS: Counter = register_counter!(Opts::new(
-        "spine_protocol_morphs_total",
-        "Total number of protocol morphing events"
-    ))
-    .unwrap();
 }
 
 pub fn init_telemetry(service_name: &str) -> anyhow::Result<()> {

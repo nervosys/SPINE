@@ -621,7 +621,7 @@ let valid = count > 0 && enabled
 
 // Built-in Functions
 print("Debug message")
-morph()              // Trigger protocol morphing
+morph()              // Emit a MorphProtocol instruction (recorded by the VDOM runtime; the wire framing is fixed)
 decoy()              // Inject decoy traffic
 let size = len(items)
 
@@ -735,7 +735,7 @@ cargo build --release -p spine-core
 ./target/release/spine-core
 ```
 
-The default `spine-core` is built without the `research` feature: cluster swarm, `GetLatentUR`, `Morph` (command dispatcher), `TransferSession`, `NeuralTransmit` and `GetAgenticState` are compiled out and answer `unsupported_without_research`, and `Search` is local only. Add `--features research` to the `cargo build` line for them. See [Build with research features](docs/NATIVE_OPERATIONS.md#build-with-research-features).
+The default `spine-core` is built without the `research` feature: cluster swarm, `GetLatentUR`, `TransferSession`, `NeuralTransmit` and `GetAgenticState` are compiled out and answer `unsupported_without_research`, and `Search` is local only. Add `--features research` to the `cargo build` line for them. See [Build with research features](docs/NATIVE_OPERATIONS.md#build-with-research-features).
 
 ### Environment Variables
 
@@ -895,10 +895,8 @@ bits derived with a non-cryptographic hash.
 2. **Moving Target Defense**: After every message exchange:
    - The basis vectors rotate
    - The dimensionality may change (64-256 dimensions)
-   - The header format morphs
-   - The padding strategy shifts
 
-3. **Per-message evolution**: each message's hash feeds the next morph, so the
+3. **Per-message evolution**: each message's hash feeds the next key evolution, so the
    encoding does not repeat across a session. This is *not* forward secrecy —
    message hashes are derivable by anyone holding the transcript, and the
    long-term secret still keys everything. Genuine forward secrecy lives in the
@@ -920,7 +918,6 @@ client.handler.enable_chameleon_aead(secret);
 
 // Protocol now automatically:
 // - Encodes messages into latent space
-// - Morphs after each message
 // - Evolves key material continuously
 ```
 
@@ -1004,10 +1001,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 ├─────────────────────────────────────┤
 │   Compression (Zstd)                │
 ├─────────────────────────────────────┤
-│   Morphing Frame Format             │
-│   ├─ Variable Header Size           │
-│   ├─ Dynamic Endianness             │
-│   └─ Chaotic Padding                │
+│   Frame: u32 BE length || 0x00      │
 ├─────────────────────────────────────┤
 │   TCP (Port 8082)                   │
 └─────────────────────────────────────┘
@@ -1018,8 +1012,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 1. **AI-First**: Every design decision prioritizes AI agent efficiency over human rendering.
 2. **Binary Execution**: Websites are programs, not static documents.
 3. **Latent Representations**: Native support for streaming embeddings and high-dimensional vectors.
-4. **Moving-Target Security**: The protocol itself is a moving target—impossible to fingerprint or replay.
-5. **Implicit Encryption**: High-dimensional projections provide encryption without explicit ciphertext.
+4. **Implicit Encryption**: High-dimensional projections provide encryption without explicit ciphertext.
 
 ## Roadmap
 
@@ -1029,7 +1022,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] Compression (Zstd)
 - [x] HLS/HLB basic compiler
 - [x] **Chameleon Protocol** (latent-space obfuscation over AES-256-GCM)
-- [x] **Moving-Target Defense** (dynamic protocol morphing)
+- [x] **Moving-Target Defense** (per-message Chameleon key evolution; research feature. Frame-header morphing and padding were removed.)
 - [x] **Decoy Traffic** injection
 - [x] **Advanced HLS Syntax** (variables, state, conditionals, loops, expressions)
 - [x] **Virtual DOM Runtime** (binary execution with UR generation)

@@ -178,35 +178,8 @@ async fn protocol_chameleon_encoding() {
         },
     });
 
-    // Chameleon encoding + morphed frame write should not panic
+    // Chameleon encoding + frame write should not panic
     client.send_message_raw(&req).await.unwrap();
-}
-// ========== MORPH PROTOCOL ==========
-
-#[tokio::test]
-async fn protocol_morph_changes_morphology() {
-    let (mut client, mut server) = handler_pair();
-
-    // Send pre-morph
-    client
-        .send_message_raw(&Message::Ping { timestamp: 1 })
-        .await
-        .unwrap();
-    let received = server.receive_message().await.unwrap();
-    assert!(matches!(received, Message::Ping { timestamp: 1 }));
-
-    // Both sides morph with same seed
-    let seed = 0xDEADBEEF;
-    client.morph_now(seed);
-    server.morph_now(seed);
-
-    // Send post-morph — should still work
-    client
-        .send_message_raw(&Message::Ping { timestamp: 2 })
-        .await
-        .unwrap();
-    let received = server.receive_message().await.unwrap();
-    assert!(matches!(received, Message::Ping { timestamp: 2 }));
 }
 
 // ========== CONCURRENT SESSIONS ==========
@@ -266,7 +239,6 @@ async fn protocol_all_command_types() {
         },
         BrowserCommand::GetRawHTML,
         BrowserCommand::GetLatentUR { dimensions: 128 },
-        BrowserCommand::Morph,
     ];
 
     for (i, cmd) in commands.into_iter().enumerate() {

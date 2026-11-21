@@ -21,7 +21,6 @@ SPINE is a headless semantic browser and native communication stack designed for
 │  • Titans Neural Encoding (spine-neural)            │
 │  • Titans Prediction (spine-crypto)                 │
 │  • Quantum-Resistant Key Evolution (spine-crypto)   │
-│  • Moving-Target Defense (Morphing)                      │
 └────────────────────┬─────────────────────────────────────┘
                      │
 ┌────────────────────▼─────────────────────────────────────┐
@@ -174,7 +173,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 **Chameleon Protocol**:
 
 - **Latent-Space Cryptography**: Messages are projected into a high-dimensional latent space using `spine-neural`.
-- **Moving-Target Defense**: The protocol "morphs" its encoding scheme periodically to resist traffic analysis.
+- **Per-message key evolution**: The latent encoder's key evolves with each message. The frame header is fixed (`u32` big-endian length, then `0x00`) and there is no padding.
 - **Quantum-Resistant**: Uses Ring-LWE lattice-based cryptography from `spine-crypto` for key evolution.
 
 **Message Format**:
@@ -301,7 +300,7 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 3. `AddChild` builds the tree structure
 4. `EmitEvent` triggers callbacks to the agent
 5. `StreamLatent` sends embeddings/vectors back to the agent
-6. `MorphProtocol` triggers Chameleon Protocol morphing
+6. `MorphProtocol` is recorded by the VDOM runtime as a morph request; it does not change the wire framing
 7. `Decoy` injects noise for traffic analysis resistance
 
 ### 5. spine-wasm
@@ -1283,7 +1282,7 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **16 Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, morph, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
+- **Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
 - **C Header**: `include/spine.h` with full documentation
 - **Thread-Local Error Handling**: `spine_last_error()` for retrieving error messages
 - **Build Targets**: `cdylib` (.so/.dylib/.dll) and `staticlib` (.a/.lib)
@@ -1296,6 +1295,6 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, Search, ExecuteHLS, Ping, Morph, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
+- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, Search, ExecuteHLS, Ping, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
 - **Offline Functions**: ParseHTML, CompileHLS, Version (no server needed)
 - **Go-Native Types**: UnifiedRepresentation, Element, SpineBinary, ExecutionResult

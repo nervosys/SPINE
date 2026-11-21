@@ -11,7 +11,6 @@ pub enum Message {
     Event(Event),
     BinaryProgram(SpineBinary),
     LatentMessage(LatentVector),
-    MorphRequest { seed: u64 },
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
 }
@@ -19,26 +18,27 @@ pub enum Message {
 
 ## Frame Format
 
-Messages are framed with a 16-byte header:
+Messages are framed with a fixed 5-byte header. The header never changes
+during a connection:
 
 ```
-┌──────────┬──────────┬───────────┬───────────┐
-│ Length(4) │ Type(1)  │ Flags(1)  │ Padding(10)│
-└──────────┴──────────┴───────────┴───────────┘
-│                 Payload                       │
-└───────────────────────────────────────────────┘
+┌───────────┬──────────┐
+│ Length(4) │ 0x00 (1) │
+└───────────┴──────────┘
+│       Payload        │
+└──────────────────────┘
 ```
 
-- **Length**: 4 bytes, big-endian, payload size
-- **Type**: Message discriminant
-- **Flags**: `0x01` = zstd compressed, `0x00` = raw
+- **Length**: 4 bytes, big-endian, payload size (at most 16 MiB)
+- **Fifth byte**: written as `0x00`, ignored on read
+- **Payload**: starts with a flag byte, `0x01` = zstd compressed, `0x00` = raw
 
 ## Compression
 
 Adaptive compression using a 1-byte flag protocol:
 - Payloads < 64 bytes are sent raw (compression overhead exceeds savings)
 - Larger payloads use zstd compression
-- Stack-allocated `[u8; 16]` headers avoid heap allocation
+- Stack-allocated `[u8; 5]` headers avoid heap allocation
 
 ## Transport Options
 

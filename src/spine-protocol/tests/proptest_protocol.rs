@@ -32,7 +32,6 @@ fn arb_browser_command() -> impl Strategy<Value = BrowserCommand> {
         }),
         "\\PC*".prop_map(|q| BrowserCommand::Search { query: q }),
         Just(BrowserCommand::GetRawHTML),
-        Just(BrowserCommand::Morph),
         (1usize..512).prop_map(|d| BrowserCommand::GetLatentUR { dimensions: d }),
     ]
 }
@@ -57,7 +56,6 @@ fn arb_message() -> impl Strategy<Value = Message> {
         arb_latent_vector().prop_map(Message::LatentMessage),
         any::<u64>().prop_map(|ts| Message::Ping { timestamp: ts }),
         any::<u64>().prop_map(|ts| Message::Pong { timestamp: ts }),
-        any::<u64>().prop_map(|seed| Message::MorphRequest { seed }),
     ]
 }
 
@@ -190,6 +188,3 @@ proptest! {
         prop_assert_eq!(v2.epoch, 1);
     }
 }
-
-// ProtocolMorphology::new() is private - morphology is tested indirectly
-// via ProtocolHandler::morph_now() in integration.rs

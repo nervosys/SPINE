@@ -44,7 +44,6 @@ struct Session {
     #[serde(skip)]
     cached_ur: Option<spine_parser::UnifiedRepresentation>,
     last_command: Option<BrowserCommand>,
-    needs_morph: bool,
     /// Reactive state variables
     state: std::collections::HashMap<String, serde_json::Value>,
     /// Current HLB binary for reactivity
@@ -68,7 +67,6 @@ impl Session {
             current_vdom: None,
             cached_ur: None,
             last_command: None,
-            needs_morph: false,
             state: std::collections::HashMap::new(),
             current_binary: None,
             history: Vec::new(),
@@ -1357,22 +1355,6 @@ async fn handle_command(
                 }
             }
         }
-        #[cfg(feature = "research")]
-        BrowserCommand::Morph => {
-            info!("Triggering protocol morphing for session {}", session_id);
-            let mut encoder = state.encoder.write().await;
-            let seed = rand::random::<u64>();
-            encoder.evolve(seed);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "status": "morphed",
-                    "new_seed": seed,
-                    "protocol": "chameleon-v2"
-                })),
-                error: None,
-            }
-        }
         BrowserCommand::Search { query } => {
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(_html) = &session.current_html {
@@ -1619,7 +1601,6 @@ async fn handle_command(
         }
         #[cfg(not(feature = "research"))]
         BrowserCommand::GetLatentUR { .. }
-        | BrowserCommand::Morph
         | BrowserCommand::TransferSession { .. }
         | BrowserCommand::NeuralTransmit { .. }
         | BrowserCommand::GetAgenticState => Response {
@@ -2237,27 +2218,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start autonomous security monitor
-    let monitor_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            info!("Autonomous security monitor: checking session health...");
-            for mut session in monitor_state.sessions.iter_mut() {
-                // If a session has been active but hasn't morphed recently, trigger a morph
-                // This is a simple "agentic" self-healing behavior
-                if session.last_command.is_some() && !session.needs_morph {
-                    info!(
-                        "Self-healing: triggering proactive protocol morph for session {}",
-                        session.key()
-                    );
-                    session.needs_morph = true;
-                }
-            }
-        }
-    });
-
     let addr = format!("{}:{}", config.server.host, port);
     let listener = TcpListener::bind(&addr).await?;
     info!("TCP listening on {}", addr);
@@ -2643,71 +2603,21 @@ where
                     continue;
                 }
 
-                // Check if session needs a proactive morph
-                if let Some(mut session) = state.sessions.get_mut(&id) {
-                    if session.needs_morph {
-                        let seed = rand::random::<u64>();
-                        info!("Sending proactive MorphRequest for session {}", id);
-                        if handler
-                            .send_message(&Message::MorphRequest { seed })
-                            .await
-                            .is_ok()
-                        {
-                            handler.morph_now(seed);
-                            session.needs_morph = false;
-                        }
+                let (res, latent_to_stream) =
+                    handle_command(&state, &id, req.command.clone(), req.id).await;
+                if !matches!(
+                    req.command,
+                    BrowserCommand::PublishResource { .. }
+                        | BrowserCommand::ReadResource { .. }
+                        | BrowserCommand::MeshCall { .. }
+                ) {
+                    if let Some(mut session) = state.sessions.get_mut(&id) {
+                        session.last_command = Some(req.command);
                     }
                 }
 
-                // Handle the command. A `Morph` command answers under the OLD
-                // framing (the client reads it before it switches) and the
-                // daemon morphs only after that send completes, so both ends
-                // switch at the same point in the stream.
-                let mut pending_morph: Option<u64> = None;
-                let (res, latent_to_stream) = if let BrowserCommand::Morph = req.command {
-                    let seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64;
-                    pending_morph = Some(seed);
-                    (
-                        Response {
-                            id: req.id,
-                            result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
-                            error: None,
-                        },
-                        Vec::new(),
-                    )
-                } else {
-                    let (res, latent) =
-                        handle_command(&state, &id, req.command.clone(), req.id).await;
-                    if !matches!(
-                        req.command,
-                        BrowserCommand::PublishResource { .. }
-                            | BrowserCommand::ReadResource { .. }
-                            | BrowserCommand::MeshCall { .. }
-                    ) {
-                        if let Some(mut session) = state.sessions.get_mut(&id) {
-                            session.last_command = Some(req.command);
-                        }
-                    }
-                    (res, latent)
-                };
-
-                match handler.send_message(&Message::Response(res)).await {
-                    Ok(()) => {
-                        if let Some(seed) = pending_morph {
-                            handler.morph_now(seed);
-                            PROTOCOL_MORPHS.inc();
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to send response: {}", e);
-                        if pending_morph.is_some() {
-                            // The peer never saw the seed: framing is unrecoverable.
-                            break;
-                        }
-                    }
+                if let Err(e) = handler.send_message(&Message::Response(res)).await {
+                    error!("Failed to send response: {}", e);
                 }
 
                 // Stream any latent vectors produced

@@ -281,7 +281,6 @@ enum TransportInner {
 struct ProtocolHandlerState {
     cipher: Option<Aes256Gcm>,
     chameleon: Option<ChameleonKey>,
-    morphology: ProtocolMorphology,
     moving_target: bool,
     /// Latent-space AEAD mode (M2)
     latent_aead: bool,
@@ -310,10 +309,6 @@ impl SpineConnection {
     /// Enable Chameleon protocol
     pub fn enable_chameleon(&mut self, secret: [u8; 32]) {
         self.handler.chameleon = Some(ChameleonKey::new(&secret));
-        self.handler.morphology = ProtocolMorphology::new_keyed(
-            u64::from_le_bytes(secret[0..8].try_into().unwrap()),
-            &secret,
-        );
         self.handler.moving_target = true;
     }
 
@@ -325,10 +320,6 @@ impl SpineConnection {
             .expect("HKDF expand");
 
         self.handler.chameleon = Some(ChameleonKey::new(&secret));
-        self.handler.morphology = ProtocolMorphology::new_keyed(
-            u64::from_le_bytes(secret[0..8].try_into().unwrap()),
-            &secret,
-        );
         self.handler.moving_target = true;
 
         let key = aes_gcm::Key::<Aes256Gcm>::from_slice(&aes_key);
@@ -377,7 +368,6 @@ impl SpineConnection {
             if self.handler.moving_target {
                 let hash = Self::hash_data(&data);
                 chameleon.evolve(hash);
-                self.handler.morphology.evolve(hash);
             }
         }
 
@@ -413,7 +403,6 @@ impl SpineConnection {
             if self.handler.moving_target {
                 let hash = Self::hash_data(&data);
                 chameleon.evolve(hash);
-                self.handler.morphology.evolve(hash);
             }
         }
 
@@ -432,7 +421,6 @@ impl ProtocolHandlerState {
         Self {
             cipher: None,
             chameleon: None,
-            morphology: ProtocolMorphology::new(0),
             moving_target: false,
             latent_aead: false,
         }
@@ -440,9 +428,6 @@ impl ProtocolHandlerState {
 
     fn encode_message(&mut self, msg: &Message) -> anyhow::Result<Vec<u8>> {
         let mut data = wire::encode(msg)?;
-
-        // Apply padding
-        data = self.apply_padding(data);
 
         // Adaptive compression with flag
         // SECURITY NOTE (L2): Compressing plaintext before encryption can leak
@@ -534,9 +519,6 @@ impl ProtocolHandlerState {
             data[1..].to_vec()
         };
 
-        // Remove padding
-        data = self.remove_padding(data);
-
         let msg: Message = wire::decode(&data)?;
         Ok(msg)
     }
@@ -550,20 +532,9 @@ impl ProtocolHandlerState {
             data.len() <= wire::MAX_TRANSPORT_FRAME_BYTES,
             "native transport frame exceeds size limit"
         );
-        let len = data.len() as u32;
-        let mut header = Vec::with_capacity(self.morphology.header_size as usize);
-
-        let len_bytes = if self.morphology.big_endian {
-            len.to_be_bytes()
-        } else {
-            len.to_le_bytes()
-        };
-        header.extend_from_slice(&len_bytes);
-        header.push(self.morphology.frame_version);
-
-        while header.len() < self.morphology.header_size as usize {
-            header.push(self.morphology.checksum_variant);
-        }
+        let mut header = [0u8; 5];
+        header[..4].copy_from_slice(&(data.len() as u32).to_be_bytes());
+        // header[4] stays 0x00.
 
         write_header_body(writer, &header, data).await?;
         Ok(())
@@ -573,15 +544,9 @@ impl ProtocolHandlerState {
         &self,
         reader: &mut R,
     ) -> anyhow::Result<Vec<u8>> {
-        let mut header = vec![0u8; self.morphology.header_size as usize];
+        let mut header = [0u8; 5];
         reader.read_exact(&mut header).await?;
-
-        let len_bytes: [u8; 4] = header[0..4].try_into()?;
-        let len = if self.morphology.big_endian {
-            u32::from_be_bytes(len_bytes)
-        } else {
-            u32::from_le_bytes(len_bytes)
-        } as usize;
+        let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
 
         anyhow::ensure!(
             len <= wire::MAX_TRANSPORT_FRAME_BYTES,
@@ -590,76 +555,6 @@ impl ProtocolHandlerState {
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await?;
         Ok(buf)
-    }
-
-    fn apply_padding(&self, mut data: Vec<u8>) -> Vec<u8> {
-        match self.morphology.padding_mode {
-            PaddingMode::None => data,
-            PaddingMode::Pkcs7 => {
-                let padding_len = 16 - (data.len() % 16);
-                data.extend(std::iter::repeat_n(padding_len as u8, padding_len));
-                data
-            }
-            PaddingMode::Random => {
-                let padding_len = 16 - (data.len() % 16);
-                let mut state = self.morphology.frame_version as u64;
-                for _ in 0..padding_len {
-                    state ^= state << 13;
-                    state ^= state >> 7;
-                    state ^= state << 17;
-                    data.push(state as u8);
-                }
-                data.push(padding_len as u8);
-                data
-            }
-            PaddingMode::Chaotic => {
-                let target = 16 + (self.morphology.frame_version as usize % 240);
-                let padding_len = if data.len() >= target {
-                    16
-                } else {
-                    target - data.len()
-                };
-                let original_len = data.len();
-
-                let mut state = self.morphology.checksum_variant as u64 * 12345;
-                for _ in 0..padding_len {
-                    state ^= state << 13;
-                    state ^= state >> 7;
-                    state ^= state << 17;
-                    data.push(state as u8);
-                }
-                data.extend_from_slice(&(original_len as u32).to_le_bytes());
-                data
-            }
-        }
-    }
-
-    fn remove_padding(&self, mut data: Vec<u8>) -> Vec<u8> {
-        match self.morphology.padding_mode {
-            PaddingMode::None => data,
-            PaddingMode::Pkcs7 => {
-                if let Some(&padding_len) = data.last() {
-                    let len = data.len().saturating_sub(padding_len as usize);
-                    data.truncate(len);
-                }
-                data
-            }
-            PaddingMode::Random => {
-                if let Some(&padding_len) = data.last() {
-                    let len = data.len().saturating_sub(padding_len as usize + 1);
-                    data.truncate(len);
-                }
-                data
-            }
-            PaddingMode::Chaotic => {
-                if data.len() >= 4 {
-                    let len_bytes: [u8; 4] = data[data.len() - 4..].try_into().unwrap_or([0; 4]);
-                    let original_len = u32::from_le_bytes(len_bytes) as usize;
-                    data.truncate(original_len);
-                }
-                data
-            }
-        }
     }
 }
 

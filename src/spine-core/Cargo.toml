@@ -59,7 +59,7 @@ spine-agent = { path = "../spine-agent", version = "2.0.2" }
 
 [features]
 default = []
-# Off by default. Cluster swarm, latent/morph and neural-transmit commands, agentic state and
+# Off by default. Cluster swarm, latent and neural-transmit commands, agentic state and
 # the human transpiler. spine-wasm is the execution layer, not research.
 research = [
     "dep:spine-agentic",

@@ -660,9 +660,6 @@ async fn configured_mutual_tls_protects_tcp_and_websocket_origins() {
         ).await.unwrap_or_else(|error| panic!("TLS origin failed: {error}; {}",
             std::fs::read_to_string(dir.path().join("server.log")).unwrap()));
         assert_eq!(agent.capabilities().await.unwrap().capabilities.len(), 2);
-        // Morphing the framing must leave the connection usable: both ends switch
-        // after the response, so the next exchange succeeds.
-        agent.morph().await.unwrap();
         agent.ping().await.unwrap();
         drop(agent);
         // A TLS 1.3 connector may finish its local handshake before the server

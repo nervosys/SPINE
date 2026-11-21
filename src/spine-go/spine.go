@@ -169,15 +169,6 @@ func (c *Client) Ping() (int64, error) {
 	return int64(rtt), nil
 }
 
-// Morph triggers protocol morphing (Chameleon protocol).
-func (c *Client) Morph() error {
-	rc := C.spine_morph(c.handle)
-	if rc != 0 {
-		return lastError()
-	}
-	return nil
-}
-
 // GetCapabilities returns the server's advertised capabilities.
 func (c *Client) GetCapabilities() ([]string, error) {
 	ptr := C.spine_get_capabilities(c.handle)

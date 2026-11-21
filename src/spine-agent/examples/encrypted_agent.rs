@@ -1,7 +1,7 @@
 //! # Encrypted Agent
 //!
 //! Demonstrates connecting over TLS and enabling Chameleon Protocol
-//! for latent-space cryptography with protocol morphing.
+//! for latent-space cryptography.
 
 use anyhow::Result;
 use spine_agent::AgentClient;
@@ -26,16 +26,11 @@ async fn main() -> Result<()> {
     client.handler.enable_chameleon(secret);
     println!("Chameleon Protocol enabled");
 
-    // Navigate — each request morphs the protocol
     client.navigate("https://example.com").await?;
-    println!("Navigated (protocol morphed)");
+    println!("Navigated");
 
     let ur = client.get_ur().await?;
     println!("Title: {} ({} elements)", ur.title, ur.elements.len());
-
-    // Morph explicitly
-    client.morph().await?;
-    println!("Protocol morphed again");
 
     Ok(())
 }

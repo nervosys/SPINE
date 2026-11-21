@@ -129,7 +129,6 @@ fn demo_protocol() {
                 epoch: 1,
             }),
         ),
-        ("MorphRequest", Message::MorphRequest { seed: 0xDEADBEEF }),
     ];
 
     for (name, msg) in &messages {
@@ -182,18 +181,6 @@ fn demo_chameleon_duplex() {
             elapsed.as_nanos() as f64 / 1000.0,
             elapsed.as_nanos() as f64 / 10000.0
         );
-
-        // Test morphing
-        client.morph_now(42);
-        server.morph_now(42);
-
-        client
-            .send_message_raw(&Message::Ping { timestamp: 999 })
-            .await
-            .unwrap();
-        let msg = server.receive_message().await.unwrap();
-        assert!(matches!(msg, Message::Ping { timestamp: 999 }));
-        println!("  Post-morph communication: OK");
     });
     println!();
 }

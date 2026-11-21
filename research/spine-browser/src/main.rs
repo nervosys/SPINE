@@ -944,38 +944,6 @@ impl eframe::App for SpineBrowser {
                     });
                 }
 
-                if ui.button("Morph").clicked() {
-                    let agent_clone = self.agent.clone();
-                    let tx = self.event_tx.clone();
-                    self.rt.spawn(async move {
-                        let mut lock = agent_clone.lock().await;
-                        let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
-                            Some(a) => a,
-                            None => return,
-                        };
-
-                        let _ = tx
-                            .send(BrowserEvent::StatusChanged(
-                                "Morphing protocol...".to_string(),
-                            ))
-                            .await;
-                        match agent.morph().await {
-                            Ok(_) => {
-                                let _ = tx
-                                    .send(BrowserEvent::StatusChanged(
-                                        "Protocol Morphed".to_string(),
-                                    ))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = tx
-                                    .send(BrowserEvent::Error(format!("Morph failed: {}", e)))
-                                    .await;
-                            }
-                        }
-                    });
-                }
-
                 if ui.button("Decoy").clicked() {
                     let agent_clone = self.agent.clone();
                     let tx = self.event_tx.clone();
@@ -1203,7 +1171,6 @@ impl eframe::App for SpineBrowser {
 
                     if !self.latent_vector.is_empty() {
                         ui.separator();
-                        ui.label("Protocol Morphology: Active");
                         ui.label("Encryption: Latent-Implicit");
                     }
                 });

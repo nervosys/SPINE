@@ -108,10 +108,6 @@ async fn interactive_session(client: &mut AgentClient<TcpStream>) -> Result<()> 
                 Ok(result) => println!("{:?}", result),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
             },
-            Cmd::Morph => match client.morph().await {
-                Ok(()) => eprintln!("  {} Protocol morphed", "✓".green()),
-                Err(e) => eprintln!("  {} {}", "✗".red(), e),
-            },
             Cmd::Capabilities => match client.get_capabilities().await {
                 Ok(caps) => {
                     println!("Capabilities:");
@@ -224,7 +220,6 @@ enum Cmd {
     Search(String),
     Ping,
     Exec(String),
-    Morph,
     Capabilities,
     Help,
     Quit,
@@ -258,7 +253,6 @@ fn handle_command(line: &str) -> Cmd {
                 Cmd::Unknown("exec requires a script".into())
             }
         }
-        "morph" => Cmd::Morph,
         "caps" | "capabilities" => Cmd::Capabilities,
         "help" | "?" | "h" => Cmd::Help,
         "quit" | "exit" | "q" => Cmd::Quit,
@@ -278,7 +272,6 @@ fn print_help() {
     eprintln!("  {}       Search the semantic web", "search <q>".cyan());
     eprintln!("  {}                 Ping the server", "ping".cyan());
     eprintln!("  {}         Execute HLS script", "exec <code>".cyan());
-    eprintln!("  {}                Morph the protocol", "morph".cyan());
     eprintln!("  {}                 Server capabilities", "caps".cyan());
     eprintln!("  {}                 Show this help", "help".cyan());
     eprintln!("  {}                 Disconnect", "quit".cyan());

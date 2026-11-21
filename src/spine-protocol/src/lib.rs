@@ -225,10 +225,6 @@ pub enum Message {
     BinaryProgram(SpineBinary),
     /// Latent-encoded message (implicit encryption)
     LatentMessage(LatentVector),
-    /// Server-initiated request to morph the protocol
-    MorphRequest {
-        seed: u64,
-    },
     /// Health check to verify connection
     Ping {
         timestamp: u64,
@@ -439,8 +435,6 @@ pub enum BrowserCommand {
     GetLatentUR {
         dimensions: usize,
     },
-    /// Trigger protocol morphing
-    Morph,
     /// Semantic search in the current page
     Search {
         query: String,

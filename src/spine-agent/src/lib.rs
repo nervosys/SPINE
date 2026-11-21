@@ -378,7 +378,6 @@ where
             loop {
                 match self.handler.receive_message().await? {
                     Message::ToolResult(result) if result.id == id => return Ok(result),
-                    Message::MorphRequest { .. } => {}
                     Message::Ping { timestamp } => {
                         self.handler
                             .send_message(&Message::Pong { timestamp })
@@ -540,30 +539,6 @@ where
         let (tx, rx) = mpsc::channel(100);
         self.latent_tx = Some(tx);
         Ok(rx)
-    }
-
-    /// Morph the protocol framing.
-    ///
-    /// A daemon built without the `research` feature still morphs the framing in
-    /// its connection loop, but its command dispatcher answers
-    /// `unsupported_without_research`; the full command needs the `research` feature.
-    ///
-    /// The daemon sends its response under the old framing and morphs right
-    /// after; this reads the response, takes the seed from it and morphs the
-    /// local handler with that seed so both ends switch together.
-    pub async fn morph(&mut self) -> anyhow::Result<()> {
-        let res = self.send_request(BrowserCommand::Morph).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let seed = res
-            .result
-            .as_ref()
-            .and_then(|result| result.get("seed"))
-            .and_then(serde_json::Value::as_u64)
-            .ok_or_else(|| anyhow::anyhow!("morph response carried no seed"))?;
-        self.handler.morph_now(seed);
-        Ok(())
     }
 
     #[instrument(skip(self))]
@@ -1055,7 +1030,7 @@ mod tests {
         // Test that Message::Request and Message::Response serialize/deserialize
         let msg = Message::Request(Request {
             id: "42".to_string(),
-            command: BrowserCommand::Morph,
+            command: BrowserCommand::GetUR,
         });
         let json = serde_json::to_string(&msg).unwrap();
         let rt: Message = serde_json::from_str(&json).unwrap();

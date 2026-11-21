@@ -244,7 +244,7 @@ async fn e2e_encrypted_multiple_messages() {
 /// Test that Chameleon AEAD send path works over real TCP without panicking.
 /// NOTE: Chameleon uses neural latent-space encoding which is inherently lossy,
 /// so full roundtrip decode is not expected to produce identical data. This test
-/// verifies the protocol mechanics (framing, encryption, morphology) are sound.
+/// verifies the protocol mechanics (framing, encryption) are sound.
 #[cfg(feature = "research")]
 #[tokio::test]
 async fn e2e_chameleon_tcp_send_path() {
@@ -283,7 +283,7 @@ async fn e2e_chameleon_tcp_send_path() {
     });
     client.send_message_raw(&req).await.unwrap();
 
-    // Send a second message to exercise morphology evolution
+    // Send a second message to exercise key evolution
     client
         .send_message_raw(&Message::Ping { timestamp: 42 })
         .await
@@ -291,78 +291,6 @@ async fn e2e_chameleon_tcp_send_path() {
 
     drop(client);
     let _ = handle.await;
-}
-
-// ====== Morph During Session ======
-
-/// Test that morph_now() works over real TCP by having both sides morph together.
-/// Uses plaintext (no encryption) for clarity — the morph changes frame header layout.
-#[tokio::test]
-async fn e2e_morph_mid_session() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-
-    let server_handle = tokio::spawn(async move {
-        let (socket, _) = listener.accept().await.unwrap();
-        let mut handler = ProtocolHandler::new(socket);
-
-        // Receive pre-morph ping
-        let msg = handler.receive_message().await.unwrap();
-        assert!(matches!(msg, Message::Ping { timestamp: 1 }));
-        handler
-            .send_message_raw(&Message::Pong { timestamp: 1 })
-            .await
-            .unwrap();
-
-        // Signal client that we're about to morph
-        // Wait for client to be ready
-        let _ = rx.await;
-
-        // Morph
-        handler.morph_now(0xDEAD_BEEF);
-
-        // Receive post-morph ping
-        let msg = handler.receive_message().await.unwrap();
-        assert!(matches!(msg, Message::Ping { timestamp: 2 }));
-        handler
-            .send_message_raw(&Message::Pong { timestamp: 2 })
-            .await
-            .unwrap();
-    });
-
-    tokio::time::sleep(Duration::from_millis(30)).await;
-
-    let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
-    let mut client = ProtocolHandler::new(stream);
-
-    // Pre-morph ping
-    client
-        .send_message_raw(&Message::Ping { timestamp: 1 })
-        .await
-        .unwrap();
-    let resp = client.receive_message().await.unwrap();
-    assert!(matches!(resp, Message::Pong { timestamp: 1 }));
-
-    // Both sides morph simultaneously
-    client.morph_now(0xDEAD_BEEF);
-    let _ = tx.send(());
-
-    // Small delay to let server morph
-    tokio::time::sleep(Duration::from_millis(10)).await;
-
-    // Post-morph ping - frame layout has changed
-    client
-        .send_message_raw(&Message::Ping { timestamp: 2 })
-        .await
-        .unwrap();
-    let resp = client.receive_message().await.unwrap();
-    assert!(matches!(resp, Message::Pong { timestamp: 2 }));
-
-    server_handle.await.unwrap();
 }
 
 // ====== Frame Format Interop ======
@@ -491,7 +419,6 @@ async fn e2e_all_command_types_over_tcp() {
             query: "test".into(),
         },
         BrowserCommand::GetLatentUR { dimensions: 64 },
-        BrowserCommand::Morph,
     ];
 
     for (i, cmd) in commands.into_iter().enumerate() {

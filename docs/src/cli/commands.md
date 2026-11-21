@@ -33,7 +33,6 @@ REPL commands:
 | `search <query>` | Search                     |
 | `ping`           | Measure latency            |
 | `exec <script>`  | Execute HLS script         |
-| `morph`          | Trigger protocol morphing  |
 | `caps`           | List server capabilities   |
 | `help`           | Show commands              |
 | `quit`           | Disconnect                 |

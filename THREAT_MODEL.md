@@ -81,10 +81,8 @@ SPINE is a **headless semantic browser with adaptive encryption** for AI agents.
 
 ### 4. Traffic Analysis
 **Problem**: Packet timing reveals communication patterns
-**Solution**: Chameleon protocol
-- Rotating ciphersuites
-- Variable padding
-- **Limitation**: Cannot fully hide traffic volume
+**Solution**: None in the native wire. The frame header is fixed and there is no padding; the Chameleon research feature changes the encoding of the body only.
+- **Limitation**: Message sizes and timing are visible to an observer
 
 ### 5. Memory Disclosure
 **Problem**: Side-channels leak neural memory contents

@@ -220,17 +220,6 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// Trigger protocol morphing.
-    fn morph(&self) -> PyResult<()> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.morph())
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
     /// Get server capabilities.
     fn get_capabilities(&self) -> PyResult<Vec<String>> {
         let mut client = self

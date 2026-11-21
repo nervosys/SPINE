@@ -16,8 +16,7 @@ API documentation: <https://docs.rs/spine-core>
 ## Features
 
 - `research` (off by default): cluster swarm and its event listener, the
-  latent, morph and neural-transmit commands (`GetLatentUR`, `Morph` in the
-  dispatcher, `NeuralTransmit`), `TransferSession`, `GetAgenticState`, the
+  latent and neural-transmit commands (`GetLatentUR`, `NeuralTransmit`), `TransferSession`, `GetAgenticState`, the
   autonomous agent loop and the human transpile on `Navigate`. Without it the
   daemon answers those commands with `unsupported_without_research`, `Search`
   is local only (`"distributed": false`, `"status": "local_only"`), and

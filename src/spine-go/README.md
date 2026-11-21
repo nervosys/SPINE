@@ -100,7 +100,6 @@ go test -v ./...
 | `Client.Search(query)`                      | Search the web                     |
 | `Client.ExecuteHLS(script)`                 | Execute HLS script                 |
 | `Client.Ping()`                             | Ping server (returns RTT ms)       |
-| `Client.Morph()`                            | Trigger protocol morphing          |
 | `Client.GetCapabilities()`                  | Get server capabilities            |
 | `Client.StoreKnowledge(key, value, tags)`   | Store knowledge entry              |
 | `Client.QueryKnowledge(query, tags, limit)` | Query knowledge base               |

@@ -154,7 +154,6 @@ The following private-key-bearing structs now `Zeroize` on `Drop`
 - `spine_crypto::QuantumKeyPair` — RLWE secret/public ring elements
 - `spine_crypto::MlKemKeyPair` — FIPS 203 decapsulation key bytes
 - `spine_crypto::QuantumKeyEvolution` — rolling key-hash history
-- `spine_protocol::ProtocolMorphology` — session HMAC key (32 B)
 - `spine_agentic::Ed25519Keypair` — wraps `ed25519-dalek::SigningKey`
   (which itself derives `ZeroizeOnDrop` upstream) plus the cached
   public-key bytes.

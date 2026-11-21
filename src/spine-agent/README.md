@@ -22,7 +22,7 @@ what changed in this release.
 The examples `agent_autonomous`, `encrypted_agent`, `latent_analysis`,
 `llm_workflow_demo`, `offline_demo`, `research_swarm`, `simple_agent` and
 `web_intelligence_demo` need it (`cargo run -p spine-agent --features research
---example simple_agent`). `get_latent_ur`, `morph`, `transfer_session` and
+--example simple_agent`). `get_latent_ur`, `transfer_session` and
 `get_agentic_state` stay available without it, but need a daemon built with
 `spine-core/research`.
 

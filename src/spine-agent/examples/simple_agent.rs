@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     println!("└─────────────────────────────────────────────────────────────┘");
     println!("[1] Navigating to https://example.com...");
     client.navigate("https://example.com").await?;
-    println!("    ✓ Navigation complete (protocol morphed)\n");
+    println!("    ✓ Navigation complete\n");
 
     // 2. Fetch the Unified Representation several times
     println!("┌─────────────────────────────────────────────────────────────┐");

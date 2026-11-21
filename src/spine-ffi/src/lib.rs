@@ -312,32 +312,6 @@ pub unsafe extern "C" fn spine_ping(handle: *mut c_void) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// Protocol morphing
-// ---------------------------------------------------------------------------
-
-/// Trigger protocol morphing. Returns 0 on success, -1 on error.
-///
-/// # Safety
-/// `handle` must be a valid client handle.
-#[no_mangle]
-pub unsafe extern "C" fn spine_morph(handle: *mut c_void) -> c_int {
-    let client = match (handle as *mut AgentClient<TcpStream>).as_mut() {
-        Some(c) => c,
-        None => {
-            set_error("spine_morph: null handle");
-            return -1;
-        }
-    };
-    match runtime().block_on(client.morph()) {
-        Ok(()) => 0,
-        Err(e) => {
-            set_error(&format!("spine_morph: {e}"));
-            -1
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------
 
@@ -618,12 +592,6 @@ mod tests {
     fn test_ping_null_handle() {
         let rtt = unsafe { spine_ping(std::ptr::null_mut()) };
         assert_eq!(rtt, -1);
-    }
-
-    #[test]
-    fn test_morph_null_handle() {
-        let rc = unsafe { spine_morph(std::ptr::null_mut()) };
-        assert_eq!(rc, -1);
     }
 
     #[test]
