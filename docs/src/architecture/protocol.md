@@ -55,8 +55,8 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 | `unknown_command` | the body names a command outside the set |
 | `invalid_request` | the body is a known command with a defect; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` past the end |
 | `internal` | the daemon failed in a way the client cannot fix |
-| `rate_limit` | the session's or the connection's request rate was exceeded |
-| `session_capacity` | the daemon holds its maximum number of sessions |
+| `rate_limit` | the connection's request rate for session commands, or its separate `tool_call` rate, was exceeded |
+| `session_capacity` | the daemon holds its maximum number of sessions; the connection stays open |
 | `session_not_found` | `get_ur` or `get_raw_html` and the session record is gone |
 | `session_expired` | `navigate` fetched a page and the session record was gone |
 | `no_page_loaded` | `get_ur` or `get_raw_html` arrived before a successful `navigate`; `get_ur` reports a page that fails to parse as `parse_error` |

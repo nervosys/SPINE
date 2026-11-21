@@ -522,6 +522,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         best_effort_close(&mut self.stream, &Close::new(code, message)).await;
     }
 
+    /// Finishes the connection without writing anything. For a write that was
+    /// cut off (a deadline): the stream may hold a partial frame, so no `CLOSE`
+    /// can be read by the peer, and the caller should drop the connection.
+    pub fn abandon(&mut self) {
+        self.finished = true;
+    }
+
     /// Checks an `EXT` body against the accepted extensions.
     fn check_ext(&self, body: &[u8]) -> Result<(), String> {
         match ext_index(body) {

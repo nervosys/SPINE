@@ -78,6 +78,56 @@ async fn native_navigation_enforces_outbound_policy() {
     }).await.expect("native outbound acceptance deadline exceeded");
 }
 
+/// Shutdown is announced: an idle established connection receives
+/// `CLOSE(shutting_down)` instead of a bare end of stream.
+#[tokio::test]
+async fn shutdown_sends_close_to_an_established_connection() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.server.idle_timeout_secs = 120;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        // Returns once the daemon accepts; the probe client is not needed.
+        drop(connect(&mut node, dir.path(), origin).await);
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut conn = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            spine_protocol::native::client_connect(stream),
+        )
+        .await
+        .expect("handshake deadline")
+        .unwrap();
+        // One byte on the managed child's control pipe requests draining.
+        {
+            use std::io::Write;
+            let mut control = node.0.stdin.take().unwrap();
+            control.write_all(&[1]).unwrap();
+        }
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(30), conn.recv())
+            .await
+            .expect("no CLOSE within 30 seconds")
+            .unwrap_err();
+        match closed {
+            spine_protocol::connection::ConnectionError::Closed(close) => {
+                assert_eq!(close.code, "shutting_down");
+            }
+            other => panic!("expected CLOSE(shutting_down), got {other}"),
+        }
+    })
+    .await
+    .expect("shutdown acceptance deadline exceeded");
+}
+
 struct Node(Child);
 impl Drop for Node {
     fn drop(&mut self) {

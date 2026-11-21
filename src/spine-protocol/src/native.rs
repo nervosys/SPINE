@@ -35,7 +35,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use crate::body::{Reply, WireError, ERR_INVALID_REQUEST, ERR_UNKNOWN_COMMAND};
 use crate::cbor::{self, CborError};
 use crate::connection::{Connection, ConnectionError};
-use crate::frame::{CloseCode, Frame, FrameType, VERSION};
+use crate::frame::{Frame, FrameType, VERSION};
 use crate::hello::{Hello, LocalConfig};
 use crate::{BrowserCommand, Message, COMMAND_NAMES};
 
@@ -56,8 +56,9 @@ pub enum NativeError {
     /// A body could not be encoded or decoded.
     #[error("body error: {0}")]
     Body(#[from] CborError),
-    /// A frame did not finish writing within [`WRITE_DEADLINE`]. The
-    /// connection has been closed.
+    /// A frame did not finish writing within [`WRITE_DEADLINE`]. The stream
+    /// may hold a partial frame, so nothing more is written: the connection
+    /// is finished and the caller drops it.
     #[error("write deadline exceeded")]
     WriteTimeout,
     /// The body decoded, but it is not one this frame type carries.
@@ -305,16 +306,27 @@ pub fn decode_message(frame: &Frame) -> Result<Message, NativeError> {
 }
 
 /// Sends `frame`, giving up after [`WRITE_DEADLINE`]. On expiry the
-/// connection is closed (`timeout`) and cannot be used again.
+/// connection is finished without writing anything more (no `CLOSE`: the
+/// dropped write may have left a partial frame) and the caller drops it.
 pub async fn send_bounded<S>(conn: &mut Connection<S>, frame: Frame) -> Result<(), NativeError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    match tokio::time::timeout(WRITE_DEADLINE, conn.send(frame)).await {
+    send_within(conn, frame, WRITE_DEADLINE).await
+}
+
+async fn send_within<S>(
+    conn: &mut Connection<S>,
+    frame: Frame,
+    deadline: Duration,
+) -> Result<(), NativeError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match tokio::time::timeout(deadline, conn.send(frame)).await {
         Ok(result) => Ok(result?),
         Err(_) => {
-            conn.close(CloseCode::Timeout, "write deadline exceeded")
-                .await;
+            conn.abandon();
             Err(NativeError::WriteTimeout)
         }
     }
@@ -332,8 +344,7 @@ where
     match tokio::time::timeout(WRITE_DEADLINE, conn.request(body)).await {
         Ok(result) => Ok(result?),
         Err(_) => {
-            conn.close(CloseCode::Timeout, "write deadline exceeded")
-                .await;
+            conn.abandon();
             Err(NativeError::WriteTimeout)
         }
     }
@@ -443,6 +454,7 @@ pub type JsonReply = Reply<serde_json::Value>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::CloseCode;
     use crate::{
         CapabilityQuery, CapabilitySelector, SpineBinary, StreamCancel, StreamEnd, StreamEndReason,
         ToolCall,
@@ -673,6 +685,44 @@ mod tests {
         assert!(matches!(refused, NativeError::Remote { ref code, .. } if code == "rate_limit"));
         drop(conn);
         tokio::time::timeout(LONG, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_write_that_times_out_abandons_the_connection_without_a_close() {
+        // A 64-byte pipe that nobody reads: a large frame cannot be written.
+        let (c, s) = duplex(64);
+        let (client, server) = tokio::time::timeout(LONG, async {
+            tokio::join!(
+                client_connect(c),
+                Connection::server_handshake(s, &local_config(), DEFAULT_HELLO_DEADLINE)
+            )
+        })
+        .await
+        .unwrap();
+        let mut client = client.unwrap();
+        let _server = server.unwrap();
+        let body = cbor::to_vec(&"a".repeat(10_000)).unwrap();
+        let started = std::time::Instant::now();
+        let error = send_within(
+            &mut client,
+            Frame {
+                frame_type: FrameType::Request,
+                request_id: 1,
+                body,
+            },
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, NativeError::WriteTimeout), "{error}");
+        assert!(client.is_finished());
+        // Writing a CLOSE into the full pipe would take its own one-second
+        // timeout (`CLOSE_WRITE_TIMEOUT`); abandoning writes nothing.
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[tokio::test]

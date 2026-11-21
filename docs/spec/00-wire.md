@@ -223,7 +223,7 @@ The receive path checks, in this order, and the first failure decides the outcom
 
 During the handshake the order is the one in 6.1; step 7 does not apply and the first frame must be `HELLO`.
 
-After a frame is delivered, the daemon decodes a `REQUEST` body (`native.rs` `decode_command`): a name outside the command set is `unknown_command`, any other defect `invalid_request` (12.1). Then, for the session commands, the daemon creates the connection's session if it has none (`session_capacity` when the daemon holds `server.max_sessions`), applies the session rate limit (`rate_limit`), and runs the command, whose failures are in section 13. `tool_call` and `capability_query` need no session; `tool_call` is limited by a separate per-connection bucket and `capability_query` is not limited (`spine-core` `main.rs` `handle_session`).
+After a frame is delivered, the daemon decodes a `REQUEST` body (`native.rs` `decode_command`): a name outside the command set is `unknown_command`, any other defect `invalid_request` (12.1). Then, for the session commands, the daemon applies the connection's command rate limit (`rate_limit`), creates the connection's session if it has none (`session_capacity` when the daemon holds `server.max_sessions`; the connection stays open), and runs the command, whose failures are in section 13. A command refused by the rate limit creates no session. `tool_call` and `capability_query` need no session; `tool_call` is limited by a separate per-connection bucket and `capability_query` is not limited (`spine-core` `main.rs` `handle_session`).
 
 ### 7.3 Close codes
 
@@ -234,8 +234,8 @@ After a frame is delivered, the daemon decodes a `REQUEST` body (`native.rs` `de
 | `malformed_frame` | Flag bits 1 to 7 set; a compressed body shorter than 4 bytes, not zstd, undecodable or of the wrong length; a body that is not one deterministic CBOR item (any rule of 5.1, an empty body included). |
 | `frame_too_large` | `length` below 11 or above the maximum in force; a declared uncompressed length above `maxinforce - 11`. |
 | `protocol_violation` | A frame-level request-id rule broken; a well-formed frame that breaks a state rule (wrong direction, reused in-flight id, `RESPONSE` or `STREAM_*` for an id in the wrong state, a second `HELLO` or `HELLO_ACK`, a `PING` or `PONG` whose body is not a uint, an `EXT` for an extension that was not accepted); a `HELLO`, `HELLO_ACK` or `CLOSE` body that is deterministic CBOR but does not fit its type or breaks a bound of 6.2 or 6.3; a first frame that is not `HELLO`. |
-| `timeout` | No `HELLO` within the deadline; no frame within `server.idle_timeout_secs` (`Connection::recv_timeout`); a write that exceeded 30 seconds (`native.rs` `send_bounded`, best effort). |
-| `shutting_down` | Defined and accepted, never sent by the daemon (section 16, item 4). |
+| `timeout` | No `HELLO` within the deadline; no frame within `server.idle_timeout_secs` (`Connection::recv_timeout`); a write that exceeded 30 seconds is not answered with a `CLOSE` (7.5). |
+| `shutting_down` | The daemon is shutting down: sent to an established connection once its current request is answered (`main.rs` `handle_session`), and to a connection whose handshake completed during shutdown (`serve_native`). |
 
 ### 7.4 Error replies
 
@@ -252,10 +252,9 @@ Every other code (section 13) comes from the command that ran. A `RESPONSE` body
 ### 7.5 Where no CLOSE is sent
 
 - The stream ends or fails inside a frame, or the transport fails: nothing can be sent.
-- A connection refused at admission (`server.max_connections`, `server.max_connections_per_ip`, or during shutdown) is closed without a byte; QUIC uses `refuse()` (`spine-core` `connections.rs`, `main.rs`).
+- A connection refused at admission (`server.max_connections`, `server.max_connections_per_ip`) is closed without a byte, before any handshake; QUIC uses `refuse()` (`spine-core` `connections.rs`, `main.rs`). During shutdown a connection is accepted and answered with `CLOSE(shutting_down)` after its handshake (7.3).
+- A write that exceeded 30 seconds (`native.rs` `send_bounded`, `send_command`): the stream may hold a partial frame, so the connection is abandoned and nothing more is written.
 - A TLS handshake or WebSocket upgrade that fails or exceeds 10 seconds ends without a frame.
-- After a `session_capacity` reply the daemon ends the connection without a `CLOSE`.
-- The daemon on shutdown (section 16, item 4).
 
 ## 8. Requests, responses and in-flight rules
 
@@ -422,8 +421,8 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with
 | `unknown_command` | 7.4 | `native.rs` `decode_command` |
 | `invalid_request` | 7.4; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` beyond the resource | `native.rs`; `main.rs` `handle_command` |
 | `internal` | an answer too large to send; a `resolve_names` task failed; a `read_resource` failure that is neither of the above (including a stored blob that fails its integrity check); a `spine.html/parse` result that could not be encoded; the unreachable arm for `tool_call` and `capability_query` in `handle_command` | `main.rs` `reply`, `handle_command`; `tools.rs` `invoke` |
-| `rate_limit` | the session's bucket (burst 100, 10 per second) is empty for a session command; the connection's separate bucket is empty for a `tool_call` | `main.rs` `check_rate_limit`, `handle_session` |
-| `session_capacity` | the connection's first session command found `server.max_sessions` sessions; the connection ends after this reply | `main.rs` `handle_session`, `create_session` |
+| `rate_limit` | the connection's command bucket (burst 100, 10 per second) is empty for a session command; the connection's separate bucket is empty for a `tool_call` | `main.rs` `check_rate_limit`, `handle_session` |
+| `session_capacity` | the connection's first session command found `server.max_sessions` sessions; the connection stays open | `main.rs` `handle_session`, `create_session` |
 | `session_not_found` | `get_ur` or `get_raw_html`, and the session record is gone | `main.rs` `handle_command` |
 | `session_expired` | `navigate` fetched a page and the session record was gone | `main.rs` `handle_command` |
 | `no_page_loaded` | `get_ur` or `get_raw_html` before a successful `navigate`; `get_ur` does not use it for a page that fails to parse (`parse_error`) | `main.rs` `handle_command` |
@@ -485,8 +484,8 @@ Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environme
 | Connections, total | 256, 1 to 65,536 | `server.max_connections`; counts TCP, WebSocket and QUIC, handshakes included | closed without a byte |
 | Connections per IP | 50, above 0 | `server.max_connections_per_ip` | closed without a byte |
 | Sessions | 1,000, 1 to 65,536 | `server.max_sessions` (`SPINE_MAX_SESSIONS`) | `session_capacity` |
-| Request rate | burst 100, refill 10 per second, per session; `tool_call` has its own bucket per connection | `main.rs` `check_rate_limit`; fixed | `rate_limit`, connection stays open |
-| Write deadline | 30 s per frame | `native.rs` `WRITE_DEADLINE`; fixed | connection closed (`CLOSE(timeout)` best effort) |
+| Request rate | burst 100, refill 10 per second, per connection for session commands; `tool_call` has its own bucket per connection | `main.rs` `check_rate_limit`; fixed | `rate_limit`, connection stays open |
+| Write deadline | 30 s per frame | `native.rs` `WRITE_DEADLINE`; fixed | connection abandoned, no `CLOSE` (7.5) |
 | Best-effort `CLOSE` write | 1 s | `connection.rs`; fixed | abandoned |
 | TLS handshake, WebSocket upgrade, QUIC connect, QUIC first stream | 10 s each | `main.rs`; fixed | dropped |
 | WebSocket message and frame, server | 16 MiB | `websocket.rs`; fixed | transport error |
@@ -579,8 +578,8 @@ Behaviour the implementation has that the specification author would change. Eac
 1. **Fixed: `read_resource` error codes.** `ResourceStore::read` returns a typed `ReadError` (`NotFound`, `InvalidRange`, `Internal`), and `main.rs` `read_failure` maps the variant to `resource_not_found`, `invalid_request` or `internal`. No code depends on message text. (An out-of-range `max_bytes` or `offset` still uses `invalid_request`; a dedicated code remains a possible refinement.)
 2. **Fixed: `navigate` codes.** `outbound.rs` `Fetcher::fetch_text` returns a typed `FetchError` that carries its code; `main.rs` `navigation_failure` sends it unchanged. `outbound_url_limit`, `outbound_dns_limit` and `outbound_http_status` (status in `details.status`) are listed codes, and `navigation_failed` is retired: nothing produces it.
 3. **Bytes inside JSON-shaped results travel as arrays of integers.** `NameRecord.content_hash` is a `[u8; 32]` and `serde_json::to_value` turns it into 32 integers inside the `record` of `publish_name`, `publish_resource`, `resolve_name`, `fetch_name` and `find_providers` (`spine-name` `record.rs`; `main.rs` `resolve_one`). The signature of the same record is base32 text, so one record uses two byte conventions, and the integer array is about twice the size. Right: one encoding, a typed `NameRecord` with byte strings on this wire.
-4. **No `CLOSE(shutting_down)` on shutdown.** The code is defined and the SDK tests accept it, but the daemon on shutdown only stops accepting (dropping new sockets with no frame), waits up to `server.shutdown_timeout_secs` for connections to end, and exits (`main.rs` `main`, `grep ShuttingDown` finds no sender outside tests). Established connections see the stream end. Right: send `CLOSE(shutting_down)` to every connection once its current request is answered.
-5. **A connection refused at admission, and the end after `session_capacity`, carry no frame.** The peer sees an end of stream, indistinguishable from a network fault (`connections.rs`, `main.rs` `handle_session`). Right: a `CLOSE` with a code before the socket is dropped.
+4. **Fixed: `CLOSE(shutting_down)`.** `main.rs` sets a shared watch signal when shutdown starts; each `handle_session` selects on it between commands, sends `CLOSE(shutting_down)` (bounded by the connection layer's one-second write timeout) and ends, and a connection whose handshake completes during shutdown gets the same `CLOSE` from `serve_native`. A command already running is answered first, and a slow peer delays only its own task: the drain loop still ends at `server.shutdown_timeout_secs`. The QUIC listener is not covered.
+5. **Fixed in part: `CLOSE` on refusal.** The refusal after the handshake (shutdown) carries `CLOSE(shutting_down)`, and `session_capacity` no longer ends the connection (no close code means "busy", so the client keeps the connection and may retry). A connection refused at `server.max_connections` or `server.max_connections_per_ip` is still closed without a byte, before any handshake, because the code set has no code for it; QUIC uses `refuse()`.
 6. **The QUIC listener is untested and unreachable from the SDK.** `spine-core`'s `quic` feature is off by default and no CI job builds `spine-core` with it; no test and no client in the workspace connects over QUIC; the listener's certificate is self-signed with no client authentication, and the library's client builder skips server certificate verification (`spine-protocol` `lib.rs` `SkipServerVerification`). Startup is refused when `tls.enabled`. Right: either test and document it, or remove the listener.
 7. **Fixed: one null-rejecting helper.** `hello.rs` uses `wirefmt.rs` `reject_null`; its private copy is gone.
 8. **A schema failure in a `RESPONSE` or a `STREAM_*` body does not close the connection.** The original design closed with `protocol_violation`. `Connection` delivers any deterministic body; the client library's `native.rs` `decode_reply` and `decode_stream_body` report `NativeError::Body` to the caller, the in-flight id has already been released, and the connection stays open. Only `HELLO_ACK`, `CLOSE`, `PING` and `PONG` bodies are checked inside `Connection`. Right: the connection layer closes with `protocol_violation`, or the specification says the failure is local (as 7.4 now does); the two should not both be true.
@@ -588,11 +587,11 @@ Behaviour the implementation has that the specification author would change. Eac
 10. **Fixed: `get_ur` on an unparseable page.** `main.rs` `handle_command` reports the parse failure as `parse_error`; `no_page_loaded` now means only that no page is loaded.
 11. **Fixed: `tool_call` checks the name first.** `tools.rs` `invoke` answers `unsupported_tool` for an unknown name whatever `args` holds; `invalid_args` applies only to the two known tools.
 12. **Stream `seq` is not enforced.** Neither `Connection` nor any helper checks that `STREAM_TOKEN.seq` starts at 0 and increments by one, and no producer exists, so the rule of section 10 is unexercised. Right: the receiver closes with `protocol_violation` on a gap or repeat, once a producer exists.
-13. **`CLOSE` after an interrupted write follows a partial frame.** `native.rs` `send_bounded` drops the write future at 30 seconds and then writes a `CLOSE` on the same stream; if the dropped write left a partial frame the peer reads garbage, not a `CLOSE`. Right: after a timeout, close the transport without writing.
+13. **Fixed: no `CLOSE` after an interrupted write.** `native.rs` `send_bounded` and `send_command` finish the connection with `Connection::abandon` when the 30-second deadline fires and write nothing more; the caller drops the stream.
 14. **No per-connection decompression byte budget.** Section 4 notes the amplification of compressed frames. No sender in the workspace compresses, so it is latent. Right: a budget of decompressed bytes per second per connection, configured by the deployment.
 15. **Fixed: non-text map keys in `HELLO`, `HELLO_ACK` and `CLOSE`.** Checked against ciborium 0.2.2: an integer key was already refused (`deserialize_identifier` accepts only text or bytes), but a byte-string key was accepted as a field name (`h'636f6465'` as `code`), and an open type ignored an unknown one. `hello.rs` `decode_body` now reads the top-level map first (`require_text_keys`) and answers `protocol_violation` for any non-text key. Unit test in `hello.rs`; the vectors `invalid_body_integer_key`, `invalid_body_unknown_byte_string_key` and `invalid_body_byte_string_key_spells_a_field` cover `HELLO`.
 16. **`max_frame`, `max_inflight` and the HELLO `agent` string are not configurable.** `native.rs` `local_config` fixes them, so the statement that a deployment can lower `max_frame` by configuration (Appendix C, G3) is true of the protocol and not of the daemon. Right: configuration keys for them.
-17. **The rate limiter's constants are hard-coded and a rate-limited first command still creates a session.** `main.rs` `check_rate_limit` (100 and 10 per second) and `handle_session` (the session is created before the limit is applied). Right: configuration keys, and the limit applied before a session slot is spent.
+17. **The rate limiter's constants are hard-coded.** `main.rs` `check_rate_limit` (100 and 10 per second). Right: configuration keys. (Fixed: a rate-limited first command no longer creates a session, because the bucket is the connection's and is checked before `create_session`.)
 18. **The SDK has no deadline on most calls.** Only the handshake (10 s), `capabilities` (10 s), `call_tool` (30 s) and a frame write (30 s) have one; `ping`, `navigate` and the rest wait indefinitely for a reply. Right: a per-call deadline option, with the reconnect rule of section 14.
 
 ## Appendix A. History: the pre-v1 wire

@@ -18,7 +18,7 @@ use spine_protocol::body::{
     ERR_SESSION_NOT_FOUND,
 };
 use spine_protocol::connection::{Connection, ConnectionError};
-use spine_protocol::frame::FrameType;
+use spine_protocol::frame::{CloseCode, FrameType};
 use spine_protocol::native;
 use spine_protocol::{BrowserCommand, ToolOutcome, WireError};
 use spine_transport::WebSocketStream;
@@ -162,6 +162,9 @@ struct BrowserState {
     start_time: std::time::Instant,
     /// Shutdown signal: when true, stop accepting new connections
     shutting_down: std::sync::atomic::AtomicBool,
+    /// Becomes true when shutdown starts. Each native session watches it, sends
+    /// `CLOSE(shutting_down)` once it is idle, and ends.
+    shutdown: tokio::sync::watch::Sender<bool>,
     /// Server configuration
     config: SpineConfig,
     /// The namespace this node serves: names it publishes, plus records it has
@@ -1269,6 +1272,7 @@ async fn main() -> Result<()> {
         ),
         start_time: std::time::Instant::now(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
+        shutdown: tokio::sync::watch::channel(false).0,
         config: config.clone(),
         names,
         mesh_names,
@@ -1823,6 +1827,11 @@ async fn main() -> Result<()> {
         shutdown_state
             .shutting_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Sessions that are idle, or finish their current command, send
+        // CLOSE(shutting_down). Nothing waits for a slow peer: each close is
+        // bounded by the connection layer's one-second write timeout, and the
+        // drain below has its own deadline.
+        shutdown_state.shutdown.send_replace(true);
 
         // Save sessions before shutdown
         if let Err(e) = shutdown_state.save_sessions().await {
@@ -1870,13 +1879,8 @@ async fn main() -> Result<()> {
                     continue;
                 };
 
-                // Check shutdown flag
-                if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
-                    info!("Rejecting connection during shutdown");
-                    drop(socket);
-                    continue;
-                }
-
+                // During shutdown the connection is still accepted: the handshake
+                // runs and `serve_native` answers it with CLOSE(shutting_down).
                 let span = span!(Level::INFO, "connection", remote_addr = %addr, transport = "tcp");
                 let _enter = span.enter();
                 info!("New TCP connection from {}", addr);
@@ -1908,11 +1912,6 @@ async fn main() -> Result<()> {
                     drop(socket);
                     continue;
                 };
-                if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
-                    drop(socket);
-                    continue;
-                }
-
                 info!("New WebSocket connection from {}", addr);
 
                 let conn_state = Arc::clone(&state);
@@ -1969,7 +1968,18 @@ where
 {
     let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
     match Connection::server_handshake(stream, &native::local_config(), deadline).await {
-        Ok(mut conn) => handle_session(&mut conn, state).await,
+        Ok(mut conn) => {
+            // Admission refused after the handshake: the daemon is draining.
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                conn.close(CloseCode::ShuttingDown, "the server is shutting down")
+                    .await;
+                return;
+            }
+            handle_session(&mut conn, state).await
+        }
         Err(e) => debug!("native handshake failed: {e}"),
     }
 }
@@ -2014,14 +2024,34 @@ where
         state: state.clone(),
         id: Uuid::new_v4().to_string(),
     };
+    // The bucket for session commands is the connection's, so it applies
+    // before a session exists and a refused command creates none.
+    let command_rate = RateLease {
+        state: state.clone(),
+        id: Uuid::new_v4().to_string(),
+    };
     let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
+    let mut shutdown = state.shutdown.subscribe();
 
     loop {
+        // Between commands: on shutdown say so and end. Dropping a read that
+        // is part-way through a frame is fine, because the connection is not
+        // read again.
+        let draining = *shutdown.borrow();
+        if draining {
+            conn.close(CloseCode::ShuttingDown, "the server is shutting down")
+                .await;
+            break;
+        }
         // `recv_timeout` restarts its deadline for every frame, including the
         // PINGs it answers itself, so a keep-alive counts as activity. When the
         // deadline fires the connection has already been closed with
         // CLOSE(timeout); it is never read again.
-        let frame = match conn.recv_timeout(idle).await {
+        let received = tokio::select! {
+            _ = shutdown.changed() => continue,
+            received = conn.recv_timeout(idle) => received,
+        };
+        let frame = match received {
             Ok(Some(frame)) => frame,
             Ok(None) => break,
             Err(ConnectionError::Timeout) => break,
@@ -2100,6 +2130,20 @@ where
                 let _enter = req_span.enter();
                 debug!("Received request");
 
+                // Rate limit first: a refused command creates no session.
+                if !state.check_rate_limit(&command_rate.id) {
+                    if !reply(
+                        conn,
+                        request_id,
+                        Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string())),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
                 if session_lease.is_none() {
                     session_lease = state.create_session();
                     if let Some(lease) = &session_lease {
@@ -2112,7 +2156,9 @@ where
                         #[cfg(not(feature = "research"))]
                         let _ = lease;
                     } else {
-                        let _ = reply(
+                        // No close code means "busy", so the connection stays
+                        // open: the client may retry, or hang up.
+                        if !reply(
                             conn,
                             request_id,
                             Err(fail(
@@ -2120,22 +2166,14 @@ where
                                 "Server busy: maximum sessions reached".into(),
                             )),
                         )
-                        .await;
-                        return;
+                        .await
+                        {
+                            break;
+                        }
+                        continue;
                     }
                 }
                 let id = session_lease.as_ref().unwrap().id.clone();
-
-                // 3. Enforce rate limit
-                if !state.check_rate_limit(&id) {
-                    let _ = reply(
-                        conn,
-                        request_id,
-                        Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string())),
-                    )
-                    .await;
-                    continue;
-                }
 
                 let answer = handle_command(&state, &id, command, request_id).await;
 
