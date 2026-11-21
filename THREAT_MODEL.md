@@ -60,6 +60,8 @@ SPINE is a **headless semantic browser** for AI agents. On the native client to 
 **Solution (deployed)**: the peer's Ed25519 mesh key doubles as its DHT keyspace position and name-record authority; a dialer may pin the expected key (`Initiator::finish`, `handshake.rs:265`).
 - Pins are supplied per message by the signed `recipient_key` of application RPC (`mesh_tcp.rs:926`). The only writer of the per-peer pin map, `TcpNameTransport::set_identity` (`mesh_tcp.rs:786`), has no caller outside tests, so DHT dials made by spine-core are unpinned (confidential, peer learned from the handshake, but not refused up front).
 - Bootstrap-seed dials are unpinned by design (`mesh_tcp.rs:958`).
+- Added 2026-11-21: handlers no longer trust `envelope.from`. A `NameResolveResponse` is absorbed only when its signature verifies under a key recorded for that agent id and, on an authenticated connection, under the session key; hellos and acks must carry the session key. `AgentId` is still not derived from the key, so the label remains the sender's claim. Trust table: `src/spine-mesh/README.md`.
+- Added 2026-11-21: `MeshNode::process_envelope`, which verified a signature only for senders in a trust map and let every other sender through, had no caller and was removed. The QUIC client no longer accepts any certificate; `QuicNameTransport` trusts only certificates it was given.
 - X3DH is not used (see "Not deployed / research").
 - **Assumption**: first contact with a bootstrap address is trusted
 

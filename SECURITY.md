@@ -24,6 +24,8 @@ or not at all. (Historical: the Chameleon layer is no longer on the native wire;
 
 The native origin TLS configuration now applies to TCP and WSS, including explicitly required client certificates and revocation lists. Transport admission, complete-message deadlines, bounded decompression, and cancelled mesh-write retirement reduce resource growth; they do not establish a process-wide memory budget. The legacy cluster and diagnostics remain trusted-network interfaces. Native origin clients have operator access; neither mTLS nor the HTTP gateway token defines per-user roles. See [the connection policy](docs/NATIVE_OPERATIONS.md#connection-and-tls-policy) for concrete limits and unsupported modes.
 
+Mesh authentication (2026-11-21): the sender of a mesh envelope is established by a signature check against a key this node recorded for it, and by the connection's authenticated key where there is one, for name-resolution responses, hellos, acks and application calls; `envelope.from` alone is never trusted for those. `AgentId` is not derived from the key, the first contact with a bootstrap address is trusted, QUIC does not surface a peer key, and no variant other than name resolution and application RPC is handled at all. The full table is in [the `spine-mesh` README](src/spine-mesh/README.md#trust-model). The QUIC client now verifies the server certificate against an explicit trusted set instead of accepting any.
+
 ## Reporting a Vulnerability
 
 If you believe you've found a security vulnerability in SPINE, please **do
