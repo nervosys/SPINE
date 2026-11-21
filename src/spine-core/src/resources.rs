@@ -156,8 +156,7 @@ impl ResourceStore {
         }
         let stored = self
             .backend
-            .get(NAMESPACE, &hash)
-            .map_err(anyhow::Error::from)?
+            .get(NAMESPACE, &hash)?
             .ok_or(ReadError::NotFound)?;
         let blob: Blob = serde_json::from_slice(&stored).map_err(anyhow::Error::from)?;
         if blob.data.len() > MAX_RESOURCE_BYTES {
