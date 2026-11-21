@@ -1,7 +1,16 @@
 //! Bounded HTTP navigation. Operator exceptions are exact origins, never URL prefixes.
-use anyhow::{anyhow, ensure, Result};
+use anyhow::{ensure, Result};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use spine_protocol::body::{
+    ERR_OUTBOUND_ADDRESS_DENIED, ERR_OUTBOUND_BODY_FAILED, ERR_OUTBOUND_BUSY,
+    ERR_OUTBOUND_CLIENT_FAILED, ERR_OUTBOUND_CREDENTIALS_DENIED, ERR_OUTBOUND_DISABLED,
+    ERR_OUTBOUND_DNS_FAILED, ERR_OUTBOUND_DNS_LIMIT, ERR_OUTBOUND_ENCODING_DENIED,
+    ERR_OUTBOUND_FRAGMENT_DENIED, ERR_OUTBOUND_HTTP_STATUS, ERR_OUTBOUND_INVALID_HOST,
+    ERR_OUTBOUND_INVALID_PORT, ERR_OUTBOUND_INVALID_URL, ERR_OUTBOUND_INVALID_UTF8,
+    ERR_OUTBOUND_REDIRECT_DENIED, ERR_OUTBOUND_REQUEST_FAILED, ERR_OUTBOUND_RESPONSE_LIMIT,
+    ERR_OUTBOUND_SCHEME_DENIED, ERR_OUTBOUND_TIMEOUT, ERR_OUTBOUND_URL_LIMIT,
+};
 use std::{
     net::IpAddr,
     sync::{
@@ -11,6 +20,50 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Semaphore;
+
+/// A failed fetch. `code` is one of the `ERR_OUTBOUND_*` codes of
+/// `spine_protocol::body`, and the daemon sends it as the wire code without
+/// inspecting any text. `status` is set only for `outbound_http_status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FetchError {
+    code: &'static str,
+    status: Option<u16>,
+}
+
+impl FetchError {
+    const fn new(code: &'static str) -> Self {
+        Self { code, status: None }
+    }
+
+    /// The stable wire code.
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    /// The HTTP status, for `outbound_http_status` only.
+    pub fn status(&self) -> Option<u16> {
+        self.status
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            Some(status) => write!(f, "{}_{status}", self.code),
+            None => f.write_str(self.code),
+        }
+    }
+}
+
+impl std::error::Error for FetchError {}
+
+fn require(condition: bool, code: &'static str) -> Result<(), FetchError> {
+    if condition {
+        Ok(())
+    } else {
+        Err(FetchError::new(code))
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -34,19 +87,19 @@ impl Default for FetchConfig {
     }
 }
 
-fn parse_url(input: &str) -> Result<Url> {
-    ensure!(input.len() <= 8192, "outbound_url_limit");
-    let url = Url::parse(input).map_err(|_| anyhow!("outbound_invalid_url"))?;
-    ensure!(
+fn parse_url(input: &str) -> Result<Url, FetchError> {
+    require(input.len() <= 8192, ERR_OUTBOUND_URL_LIMIT)?;
+    let url = Url::parse(input).map_err(|_| FetchError::new(ERR_OUTBOUND_INVALID_URL))?;
+    require(
         matches!(url.scheme(), "http" | "https"),
-        "outbound_scheme_denied"
-    );
-    ensure!(url.host_str().is_some(), "outbound_invalid_host");
-    ensure!(
+        ERR_OUTBOUND_SCHEME_DENIED,
+    )?;
+    require(url.host_str().is_some(), ERR_OUTBOUND_INVALID_HOST)?;
+    require(
         url.username().is_empty() && url.password().is_none(),
-        "outbound_credentials_denied"
-    );
-    ensure!(url.fragment().is_none(), "outbound_fragment_denied");
+        ERR_OUTBOUND_CREDENTIALS_DENIED,
+    )?;
+    require(url.fragment().is_none(), ERR_OUTBOUND_FRAGMENT_DENIED)?;
     Ok(url)
 }
 
@@ -144,27 +197,27 @@ struct CallOutcome {
     completed: bool,
 }
 impl CallOutcome {
-    fn complete(&mut self, result: &Result<String>) {
+    fn complete(&mut self, result: &Result<String, FetchError>) {
         let c = &self.counters;
         if let Err(error) = result {
             c.failed.fetch_add(1, Ordering::Relaxed);
-            match error.to_string().as_str() {
-                "outbound_busy" => {
+            match error.code() {
+                ERR_OUTBOUND_BUSY => {
                     c.busy.fetch_add(1, Ordering::Relaxed);
                 }
-                "outbound_timeout" => {
+                ERR_OUTBOUND_TIMEOUT => {
                     c.timed_out.fetch_add(1, Ordering::Relaxed);
                 }
-                "outbound_response_limit" => {
+                ERR_OUTBOUND_RESPONSE_LIMIT => {
                     c.response_limit_failures.fetch_add(1, Ordering::Relaxed);
                 }
-                "outbound_disabled"
-                | "outbound_address_denied"
-                | "outbound_scheme_denied"
-                | "outbound_credentials_denied"
-                | "outbound_fragment_denied"
-                | "outbound_redirect_denied"
-                | "outbound_encoding_denied" => {
+                ERR_OUTBOUND_DISABLED
+                | ERR_OUTBOUND_ADDRESS_DENIED
+                | ERR_OUTBOUND_SCHEME_DENIED
+                | ERR_OUTBOUND_CREDENTIALS_DENIED
+                | ERR_OUTBOUND_FRAGMENT_DENIED
+                | ERR_OUTBOUND_REDIRECT_DENIED
+                | ERR_OUTBOUND_ENCODING_DENIED => {
                     c.denied.fetch_add(1, Ordering::Relaxed);
                 }
                 _ => {}
@@ -198,7 +251,7 @@ impl Fetcher {
             .internal_origins
             .iter()
             .map(|s| parse_url(s))
-            .collect::<Result<_>>()?;
+            .collect::<Result<_, FetchError>>()?;
         Ok(Self {
             admission: Arc::new(Semaphore::new(config.max_concurrent)),
             config,
@@ -234,7 +287,7 @@ impl Fetcher {
         }
     }
 
-    pub async fn fetch_text(&self, input: &str) -> Result<String> {
+    pub async fn fetch_text(&self, input: &str) -> Result<String, FetchError> {
         self.counters.started.fetch_add(1, Ordering::Relaxed);
         let mut outcome = CallOutcome {
             counters: self.counters.clone(),
@@ -245,44 +298,44 @@ impl Fetcher {
         result
     }
 
-    async fn fetch_checked(&self, input: &str) -> Result<String> {
-        ensure!(self.config.enabled, "outbound_disabled");
+    async fn fetch_checked(&self, input: &str) -> Result<String, FetchError> {
+        require(self.config.enabled, ERR_OUTBOUND_DISABLED)?;
         let url = parse_url(input)?;
         tokio::time::timeout(
             Duration::from_secs(self.config.timeout_secs),
             self.fetch(url),
         )
         .await
-        .map_err(|_| anyhow!("outbound_timeout"))?
+        .map_err(|_| FetchError::new(ERR_OUTBOUND_TIMEOUT))?
     }
 
-    async fn fetch(&self, url: Url) -> Result<String> {
+    async fn fetch(&self, url: Url) -> Result<String, FetchError> {
         let _lease = self
             .admission
             .try_acquire()
-            .map_err(|_| anyhow!("outbound_busy"))?;
+            .map_err(|_| FetchError::new(ERR_OUTBOUND_BUSY))?;
         // Resolve once, check the complete answer, then give exactly that answer to the connector.
         // A fresh client prevents a pooled connection from bypassing the current DNS decision.
         let host = url
             .host_str()
-            .ok_or_else(|| anyhow!("outbound_invalid_host"))?;
+            .ok_or(FetchError::new(ERR_OUTBOUND_INVALID_HOST))?;
         let host = host.trim_start_matches('[').trim_end_matches(']');
         let port = url
             .port_or_known_default()
-            .ok_or_else(|| anyhow!("outbound_invalid_port"))?;
+            .ok_or(FetchError::new(ERR_OUTBOUND_INVALID_PORT))?;
         let addresses: Vec<_> = tokio::net::lookup_host((host, port))
             .await
-            .map_err(|_| anyhow!("outbound_dns_failed"))?
+            .map_err(|_| FetchError::new(ERR_OUTBOUND_DNS_FAILED))?
             .take(65)
             .collect();
-        ensure!(
+        require(
             !addresses.is_empty() && addresses.len() <= 64,
-            "outbound_dns_limit"
-        );
-        ensure!(
+            ERR_OUTBOUND_DNS_LIMIT,
+        )?;
+        require(
             self.internal(&url) || addresses.iter().all(|a| public_address(a.ip())),
-            "outbound_address_denied"
-        );
+            ERR_OUTBOUND_ADDRESS_DENIED,
+        )?;
         let client = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -294,7 +347,7 @@ impl Fetcher {
             .timeout(Duration::from_secs(self.config.timeout_secs))
             .resolve_to_addrs(host, &addresses)
             .build()
-            .map_err(|_| anyhow!("outbound_client_failed"))?;
+            .map_err(|_| FetchError::new(ERR_OUTBOUND_CLIENT_FAILED))?;
         let mut response = client
             .get(url)
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
@@ -302,51 +355,52 @@ impl Fetcher {
             .await
             .map_err(|error| {
                 if error.is_timeout() {
-                    anyhow!("outbound_timeout")
+                    FetchError::new(ERR_OUTBOUND_TIMEOUT)
                 } else {
-                    anyhow!("outbound_request_failed")
+                    FetchError::new(ERR_OUTBOUND_REQUEST_FAILED)
                 }
             })?;
-        ensure!(
+        require(
             !response.status().is_redirection(),
-            "outbound_redirect_denied"
-        );
-        ensure!(
-            response.status().is_success(),
-            "outbound_http_status_{}",
-            response.status().as_u16()
-        );
-        ensure!(
+            ERR_OUTBOUND_REDIRECT_DENIED,
+        )?;
+        if !response.status().is_success() {
+            return Err(FetchError {
+                code: ERR_OUTBOUND_HTTP_STATUS,
+                status: Some(response.status().as_u16()),
+            });
+        }
+        require(
             response
                 .headers()
                 .get(reqwest::header::CONTENT_ENCODING)
                 .is_none_or(|v| v == "identity"),
-            "outbound_encoding_denied"
-        );
-        ensure!(
+            ERR_OUTBOUND_ENCODING_DENIED,
+        )?;
+        require(
             response
                 .content_length()
                 .is_none_or(|size| size <= self.config.max_response_bytes as u64),
-            "outbound_response_limit"
-        );
+            ERR_OUTBOUND_RESPONSE_LIMIT,
+        )?;
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|error| {
             if error.is_timeout() {
-                anyhow!("outbound_timeout")
+                FetchError::new(ERR_OUTBOUND_TIMEOUT)
             } else {
-                anyhow!("outbound_body_failed")
+                FetchError::new(ERR_OUTBOUND_BODY_FAILED)
             }
         })? {
             self.counters
                 .bytes_received
                 .fetch_add(chunk.len() as u64, Ordering::Relaxed);
-            ensure!(
+            require(
                 chunk.len() <= self.config.max_response_bytes.saturating_sub(body.len()),
-                "outbound_response_limit"
-            );
+                ERR_OUTBOUND_RESPONSE_LIMIT,
+            )?;
             body.extend_from_slice(&chunk);
         }
-        String::from_utf8(body).map_err(|_| anyhow!("outbound_invalid_utf8"))
+        String::from_utf8(body).map_err(|_| FetchError::new(ERR_OUTBOUND_INVALID_UTF8))
     }
 }
 
@@ -386,6 +440,23 @@ mod tests {
         assert!(!f.internal(&parse_url("http://localhost:8124/page").unwrap()));
         assert!(!f.internal(&parse_url("https://localhost:8123/page").unwrap()));
         assert!(!f.internal(&parse_url("http://localhost.example:8123/page").unwrap()));
+    }
+
+    #[test]
+    fn url_and_status_failures_carry_their_own_codes() {
+        let long = format!("http://example.com/{}", "a".repeat(8192));
+        assert_eq!(parse_url(&long).unwrap_err().code(), ERR_OUTBOUND_URL_LIMIT);
+        assert_eq!(
+            parse_url("not a url").unwrap_err().code(),
+            ERR_OUTBOUND_INVALID_URL
+        );
+        let status = FetchError {
+            code: ERR_OUTBOUND_HTTP_STATUS,
+            status: Some(503),
+        };
+        assert_eq!(status.status(), Some(503));
+        assert_eq!(status.to_string(), "outbound_http_status_503");
+        assert!(spine_protocol::body::ALL_ERROR_CODES.contains(&status.code()));
     }
 
     #[test]
@@ -479,7 +550,12 @@ mod tests {
         ] {
             let (origin, server) = fixture(reply).await;
             let f = Fetcher::new(FetchConfig { internal_origins: vec![origin.clone()], ..Default::default() }).unwrap();
-            assert_eq!(f.fetch_text(&origin).await.unwrap_err().to_string(), error);
+            let failure = f.fetch_text(&origin).await.unwrap_err();
+            assert_eq!(failure.to_string(), error);
+            if error.starts_with("outbound_http_status") {
+                assert_eq!(failure.code(), ERR_OUTBOUND_HTTP_STATUS);
+                assert_eq!(failure.status(), Some(503));
+            }
             server.await.unwrap();
         }
     }

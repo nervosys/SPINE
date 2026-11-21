@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
 use spine_protocol::body::{
-    ALL_ERROR_CODES, ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_EXECUTION_FAILED,
-    ERR_INTERNAL, ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED, ERR_LOOKUP_FAILED,
+    ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_EXECUTION_FAILED, ERR_INTERNAL,
+    ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED, ERR_LOOKUP_FAILED,
     ERR_LOOKUP_UNAVAILABLE, ERR_MALFORMED_RECORD, ERR_MESH_CALL_FAILED, ERR_NAMESPACE_UNAVAILABLE,
-    ERR_NAVIGATION_FAILED, ERR_NO_PAGE, ERR_PUBLISH_FAILED, ERR_RATE_LIMIT, ERR_RECORD_EXPIRED,
+    ERR_NO_PAGE, ERR_PARSE_ERROR, ERR_PUBLISH_FAILED, ERR_RATE_LIMIT, ERR_RECORD_EXPIRED,
     ERR_RECORD_REJECTED, ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY, ERR_SESSION_EXPIRED,
     ERR_SESSION_NOT_FOUND,
 };
@@ -566,17 +566,27 @@ fn fail(code: &str, message: String) -> WireError {
     WireError::new(code, message)
 }
 
-/// The `err` for a failed navigation. The fetcher's failures are already
-/// stable snake_case identifiers (`outbound_address_denied`, ...); they pass
-/// through as the code.
-fn navigation_failure(error: &anyhow::Error) -> WireError {
-    let text = error.to_string();
-    if text.starts_with("outbound_") && ALL_ERROR_CODES.contains(&text.as_str()) {
-        let message = format!("the outbound request was refused or failed ({text})");
-        fail(&text, message)
-    } else {
-        fail(ERR_NAVIGATION_FAILED, text)
+/// The `err` for a failed navigation. The fetcher's error carries its wire
+/// code (`outbound_address_denied`, ...), which passes through unchanged; an
+/// HTTP status goes in `details.status`.
+fn navigation_failure(error: &outbound::FetchError) -> WireError {
+    let message = format!("the outbound request was refused or failed ({error})");
+    let wire = fail(error.code(), message);
+    match error.status() {
+        Some(status) => wire.with_details(serde_json::json!({ "status": status })),
+        None => wire,
     }
+}
+
+/// The `err` for a failed `read_resource`, by the error's variant.
+fn read_failure(error: &spine_core::resources::ReadError) -> WireError {
+    use spine_core::resources::ReadError;
+    let code = match error {
+        ReadError::NotFound => ERR_RESOURCE_NOT_FOUND,
+        ReadError::InvalidRange(_) => ERR_INVALID_REQUEST,
+        ReadError::Internal(_) => ERR_INTERNAL,
+    };
+    fail(code, error.to_string())
 }
 
 #[instrument(skip_all)]
@@ -636,17 +646,7 @@ async fn handle_command(
             max_bytes,
         } => match state.resources.read(hash, offset, max_bytes) {
             Ok(chunk) => Ok(Output::Chunk(chunk)),
-            Err(e) => {
-                let text = e.to_string();
-                let code = if text.contains("not held by this origin") {
-                    ERR_RESOURCE_NOT_FOUND
-                } else if text.contains("chunk must be") || text.contains("offset") {
-                    ERR_INVALID_REQUEST
-                } else {
-                    ERR_INTERNAL
-                };
-                Err(fail(code, text))
-            }
+            Err(e) => Err(read_failure(&e)),
         },
         BrowserCommand::PublishResource {
             record,
@@ -922,7 +922,15 @@ async fn handle_command(
                 // Populate cache on first access (avoids re-parsing on repeated GetUR calls)
                 if session.cached_ur.is_none() {
                     if let Some(html) = session.current_html.clone() {
-                        session.cached_ur = spine_parser::parse_html(&html).ok();
+                        match spine_parser::parse_html(&html) {
+                            Ok(ur) => session.cached_ur = Some(ur),
+                            Err(e) => {
+                                return Err(fail(
+                                    ERR_PARSE_ERROR,
+                                    format!("the loaded page does not parse: {e}"),
+                                ))
+                            }
+                        }
                     }
                 }
                 if let Some(ur) = &session.cached_ur {

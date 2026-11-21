@@ -16,6 +16,14 @@ pub fn capabilities() -> Vec<spine_protocol::Capability> {
 
 pub fn invoke(call: ToolCall) -> ToolOutcome {
     let result = (|| -> Result<serde_json::Value, (&str, &str)> {
+        // The name decides first: an unknown tool is unsupported whatever its
+        // arguments look like.
+        if !matches!(
+            call.name.as_str(),
+            "spine.content/hash" | "spine.html/parse"
+        ) {
+            return Err((ERR_UNSUPPORTED_TOOL, "tool is not available on this origin"));
+        }
         let text = call
             .args
             .get("text")
@@ -70,6 +78,30 @@ mod tests {
         assert!(matches!(
             invoke(call("shell", "abc")),
             ToolOutcome::Err { ref code, .. } if code == ERR_UNSUPPORTED_TOOL
+        ));
+        // An unknown tool is reported as such even when its arguments are bad.
+        for args in [
+            serde_json::json!({}),
+            serde_json::json!({"text": 7}),
+            serde_json::json!(null),
+        ] {
+            let bad = ToolCall {
+                name: "shell".into(),
+                args,
+                trace: None,
+            };
+            assert!(matches!(
+                invoke(bad),
+                ToolOutcome::Err { ref code, .. } if code == ERR_UNSUPPORTED_TOOL
+            ));
+        }
+        assert!(matches!(
+            invoke(ToolCall {
+                name: "spine.content/hash".into(),
+                args: serde_json::json!({}),
+                trace: None,
+            }),
+            ToolOutcome::Err { ref code, .. } if code == ERR_INVALID_ARGS
         ));
         assert!(matches!(
             invoke(call("spine.html/parse", &"a".repeat(1024 * 1024 + 1))),

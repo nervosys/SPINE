@@ -414,20 +414,19 @@ The daemon's tools (`tool_call`) are `spine.html/parse` and `spine.content/hash`
 
 ## 13. Error codes
 
-Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 45 codes), with the condition and the place that raises it. A client MUST tolerate a code not in this list.
+Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with the condition and the place that raises it. A client MUST tolerate a code not in this list.
 
 | Code | Condition | Raised in |
 | --- | --- | --- |
 | `overloaded` | server at `max_inflight` (never by the daemon, 8.3) | `connection.rs` `accept` |
 | `unknown_command` | 7.4 | `native.rs` `decode_command` |
-| `invalid_request` | 7.4; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` beyond the resource (section 16, item 1) | `native.rs`; `main.rs` `handle_command` |
+| `invalid_request` | 7.4; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` beyond the resource | `native.rs`; `main.rs` `handle_command` |
 | `internal` | an answer too large to send; a `resolve_names` task failed; a `read_resource` failure that is neither of the above (including a stored blob that fails its integrity check); a `spine.html/parse` result that could not be encoded; the unreachable arm for `tool_call` and `capability_query` in `handle_command` | `main.rs` `reply`, `handle_command`; `tools.rs` `invoke` |
 | `rate_limit` | the session's bucket (burst 100, 10 per second) is empty for a session command; the connection's separate bucket is empty for a `tool_call` | `main.rs` `check_rate_limit`, `handle_session` |
 | `session_capacity` | the connection's first session command found `server.max_sessions` sessions; the connection ends after this reply | `main.rs` `handle_session`, `create_session` |
 | `session_not_found` | `get_ur` or `get_raw_html`, and the session record is gone | `main.rs` `handle_command` |
 | `session_expired` | `navigate` fetched a page and the session record was gone | `main.rs` `handle_command` |
-| `no_page_loaded` | `get_ur` or `get_raw_html` before a successful `navigate`; `get_ur` also when the page does not parse (section 16, item 10) | `main.rs` `handle_command` |
-| `navigation_failed` | `navigate` failed with an error that is not a listed `outbound_*` code (`outbound_url_limit`, `outbound_dns_limit`, `outbound_http_status_<n>`); the message carries the text (section 16, item 2) | `main.rs` `navigation_failure` |
+| `no_page_loaded` | `get_ur` or `get_raw_html` before a successful `navigate`; `get_ur` does not use it for a page that fails to parse (`parse_error`) | `main.rs` `handle_command` |
 | `capability_denied` | `execute_binary` lists a capability other than `network`, `storage`, `memory`, `search` | `main.rs` `handle_command` |
 | `execution_failed` | `execute_binary`: the program failed to compile, instantiate or run, or ran out of fuel | `main.rs` `handle_command` |
 | `namespace_unavailable` | `mesh_call` and no namespace is configured (checked before `peer_id`) | `main.rs` `handle_command` |
@@ -442,9 +441,9 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 45 codes), with
 | `publish_failed` | `publish_resource`: `put_tracked` failed (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, store quota) | `main.rs`; `resources.rs` `put_tracked` |
 | `resource_not_found` | `read_resource`: no blob for the hash | `main.rs` `handle_command` |
 | `invalid_seed` | `crawl_names`: `seed` does not parse as a name | `main.rs` `handle_command` |
-| `invalid_args` | `tool_call`: `args.text` is not text or exceeds 1 MiB (checked before the tool name) | `tools.rs` `invoke` |
-| `unsupported_tool` | `tool_call`: the name is neither tool, and `args.text` was valid | `tools.rs` `invoke` |
-| `parse_error` | `tool_call` `spine.html/parse`: parsing failed | `tools.rs` `invoke` |
+| `invalid_args` | `tool_call` of a known tool: `args.text` is not text or exceeds 1 MiB (the tool name is checked first) | `tools.rs` `invoke` |
+| `unsupported_tool` | `tool_call`: the name is neither tool, whatever `args` holds | `tools.rs` `invoke` |
+| `parse_error` | `tool_call` `spine.html/parse`: parsing failed; `get_ur`: the loaded page does not parse | `tools.rs` `invoke`; `main.rs` `handle_command` |
 | `outbound_disabled` | `navigate` and `outbound.enabled` is false | `outbound.rs` `fetch_checked` |
 | `outbound_address_denied` | a resolved address is not public and the origin is not in `outbound.internal_origins` | `outbound.rs` `fetch` |
 | `outbound_scheme_denied` | the scheme is not `http` or `https` | `outbound.rs` `parse_url` |
@@ -463,8 +462,11 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 45 codes), with
 | `outbound_request_failed` | sending the request failed other than by timeout | `outbound.rs` `fetch` |
 | `outbound_body_failed` | reading the body failed other than by timeout | `outbound.rs` `fetch` |
 | `outbound_invalid_utf8` | the body is not UTF-8 | `outbound.rs` `fetch` |
+| `outbound_url_limit` | the URL is longer than 8192 bytes | `outbound.rs` `parse_url` |
+| `outbound_dns_limit` | name resolution returned no address or more than 64 | `outbound.rs` `fetch` |
+| `outbound_http_status` | the origin answered a status that is neither success nor redirect; `details` is `{status: uint}` | `outbound.rs` `fetch` |
 
-`navigate` passes an `outbound_*` code through unchanged only when the fetcher's error text is exactly one of the listed codes (`main.rs` `navigation_failure`).
+`navigate` passes the fetcher's typed error code through unchanged (`main.rs` `navigation_failure`); only `outbound_http_status` carries `details`.
 
 ## 14. Limits, timeouts and configuration
 
@@ -574,8 +576,8 @@ The vectors cover the frame codec, the CBOR profile, the first-frame bodies and 
 
 Behaviour the implementation has that the specification author would change. Each is specified above as implemented; the right behaviour is what to do instead.
 
-1. **Error code chosen from error text in `read_resource`.** `main.rs` `handle_command` maps the error's text: "not held by this origin" gives `resource_not_found`, text containing "chunk must be" or "offset" gives `invalid_request`, anything else `internal`. A wording change in `resources.rs` `read` or `load_verified` silently changes the code, and `invalid_request` is the code 7.4 reserves for undecodable requests. Right: `ResourceStore::read` returns a typed error; an out-of-range `max_bytes` or `offset` gets its own code (for example `invalid_range`).
-2. **`navigate` derives its code from error text too.** `main.rs` `navigation_failure` treats the fetcher's error text as the code when it starts with `outbound_` and is in `ALL_ERROR_CODES`. `outbound_url_limit`, `outbound_dns_limit` and `outbound_http_status_<n>` (`outbound.rs` `parse_url`, `fetch`) are not in the list, so they collapse into `navigation_failed` with the code only inside the message. Right: a typed fetch error with a code each, and a code for an HTTP status that is not success.
+1. **Fixed: `read_resource` error codes.** `ResourceStore::read` returns a typed `ReadError` (`NotFound`, `InvalidRange`, `Internal`), and `main.rs` `read_failure` maps the variant to `resource_not_found`, `invalid_request` or `internal`. No code depends on message text. (An out-of-range `max_bytes` or `offset` still uses `invalid_request`; a dedicated code remains a possible refinement.)
+2. **Fixed: `navigate` codes.** `outbound.rs` `Fetcher::fetch_text` returns a typed `FetchError` that carries its code; `main.rs` `navigation_failure` sends it unchanged. `outbound_url_limit`, `outbound_dns_limit` and `outbound_http_status` (status in `details.status`) are listed codes, and `navigation_failed` is retired: nothing produces it.
 3. **Bytes inside JSON-shaped results travel as arrays of integers.** `NameRecord.content_hash` is a `[u8; 32]` and `serde_json::to_value` turns it into 32 integers inside the `record` of `publish_name`, `publish_resource`, `resolve_name`, `fetch_name` and `find_providers` (`spine-name` `record.rs`; `main.rs` `resolve_one`). The signature of the same record is base32 text, so one record uses two byte conventions, and the integer array is about twice the size. Right: one encoding, a typed `NameRecord` with byte strings on this wire.
 4. **No `CLOSE(shutting_down)` on shutdown.** The code is defined and the SDK tests accept it, but the daemon on shutdown only stops accepting (dropping new sockets with no frame), waits up to `server.shutdown_timeout_secs` for connections to end, and exits (`main.rs` `main`, `grep ShuttingDown` finds no sender outside tests). Established connections see the stream end. Right: send `CLOSE(shutting_down)` to every connection once its current request is answered.
 5. **A connection refused at admission, and the end after `session_capacity`, carry no frame.** The peer sees an end of stream, indistinguishable from a network fault (`connections.rs`, `main.rs` `handle_session`). Right: a `CLOSE` with a code before the socket is dropped.
@@ -583,8 +585,8 @@ Behaviour the implementation has that the specification author would change. Eac
 7. **A duplicated null-rejecting helper.** `hello.rs` defines a private `reject_null` that is identical to `wirefmt.rs` `reject_null` (which `lib.rs`, `agentic.rs` and `body.rs` use). Right: `hello.rs` uses the shared one.
 8. **A schema failure in a `RESPONSE` or a `STREAM_*` body does not close the connection.** The original design closed with `protocol_violation`. `Connection` delivers any deterministic body; the client library's `native.rs` `decode_reply` and `decode_stream_body` report `NativeError::Body` to the caller, the in-flight id has already been released, and the connection stays open. Only `HELLO_ACK`, `CLOSE`, `PING` and `PONG` bodies are checked inside `Connection`. Right: the connection layer closes with `protocol_violation`, or the specification says the failure is local (as 7.4 now does); the two should not both be true.
 9. **The daemon does not read while it executes a command.** `main.rs` `handle_session` awaits each command inline, so during a slow `navigate` or `execute_binary`: a `PING` is answered only afterwards, a `STREAM_CANCEL` could not be acted on, and a client's second request waits in the socket buffer (which is why `overloaded` never occurs). The idle timer is unaffected because it measures time between reads. Right: split reading from execution so liveness frames and cancels are handled during a command.
-10. **`get_ur` reports a page that fails to parse as `no_page_loaded`.** `main.rs` `handle_command` does `parse_html(&html).ok()`, discarding the parse error, so a loaded but unparseable page and no page at all give the same code. Right: a distinct code, such as `parse_error`.
-11. **`tool_call` checks `args.text` before the tool name.** `tools.rs` `invoke` returns `invalid_args` for an unknown tool whose `args` has no text, and `unsupported_tool` only when `text` is valid. Right: check the name first.
+10. **Fixed: `get_ur` on an unparseable page.** `main.rs` `handle_command` reports the parse failure as `parse_error`; `no_page_loaded` now means only that no page is loaded.
+11. **Fixed: `tool_call` checks the name first.** `tools.rs` `invoke` answers `unsupported_tool` for an unknown name whatever `args` holds; `invalid_args` applies only to the two known tools.
 12. **Stream `seq` is not enforced.** Neither `Connection` nor any helper checks that `STREAM_TOKEN.seq` starts at 0 and increments by one, and no producer exists, so the rule of section 10 is unexercised. Right: the receiver closes with `protocol_violation` on a gap or repeat, once a producer exists.
 13. **`CLOSE` after an interrupted write follows a partial frame.** `native.rs` `send_bounded` drops the write future at 30 seconds and then writes a `CLOSE` on the same stream; if the dropped write left a partial frame the peer reads garbage, not a `CLOSE`. Right: after a timeout, close the transport without writing.
 14. **No per-connection decompression byte budget.** Section 4 notes the amplification of compressed frames. No sender in the workspace compresses, so it is latent. Right: a budget of decompressed bytes per second per connection, configured by the deployment.

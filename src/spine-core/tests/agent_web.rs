@@ -32,6 +32,7 @@ async fn native_navigation_enforces_outbound_policy() {
                 &b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n<h1>hello</h1>"[..],
                 &b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
                 &b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n"[..],
+                &b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
             ] {
                 let (mut socket, _) = http.accept().await.unwrap();
                 let mut request = [0; 4096];
@@ -56,18 +57,22 @@ async fn native_navigation_enforces_outbound_policy() {
         assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
         assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_redirect_denied");
         assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_response_limit");
+        // A status that is not success has one code, with the status in details.
+        assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_http_status");
+        let long_url = format!("http://127.0.0.1:1/{}", "a".repeat(9000));
+        assert_eq!(code_of(&client.navigate(&long_url).await.unwrap_err()), "outbound_url_limit");
         assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
         server.await.unwrap();
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let health: serde_json::Value = http.get(format!("http://127.0.0.1:{metrics_port}/health")).send().await.unwrap().json().await.unwrap();
-        assert_eq!(health["outbound"]["started"], 4);
+        assert_eq!(health["outbound"]["started"], 6);
         assert_eq!(health["outbound"]["succeeded"], 1);
-        assert_eq!(health["outbound"]["failed"], 3);
+        assert_eq!(health["outbound"]["failed"], 5);
         assert_eq!(health["outbound"]["denied"], 2);
         assert_eq!(health["outbound"]["response_limit_failures"], 1);
         assert_eq!(health["outbound"]["active"], 0);
         let text = http.get(format!("http://127.0.0.1:{metrics_port}/metrics")).send().await.unwrap().text().await.unwrap();
-        assert!(text.contains("spine_outbound_calls_started_total 4\n"));
+        assert!(text.contains("spine_outbound_calls_started_total 6\n"));
         assert!(text.contains("spine_outbound_calls_denied_total 2\n"));
         assert!(!text.contains(&allowed));
     }).await.expect("native outbound acceptance deadline exceeded");
@@ -488,6 +493,15 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
         assert!(matches!(parsed, spine_protocol::ToolOutcome::Ok { .. }));
         let rejected = agent
             .call_tool("shell", serde_json::json!({"text":"test"}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            rejected,
+            spine_protocol::ToolOutcome::Err { ref code, .. } if code == "unsupported_tool"
+        ));
+        // The tool name is checked before the arguments.
+        let rejected = agent
+            .call_tool("shell", serde_json::json!({"text": 7}))
             .await
             .unwrap();
         assert!(matches!(

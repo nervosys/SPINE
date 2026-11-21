@@ -59,8 +59,7 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 | `session_capacity` | the daemon holds its maximum number of sessions |
 | `session_not_found` | `get_ur` or `get_raw_html` and the session record is gone |
 | `session_expired` | `navigate` fetched a page and the session record was gone |
-| `no_page_loaded` | `get_ur` or `get_raw_html` arrived before a successful `navigate`; `get_ur` also reports a page that fails to parse this way |
-| `navigation_failed` | the page could not be loaded for a reason with no `outbound_*` code of its own (`outbound_url_limit`, `outbound_dns_limit` and `outbound_http_status_<n>` land here, with the text in the message) |
+| `no_page_loaded` | `get_ur` or `get_raw_html` arrived before a successful `navigate`; `get_ur` reports a page that fails to parse as `parse_error` |
 | `capability_denied` | an `execute_binary` program declares a capability other than `network`, `storage`, `memory` or `search` |
 | `execution_failed` | a binary failed to compile, instantiate or run |
 | `namespace_unavailable` | no namespace or mesh is configured |
@@ -70,8 +69,8 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 | `record_expired`, `malformed_record`, `record_rejected`, `publish_failed` | a published record or resource was refused |
 | `resource_not_found` | `read_resource`: this origin holds no blob for the hash |
 | `invalid_seed` | a crawl seed is not a valid name |
-| `invalid_args`, `unsupported_tool`, `parse_error` | a `tool_call` failed; `invalid_args` (no text, or over 1 MiB) is checked before the tool name, so an unknown tool with bad args reports it |
-| `outbound_*` | the daemon's outbound HTTP policy refused or failed a fetch: `disabled`, `address_denied`, `scheme_denied`, `credentials_denied`, `fragment_denied`, `redirect_denied`, `encoding_denied`, `response_limit`, `busy`, `timeout`, `invalid_url`, `invalid_host`, `invalid_port`, `dns_failed`, `client_failed`, `request_failed`, `body_failed`, `invalid_utf8` |
+| `invalid_args`, `unsupported_tool`, `parse_error` | a `tool_call` failed (the tool name is checked first, so an unknown tool reports `unsupported_tool` whatever its args); `parse_error` is also what `get_ur` reports for a loaded page that does not parse |
+| `outbound_*` | the daemon's outbound HTTP policy refused or failed a fetch: `disabled`, `address_denied`, `scheme_denied`, `credentials_denied`, `fragment_denied`, `redirect_denied`, `encoding_denied`, `response_limit`, `busy`, `timeout`, `invalid_url`, `invalid_host`, `invalid_port`, `dns_failed`, `client_failed`, `request_failed`, `body_failed`, `invalid_utf8`, `url_limit`, `dns_limit`, `http_status` (the status is in `details.status`) |
 
 The SDK returns an error as `NativeError::Remote { code, message, details }`
 inside `anyhow::Error`; use `spine_protocol::native::remote_code`.

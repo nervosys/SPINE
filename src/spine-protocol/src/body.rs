@@ -32,8 +32,6 @@ pub const ERR_NO_PAGE: &str = "no_page_loaded";
 
 // ---- Navigation and execution.
 
-/// `navigate` failed for a reason the outbound policy does not name.
-pub const ERR_NAVIGATION_FAILED: &str = "navigation_failed";
 /// `execute_binary` asked for a capability the origin does not grant.
 pub const ERR_CAPABILITY_DENIED: &str = "capability_denied";
 /// `execute_binary`: the program failed to compile, instantiate or run.
@@ -72,11 +70,11 @@ pub const ERR_INVALID_SEED: &str = "invalid_seed";
 pub const ERR_INVALID_ARGS: &str = "invalid_args";
 /// A tool call for a tool this origin does not offer.
 pub const ERR_UNSUPPORTED_TOOL: &str = "unsupported_tool";
-/// A tool that could not parse its input.
+/// A tool, or `get_ur` on a loaded page, that could not parse its input.
 pub const ERR_PARSE_ERROR: &str = "parse_error";
 
-// ---- Outbound policy. `navigate` passes these through unchanged: they are
-// the stable identifiers the fetcher already used for its failures.
+// ---- Outbound policy. `navigate` passes these through unchanged: the fetcher's
+// typed error carries its code (`outbound_http_status` adds `details.status`).
 
 pub const ERR_OUTBOUND_DISABLED: &str = "outbound_disabled";
 pub const ERR_OUTBOUND_ADDRESS_DENIED: &str = "outbound_address_denied";
@@ -96,6 +94,13 @@ pub const ERR_OUTBOUND_CLIENT_FAILED: &str = "outbound_client_failed";
 pub const ERR_OUTBOUND_REQUEST_FAILED: &str = "outbound_request_failed";
 pub const ERR_OUTBOUND_BODY_FAILED: &str = "outbound_body_failed";
 pub const ERR_OUTBOUND_INVALID_UTF8: &str = "outbound_invalid_utf8";
+/// The URL is longer than 8192 bytes.
+pub const ERR_OUTBOUND_URL_LIMIT: &str = "outbound_url_limit";
+/// Name resolution returned no address or more than 64.
+pub const ERR_OUTBOUND_DNS_LIMIT: &str = "outbound_dns_limit";
+/// The origin answered with a status that is neither success nor redirect; the
+/// status is in `details.status`.
+pub const ERR_OUTBOUND_HTTP_STATUS: &str = "outbound_http_status";
 
 /// The codes that mean the connection layer or the decoder refused the
 /// request itself, as opposed to a command that ran and failed.
@@ -114,7 +119,6 @@ pub const ALL_ERROR_CODES: &[&str] = &[
     ERR_SESSION_NOT_FOUND,
     ERR_SESSION_EXPIRED,
     ERR_NO_PAGE,
-    ERR_NAVIGATION_FAILED,
     ERR_CAPABILITY_DENIED,
     ERR_EXECUTION_FAILED,
     ERR_NAMESPACE_UNAVAILABLE,
@@ -150,6 +154,9 @@ pub const ALL_ERROR_CODES: &[&str] = &[
     ERR_OUTBOUND_REQUEST_FAILED,
     ERR_OUTBOUND_BODY_FAILED,
     ERR_OUTBOUND_INVALID_UTF8,
+    ERR_OUTBOUND_URL_LIMIT,
+    ERR_OUTBOUND_DNS_LIMIT,
+    ERR_OUTBOUND_HTTP_STATUS,
 ];
 
 /// The `err` of a failed `RESPONSE`: `{code, message[, details]}`. A closed

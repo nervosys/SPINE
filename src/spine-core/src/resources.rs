@@ -43,6 +43,36 @@ mod compact_bytes {
     }
 }
 
+/// Why `ResourceStore::read` failed. The daemon maps the variant to a wire code;
+/// nothing inspects the message.
+#[derive(Debug)]
+pub enum ReadError {
+    /// No blob is held for the hash.
+    NotFound,
+    /// `max_bytes` outside 1 to 65,536, or an `offset` beyond the resource.
+    InvalidRange(&'static str),
+    /// The stored blob could not be read or failed its integrity check.
+    Internal(anyhow::Error),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::NotFound => f.write_str("resource not held by this origin"),
+            ReadError::InvalidRange(reason) => f.write_str(reason),
+            ReadError::Internal(error) => write!(f, "{error:#}"),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
+
+impl From<anyhow::Error> for ReadError {
+    fn from(error: anyhow::Error) -> Self {
+        ReadError::Internal(error)
+    }
+}
+
 pub struct ResourceStore {
     backend: Arc<dyn StorageBackend>,
     writes: Mutex<()>,
@@ -118,7 +148,7 @@ impl ResourceStore {
         Ok(())
     }
 
-    fn load_verified(&self, hash: [u8; 32]) -> Result<Arc<Blob>> {
+    fn load_verified(&self, hash: [u8; 32]) -> Result<Arc<Blob>, ReadError> {
         if let Some((cached, blob)) = self.verified.lock().unwrap().as_ref() {
             if *cached == hash {
                 return Ok(blob.clone());
@@ -126,13 +156,15 @@ impl ResourceStore {
         }
         let stored = self
             .backend
-            .get(NAMESPACE, &hash)?
-            .context("resource not held by this origin")?;
-        let blob: Blob = serde_json::from_slice(&stored)?;
-        ensure!(
-            blob.data.len() <= MAX_RESOURCE_BYTES,
-            "stored resource failed integrity check"
-        );
+            .get(NAMESPACE, &hash)
+            .map_err(anyhow::Error::from)?
+            .ok_or(ReadError::NotFound)?;
+        let blob: Blob = serde_json::from_slice(&stored).map_err(anyhow::Error::from)?;
+        if blob.data.len() > MAX_RESOURCE_BYTES {
+            return Err(ReadError::Internal(anyhow::anyhow!(
+                "stored resource failed integrity check"
+            )));
+        }
         verify_resource(&hash, &blob.content_type, &blob.data)
             .context("stored resource failed integrity check")?;
         let blob = Arc::new(blob);
@@ -140,14 +172,22 @@ impl ResourceStore {
         Ok(blob)
     }
 
-    pub fn read(&self, hash: [u8; 32], offset: u64, max_bytes: u32) -> Result<ResourceChunk> {
-        ensure!(
-            (1..=MAX_RESOURCE_CHUNK).contains(&max_bytes),
-            "chunk must be 1 through 65536 bytes"
-        );
+    pub fn read(
+        &self,
+        hash: [u8; 32],
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<ResourceChunk, ReadError> {
+        if !(1..=MAX_RESOURCE_CHUNK).contains(&max_bytes) {
+            return Err(ReadError::InvalidRange(
+                "chunk must be 1 through 65536 bytes",
+            ));
+        }
         let blob = self.load_verified(hash)?;
-        let start = usize::try_from(offset).context("invalid offset")?;
-        ensure!(start <= blob.data.len(), "offset beyond resource");
+        let start = usize::try_from(offset)
+            .ok()
+            .filter(|start| *start <= blob.data.len())
+            .ok_or(ReadError::InvalidRange("offset beyond resource"))?;
         let end = start
             .saturating_add(max_bytes as usize)
             .min(blob.data.len());
@@ -200,8 +240,18 @@ mod tests {
         assert!(!first.complete);
         assert!(second.complete);
         assert_eq!([first.data, second.data].concat(), bytes);
-        assert!(store.read(hash, 1000, 4).is_err());
-        assert!(store.read(hash, 0, MAX_RESOURCE_CHUNK + 1).is_err());
+        assert!(matches!(
+            store.read(hash, 1000, 4),
+            Err(ReadError::InvalidRange(_))
+        ));
+        assert!(matches!(
+            store.read(hash, 0, MAX_RESOURCE_CHUNK + 1),
+            Err(ReadError::InvalidRange(_))
+        ));
+        assert!(matches!(
+            store.read([1; 32], 0, 4),
+            Err(ReadError::NotFound)
+        ));
         // Corruption is caught the first time a blob is loaded.
         let store = open();
         store
@@ -212,7 +262,10 @@ mod tests {
                 br#"{"content_type":"text/plain","data":[0]}"#,
             )
             .unwrap();
-        assert!(store.read(hash, 0, 4).is_err());
+        assert!(matches!(
+            store.read(hash, 0, 4),
+            Err(ReadError::Internal(_))
+        ));
     }
 
     fn signed(bytes: &[u8]) -> NameRecord {
@@ -263,7 +316,7 @@ mod tests {
         assert!(!again);
         assert!(store.read(hash, 0, 4).is_ok());
         store.remove(hash).unwrap();
-        assert!(store.read(hash, 0, 4).is_err());
+        assert!(matches!(store.read(hash, 0, 4), Err(ReadError::NotFound)));
         assert!(!store.backend.exists(NAMESPACE, &hash).unwrap());
         store.remove(hash).unwrap();
     }
