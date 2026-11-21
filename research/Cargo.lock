@@ -6135,6 +6135,7 @@ dependencies = [
  "proptest",
  "rand 0.8.8",
  "serde",
+ "serde_bytes",
  "serde_json",
  "sha2",
  "spine-crypto",

@@ -4596,6 +4596,7 @@ dependencies = [
  "parking_lot",
  "rand 0.8.8",
  "serde",
+ "serde_bytes",
  "sha2",
  "spine-crypto",
  "spine-neural",
