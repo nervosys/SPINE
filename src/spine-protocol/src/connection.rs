@@ -1218,7 +1218,7 @@ mod tests {
 
     #[tokio::test]
     async fn recv_timeout_closes_an_idle_peer_with_timeout() {
-        let (mut s, mut c) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut c, mut s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
         let err = s
             .recv_timeout(Duration::from_millis(100))
             .await
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[tokio::test]
     async fn recv_timeout_restarts_on_a_ping_and_still_delivers_requests() {
-        let (mut s, mut c) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut c, mut s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
         let ping = Frame {
             frame_type: FrameType::Ping,
             request_id: 5,

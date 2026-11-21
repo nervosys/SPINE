@@ -156,6 +156,7 @@ fn demo_handler_duplex() {
 
     rt.block_on(async {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let config = native::local_config();
         let (client, server) = tokio::join!(
             Connection::client_handshake(
                 client_io,
@@ -164,7 +165,7 @@ fn demo_handler_duplex() {
             ),
             Connection::server_handshake(
                 server_io,
-                &native::local_config(),
+                &config,
                 native::DEFAULT_HELLO_DEADLINE
             )
         );

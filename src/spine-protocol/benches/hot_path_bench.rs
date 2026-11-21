@@ -65,6 +65,7 @@ async fn connection_pair() -> (
     use spine_protocol::native;
 
     let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let config = native::local_config();
     let (client, server) = tokio::join!(
         Connection::client_handshake(
             client_io,
@@ -73,7 +74,7 @@ async fn connection_pair() -> (
         ),
         Connection::server_handshake(
             server_io,
-            &native::local_config(),
+            &config,
             native::DEFAULT_HELLO_DEADLINE
         )
     );
