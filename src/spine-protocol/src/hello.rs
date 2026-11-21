@@ -437,7 +437,7 @@ mod tests {
     /// A map with its entries sorted by the encoded key bytes.
     fn map_sorted(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
         let mut sorted: Vec<(&str, Vec<u8>)> = entries.to_vec();
-        sorted.sort_by(|a, b| text(a.0).cmp(&text(b.0)));
+        sorted.sort_by_key(|a| text(a.0));
         map_in_order(&sorted)
     }
 
