@@ -71,9 +71,12 @@ pub struct NameRecord {
     /// `cap:` names resolve without a central directory.
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// SHA-256 of the current representation. Serves as a strong cache
-    /// validator: an agent holding this hash needs no refetch, and a `blob:`
-    /// name for it is immutable.
+    /// The resource id of the current representation, as computed by
+    /// [`crate::resource_id`]: SHA-256 over a domain prefix, the content type
+    /// and the bytes, not the plain [`crate::content_hash`] of the bytes. It
+    /// serves as a strong cache validator and, because the content type is
+    /// hashed in, authenticates the type as well. Check a fetched
+    /// representation with [`crate::verify_resource`].
     #[serde(default)]
     pub content_hash: Option<[u8; 32]>,
     /// Outbound links. This is the field that makes the agent web a *graph*

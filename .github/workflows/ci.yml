@@ -120,6 +120,12 @@ jobs:
       - name: The committed vectors match the generator
         run: python3 scripts/wire_v1.py generate | diff - docs/spec/00-wire.vectors.json
 
+      - name: Check every name vector with the Python reference implementation
+        run: python3 scripts/names_v1.py check docs/spec/02-names.vectors.json
+
+      - name: The committed name vectors match the generator
+        run: python3 scripts/names_v1.py generate | diff - docs/spec/02-names.vectors.json
+
   # ── Security Audit ─────────────────────────────────────────────────────────
   audit:
     runs-on: ubuntu-latest

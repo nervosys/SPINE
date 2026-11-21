@@ -1,8 +1,8 @@
 # Layer 2: Names (as built)
 
-Status: description of the code on branch `completion/agent-web`, read 2026-11-20. It states what the code does, not what it should do. Nothing was executed to produce it; every behaviour below was determined by reading the cited source. Where reading did not settle a question the text says "Undetermined". Section 8 is the only place that discusses the target design.
+Status: sections 2.5, 2.6, 2.8, 2.9, 3 (except 3.2 and 3.5), 6 and 9 are normative and match the code of branch `completion/agent-web` after the changes that accompany `docs/spec/02-names.vectors.json`. They cite `file: function` and are checked by the vectors (section 6). The other sections (2.1 to 2.4, 2.7, 4, 5, 7, 8) are the earlier read-through description of the code, unchanged except where noted; their `file:line` citations may have drifted and the paths under `research/spine-agentic` have since moved into `src/spine-mesh`. Where a claim there disagrees with a normative section, the normative section wins. Section 9 is the list of known open issues.
 
-Primary sources: `src/spine-name/src/` (uri.rs, base32.rs, key.rs, record.rs, link.rs, store.rs, cache.rs, resolver.rs, routing.rs, frontier.rs), `research/spine-agentic/src/naming.rs`, `research/spine-agentic/src/naming_mesh.rs`, the naming message builders in `research/spine-agentic/src/mesh.rs`, and the node glue in `src/spine-core/src/main.rs` and `src/spine-core/src/namespace.rs`.
+Primary sources: `src/spine-name/src/` (uri.rs, base32.rs, key.rs, record.rs, link.rs, lib.rs, store.rs, cache.rs, resolver.rs, routing.rs, frontier.rs), the naming code in `src/spine-mesh`, and the node glue in `src/spine-core`. Key words MUST and MUST NOT in the normative sections describe what a conforming implementation does; they restate the code, they do not change it.
 
 ## 1. Scope and terminology
 
@@ -68,86 +68,87 @@ Consequence of preserving the trailing slash: `/a` and `/a/` are different paths
 
 Query: split on `&`, drop empty pairs, split each at the first `=`; no `=` gives an empty value. The pairs are sorted lexicographically by (key, value), so order is not significant (uri.rs:215-225). Duplicates are kept. The query does not take part in the routing key. The fragment does not either (uri.rs:257-261, 323-335).
 
-### 2.5 Base32 variant
+### 2.5 Base32 (base32.rs: `encode`, `decode`, `decode_key`)
 
-RFC 4648 section 6 alphabet, lowercase, no padding (base32.rs:11, `abcdefghijklmnopqrstuvwxyz234567`).
+The alphabet is `abcdefghijklmnopqrstuvwxyz234567` (RFC 4648 section 6, lower case) with no padding.
 
-- Encode (base32.rs:14-41): 5 input bytes map to 8 symbols, most significant bits first. A final chunk of 1, 2, 3, 4 bytes emits 2, 4, 5, 7 symbols. 32 bytes encode to 52 symbols (base32.rs:108-113).
-- Decode (base32.rs:45-68): accepts upper and lower case (symbol_value, base32.rs:81-88). Rejects any other character and any chunk length of 1, 3 or 6 symbols (final chunk). `decode_key` additionally requires exactly 32 bytes (base32.rs:71-79).
-- Non-canonical trailing bits are not checked. The final symbol of a 52-symbol string carries 4 bits beyond the 256 data bits, because 52 x 5 = 260. `decode` shifts those bits out without testing that they are zero (base32.rs:51-65). Therefore several 52-symbol strings can decode to the same key. For names this is harmless to equality because parsing re-encodes to the canonical string, but a second implementation that rejects non-zero trailing bits would reject names this one accepts. The same decoder is used for signatures in JSON (record.rs:323-335).
-- The same encoding appears for `NameKey` in JSON (key.rs:92-105).
+- Encoding: the input bits are written most significant first and cut into 5-bit groups; a final partial group is padded on the right with zero bits. A 32-byte key is 256 bits, so 52 symbols, the last carrying one data bit and four zero padding bits. The empty input encodes to the empty string.
+- Decoding accepts upper and lower case letters and nothing else. It MUST refuse a length of 1, 3 or 6 symbols modulo 8 (no byte string encodes to it) and MUST refuse a final group whose padding bits are not all zero. Hence a byte string has exactly one spelling up to letter case, and `decode_key` additionally requires exactly 32 bytes.
+- The same codec spells a `NameKey` in JSON (key.rs: `key_bytes`) and a record signature in JSON (record.rs: `sig_bytes`).
 
-### 2.6 Routing key
+History: before the change that accompanies the vectors, `decode` shifted the padding bits out without testing them, so several 52-symbol strings named one key. See `keys[].noncanonical_base32` and `invalid_names` in the vectors.
 
-`SpineUri::key()` (uri.rs:328-335) is SHA-256 over the UTF-8 bytes of the string `spine://` + canonical authority + normalised path. Query and fragment are excluded. Two names that differ only in query or fragment have the same key and are the same slot in every store (store.rs:150, 116).
+### 2.6 Routing key (uri.rs: `SpineUri::key`, `routing_form`)
 
-Capability routing key (different derivation): SHA-256 over the UTF-8 string `cap:` + lowercase term, with no `spine://` prefix and no trailing `/` (naming.rs:80-82). This differs from `SpineUri::capability(term).key()`, which hashes `spine://cap:<term>/`.
+The routing key of a name is SHA-256 over the UTF-8 bytes of `spine://` + canonical authority + normalised path. The query and the fragment are not part of it, so names that differ only there share a key and a slot in every `RecordStore` (store.rs: `put`, `get`). The signed name (3.3) does include them. The routing key has no domain separation (open issue 3). The vectors give the key of every name in `names[]`.
+
+Capability routing key (spine-mesh naming.rs: `capability_key`): SHA-256 over `cap:` + lower-case term, with no `spine://` prefix and no trailing `/`. This is not `SpineUri::capability(term).key()`, which hashes `spine://cap:<term>/` (open issue 4).
 
 ### 2.7 Joining references
 
 `SpineUri::join` (uri.rs:341-391) resolves a reference like an href. Absolute `spine://` references are re-parsed. A rooted reference replaces the path. Anything else is resolved against the base path's directory (up to and including its last `/`). The reference's own query and fragment replace the base's. Empty reference returns the base.
 
-### 2.8 Defect: parser can panic on non-ASCII input (by reading, not executed)
+### 2.8 Non-ASCII input to the parser (resolved)
 
-`SpineUri::parse` falls back to `trimmed.split_at(trimmed.len().min(8))` when `strip_prefix` fails (uri.rs:187-191). `str::split_at` panics if the index is not a char boundary. Input whose byte 8 falls inside a multi-byte character (for example seven ASCII bytes followed by a three-byte character) reaches that call and, by the standard library's contract, panics. `join` slices `reference[..SCHEME.len()]` after only a length check (uri.rs:346), with the same hazard. `parse` is reached with client-supplied strings at `resolve_one` (main.rs:442) and when deserialising any `SpineUri` from the wire (uri.rs:465-470), including inside records and responses from peers. No test covers non-ASCII input. This should be treated as a remotely triggerable panic until a test proves otherwise.
+The earlier reading of this section found that `SpineUri::parse` and `SpineUri::join` could panic when byte 8 of the input fell inside a multi-byte character. The code now compares the scheme prefix through `str::get(..SCHEME.len())` (uri.rs: `parse`, `join`), which returns `None` rather than panicking. The vectors include non-ASCII paths, queries and fragments (`names[]`).
+
+### 2.9 Resource id (lib.rs: `resource_id`, `verify_resource`, `validate_content_type`, `content_hash`)
+
+`content_hash(bytes)` is plain SHA-256. A resource id is
+
+    SHA-256( "spine/resource-id/v1" 0x00 || u32_be(len(content_type)) || content_type
+             || u64_be(len(bytes)) || bytes )
+
+so it commits to the content type as well as the bytes, and the prefix and length framing keep it from equalling the plain hash of any ordinary byte string and make ("a", "bcdef") and ("ab", "cdef") different. A content type is valid only in canonical form: 1 to 256 bytes of printable ASCII (0x20 to 0x7e), no upper-case letters, no leading or trailing space; otherwise `resource_id` returns `InvalidContentType`. `verify_resource(id, type, bytes)` recomputes the id and returns `ResourceIdMismatch` if it differs. `resource_id` is the only function that computes an id. `NameRecord::content_hash` holds a resource id, not a plain hash. Vectors: `resource_ids[]`, `invalid_content_types[]`.
 
 ## 3. NameRecord
 
-### 3.1 Fields
-
-Struct `NameRecord` (record.rs:53-85).
+### 3.1 Fields (record.rs: `NameRecord`, `Endpoint`; link.rs: `Link`, `Rel`)
 
 | Field | Type | Signed | Notes |
 | --- | --- | --- | --- |
-| `name` | `SpineUri` | yes (canonical string, including query and fragment) | Must have a `did` authority to be created or verified. May carry a path, query and fragment. |
+| `name` | `SpineUri` | yes (canonical string, including query and fragment) | MUST have a `did` authority. |
 | `seq` | `u64` | yes | Version counter. |
-| `ttl_secs` | `u32` | yes | Default 3600 (record.rs:22). 0 is accepted and means expired at publication. No maximum. |
-| `published_at` | `u64` | yes | Unix seconds. Set by the publisher. No bound against the clock is checked anywhere in spine-name. |
-| `endpoints` | `Vec<Endpoint>` | yes | Each `{transport: String, address: String, priority: u8}`. `transport` and `address` are free text (documented as tcp, ws, wss, quic, grpc but not enforced). |
-| `capabilities` | `Vec<String>` | yes | Free text terms. `with_capability` lowercases (record.rs:174); deserialisation does not. |
-| `content_hash` | `Option<[u8; 32]>` | yes | SHA-256 of the current representation. |
-| `links` | `Vec<Link>` | partly | Only `rel` and `target` of each link are signed (3.3). `Link.title` and `Link.capabilities` are NOT signed (link.rs:99-106). |
-| `meta` | `BTreeMap<String, String>` | yes | Sorted by key in the encoding. |
-| `signature` | `Vec<u8>` | n/a | 64 bytes of Ed25519 signature; JSON form is unpadded lowercase base32 (record.rs:322-335). |
+| `ttl_secs` | `u32` | yes | Default 3600 (`DEFAULT_TTL_SECS`). 0 is accepted and means expired at publication. No maximum. |
+| `published_at` | `u64` | yes | Unix seconds, set by the publisher. No bound against the clock is checked in spine-name. |
+| `endpoints` | `Vec<Endpoint>` | yes | Each `{transport, address, priority: u8}`; strings are free text. |
+| `capabilities` | `Vec<String>` | yes | Free text. `with_capability` lower-cases; deserialisation does not, and the signature covers the string as stored. |
+| `content_hash` | `Option<[u8; 32]>` | yes | A resource id (2.9) of the current representation. |
+| `links` | `Vec<Link>` | yes | Every field of every link is signed: `rel`, `target`, `title` and `capabilities`. |
+| `meta` | `BTreeMap<String, String>` | yes | Signed in byte-wise key order. |
+| `signature` | `Vec<u8>` | n/a | 64 bytes of Ed25519; JSON form is unpadded lower-case base32. |
 
-`Rel` is `child, parent, peer, provides, requires, alternate, describes, snapshot` or `Other(String)`; wire strings are the lowercase names, `Other` carries its own string (link.rs:17-70). There is no length or count limit on any field in spine-name. The only size bounds met on the path are the transport frame limit of 4 MiB (mesh_tcp.rs:62) and, at the origin, the JSON command envelope; whether a record is rejected for size before parsing is Undetermined (not found in spine-name or naming*.rs).
+`Rel` is `child, parent, peer, provides, requires, alternate, describes, snapshot` or `Other(String)`. Its wire string is the lower-case name, and `Other` carries its own string. Deserialising `Other(s)` where `s` is exactly a built-in name yields the built-in variant (link.rs: `Rel::other`, `From<RelRepr>`), so the alias cannot come out of deserialisation; `Rel::parse` lower-cases and also maps built-in names. `Other("Mirrors")` keeps its case, which is signed. Constructing `Rel::Other("child")` directly in Rust is still possible and signs as `child` (open issue 1).
 
-Serialisation of a record for storage and transport is serde JSON (naming_mesh payloads are JSON envelopes, mesh_tcp.rs:164; persistence is `serde_json::to_vec`, resolver.rs:231). Within it `content_hash` serialises as an array of 32 integers (no custom serde on that field, record.rs:73-74) and `signature` as a base32 string. This JSON form is not canonical and is not what is signed.
+JSON shape (serde, record.rs and link.rs): an object with `name` (string), `seq`, `ttl_secs`, `published_at` (numbers), `endpoints` (array of `{transport, address, priority}`), `capabilities` (array of strings), `content_hash` (array of 32 integers or `null`), `links`, `meta` (object) and `signature` (base32 string). A link is `{rel, target}` plus `title` only when present and `capabilities` only when non-empty; `rel` is a string for a built-in relation and `{"other": "<name>"}` otherwise. Missing `endpoints`, `capabilities`, `content_hash`, `links`, `meta` and `signature` default to empty or null on input. The vectors carry this form as `records[].json`. This form is not canonical and is not what is signed.
 
 ### 3.2 Which names can have records
 
-`NameRecord::new` fails with `NotSignable` unless the authority is `did` (record.rs:90-93). `verify` fails with `NotSignable` for any other authority (record.rs:269-273). `RecordStore::put` verifies first (store.rs:113). Therefore a `blob:` name, a `cap:` name and a `host:` name can never be stored, cached via `cache_record`, or resolved from a store. `blob:` names are only content addresses; this layer has no operation that turns a `blob:` name into bytes or into a record. `host:` records are synthesised (4.1).
+`NameRecord::new` fails with `NotSignable` unless the authority is `did`. `verify` fails with `NotSignable` for any other authority. `RecordStore::put` verifies first. Therefore a `blob:`, `cap:` or `host:` name can never be stored, cached via `cache_record`, or resolved from a store; `host:` records are synthesised (4.1).
 
-### 3.3 Canonical signed bytes
+### 3.3 Signed bytes (record.rs: `NameRecord::signing_bytes`, layout v2)
 
-`signing_bytes` (record.rs:200-248). The byte string is the concatenation, in this order:
+`str(x)` is a big-endian `u32` byte length followed by the UTF-8 bytes of `x`. Every count is a big-endian `u32`. Integers are big-endian. The signed bytes are the concatenation, in order, of:
 
 | # | Bytes |
 | --- | --- |
-| 1 | ASCII `spine-name-record-v1` followed by one `0x00` (21 bytes) |
-| 2 | UTF-8 of `name.to_string()` (canonical, with query and fragment), then `0x00` |
-| 3 | `seq` as 8 bytes |
-| 4 | `ttl_secs` as 4 bytes |
-| 5 | `published_at` as 8 bytes |
-| 6 | endpoint count as u32 (4 bytes); then for each endpoint in stored order: `transport` UTF-8, `0x00`, `address` UTF-8, `0x00`, `priority` (1 byte) |
-| 7 | capability count as u32; then for each in stored order: UTF-8, `0x00` |
-| 8 | `content_hash`: `0x01` then 32 bytes, or `0x00` alone |
-| 9 | link count as u32; then for each in stored order: `rel` wire string, `0x00`, `target.to_string()`, `0x00` |
-| 10 | meta count as u32; then for each in key order (BTreeMap, byte-wise order of the key string): key, `0x00`, value, `0x00` |
+| 1 | `spine-name-record-v2` followed by `0x00` (21 bytes) |
+| 2 | `str(name)`, `name` being the canonical string including query and fragment |
+| 3 | `seq` (8 bytes), `ttl_secs` (4), `published_at` (8) |
+| 4 | endpoint count; per endpoint, in stored order: `str(transport)`, `str(address)`, `priority` (1 byte) |
+| 5 | capability count; per capability, in stored order: `str(term)` |
+| 6 | `0x00`, or `0x01` followed by the 32 bytes of `content_hash` |
+| 7 | link count; per link, in stored order: `str(rel)`, `str(target)`, then `0x00` or `0x01` followed by `str(title)`, then the count of link capabilities and `str(term)` for each in stored order |
+| 8 | meta count; per entry in byte-wise key order: `str(key)`, `str(value)` |
 
-Properties a second implementation must reproduce or knowingly diverge from:
+Everything in the record except `signature` is covered. No field is terminated by a sentinel, so no string content can move a field boundary: the encoding is injective. Endpoints, capabilities, links and link capabilities are signed in stored order, so reordering them invalidates the signature; meta order does not matter. `str(rel)` is the wire string, so `Rel::Other("child")` and `Rel::Child` sign identically. `signing_bytes` is public API. The vectors give the bytes for every record in `records[]`; Python builds them from the structured description in `records[].record`.
 
-- Endpoints, capabilities and links are signed in stored order, so reordering them invalidates the signature. Meta is order-independent (test record.rs:494-503).
-- Strings are not length-prefixed; they are NUL-terminated. A string that itself contains `0x00` (nothing in the code forbids it: `cap`, `host`, path and query accept it, and endpoint, capability and meta strings are unrestricted) can shift field boundaries within a section. Counts are prefixed, which limits but does not remove the ambiguity. Whether a concrete collision exists was not constructed.
-- Unsigned: `Link.title`, `Link.capabilities`. A relaying node can alter these without invalidating the signature.
-- The `name` is signed in canonical string form, so two spellings of one name sign identically. The signature does not cover the routing key separately; it is derived from the name.
+### 3.4 Signature and verification (record.rs: `sign`, `verify`)
 
-### 3.4 Signature algorithm and verification
-
-- Algorithm: Ed25519 (ed25519_dalek) over `signing_bytes`, no prehash, no context string (record.rs:262).
-- Signing key must match the key in the name, else `KeyMismatch` (record.rs:254-261).
-- Verification (record.rs:269-282): signature length must be 64; the 32 bytes in the name must be a valid curve point (`VerifyingKey::from_bytes`); then `Verifier::verify`. The code uses `verify`, not `verify_strict`, so the strict-verification restrictions on small-order keys and malleable signatures are not applied. Impact on this layer: a publisher can choose such a key for its own name; the record only ever claims that name.
-- Verification is performed at every ingress: `RecordStore::put` (store.rs:113), `LocalResolver::publish` and `cache_record` (resolver.rs:196, 252), `Lookup::on_response` for records and providers (naming.rs:320, 332), `announce_name` and `announce_name_to` before sending (mesh.rs:644, 662), and when restoring from disk (resolver.rs:160).
+- Algorithm: Ed25519 over exactly the bytes of 3.3, no prehash, no context. The key is the 32-byte key of the `did:` authority of `name`.
+- `sign` fails with `KeyMismatch` unless the signing key's public key equals the key in the name.
+- `verify` MUST fail with `BadSignature` unless the signature is exactly 64 bytes and the key in the name is a valid point, and then uses `verify_strict` (`ed25519_dalek::VerifyingKey::verify_strict`): in addition to RFC 8032 verification it rejects a small-order public key or R and a non-canonical S. The reference implementation's strict profile is RFC 8032 section 5.1.7 plus rejecting S >= L and a small-order A or R. `invalid_records[]` includes S + L and an identity public key with R = identity, S = 0 (accepted by non-strict verification).
+- Verification is performed at every ingress (store put, resolver publish and cache, lookup responses, announcements, restore from disk). Signature validity does not depend on time.
 
 ### 3.5 Validity and expiry
 
@@ -156,16 +157,15 @@ Properties a second implementation must reproduce or knowingly diverge from:
 - Publication at the origin rejects an already-expired record (main.rs:796), but `LocalResolver::publish` itself does not.
 - Clock: injected function returning Unix seconds (resolver.rs:121, naming_mesh.rs:341). No skew tolerance exists.
 
-### 3.6 Ordering and conflict resolution
+### 3.6 Ordering and conflict resolution (record.rs: `supersedes`)
 
-`supersedes` (record.rs:304-306): `self` replaces `other` iff `(seq, published_at)` of self is lexicographically greater than that of other. Records are compared only within one routing key (same authority and path; query and fragment ignored).
+`self` replaces `other` iff `(seq, published_at, signature)` of `self` is lexicographically greater than that of `other` (signatures compared as byte strings). The signature is the final tiebreak, which makes the order total over distinct records, so replicas converge when they see the same set. Records are compared only within one routing key (same authority and path; query and fragment ignored).
 
-- `RecordStore::put` (store.rs:116-124): an existing record for the key is replaced only if the new one supersedes it. Otherwise the outcome is `Superseded` (not an error) and the stored record is kept. Note the enum comment says "newer or equal".
-- `LocalResolver::publish` (resolver.rs:198-202): if a different record is offered that does not supersede the stored one, it returns `StalePublication`. Offering the identical record again is accepted as a no-op.
-- Equal `(seq, published_at)` with different content: neither supersedes the other, so each store keeps whichever it received first. Two replicas can then hold different records for one name permanently. The doc comment at record.rs:301-303 says replicas converge regardless of arrival order; that holds only when the pairs differ. A publisher that signs two records with the same seq and published_at (equivocation) is not detected or penalised anywhere.
-- `seq` is a bare counter chosen by the signer. There is no chain, no hash link to the previous record, and no requirement that seq increases by one. A record with a high seq and large `ttl_secs` can only be replaced by a higher seq signed by the same key.
-- `renewed` (record.rs:156-167): verifies the old record, increments seq by one (checked; at `u64::MAX` returns `SequenceExhausted`), sets `published_at = now` and `ttl_secs`, re-signs. Contents are otherwise unchanged.
-- The resolver cache does not compare seq. `ResolverCache::put` overwrites any entry for the key (cache.rs:140-154) and `cache_record` calls it after only a signature check (resolver.rs:251-255). A node that learns an older valid record after a newer one can therefore cache the older one.
+- `RecordStore::put`: an existing record for the key is replaced only if the new one supersedes it; otherwise the outcome is `Superseded` and the stored record is kept.
+- `LocalResolver::publish`: a different record that does not supersede the stored one returns `StalePublication`; offering the identical record again is accepted as a no-op.
+- A publisher that signs two records with the same `seq` and `published_at` is not detected or penalised; replicas converge on the one with the greater signature, which the publisher does not control.
+- `seq` is a bare counter chosen by the signer: no chain, no hash link, no required step of one. `renewed` verifies the old record, increments `seq` by one (checked: `SequenceExhausted` at `u64::MAX`), sets `published_at` and `ttl_secs`, and re-signs.
+- The resolver cache does not compare `seq` (cache.rs: `ResolverCache::put`), so a node can cache an older valid record over a newer one (8.6 g).
 
 ## 4. Resolution
 
@@ -204,7 +204,7 @@ Routing table insertion (routing.rs:89-122): a known node is refreshed if the ne
 
 ### 4.3 Messages
 
-Payload variants carried in a signed `MeshEnvelope` (mesh.rs:220-224 and builders mesh.rs:640-724). The envelope signature is over `id || from || serde_json(payload)` (mesh.rs:916-924); envelope and transport authentication belong to layer 1 and are not specified here.
+Payload variants carried in a signed `MeshEnvelope` (mesh.rs:220-224 and builders mesh.rs:640-724). The envelope and its signature are defined by spine-mesh (`src/spine-mesh`, mesh.rs) and are about to change; they are not specified here, and this layer does not depend on their layout.
 
 | Message | Fields | Direction and use |
 | --- | --- | --- |
@@ -292,38 +292,27 @@ The origin returns JSON with `stored: true`, `local_persistent`, `replicas` and 
 
 ## 6. Test vectors
 
-The existing tests contain almost no fixed expected outputs. Fixed keys are used (`[seed; 32]` byte arrays, for example `SigningKey::from_bytes(&[1; 32])`), but no test asserts a literal hash, public key, name string, canonical byte string or signature. A repository search of spine-name and the naming modules for long hex literals found none. The only literal vectors are below.
+The vectors for this layer are `docs/spec/02-names.vectors.json`, generated by `scripts/names_v1.py` (standard-library Python, 3.8 or later, written from this specification and not from the Rust code) and checked against the crate by `src/spine-name/tests/vectors.rs`.
 
-### 6.1 Vectors present in the tests
+    python scripts/names_v1.py generate > docs/spec/02-names.vectors.json
+    python scripts/names_v1.py check docs/spec/02-names.vectors.json
 
-Base32 (base32.rs:145-153; RFC 4648 section 10, lowercased, unpadded):
+The script carries its own Ed25519 (RFC 8032 section 6 reference algorithm) and asserts RFC 8032 section 7.1 test vectors 1 to 3 before generating or checking. Generation is deterministic (fixed seeds `0x01`, `0x02`, `0x03` repeated 32 times, sorted keys, LF, no times). CI (the `wire-vectors` job) runs `check` and diffs `generate` against the committed file; the `test` job runs the Rust side.
 
-| Input (ASCII) | Output |
+| Section | Content |
 | --- | --- |
-| `f` | `my` |
-| `fo` | `mzxq` |
-| `foo` | `mzxw6` |
-| `foob` | `mzxw6yq` |
-| `fooba` | `mzxw6ytb` |
-| `foobar` | `mzxw6ytboi` |
+| `keys` | seed, public key, base32, `did:` authority, name, and a non-canonical spelling that MUST be refused |
+| `names` | parse input, canonical form, routing key, and the parsed authority, path, query and fragment |
+| `invalid_names` | strings that MUST NOT parse, including non-zero trailing bits |
+| `resource_ids` | content type, bytes, id and plain hash; empty bytes; the ("a", "bcdef") / ("ab", "cdef") boundary pair |
+| `invalid_content_types` | types that `resource_id` MUST refuse |
+| `rel_aliases` | `Rel` JSON forms, including `{"other": "<built-in>"}` |
+| `records` | structured record, signing bytes, signature and serde JSON: minimal, every optional field, every relation, multi-byte UTF-8, empty strings, numeric extremes, case |
+| `invalid_records` | one field changed after signing (per field), signature damaged in several ways, a signature by another key, and a weak-key signature: all MUST fail `verify` |
 
-Rejections (base32.rs:122-142): `decode("ab1c")`, `"ab0c"`, `"ab8c"`, `"-bcd"` return none; `decode("a")`, `"abc"`, `"abcdef"` return none; `decode_key` of 16-byte and 33-byte inputs returns none; a 32-byte key of `0xAB` bytes encodes to 52 symbols (the symbols themselves are not given in the test). Parse rejections (uri.rs:539-554): `https://example.com/` is `NotSpineScheme`; `spine://ftp:whatever/` is `UnknownAuthorityKind`; `spine://did:mzxw6/` is `InvalidAuthority`; `spine://` is an error.
+The Rust test pins the layout two ways: it compares `signing_bytes()` byte for byte with the vector, and, because Ed25519 is deterministic, re-signs the deserialised record with the vector's seed and compares the signature. It also compares `serde_json::to_value(&record)` with `records[].json`.
 
-Name behaviours with literal inputs: `spine://cap:Web.Search/` parses to term `web.search` (uri.rs:505); `spine://host:node.example.org:9440/` gives host `node.example.org`, port 9440, and without `:9440` gives no port (uri.rs:513-527); `/a//b/./c` and `/a/b/x/../c` both normalise to `/a/b/c` and share a key (uri.rs:557-564); `/../../etc/passwd` becomes `/etc/passwd` (uri.rs:567-571); `?b=2&a=1` prints as `?a=1&b=2` (uri.rs:574-581); `join` cases on base path `/tools/search`: `index` gives `/tools/index`, `../about` gives `/about`, `/top` gives `/top` (uri.rs:593-613).
-
-Record behaviours with literal inputs (record.rs:432-456): published_at 1000, ttl 60 gives `expires_at` 1060; fresh at 1059, expired at 1060; remaining 30 at 1030 and 0 at 9999. Ordering: (seq 2, t 1000) supersedes (seq 1, t 1000); (seq 2, t 2000) supersedes (seq 2, t 1000); a record does not supersede itself.
-
-### 6.2 Vectors that must be generated (none exist in the repository)
-
-Do not treat any of these as known until produced by a reference run and reviewed:
-
-1. Public key and 52-symbol `did:` string for a fixed Ed25519 seed (suggest seed `[1u8; 32]`, which the tests already use).
-2. SHA-256 routing key of `spine://did:<...>/` and of a name with a path, and of `cap:web.search`, each in hex and base32 (confirms 2.6 including the `cap:` derivation).
-3. `blob_of(b"hello agents")` name string.
-4. Full `signing_bytes` hex for a minimal record (no endpoints, no capabilities, no content hash, no links, no meta) and for a record using every field including a non-default priority, a `None` and a `Some` content hash, a link, and two meta keys inserted in reverse order.
-5. The Ed25519 signature (hex, and JSON base32) over each of those; Ed25519 is deterministic, so the value is stable.
-6. Negative vectors: tampered field per field, wrong-length signature, signature under a different name, trailing-bit-set 52-symbol `did:` string (to pin the behaviour in 2.5), non-ASCII input to `SpineUri::parse` (to settle 2.8), equal-(seq, published_at) conflicting records (to pin 3.6).
-7. XOR distance and bucket index examples for named keys (key.rs tests assert only relations and the two extreme bucket indexes 255 and 0 for keys differing in the top and bottom bit).
+Not covered by vectors: distance and bucket arithmetic (key.rs tests assert relations and the extreme indexes), `join`, equal-`(seq, published_at)` conflicts, and the resolution and replication behaviour of sections 4 and 5.
 
 ## 7. What is not defined in this layer
 
@@ -348,7 +337,7 @@ Target design reference: docs/FIRST_PRINCIPLES.md layer 2 and layer 6. Each item
 
 ### 8.3 Human-meaningful labels and attestations: absent
 
-- The namespace has four authority kinds, none of which is a label (uri.rs:36-50). The only free text is `meta` (signed but self-asserted, record.rs:80-81), `Link.title` (unsigned, link.rs:99-100) and `cap:` terms (record.rs:68).
+- The namespace has four authority kinds, none of which is a label (uri.rs:36-50). The only free text is `meta` (signed but self-asserted, record.rs:80-81), `Link.title` (signed since layout v2, link.rs: `Link`) and `cap:` terms (record.rs:68).
 - No attestation object, no verifier of third-party claims, no petname or label-to-key binding exists. Searched for attest: the only hits are `is_attested`, which means "has a signature that verifies" (record.rs:144-146, resolver.rs:68-70), a different concept.
 
 ### 8.4 Sybil and admission cost for `cap:` publishing: absent
@@ -368,16 +357,16 @@ Target design reference: docs/FIRST_PRINCIPLES.md layer 2 and layer 6. Each item
 
 | # | Finding | Reference |
 | --- | --- | --- |
-| a | Parser may panic on non-ASCII input (section 2.8) | uri.rs:187-191, 346 |
+| a | Parser panic on non-ASCII input: resolved (section 2.8) | uri.rs: `parse`, `join` |
 | b | Negative cache does not prevent repeated mesh walks (section 4.6) | main.rs:478, resolver.rs:317 |
 | c | "Absent" reported when all known peers were unreachable (section 4.7) | naming_mesh.rs:855-857, main.rs:492-499 |
-| d | Equal `(seq, published_at)` conflicting records do not converge (section 3.6) | record.rs:304-306, store.rs:117 |
-| e | `Link.title` and `Link.capabilities` are outside the signature | record.rs:232-238, link.rs:99-106 |
-| f | Strings in `signing_bytes` are NUL-terminated, not length-prefixed | record.rs:200-248 |
+| d | Equal `(seq, published_at)` conflicting records did not converge: resolved by the signature tiebreak (section 3.6) | record.rs: `supersedes` |
+| e | `Link.title` and `Link.capabilities` were outside the signature: resolved, signed since layout v2 (section 3.3) | record.rs: `signing_bytes` |
+| f | Strings in `signing_bytes` were NUL-terminated: resolved, length-prefixed since layout v2 (section 3.3) | record.rs: `signing_bytes` |
 | g | Cache accepts an older valid record over a newer one | cache.rs:140-154, resolver.rs:251 |
 | h | Lookup does not check that a returned record is unexpired | naming.rs:319-329 |
 | i | Envelope signature is taken over `serde_json` output, the construct `signing_bytes` avoids for records | mesh.rs:916-924 |
-| j | `verify` rather than `verify_strict` | record.rs:280 |
+| j | `verify` rather than `verify_strict`: resolved (section 3.4) | record.rs: `verify` |
 | k | Record store capacity is count-based only; no byte or field-count limits | store.rs:39, record.rs |
 | l | `host:` parsing treats a bare IPv6 address as host plus port | uri.rs:104-106 |
 
@@ -386,10 +375,22 @@ Target design reference: docs/FIRST_PRINCIPLES.md layer 2 and layer 6. Each item
 | Item | Looked in |
 | --- | --- |
 | Whether a record is size-limited before JSON parsing at the origin or in mesh ingress | naming.rs, naming_mesh.rs, spine-name (no check found; frame limit 4 MiB in mesh_tcp.rs:62 only) |
-| Whether a concrete NUL-injection collision exists in `signing_bytes` | record.rs (analysis only; none constructed) |
-| Whether non-ASCII input to `SpineUri::parse` actually panics | uri.rs (by reading the standard library contract; not run) |
 | Who calls `LocalResolver::sweep` on a schedule | namespace.rs, main.rs |
 | Whether the transport binds a peer's claimed `agent_id` to its public key | identity.rs, mesh_tcp.rs (mesh.rs:734 verifies only against the key the message carries) |
 | Behaviour of capability lookup at network scale | naming_mesh.rs tests read only to function level |
 | Behaviour when two names differing only in query are published to the persistent resolver | resolver.rs:198-240 |
 | The wire encoding used by the QUIC and WebSocket mesh transports | mesh_tcp.rs only for TCP: JSON frames; other transport files not read |
+
+## 9. Open issues
+
+Each item was checked against the source when this section was written.
+
+1. `Rel::Other("child")` signs identically to `Rel::Child` (link.rs: `Rel::as_str`; record.rs: `signing_bytes`). Deserialisation now normalises the alias (`Rel::other`), but the variant is public, so Rust code can still build `Other("child")`, which is then a distinct value that compares unequal to `Child` and signs the same. Making `Other` unconstructible (private field or a newtype) would close it.
+2. The base32 decoder used to accept non-zero trailing bits, giving several spellings of one key. Fixed (base32.rs: `decode`); retained here because any other implementation MUST do the same, and `invalid_names` pins it.
+3. The routing key has no domain separation: it is a bare SHA-256 of `spine://` + authority + path (uri.rs: `SpineUri::key`), in a keyspace shared with node ids that are raw Ed25519 keys (key.rs: `NameKey::from_bytes`). It excludes the query and fragment while the signed name (record.rs: `signing_bytes`) includes them, so records for names that differ only there collide in the store's by-key map (store.rs: `put`). The persisted row key is the full canonical name string (resolver.rs: `LocalResolver::publish`, `persistent`), unlike the in-memory key, so the two views of "one name" differ.
+4. `capability_key(term)` in spine-mesh hashes `"cap:" + term` (naming.rs: `capability_key`) while `SpineUri::capability(term).key()` hashes `"spine://cap:" + term + "/"` (uri.rs: `SpineUri::key`). Two different points in the keyspace for one capability.
+5. Lengths are written with `as u32` (record.rs: `signing_bytes`, `put_str`, `put_count`; lib.rs: `resource_id`), which truncates silently above 4 GiB (or above 2^32 elements). Not reachable for records that pass `validate_size`, but nothing forces that call.
+6. `validate_size` is not called inside `sign` or `verify` (record.rs). A peer can sign an enormous record and `verify` will accept it; ingress code must call `validate_size` first.
+7. One Ed25519 key signs name records, mesh envelopes (spine-mesh mesh.rs: `ENVELOPE_SIG_DOMAIN`, `spine-mesh-envelope-v2\0`) and the session handshake (spine-session handshake.rs: `LABEL_INITIATOR`, `spine-mesh-hs-v1/initiator`), separated only by those prefixes. Record and envelope prefixes both end in a NUL after a version; the handshake label has no NUL. The domains are distinct, but a single key compromise breaks all three and the prefixes are the only separation.
+8. A `cap:` term is not validated beyond non-empty, no whitespace, no `/`; a `host:` is not validated as a host; an IPv6 literal without brackets mis-parses (8.6 l).
+
