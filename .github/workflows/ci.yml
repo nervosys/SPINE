@@ -103,6 +103,23 @@ jobs:
       - name: Run tests (lib + integration)
         run: cargo test --workspace --exclude spine-browser --lib --tests
 
+  # ── Wire vectors ────────────────────────────────────────────────────────────
+  # The spine-wire v1 conformance vectors are checked by an independent
+  # implementation written in Python (standard library only). No other job
+  # uses Python, so this uses the runner's preinstalled python3 rather than a
+  # setup action. The Rust side of the check is
+  # src/spine-protocol/tests/conformance_vectors.rs, run by the test job.
+  wire-vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check every vector with the Python reference implementation
+        run: python3 scripts/wire_v1.py check docs/spec/00-wire.vectors.json
+
+      - name: The committed vectors match the generator
+        run: python3 scripts/wire_v1.py generate | diff - docs/spec/00-wire.vectors.json
+
   # ── Security Audit ─────────────────────────────────────────────────────────
   audit:
     runs-on: ubuntu-latest
