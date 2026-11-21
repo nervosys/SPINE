@@ -501,6 +501,10 @@ where
         Ok(result)
     }
 
+    /// Request a latent representation of the current page.
+    ///
+    /// Needs a daemon built with the `research` feature; a research-free daemon
+    /// answers with an `unsupported_without_research` error.
     pub async fn get_latent_ur(&mut self, dimensions: usize) -> anyhow::Result<Vec<f32>> {
         let res = self
             .send_request(BrowserCommand::GetLatentUR { dimensions })
@@ -526,6 +530,11 @@ where
         Ok(rx)
     }
 
+    /// Morph the protocol framing.
+    ///
+    /// A daemon built without the `research` feature still morphs the framing in
+    /// its connection loop, but its command dispatcher answers
+    /// `unsupported_without_research`; the full command needs the `research` feature.
     pub async fn morph(&mut self) -> anyhow::Result<()> {
         let res = self.send_request(BrowserCommand::Morph).await?;
         if let Some(err) = res.error {
@@ -552,6 +561,10 @@ where
         Ok(res.result.unwrap_or_default())
     }
 
+    /// Transfer the session to another cluster node.
+    ///
+    /// Needs a daemon built with the `research` feature; a research-free daemon
+    /// answers with an `unsupported_without_research` error.
     pub async fn transfer_session(&mut self, target_node_id: uuid::Uuid) -> anyhow::Result<()> {
         let res = self
             .send_request(BrowserCommand::TransferSession { target_node_id })
@@ -777,6 +790,10 @@ where
         Ok(())
     }
 
+    /// Transmit data over the neural protocol.
+    ///
+    /// Needs a daemon built with the `research` feature; a research-free daemon
+    /// answers with an `unsupported_without_research` error.
     pub async fn transmit_neural(
         &mut self,
         data: &[u8],
@@ -801,6 +818,10 @@ where
         Ok(stats)
     }
 
+    /// Fetch the agentic runtime state.
+    ///
+    /// Needs a daemon built with the `research` feature; a research-free daemon
+    /// answers with an `unsupported_without_research` error.
     pub async fn get_agentic_state(&mut self) -> anyhow::Result<serde_json::Value> {
         let res = self.send_request(BrowserCommand::GetAgenticState).await?;
         if let Some(err) = res.error {

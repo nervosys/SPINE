@@ -52,8 +52,8 @@ jobs:
           cargo clippy -p spine-protocol --no-default-features --all-targets -- -D warnings
           cargo clippy -p spine-protocol --no-default-features --features quic --all-targets -- -D warnings
 
-      - name: Clippy (spine-core without research code)
-        run: cargo clippy -p spine-core --no-default-features --all-targets -- -D warnings
+      - name: Clippy (spine-core with research code)
+        run: cargo clippy -p spine-core --features research --all-targets -- -D warnings
 
       - name: Clippy (spine-mesh alone)
         run: cargo clippy -p spine-mesh --all-targets -- -D warnings

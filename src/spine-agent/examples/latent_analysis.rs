@@ -2,6 +2,10 @@
 //!
 //! Demonstrates extracting latent (neural embedding) representations
 //! of web pages and computing semantic similarity between them.
+//!
+//! Needs a `spine-core` daemon built with the `research` feature
+//! (`cargo run -p spine-core --features research`); a default daemon answers
+//! `unsupported_without_research`.
 
 use anyhow::Result;
 use spine_agent::AgentClient;

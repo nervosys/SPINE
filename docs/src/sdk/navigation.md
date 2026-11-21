@@ -60,7 +60,7 @@ client.type_text("search-input", "hello world").await?;
 
 ## Latent Vectors
 
-Extract neural embeddings of page content:
+Extract neural embeddings of page content. This needs a daemon built with the `research` feature (`cargo build -p spine-core --features research`); the default daemon answers `unsupported_without_research`:
 
 ```rust
 let latent = client.get_latent_ur(256).await?;

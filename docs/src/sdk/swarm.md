@@ -34,7 +34,7 @@ client.execute_plan_task(plan_id, task_id).await?;
 
 ## Session Transfer
 
-Move a session to another cluster node:
+Move a session to another cluster node. This needs a daemon built with the `research` feature (`cargo build -p spine-core --features research`); the default daemon answers `unsupported_without_research`:
 
 ```rust
 client.transfer_session(target_node_id).await?;

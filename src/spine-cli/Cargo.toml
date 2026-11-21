@@ -39,3 +39,12 @@ tokio-rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+# `spine deploy` and `spine-core` run the sibling `spine-core` binary, which is
+# research-free unless it is built with `research`. This feature forwards it, so
+# `cargo build --release -p spine-core -p spine-cli --features spine-cli/research`
+# builds both against one research-enabled `spine-core` (workspace resolver 2
+# unifies the feature across the selected packages). Off by default.
+research = ["spine-core/research"]

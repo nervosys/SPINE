@@ -74,6 +74,8 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
 - **Long-Term Memory**: Persistent knowledge base with tagging, querying, and cross-cluster synchronization.
 
+The adaptive-protocol, latent, cluster-swarm and human-transpile features are in the `spine-core` daemon only when it is built with `--features research`; the default daemon is research-free (see [docs/NATIVE_OPERATIONS.md](docs/NATIVE_OPERATIONS.md)).
+
 ## The Namespace: `spine://`
 
 A stack is not a web until resources have **names** — something to refer to a
@@ -717,7 +719,7 @@ SPINE is designed for high-performance native deployment in distributed clusters
 
 ### Quick Start (Local Cluster)
 
-The easiest way to deploy a local SPINE cluster is using the provided deployment script:
+The easiest way to deploy a local SPINE cluster is using the provided deployment script, which builds the daemon with `--features research` because cluster swarm is part of the research feature (the default daemon is research-free):
 
 ```bash
 # Start a 3-node local cluster (1 seed, 2 worker nodes)
@@ -742,6 +744,8 @@ cargo build --release -p spine-core
 # Run the server
 ./target/release/spine-core
 ```
+
+The default `spine-core` is built without the `research` feature: cluster swarm, `GetLatentUR`, `Morph` (command dispatcher), `TransferSession`, `NeuralTransmit` and `GetAgenticState` are compiled out and answer `unsupported_without_research`, and `Search` is local only. Add `--features research` to the `cargo build` line for them. See [Build with research features](docs/NATIVE_OPERATIONS.md#build-with-research-features).
 
 ### Environment Variables
 

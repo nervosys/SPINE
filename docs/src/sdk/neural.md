@@ -48,6 +48,8 @@ client.morph().await?;
 
 This evolves the protocol's frame structure using genetic algorithms for active defense.
 
+The command dispatcher of a daemon built without the `research` feature answers `unsupported_without_research`; build with `--features research` for the full command.
+
 ## Speculation Stats
 
 Check how well the predictor is performing:
