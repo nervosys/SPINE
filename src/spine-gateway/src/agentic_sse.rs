@@ -367,20 +367,27 @@ pub async fn capabilities() -> Json<serde_json::Value> {
 // Neural codec endpoints
 // ---------------------------------------------------------------------------
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
-use spine_protocol::{CodecRegistry, EmbeddingInput, EmbeddingRequest, TitansLatentCodec};
+use spine_protocol::{CodecRegistry, EmbeddingInput, EmbeddingRequest};
 
-/// Process-wide codec registry. Lazily initialised on first access with
-/// the default `TitansLatentCodec` (256-dim, f32). Production deployments
-/// pre-populate via [`spine_protocol::CodecRegistry::register`] at start
-/// up — once you hold an `Arc<CodecRegistry>`, registration is
-/// concurrent-safe.
+/// Process-wide codec registry. Lazily initialised on first access.
+///
+/// With the `research` feature it starts with the default
+/// `TitansLatentCodec` (256-dim, f32). Without it (the default build) the
+/// registry starts empty: `GET /v1/agentic/codecs` lists nothing and
+/// `POST /v1/embeddings` answers `503` until the deployment registers a
+/// codec. Production deployments pre-populate via
+/// [`spine_protocol::CodecRegistry::register`] at start up — once you hold
+/// an `Arc<CodecRegistry>`, registration is concurrent-safe.
 pub fn registry() -> &'static CodecRegistry {
     static REG: OnceLock<CodecRegistry> = OnceLock::new();
     REG.get_or_init(|| {
         let r = CodecRegistry::new();
-        r.register(Arc::new(TitansLatentCodec::new(256)));
+        #[cfg(feature = "research")]
+        r.register(std::sync::Arc::new(spine_protocol::TitansLatentCodec::new(
+            256,
+        )));
         r
     })
 }
@@ -393,8 +400,16 @@ pub struct EmbeddingsHttpReq {
     pub model: String,
 }
 
+/// The model used when a request omits `model`. With `research` it names the
+/// Titans codec; without it there is no built-in codec, so the default is
+/// empty and resolves to the registry's first codec (or a `503` when none is
+/// registered).
 fn default_embed_model() -> String {
-    "spine:codec/titans/v1@dim=256,dtype=f32".into()
+    #[cfg(feature = "research")]
+    let model = "spine:codec/titans/v1@dim=256,dtype=f32";
+    #[cfg(not(feature = "research"))]
+    let model = "";
+    model.into()
 }
 
 /// `POST /v1/embeddings` — OpenAI-shaped wrapper around
@@ -411,6 +426,15 @@ fn default_embed_model() -> String {
 #[tracing::instrument(skip_all, fields(model = %req.model))]
 pub async fn embeddings(
     Json(req): Json<EmbeddingsHttpReq>,
+) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    embeddings_with(registry(), req)
+}
+
+/// [`embeddings`] against an explicit registry. Answers `503 no codecs
+/// registered` when `reg` is empty.
+fn embeddings_with(
+    reg: &CodecRegistry,
+    req: EmbeddingsHttpReq,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     use axum::http::StatusCode;
 
@@ -449,16 +473,16 @@ pub async fn embeddings(
     // Resolve codec — fall back to the registry's first codec when the
     // client asked for one we don't have (keeps existing OpenAI SDK
     // smoke tests working with `text-embedding-3-large`).
-    let codec_id = if registry().get(&req.model).is_some() {
+    let codec_id = if reg.get(&req.model).is_some() {
         req.model.clone()
     } else {
-        registry().ids().first().cloned().ok_or((
+        reg.ids().first().cloned().ok_or((
             StatusCode::SERVICE_UNAVAILABLE,
             "no codecs registered".into(),
         ))?
     };
 
-    let codec = registry().get(&codec_id).expect("just resolved");
+    let codec = reg.get(&codec_id).expect("just resolved");
 
     // Encode each input.
     let texts: Vec<String> = match &spine_req.input {
@@ -591,6 +615,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "research")]
     #[tokio::test]
     async fn embeddings_endpoint_round_trip_via_titans() {
         // Single string input.
@@ -617,6 +642,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "research")]
     #[tokio::test]
     async fn embeddings_endpoint_handles_array_input() {
         let req = Json(EmbeddingsHttpReq {
@@ -632,6 +658,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "research")]
     #[tokio::test]
     async fn embeddings_endpoint_falls_back_to_registry_default() {
         // An OpenAI-style model name the gateway doesn't know — should
@@ -654,6 +681,104 @@ mod tests {
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
     }
 
+    #[cfg(not(feature = "research"))]
+    #[tokio::test]
+    async fn embeddings_endpoint_without_research_is_503() {
+        // Default build: no codec is registered, and an omitted model
+        // resolves to the empty default.
+        assert_eq!(default_embed_model(), "");
+        let req = Json(EmbeddingsHttpReq {
+            input: json!("hi"),
+            model: default_embed_model(),
+        });
+        let err = embeddings(req).await.unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(err.1, "no codecs registered");
+    }
+
+    #[cfg(not(feature = "research"))]
+    #[tokio::test]
+    async fn codecs_endpoint_without_research_is_empty() {
+        let ad = codecs().await.0;
+        assert_eq!(ad["agent_id"], "spine-gateway");
+        assert!(ad["codecs"].as_array().unwrap().is_empty());
+    }
+
+    /// Tiny codec that maps every input to four little-endian f32s.
+    struct TestCodec;
+
+    impl spine_protocol::NeuralCodec for TestCodec {
+        fn id(&self) -> &str {
+            "test:codec/fixed@dim=4"
+        }
+
+        fn describe(&self) -> spine_protocol::CodecDescriptor {
+            spine_protocol::CodecDescriptor {
+                id: self.id().into(),
+                description: "fixed test codec".into(),
+                direction: spine_protocol::CodecDirection::Encode,
+                modality: spine_protocol::Modality::Text,
+                embedding_dim: Some(4),
+                vocab_size: None,
+                dtype: spine_protocol::DType::F32,
+                semantic_embedding: None,
+            }
+        }
+
+        fn encode(
+            &self,
+            input: &[u8],
+        ) -> Result<spine_protocol::EncodedFrame, spine_protocol::CodecError> {
+            let data: Vec<u8> = [1.0f32, 2.0, 3.0, input.len() as f32]
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect();
+            Ok(spine_protocol::EncodedFrame {
+                codec: self.id().into(),
+                variant: None,
+                data,
+                metadata: spine_protocol::EncodedMetadata {
+                    modality: spine_protocol::Modality::Embedding,
+                    shape: vec![4],
+                    dtype: spine_protocol::DType::F32,
+                    original_len: None,
+                    source_hash: None,
+                },
+                trace: None,
+            })
+        }
+
+        fn decode(
+            &self,
+            _frame: &spine_protocol::EncodedFrame,
+        ) -> Result<Vec<u8>, spine_protocol::CodecError> {
+            Err(spine_protocol::CodecError::EncodeOnly(self.id().into()))
+        }
+    }
+
+    #[test]
+    fn embeddings_with_explicit_registry() {
+        let req = |model: &str| EmbeddingsHttpReq {
+            input: json!("abc"),
+            model: model.into(),
+        };
+
+        // An empty registry is a 503, not a panic.
+        let empty = CodecRegistry::new();
+        let err = embeddings_with(&empty, req("anything")).unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+
+        // A registered codec serves its own id, and unknown ids fall back to it.
+        let reg = CodecRegistry::new();
+        reg.register(std::sync::Arc::new(TestCodec));
+        for model in ["test:codec/fixed@dim=4", "", "text-embedding-3-large"] {
+            let resp = embeddings_with(&reg, req(model)).expect("ok").0;
+            assert_eq!(resp["model"], "test:codec/fixed@dim=4");
+            assert_eq!(resp["data"][0]["embedding"], json!([1.0, 2.0, 3.0, 3.0]));
+        }
+    }
+
+    #[cfg(feature = "research")]
     #[tokio::test]
     async fn codecs_endpoint_returns_advertisement() {
         let ad = codecs().await.0;

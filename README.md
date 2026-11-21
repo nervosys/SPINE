@@ -275,6 +275,8 @@ POST /v1/embeddings                    → OpenAI-shaped embedding response, com
 GET  /v1/agentic/codecs                → CodecAdvertisement of registered encoder/decoder pairs
 ```
 
+The default gateway build registers no codec: `GET /v1/agentic/codecs` lists none and `POST /v1/embeddings` answers `503 no codecs registered` until your deployment registers one on `agentic_sse::registry()`. Build with `--features research` to pre-register `TitansLatentCodec` (256-dim, f32) and default `model` to it.
+
 `StreamEndReason` is the exact OpenAI/Anthropic finish-reason taxonomy (`stop`, `length`, `tool_calls`, `content_filter`, `cancelled`, `error`), so an existing SDK switches over a SPINE stream with no translator.
 
 ## Neural Encoder-Decoder Protocols

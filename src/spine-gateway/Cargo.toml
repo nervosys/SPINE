@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 spine-name = { path = "../spine-name", version = "2.0.2" }
 spine-agent = { path = "../spine-agent", version = "2.0.2" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-features = false }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 spine-core = { path = "../spine-core", version = "2.0.2" }
@@ -45,6 +45,13 @@ rustls = { workspace = true }
 
 [features]
 default = []
+
+# Restore the research codec: the process-wide registry is pre-populated with
+# `TitansLatentCodec` (256-dim, f32) and `POST /v1/embeddings` defaults to it.
+# Needs spine-neural and spine-crypto via `spine-protocol/research`. Without
+# it the registry starts empty (codecs list is empty, embeddings answer 503
+# until the deployment registers a codec).
+research = ["spine-protocol/research"]
 
 # Compile spine-gateway against the FIPS-shaped rustls provider stack.
 #
