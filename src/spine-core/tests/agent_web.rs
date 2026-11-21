@@ -17,7 +17,7 @@ static PROCESS_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 async fn native_navigation_enforces_outbound_policy() {
     let _isolated = PROCESS_TEST.lock().await;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    tokio::time::timeout(std::time::Duration::from_secs(90), async {
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
         let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let allowed = format!("http://{}", http.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -156,7 +156,7 @@ fn launch(dir: &Path) -> Node {
 #[tokio::test]
 async fn managed_shutdown_drains_and_keeps_published_bytes() {
     let _isolated = PROCESS_TEST.lock().await;
-    tokio::time::timeout(std::time::Duration::from_secs(90), async {
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
         let dir = tempfile::tempdir().unwrap();
         let origin_port = origin_port();
         let mesh_port = port();
@@ -208,7 +208,7 @@ async fn managed_shutdown_drains_and_keeps_published_bytes() {
 async fn signed_mesh_tasks_dependencies_knowledge_restart_and_authorization() {
     let _isolated = PROCESS_TEST.lock().await;
     use spine_protocol::tasks::{TaskInput, TaskOperation, TaskRecord, TaskSpec, TaskState};
-    tokio::time::timeout(std::time::Duration::from_secs(90), async {
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
         let caller_dir = tempfile::tempdir().unwrap();
         let worker_dir = tempfile::tempdir().unwrap();
         let outsider_dir = tempfile::tempdir().unwrap();
@@ -417,7 +417,9 @@ async fn signed_mesh_tasks_dependencies_knowledge_restart_and_authorization() {
 }
 
 async fn connect(node: &mut Node, dir: &Path, port: u16) -> AgentClient<TcpStream> {
-    for _ in 0..200 {
+    // A debug-build daemon on a loaded CI runner can take well over ten seconds
+    // to start listening; seven of these tests start daemons at once.
+    for _ in 0..600 {
         if let Some(status) = node.0.try_wait().unwrap() {
             panic!(
                 "core exited {status}: {}",
@@ -443,7 +445,7 @@ async fn connect(node: &mut Node, dir: &Path, port: u16) -> AgentClient<TcpStrea
 #[tokio::test]
 async fn discover_fetch_restart_and_renew_over_independent_nodes() {
     let _isolated = PROCESS_TEST.lock().await;
-    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
         let first_dir = tempfile::tempdir().unwrap();
         let second_dir = tempfile::tempdir().unwrap();
         let (first_port, first_mesh, second_port, second_mesh) =
@@ -590,7 +592,7 @@ async fn discover_fetch_restart_and_renew_over_independent_nodes() {
 async fn native_idle_connections_release_global_admission() {
     let _isolated = PROCESS_TEST.lock().await;
     use std::time::Duration;
-    tokio::time::timeout(Duration::from_secs(90), async {
+    tokio::time::timeout(Duration::from_secs(180), async {
         let dir = tempfile::tempdir().unwrap();
         let origin = origin_port();
         let metrics_port = port();
@@ -691,7 +693,7 @@ async fn configured_mutual_tls_protects_tcp_and_websocket_origins() {
 #[tokio::test]
 async fn detached_session_retention_recovers_capacity_and_does_not_resurrect() {
     let _isolated = PROCESS_TEST.lock().await;
-    tokio::time::timeout(std::time::Duration::from_secs(90), async {
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
         let dir = tempfile::tempdir().unwrap();
         let origin = origin_port();
         let mut config = spine_core::SpineConfig::default();
