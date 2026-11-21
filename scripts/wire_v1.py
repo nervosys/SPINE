@@ -1604,6 +1604,15 @@ def make_handshakes():
                                           "body": {"versions": [1], "max_frame": 1024, "extensions": [1]}}, note=schema)
     add("invalid_body_is_array", {"type": "HELLO", "request_id": 0, "flags": 0, "body": [1]}, note=schema)
     add("invalid_body_is_null", {"type": "HELLO", "request_id": 0, "flags": 0, "body": None}, note=schema)
+    # Non-text keys (section 5 rule 9). Each is a HELLO with every required field, so the
+    # key is the only defect; a byte-string key spelling a field name must not stand in for it.
+    tail = "69 6d 61 78 5f 66 72 61 6d 65 19 04 00 6a 65 78 74 65 6e 73 69 6f 6e 73 80"
+    add("invalid_body_integer_key", raw("a4 00 01 68 76 65 72 73 69 6f 6e 73 81 01 " + tail),
+        note="a map key that is not text: protocol_violation (section 5 rule 9)")
+    add("invalid_body_unknown_byte_string_key", raw("a4 41 78 01 68 76 65 72 73 69 6f 6e 73 81 01 " + tail),
+        note="a byte-string key is not ignored as an unknown key: protocol_violation (section 5 rule 9)")
+    add("invalid_body_byte_string_key_spells_a_field", raw("a3 48 76 65 72 73 69 6f 6e 73 81 01 " + tail),
+        note="a byte-string key spelling 'versions' does not supply that field: protocol_violation (section 5 rule 9)")
     add("invalid_body_indefinite_map", raw("bf ff"), note="a CBOR rule failure in the body is malformed_frame (section 7.3)")
     add("invalid_body_trailing_bytes", raw("a0 00"), note="trailing bytes: malformed_frame (section 7.3)")
     add("invalid_body_unsorted_keys", raw("a2 61 62 01 61 61 02"), note="unsorted keys: malformed_frame (section 7.3)")

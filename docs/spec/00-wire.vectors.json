@@ -1755,6 +1755,81 @@
     },
     {
       "expect": {
+        "code": "protocol_violation",
+        "result": "close",
+        "supported": null
+      },
+      "hello_frame": "000000320101000000000000000000a400016876657273696f6e738101696d61785f6672616d651904006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body_hex": "a4 00 01 68 76 65 72 73 69 6f 6e 73 81 01 69 6d 61 78 5f 66 72 61 6d 65 19 04 00 6a 65 78 74 65 6e 73 69 6f 6e 73 80",
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "invalid_body_integer_key",
+      "note": "a map key that is not text: protocol_violation (section 5 rule 9)"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close",
+        "supported": null
+      },
+      "hello_frame": "000000330101000000000000000000a44178016876657273696f6e738101696d61785f6672616d651904006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body_hex": "a4 41 78 01 68 76 65 72 73 69 6f 6e 73 81 01 69 6d 61 78 5f 66 72 61 6d 65 19 04 00 6a 65 78 74 65 6e 73 69 6f 6e 73 80",
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "invalid_body_unknown_byte_string_key",
+      "note": "a byte-string key is not ignored as an unknown key: protocol_violation (section 5 rule 9)"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close",
+        "supported": null
+      },
+      "hello_frame": "000000300101000000000000000000a34876657273696f6e738101696d61785f6672616d651904006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body_hex": "a3 48 76 65 72 73 69 6f 6e 73 81 01 69 6d 61 78 5f 66 72 61 6d 65 19 04 00 6a 65 78 74 65 6e 73 69 6f 6e 73 80",
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "invalid_body_byte_string_key_spells_a_field",
+      "note": "a byte-string key spelling 'versions' does not supply that field: protocol_violation (section 5 rule 9)"
+    },
+    {
+      "expect": {
         "code": "malformed_frame",
         "result": "close",
         "supported": null

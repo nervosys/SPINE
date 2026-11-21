@@ -21,10 +21,11 @@
 
 use std::collections::HashSet;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use crate::cbor::{self, CborError};
 use crate::frame::{CloseCode, Frame, FrameType, MAX_FRAME};
+use crate::wirefmt::reject_null;
 
 /// Smallest `max_frame` a `HELLO` or `HELLO_ACK` may carry (C.6).
 pub const MIN_MAX_FRAME: u32 = 1024;
@@ -34,16 +35,6 @@ pub const MAX_AGENT_LEN: usize = 128;
 
 /// Largest extension id, in bytes (C.10).
 pub const MAX_EXTENSION_ID_LEN: usize = 128;
-
-/// Deserialises an optional field so that a present `null` is rejected
-/// (C.5 rule 7). A missing key is handled by `#[serde(default)]`.
-fn reject_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
-}
 
 /// The `CLOSE` body for a body that failed to encode or decode.
 fn body_error(error: &CborError) -> Close {
@@ -140,7 +131,29 @@ fn decode_body<T: serde::de::DeserializeOwned>(
             ),
         ));
     }
+    require_text_keys(&frame.body)?;
     cbor::from_slice(&frame.body).map_err(|e| body_error(&e))
+}
+
+/// Rejects a body whose top-level map has a key that is not text. serde's
+/// field identifiers accept a byte string as a name (ciborium
+/// `deserialize_identifier`), so `{h'6d61785f6672616d65': ...}` would otherwise
+/// decode as `max_frame`, and an open type would silently ignore any other
+/// non-text key. A body that is not deterministic CBOR, or not a map, passes
+/// here and fails in the typed decode with its own code.
+fn require_text_keys(body: &[u8]) -> Result<(), Close> {
+    if let Ok(ciborium::Value::Map(entries)) = cbor::from_slice::<ciborium::Value>(body) {
+        if entries
+            .iter()
+            .any(|(key, _)| !matches!(key, ciborium::Value::Text(_)))
+        {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                "a body key is not text",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The body of a `HELLO` frame (C.6). An open type: unknown keys are ignored.
@@ -635,6 +648,52 @@ mod tests {
             ("message", text("x")),
             ("extra", vec![0x01]),
         ]);
+        let err = Close::from_frame(&frame_of(FrameType::Close, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    /// `valid` is a map of three entries; this puts `key` and `value` first
+    /// (a non-text key sorts before every text key) in a four-entry map.
+    fn with_leading_entry(valid: &[u8], key: &[u8], value: &[u8]) -> Vec<u8> {
+        let mut out = vec![valid[0] + 1];
+        out.extend_from_slice(key);
+        out.extend_from_slice(value);
+        out.extend_from_slice(&valid[1..]);
+        out
+    }
+
+    #[test]
+    fn a_non_text_key_in_hello_hello_ack_or_close_is_a_protocol_violation() {
+        let hello_body = map_sorted(&[
+            ("versions", vec![0x81, 0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("extensions", vec![0x80]),
+        ]);
+        let ack_body = map_sorted(&[
+            ("version", vec![0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("max_inflight", vec![0x01]),
+            ("extensions", vec![0x80]),
+        ]);
+        let close_body = map_sorted(&[("code", text("timeout")), ("message", text("x"))]);
+        // An integer key and a byte-string key (h'78'), each with a value.
+        for (key, value) in [(vec![0x00], vec![0x01]), (vec![0x41, 0x78], vec![0x01])] {
+            let body = with_leading_entry(&hello_body, &key, &value);
+            let err = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap_err();
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+            let body = with_leading_entry(&ack_body, &key, &value);
+            let err = HelloAck::from_frame(&frame_of(FrameType::HelloAck, body)).unwrap_err();
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+            let body = with_leading_entry(&close_body, &key, &value);
+            let err = Close::from_frame(&frame_of(FrameType::Close, body)).unwrap_err();
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        }
+        // A byte-string key must not stand in for a field name: h'636f6465' is
+        // "code".
+        let mut body = vec![0xa2, 0x44, 0x63, 0x6f, 0x64, 0x65];
+        body.extend(text("timeout"));
+        body.extend(text("message"));
+        body.extend(text("x"));
         let err = Close::from_frame(&frame_of(FrameType::Close, body)).unwrap_err();
         assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
     }
