@@ -1,270 +1,47 @@
-# Wire: the native client to daemon protocol
+# spine-wire v1: the native client to daemon protocol
 
-Status: part A describes the code as built at commit `156f7e6` (branch `completion/agent-web`). Parts B to G are a proposal ("spine-wire v1") and are not implemented anywhere. Nothing was compiled or run to produce this document, with one exception: the two hex examples and the as-built size count in sections A.2 and C.12 were cross-checked with a throwaway Python script kept outside the repository. No SPINE code and no cargo command was run.
+Status: spine-wire v1, as implemented at `c33e52b` (branch `completion/agent-web`). Normative for the reference implementation (`src/spine-protocol`, the daemon in `src/spine-core`, the SDK in `src/spine-agent`). Not externally reviewed. Nothing in this revision was compiled or run except the two Python commands of section 15.1; every rule below names the function that enforces it, and a rule that could not be confirmed by reading is marked "unverified".
 
-Citations are `path:line` relative to the repository root. A statement without a citation is either a definition in this document or is marked "unverified". The ciborium crate source is not present on the development machine (`~/.cargo/registry` holds only the index), so every claim about ciborium's byte output is marked unverified.
+This document replaced an earlier one that described the pre-v1 wire (now Appendix A), proposed v1 (the text of sections 2 to 12), planned the migration (Appendix B) and listed open questions (Appendix C). Where the proposal and the implementation differed, the implementation is now the specification, or, when the implementation contradicts another rule of this document or looks like a defect, the behaviour is specified as implemented and listed in section 16. Section labels of the earlier document (`C.7`, `G11`, ...) still appear in source comments and other documents; Appendix D maps them to the sections below.
 
-Scope: the client to daemon path (SDK, CLI, gateway, bindings to `spine-core`). The node to node mesh path is a different protocol and is described only to say where it differs (A.1, C.11). Compatibility with earlier SPINE versions, HTTP and MCP is not a goal (`docs/FIRST_PRINCIPLES.md`, first paragraph).
+## 1. Conventions, scope and security non-goals
 
-Related: `docs/spec/01-session.md` section 4 describes the same framing at an older commit (`7f7d1fc`); several of its line numbers and one finding (the unbounded QUIC read) no longer hold. Where this document and that one disagree, this one is later and cites its lines.
+### 1.1 Conventions
 
-## A. As built
+The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are to be read as in RFC 2119 as clarified by RFC 8174, and only when in capitals. A statement without those words is a description of what the implementation does.
 
-### A.1 Who speaks the native wire
+Citations are `file` plus `function` or type, relative to `src/spine-protocol/src` unless a crate is named. Line numbers are not used. "The daemon" is `spine-core`; "the SDK" is `spine-agent` (`AgentClient`); "the reference" is `scripts/wire_v1.py`.
 
-| Party | Role | Transport | Cite |
-| --- | --- | --- | --- |
-| `spine-core` daemon | server | TCP (port 8080), WebSocket (port+1), QUIC (port+2, only when built with `--features quic`, which is off by default) | `src/spine-core/src/config.rs:221-224`, `src/spine-core/src/main.rs:2255-2323, 2441-2456, 2476-2487`, `src/spine-core/Cargo.toml` (`default = []`, `quic = ["spine-protocol/quic"]`) |
-| `spine-agent` SDK (`AgentClient`) | client | TCP, TCP+TLS (optional mTLS), WebSocket (`ws://` or `wss://`). No QUIC client. | `src/spine-agent/src/lib.rs:34-47, 107-218, 220-236` |
-| `spine-cli` | client via SDK | TCP, TLS, WebSocket | `src/spine-cli/src/commands/connect.rs:28,48`, `mcp.rs:30`, `tasks.rs:41`, `init.rs:88-199` |
-| `spine-gateway` | client via SDK | TCP only (`AgentClient::connect`) | `src/spine-gateway/src/main.rs:292`, `names.rs:280` |
-| `spine-ffi` (and Go through cgo) | client via SDK | TCP only (`AgentClient<TcpStream>`) | `src/spine-ffi/src/lib.rs:98-127`, `src/spine-go/spine.go:4,38-39` |
-| `spine-python` | client via SDK | TCP only. Not in the root workspace (`exclude`), so not built by the root CI jobs. | `src/spine-python/src/lib.rs:29,110,281-284`, root `Cargo.toml` (`exclude = ["src/spine-python", "src/spine-js", "research"]`) |
-| `spine-js`, `spine-wasm` | none | Offline parsing and compilation only. They import types, not the wire. | `src/spine-js/src/lib.rs:112-143`, `src/spine-wasm/src/lib.rs:20` |
-| Browser extension | speaks something else | JSON text over `ws://localhost:9800/ws` with `{type: ...}` objects. No listener on 9800 exists in `src/**/*.rs` (searched). It does not speak the native wire. | `extension/background.js:4,18,33,87` |
-| `research/spine-browser` | client via SDK | not in CI (`--exclude spine-browser`, `.github/workflows/ci.yml:106,109`) | `research/spine-browser/Cargo.toml:14` |
-| Mesh node to node | different protocol | TCP, u32 BE length, JSON `MeshEnvelope`, 4 MiB cap, optionally inside the `spine-session` AEAD record layer | `src/spine-mesh/src/mesh_tcp.rs:62,160-217`, `src/spine-session/src/handshake.rs:87-102,483-509` |
+All integers in frame headers are big-endian. "uint" means a CBOR unsigned integer, "text" a CBOR text string, "bytes" a CBOR byte string.
 
-`scripts/smoke_candidate.py` does not speak the native frame. It drives the CLI, opens bare sockets to test connection admission (it holds two idle TCP sockets and expects the third to be closed, `scripts/smoke_candidate.py:303-318`), and performs one raw TLS plus WebSocket upgrade request to test client-certificate policy (`:355-375`).
+### 1.2 Scope
 
-`src/spine-mesh/src/signed_frame.rs` (an Ed25519 signature over `wire::encode` output) is not on either path. Nothing outside its own tests calls `sign_frame` or `verify_frame` (searched `src` and `research`; `research/spine-agentic/src/lib.rs:83` re-exports the module).
+The client to daemon path: the SDK, the CLI, the gateway and the FFI, Go and Python bindings (all of which use the SDK) against `spine-core`. The node to node mesh path is a different protocol (JSON `MeshEnvelope` records, optionally inside the `spine-session` record layer) and is not described here. Compatibility with earlier SPINE wires, HTTP and MCP is not a goal (`docs/FIRST_PRINCIPLES.md`).
 
-### A.2 The layers, client to daemon and daemon to client
+### 1.3 Parties
 
-The framing is symmetric: both directions use the same `ProtocolHandler` (`src/spine-protocol/src/handler.rs:210-1039`). There is no handshake and no version exchange. The first byte on the connection is the first frame.
-
-Sender path of `ProtocolHandler::send_message`, which is what the daemon and the SDK use (daemon calls at `src/spine-core/src/main.rs:2562-2687`, SDK at `src/spine-agent/src/lib.rs:332-345`). Default build (`research` off), no cipher, no morph:
-
-```
-L1  cbor      ciborium::into_writer(Message)                             wire.rs:207-213
-L2  sp_body   'S' 'P' 0x01 0x02 || u32_be(len(L1)) || L1                  wire.rs:52-58,159-177,248-254
-L3  json      serde_json::to_vec(SpeculativeFrame{
-                payload: Full(L2 as Vec<u8>), next_prediction_hash: 0,
-                confidence: 0.0, speculation_depth: 1 })                  handler.rs:598-606, lib.rs:137-176
-              Vec<u8> serialises as a JSON array of decimal integers.
-L4  padded    apply_padding(L3) per morphology.padding_mode               handler.rs:614, 923-967
-L5  flagged   0x01 || zstd_level3(L4)   if len(L4) >= 64
-              0x00 || L4                otherwise                          handler.rs:616-627
-L6  sealed    L5, or nonce12 || AES-256-GCM(key, nonce, L5)
-              only after enable_encryption(); no production caller        handler.rs:633-645, 309-312
-L7  frame     length:u32 (BE if morphology.big_endian, else LE)
-              || frame_version:u8
-              || (header_size - 5) filler bytes, each = checksum_variant
-              || L6                                                       handler.rs:857-887
-```
-
-Default morphology, `ProtocolMorphology::new(0)` (`handler.rs:151-166`, used at `:291`): `frame_version = 0`, `header_size = 5`, `big_endian = true`, `checksum_variant = 0`, `padding_mode = None`, `hmac_key = [0; 32]`. So an unmorphed frame is `u32_be length || 0x00 || flag byte || zstd(...)`. The `length` covers only L6.
-
-Concrete size, `Message::Ping { timestamp: 42 }`, hand-counted and cross-checked with an outside script (unverified against Rust):
-
-| Layer | Bytes | Note |
+| Party | Role | Transports |
 | --- | --- | --- |
-| L1 CBOR | 19 | `a1 64 50 69 6e 67 a1 69 74 69 6d 65 73 74 61 6d 70 18 2a`, i.e. `{"Ping": {"timestamp": 42}}` if ciborium emits serde's external tagging as expected (unverified) |
-| L2 `SP` body | 27 | `53 50 01 02 00 00 00 13` + L1 |
-| L3 JSON | 177 | 87 fixed bytes of wrapper plus 90 bytes of array text |
-| L5 | 1 + zstd(177 bytes) | the zstd output size was not computed |
-| L7 | 5 + L5 | |
+| `spine-core` | server | TCP (`server.port`, default 8080), WebSocket (`port + ws_port_offset`, default 8081), QUIC (`port + quic_port_offset`, default 8082, only when built with `--features quic`) |
+| `spine-agent` `AgentClient` | client | TCP, TCP plus TLS (optional mutual TLS), WebSocket (`ws://`, `wss://`); any `AsyncRead + AsyncWrite` through `AgentClient::over`. No QUIC client. |
+| `spine-cli`, `spine-gateway`, `spine-ffi`, Go, Python | clients through the SDK | as the SDK; FFI and Go and Python use TCP only |
 
-Consequence: the wrapper alone is 87 bytes, so `len(L4) >= 64` is true for every frame on this path when padding is `None`, and the `0x00` raw branch is reachable only through `send_message_raw`. The compression "threshold" is therefore not a threshold on `send_message`.
+### 1.4 Security non-goals
 
-`send_message_raw` (`handler.rs:658-701`) is a second sender format: L2 directly (no L3 wrapper), then L4 to L7. It is used by tests, benches, `replay.rs:368` and `src/spine-agent/examples/offline_demo.rs`; no production caller (searched). The receiver accepts both (below).
+This layer provides no confidentiality, no peer authentication and no replay protection. A frame is plaintext inside whatever carries it. There is no field for a signature, a capability or a nonce, and adding one is a new version.
 
-Receiver path of `receive_message` (`handler.rs:704-831`), in order:
+Where protection comes from today:
 
-1. Read `header_size` bytes under the current morphology. The version byte and the filler bytes are read and ignored (`handler.rs:891-903`).
-2. Length field to `usize`; reject if over 16 MiB (`:905-913`). Then `read_buf.resize(len, 0)` and `read_exact` (`:915-919`).
-3. If a cipher is set: first 12 bytes are the nonce, AES-GCM decrypt, no AAD (`:713-721`). Otherwise skip.
-4. First byte: `0x01` means zstd, bounded by `wire::decode_zstd_limited(.., MAX_DECODED_FRAME_BYTES)`; any other value, including `0x02` to `0xff`, means "raw" and the byte is dropped (`:727-731`).
-5. `remove_padding` per morphology. It is lenient: invalid PKCS7 padding is returned unchanged, and Random and Chaotic modes truncate to whatever length the trailing bytes claim, clamped only by `total_padding <= data.len()` or `truncate(original_len)` (`:970-1009`).
-6. Try `serde_json::from_slice::<SpeculativeFrame>`. If it parses, pick the message bytes by variant: `Full(v)` uses `v`; `Confirmed` looks up `prediction_cache` and returns an error if absent (`:769-773`); `Partial` and `Batch` use `suffix` and `fallback` respectively (`:775-796`). Then `wire::decode` (`:799`).
-7. If step 6 fails for any reason, treat the whole buffer as a bare `SP` body and call `wire::decode` (`:814-830`).
-8. `wire::decode` itself: if the first two bytes are not `SP`, parse the whole buffer as a headerless JSON `Message` (`wire.rs:266-270`). With `SP`, require version 1 and an exact length match, then dispatch on format `0x01` JSON, `0x02` CBOR, `0x03` CBOR+zstd (`wire.rs:272-297`).
-9. If the message is `MorphRequest { seed }`, call `morph_now(seed)` (`handler.rs:802-804, 819-821`).
+- TLS 1.3 through rustls on the TCP and WebSocket listeners. It is off by default (`tls.enabled`), optionally with mutual TLS (`tls.mutual_tls`). There is no SPINE identity on this path: authentication is an X.509 client certificate or nothing.
+- A non-loopback `server.host` is refused at startup unless `tls.mutual_tls` is on or `server.allow_unauthenticated_remote` is set (`spine-core` `config.rs` `SpineConfig::validate`). Every connected client has full control of the node.
+- QUIC has no client authentication and its certificate is self-signed; startup with QUIC is refused when `tls.enabled` (`spine-core` `main.rs` `main`).
+- The mesh path runs a different handshake (`spine-session`: ML-KEM-768, Ed25519, AES-256-GCM) that has had no external review.
 
-So one logical message has many accepted byte encodings: headerless JSON; `SP` plus JSON, CBOR or CBOR+zstd; each optionally wrapped in any of four `SpeculativePayload` shapes; each padded and flagged in several ways. The receiver is maximally permissive and the sender is not canonical.
+Whether to run this wire over the `spine-session` handshake instead of TLS is an open question (Appendix C, G1). It stays open until that handshake is independently reviewed. The frame layer is agnostic: v1 frames would be the plaintext inside session records.
 
-Sender limits: `wire::encode` fails if the CBOR exceeds 16 MiB (`wire.rs:60,80-88,207-213`); `write_morphed_frame` fails if L6 exceeds 16 MiB (`handler.rs:858-861`); the write has a 30 second deadline after which the stream is shut down (`lib.rs:61-111`).
+## 2. Frame
 
-### A.3 Transports
-
-| Transport | What wraps the byte stream | Differences |
-| --- | --- | --- |
-| TCP | Optional rustls TLS (`main.rs:2441-2456`, `src/spine-core/src/tls.rs`, off by default: `config.rs` `TlsConfig::default`). A non-loopback bind requires mutual TLS or `allow_unauthenticated_remote` (`config.rs:414-416`). | None. The handler reads and writes the stream directly. |
-| WebSocket (daemon port 8081 by default) | Optional TLS, then `WebSocketServerBridge::accept` with tungstenite `max_message_size` and `max_frame_size` of 16 MiB (`src/spine-transport/src/websocket.rs:232-250`). `WebSocketStream` presents Binary messages as a byte stream, skips Text messages (`websocket.rs:417-421`), and turns each `poll_write` into one Binary message (`:443`). The adapters do not override vectored writes (searched `websocket.rs`), and `write_header_body` (`lib.rs:89-111`) therefore most likely issues the header and the body as two separate WebSocket messages (inference from the default `AsyncWrite::poll_write_vectored`, not verified in tokio). The byte layout above is unchanged because the reader re-assembles a stream. The client uses `connect_async` with tungstenite defaults (`websocket.rs:96-99`); its limits were not checked. No path, subprotocol or Origin check exists in SPINE code. |
-| QUIC (daemon only, feature off by default) | `QuicEndpointBuilder::build_server`: self-signed certificate, TLS 1.3, no client authentication (`src/spine-protocol/src/lib.rs:929-954`). Startup is refused when `tls.enabled` (`main.rs:2261-2265`). The first bidirectional stream must arrive within 10 seconds (`main.rs:2302-2306`). | The stream is wrapped in `QuicStream` and handed to the same `ProtocolHandler` (`main.rs:2309-2311`), so the layer stack is identical. No client in the root workspace connects over QUIC. The only QUIC clients are the research-gated `SpineConnection::from_quic`/`connect_auto` (`research.rs:456, 828-866`), which write a u32 little-endian length and no 5-byte header (`research.rs:518-523`), which the daemon's `ProtocolHandler` would not parse. The only client builder skips server certificate verification (`lib.rs:956-975, 998-1048`). |
-
-`SpineConnection` (`research.rs:412-581`, research-gated) is a second codec with its own `ProtocolHandlerState` (`research.rs:583-`). It does not apply the `SpeculativeFrame` wrapper, so its output is read by `ProtocolHandler` only through the legacy fallback in step 7 above. Neither the daemon nor the SDK uses it.
-
-### A.4 Morphology as exercised by the default daemon
-
-`BrowserCommand::Morph` and the daemon's proactive `MorphRequest` both change the frame header of every later frame (`handler.rs:178-203, 1035-1038`). The relevant facts, all from reading:
-
-- It is active in a research-free daemon. `handle_session` intercepts `Morph` before `handle_command` (`main.rs:2656-2671`), so the research-gated `Morph` arm at `main.rs:1351` and the `unsupported_without_research` arm at `:1610-1619` are unreachable for `Morph` in both builds. The task description lists `Morph` among the variants a research-free daemon refuses; it does not refuse it.
-- The daemon morphs by itself. A task started at `main.rs:2230-2250` runs every 30 seconds and sets `needs_morph = true` on every session that has a `last_command`. The next `Request` on that session makes the daemon send `MorphRequest { seed }` under the old framing and then call `morph_now(seed)` (`main.rs:2636-2650`). The client switches when it receives `MorphRequest` (`handler.rs:802-804`). A client that has already pipelined a request before it reads `MorphRequest` sends that request under the old framing to a server already on the new one, so it would desynchronise. The SDK is strictly request then response and does not pipeline (`src/spine-agent/src/lib.rs:332-360`); this is by reading, not tested.
-- Without a chameleon the evolution is not secret. `ProtocolMorphology::new` sets `hmac_key = [0; 32]` (`handler.rs:163`); only `new_keyed`, called by the research-gated `enable_chameleon*`, sets a real key (`handler.rs:169-173, 315-351`). `evolve` therefore runs an HMAC under an all-zero key on a counter and a seed that is sent in the clear. Anyone observing the connection can compute the next framing.
-- Morph can select `Pkcs7`, `Random` or `Chaotic` padding and header sizes 5 to 16 bytes (`handler.rs:193-202`).
-- The desync fixed in `8722dc8`/`b8a0a4e` (the SDK's `morph()` not calling `morph_now`) is gone from `lib.rs`; the SDK now takes the seed from the response and calls it (`src/spine-agent/src/lib.rs`, the `morph` method).
-
-### A.5 Speculation: what is live
-
-- Default build: `SpeculativePredictor` is a stand-in whose `predict_next` returns `(0, 0.0)` and whose other methods return empty values (`handler.rs:27-63`). `ProtocolHandler::new` still allocates two of them and two `Vec` caches (`handler.rs:285-306`).
-- `send_message` emits `Full` unless the peer's last advertised `next_prediction_hash` equals this message's hash (`handler.rs:559-575`). The peer's value is always 0 with the stand-in, so `Confirmed` is chosen only on a 64-bit hash collision with 0. "Always yields a Full frame" is true in practice and not by construction.
-- The receiver accepts all four payload shapes from a peer regardless of build (`handler.rs:743-796`). A peer can make the receiver return the error "Speculation hit but prediction not in cache" at will.
-- `enable_speculation` sets two booleans that nothing reads (`handler.rs:354-357` writes `output_speculation` and `input_speculation`; a search of `src/spine-protocol/src` finds no read of either field, in the stand-in or in the research predictor, `research.rs:69-71`).
-- `precompute_response` fills `precomputed_cache`; `get_precomputed` is private and has no caller (`handler.rs:360-381`; searched `src`). So a `PreComputed` message is never transmitted in either build. The daemon still builds `PreComputedResponse` values on every `Request` through `speculate_responses` and discards them (`main.rs:2718-2754`); with the stand-in `predict_batch` returns nothing, so the callback never runs.
-- Statistics (`SpeculationStats`) are read only to print them: `src/spine-cli/src/commands/init.rs:228`, `connect.rs:112`, `benchmark.rs:97`.
-
-### A.6 Limits and what happens on violation
-
-| Limit | Value | Enforced at | On violation |
-| --- | --- | --- | --- |
-| Frame length (receive) | 16 MiB (`MAX_TRANSPORT_FRAME_BYTES`, `wire.rs:64`) | `handler.rs:905-913`, checked after the header is read and before the body buffer is resized | `receive_message` returns an error; `handle_session` logs it and breaks, so the connection is dropped (`main.rs:2757-2761`). Up to 16 MiB is zero-filled before any body byte arrives (`handler.rs:916-918`): a peer that announces 16 MiB and stops sending holds 16 MiB until the idle timeout. |
-| Frame length (send) | 16 MiB | `handler.rs:858-861` | `send_message` returns an error to the caller |
-| Decompressed outer frame | 64 MiB (`MAX_DECODED_FRAME_BYTES`, `wire.rs:62`) and zstd window log 23 (`wire.rs:68-78`) | `handler.rs:728` | error, connection dropped |
-| Inner message | 16 MiB (`MAX_MESSAGE_BYTES`, `wire.rs:60`); `decode` rejects buffers over 16 MiB + 8 | `wire.rs:262-265, 80-88, 272-276` | error, connection dropped |
-| `SP` version | must be 1 | `wire.rs:272-274` | `UnsupportedVersion`, connection dropped. There is no negotiation. |
-| `SP` length field | must equal the remaining bytes | `wire.rs:276-281` | `LengthMismatch`, connection dropped |
-| Unknown `SP` format byte | known: 1, 2, 3 | `wire.rs:289-296` | `UnknownFormat`, connection dropped |
-| Frame header version and filler bytes | none | not validated (`handler.rs:891-903`) | accepted |
-| Unknown or malformed message body | serde error | `wire::decode` | error, connection dropped |
-| Valid `Message` the daemon does not handle | n/a | `Ok(_) => {}` at `main.rs:2756` | silently ignored: no error and no response; a waiting client times out |
-| Idle | `idle_timeout_secs`, default 300 | `main.rs:2530-2537`, `config.rs:229` | connection dropped. The timer covers one whole `receive_message`, including a half-sent frame. |
-| Connections | 256 total, 50 per IP (`config.rs:227-228`) | `main.rs:2422-2425, 2463-2466, 2289-2295` | socket dropped without a byte (QUIC: `incoming.refuse()`) |
-| Sessions | 1000 | `main.rs:2600-2621` | `Response` with error "Server busy: maximum sessions reached", then the session loop returns |
-| Request rate | 100 token bucket, 10 per second refill, per session | `main.rs:372-384, 2625-2634` | `Response` with error "Rate limit exceeded", connection stays open. `ToolCall` uses a separate bucket keyed by a per-connection id (`main.rs:2524-2527, 2571-2583`) and answers `ToolOutcome::Err { code: "rate_limit" }`. |
-| TLS handshake, WebSocket upgrade, QUIC connect, QUIC stream accept | 10 s each | `main.rs:2299-2306, 2444, 2479, 2504-2508` | connection dropped |
-| WebSocket message and frame (server) | 16 MiB | `websocket.rs:238-239` | tungstenite error, surfaced as an `io::Error` from `poll_read` |
-| Write | 30 s | `lib.rs:66-86` | stream shut down |
-| Max uploaded resource | 8 MiB (`MAX_RESOURCE_BYTES`), download chunk 64 KiB | `src/spine-protocol/src/resource.rs:6-7`, `src/spine-core/src/resources.rs:143-152` | command-level error |
-
-The daemon handles one frame at a time on a connection and awaits each command inline (`main.rs:2672-2685`), so a slow `Navigate` blocks `Ping` and everything else on that connection.
-
-### A.7 Dispatch in the daemon
-
-`handle_session` (`src/spine-core/src/main.rs:2519-2763`): `CapabilityQuery` to `CapabilityAd` (2539-2569; `Semantic` selector matches nothing, 2548); `ToolCall` to `ToolResult` (2570-2591); `Ping` to `Pong` (2592-2594); `Request` (2595-2755) as below; anything else is dropped (2756). A `Request` creates a session lease on first use (2600-2621), may trigger a proactive morph (2636-2650), runs `handle_command` (or the inline `Morph` path), replies with `Response`, then sends one `LatentMessage` per vector that an `ExecuteBinary` program produced (2704-2716).
-
-### A.8 Message inventory
-
-`Message` (`src/spine-protocol/src/lib.rs:273-329`) has 24 variants. "Research-free" means a daemon built with `default = []` features. "Sent in root workspace" means a non-test, non-example, non-bench constructor exists in `src/` and is reachable from a binary (SDK methods count; callers listed). Searches: `rg "Message::<Variant>"` over `src` and `research`, then SDK method callers in `spine-cli`, `spine-gateway`, `spine-ffi`, `spine-core`.
-
-| # | Variant | Direction | Produced by | Consumed by | Research-free daemon | Sent in root workspace |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | `Request` | C to S | SDK `send_request` (`spine-agent/src/lib.rs:339`) | daemon `main.rs:2595` | yes | yes (all SDK commands) |
-| 2 | `Response` | S to C | daemon (`main.rs:2613, 2627, 2687`) | SDK `send_request` | yes | yes |
-| 3 | `Event` | S to C | only `ProtocolHandler::send_decoy` (`handler.rs:1012-1032`); `research/spine-browser/src/main.rs:994` calls it | SDK forwards to `event_tx` | daemon never sends one | no |
-| 4 | `BinaryProgram` | n/a | nothing | nothing (daemon drops it, `main.rs:2756`) | dropped | no |
-| 5 | `LatentMessage` | S to C | daemon after `ExecuteBinary` (`main.rs:1091, 2704-2716`) | SDK `send_request` forwards to `latent_tx` | yes (path is not gated) | yes, by the daemon, when an HLB program has `StreamLatent` |
-| 6 | `Sync` | n/a | nothing outside a test (`wire.rs:354`) | nothing | dropped | no |
-| 7 | `Speculative` | n/a | nothing | nothing | dropped | no |
-| 8 | `PreComputed` | n/a | built at `main.rs:2730, 2742` and never transmitted (A.5) | nothing | not sent | no |
-| 9 | `MorphRequest` | S to C | daemon `main.rs:2642` | `handler.rs:802-804` | yes, sent by default every 30 s per active session | yes |
-| 10 | `Ping` | either | SDK `ping` (`spine-agent/src/lib.rs`), CLI `status`, `connect`, `benchmark`, `init`, `query`, gateway, ffi | daemon `main.rs:2592` | yes | yes |
-| 11 | `Pong` | either | daemon `main.rs:2593`; SDK `call_tool` (`lib.rs:384`) | SDK | yes | yes |
-| 12 | `ToolCall` | C to S | SDK `call_tool` (`lib.rs:377`); CLI `mcp.rs` | daemon `main.rs:2570` | yes (two read-only tools, `tools.rs:4-14`) | yes |
-| 13 | `ToolResult` | S to C | daemon `main.rs:2585` | SDK | yes | yes |
-| 14 | `StreamStart` | S to C | nothing | nothing | dropped | no. The types are used by the gateway's SSE translation (`spine-gateway/src/agentic_sse.rs`), not sent. |
-| 15 | `StreamToken` | S to C | nothing | nothing | dropped | no |
-| 16 | `StreamEnd` | S to C | nothing | nothing | dropped | no |
-| 17 | `StreamCancel` | C to S | nothing | nothing (no handler anywhere in `src`) | dropped | no |
-| 18 | `CapabilityQuery` | C to S | SDK `capabilities` (`lib.rs:270`); CLI `mcp.rs` | daemon `main.rs:2539` | yes | yes |
-| 19 | `CapabilityAd` | S to C | daemon `main.rs:2563` | SDK | yes | yes |
-| 20 | `Encoded` | either | nothing outside tests and benches | nothing | dropped | no |
-| 21 | `CodecAd` | either | nothing | nothing | dropped | no |
-| 22 | `CodecNegotiation` | either | nothing | nothing | dropped | no |
-| 23 | `EmbeddingRequest` | C to S | nothing | nothing | dropped | no |
-| 24 | `EmbeddingResponse` | S to C | nothing | nothing | dropped | no |
-
-`Request` is `{ id: String, command: BrowserCommand }` and `Response` is `{ id: String, result: Option<serde_json::Value>, error: Option<String> }` (`lib.rs:751-762`). `Event` is `{ name, data: Value }` (`:764-768`).
-
-`BrowserCommand` (`lib.rs:498-670`) has 35 variants. The "research-free" column says what `handle_command` (`main.rs:556-1628`) does. "Root senders" are non-test callers of the SDK method in `spine-cli`, `spine-gateway`, `spine-ffi`, `spine-core` (spine-python is outside the root workspace and is noted separately).
-
-| # | Variant | Daemon arm | Research-free daemon | Root senders |
-| --- | --- | --- | --- | --- |
-| 1 | `Navigate` | `main.rs:945` | works (outbound fetch policy); the HLB transpile is empty without research (`:964-975`) | CLI `benchmark`, `connect`, `init`, `query`; gateway; ffi |
-| 2 | `GetUR` | `:997` | works | CLI `benchmark`, `connect`, `init`, `query`; gateway; ffi |
-| 3 | `GetRawHTML` | `:1032` | works | CLI `connect`, `query`; gateway; ffi |
-| 4 | `Click` | `:1293` | stub: prints to stdout, returns `{"status":"clicked"}`, does nothing else | none (python only) |
-| 5 | `Type` | `:1301` | stub, same | none (python only) |
-| 6 | `ExecuteBinary` | `:1055` | works, partly gated inside (`:1140-1202`). The result of `wasm_runtime.execute` is unwrapped with `.expect` (`:1086-1089`). | CLI `connect`, `query`; gateway; ffi (through `execute_hls`) |
-| 7 | `HandleEvent` | `:1228` | implemented | none (examples only) |
-| 8 | `GetLatentUR` | `:1310` (research); else `:1610-1619` | `unsupported_without_research` | CLI `benchmark` (skips when unsupported); python |
-| 9 | `Morph` | handled in `handle_session` `:2657`; the arms at `:1351` and `:1612` are unreachable | works (A.4) | CLI `connect`; ffi; python |
-| 10 | `Search` | `:1366` | returns a hard-coded result (`"Found relevant content locally..."`, relevance 0.92) plus `"status": "local_only"` | CLI `query`, `connect`; ffi; gateway `main.rs:430` (receiver type not checked) |
-| 11 | `TransferSession` | `:1415` (research); else `:1610-1619` | `unsupported_without_research` | none (examples only) |
-| 12 | `StoreKnowledge` | `:1453` | works (in-memory, per session) | CLI `init`, `query`; ffi; python |
-| 13 | `QueryKnowledge` | `:1484` | works | CLI `init`, `query`; ffi; python |
-| 14 | `DeleteKnowledge` | `:1505` | works | none |
-| 15 | `GetSessionHistory` | `:1515` | works | none (examples only) |
-| 16 | `GetCapabilities` | `:1527` | works; returns the capability list of the session's current binary, not the origin's tools | CLI `connect`; ffi; python |
-| 17 | `SetAutonomousMode` | `:1539` | sets a flag; the loop that reads it is research-gated (`:2169-`) | CLI `init` |
-| 18 | `SwarmSearch` | `:1557-1565` | `unsupported_legacy_swarm` in every build | CLI `init` |
-| 19 | `DelegateTask` | same | same | none (a test asserts the refusal, `tests/agent_web.rs:462-478`) |
-| 20 | `ProposeKnowledge` | same | same | none |
-| 21 | `CreateSwarmPlan` | same | same | CLI `init` |
-| 22 | `ExecutePlanTask` | same | same | none (test asserts refusal) |
-| 23 | `NeuralTransmit` | `:1567` (research); else `:1610-1619` | `unsupported_without_research` | none (examples only) |
-| 24 | `GetAgenticState` | `:1594` (research); else `:1610-1619` | `unsupported_without_research` | CLI `init` |
-| 25 | `SendSpeechAct` | `:1620-1623` | `unsupported_speech_act` in every build | none (test asserts refusal) |
-| 26 | `ResolveName` | `:688` | works (needs a namespace for network answers) | CLI `names`; gateway; SDK `resources.rs` |
-| 27 | `ResolveNames` | `:700` | works | gateway |
-| 28 | `FindProviders` | `:749` | works | CLI `names`; gateway |
-| 29 | `PublishName` | `:819` | works | CLI `names`; gateway |
-| 30 | `FetchName` | `:858` | works | gateway |
-| 31 | `CrawlNames` | `:889` | works | gateway |
-| 32 | `PublishResource` | `:651` | works | CLI `names`; gateway; SDK `resources.rs` |
-| 33 | `ReadResource` | `:629` | works | gateway; SDK `resources.rs` |
-| 34 | `NamespaceStatus` | `:579` | works | CLI `names` |
-| 35 | `MeshCall` | `:603` | works | CLI `tasks` |
-
-Python additionally sends `Click`, `Type`, `GetLatentUR`, `Morph`, `Search`, `StoreKnowledge`, `QueryKnowledge`, `GetCapabilities` (`src/spine-python/src/lib.rs:116-262`).
-
-### A.9 Where the task description needed correcting
-
-1. "Research-free daemon answers research variants with `unsupported_without_research`": true for four commands only (`GetLatentUR`, `TransferSession`, `NeuralTransmit`, `GetAgenticState`, `main.rs:1610-1619`). `Morph` is not among them in practice (A.4). Five swarm commands and `SendSpeechAct` are refused in every build with different error strings. Every research-flavoured `Message` variant (`LatentMessage` inbound, `Encoded`, `CodecAd`, `CodecNegotiation`, `EmbeddingRequest`, `EmbeddingResponse`, `Sync`, `Speculative`, `PreComputed`, `BinaryProgram`, `Event`, `Stream*`) is not answered at all: `Ok(_) => {}` drops it (`main.rs:2756`).
-2. "Speculation fields, prediction cache and per-message predictor are dead": confirmed, and also dead in a research build: nothing ever reads `precomputed_cache` (A.5). "Always yields a Full frame" holds only up to a hash collision.
-3. "`Morph` changes framing mid-connection": confirmed, with three additions: the daemon triggers it itself every 30 s; it works in a research-free daemon; without a chameleon the evolution uses an all-zero key (A.4).
-4. "padded per `ProtocolMorphology`, then a flag byte and zstd at >= 64 bytes": the order is right, but the compression threshold applies to the padded JSON wrapper, which is at least 87 bytes, so the compressed branch is the only one reachable on `send_message`. There is also a second sender format, `send_message_raw`, and the receiver accepts many more encodings than either sender produces (A.2).
-5. "A message is CBOR-encoded with an 8-byte `SP` header, then wrapped in a `SpeculativeFrame` serialised as JSON with the body as an array of numbers": correct.
-6. "No encryption unless TLS": correct. `enable_encryption` exists (PSK AES-256-GCM, random nonce, no AAD) and has no production caller (`rg enable_encryption` finds only tests).
-7. "The mesh path ... signed_frame.rs": `signed_frame.rs` is not used by the mesh path or anything else (A.1). The mesh uses JSON envelopes in `mesh_tcp.rs`.
-8. "Rustdoc warnings denied" in CI: I found no `RUSTDOCFLAGS` anywhere in `.github/workflows/`. The `docs` job runs `cargo doc --workspace --no-deps` with the global `RUSTFLAGS: "-D warnings"` (`ci.yml:15-16, 340-341`). I believe `RUSTFLAGS` does not make rustdoc lints errors, but I did not verify that. Treat "rustdoc warnings denied" as unconfirmed.
-
-### A.10 Other findings, recorded and not fixed
-
-- `ExecuteBinary` panics on a failed execution: `.expect("Failed to execute HLB in WASM")` (`main.rs:1086-1089`). `WasmRuntime::execute` returns `Err` on a WAT parse failure, a module compile failure and an instantiation failure, and sets a fuel budget that traps (`src/spine-wasm/src/lib.rs:702-745`). The release profile has `panic = "abort"` (root `Cargo.toml`, `[profile.release]`). By reading, a client-supplied program that fails to compile or runs out of fuel aborts the whole daemon in a release build. Not run.
-- `src/spine-protocol/src/negotiation.rs` defines `VersionOffer`/`VersionResponse`/`ProtocolFeature` (JSON, `negotiation.rs:68-101, 279-319`). Nothing on any wire uses it; only `fuzz/fuzz_targets/fuzz_negotiation.rs` does. `evaluate_offer` accepts any `offer.major >= 1` and ignores `min_major`/`min_minor` (`negotiation.rs:171-190`). Its feature list names Chameleon, Speculation, Morphology, Rlwe (`:17-40`).
-- The SDK `AgentClient::connect` returns after the TCP connect; the test helper treats that as "daemon ready" (`src/spine-core/tests/agent_web.rs:419-444`).
-- `Search`, `Click` and `Type` are stubs that return fabricated or empty success (A.8). A caller cannot tell them from a working implementation.
-
-## B. Requirements
-
-Derived from `docs/FIRST_PRINCIPLES.md` (premise numbers P1 to P9 refer to its table; "change 1" is "Rejustify the wire"). Each is testable by a named kind of test.
-
-| # | Requirement | Source | Test |
-| --- | --- | --- | --- |
-| R1 | Framing is fixed for the life of a connection. No frame changes the framing of a later frame. | change 1; A.4 | Property test: decoding a frame sequence gives the same result whatever frames precede it; grep gate: no state in the codec other than the negotiated limits. |
-| R2 | Every length field is bounded before any allocation or read that depends on it. An out-of-range length ends the connection. | P7; A.6 | Feed a 4-byte length of 0xFFFFFFFF and of limit+1; assert no read of the body and no allocation above 64 KiB (counting allocator or a reader that fails on a body read). |
-| R3 | Decompressed size is declared, checked against the limit before inflation, and checked again after. | P7; A.6 | A zstd bomb whose declared length is small and whose true output is large fails; one whose declared length exceeds the limit fails without calling the decompressor. |
-| R4 | For every accepted frame body, re-encoding the decoded value yields the identical bytes. Non-canonical input is rejected, not normalised. | Stage 5 first item (canonical encoding); change 1 (capability chains and receipts will cover bytes) | Differential test: decode then encode equals input for every vector; a corpus of non-canonical encodings (indefinite length, non-shortest integer, unsorted keys, duplicate keys, trailing bytes) is rejected. |
-| R5 | A version and capability exchange precedes any message, with a defined outcome when no version is shared. | change 1 | Handshake tests: shared version, no shared version, unknown extension offered, HELLO timeout. |
-| R6 | Every request carries a correlation id in the frame header; replies echo it; several requests may be in flight; unsolicited frames use id 0. | P4, P8 | Two requests in flight answered out of order are matched correctly. |
-| R7 | Streams and cancellation are frame types. A cancel is processed while a response is in progress and the producer stops within one frame. | P4, P8 (cancel latency) | A producer emitting tokens stops after `STREAM_CANCEL`, and emits `STREAM_END` with reason `cancelled`. |
-| R8 | Per-message overhead is a fixed 15 bytes plus the deterministic CBOR body; there is no per-connection model, predictor or cache. | P8, change 1 | Size assertion on an empty-bodied frame; no allocation of predictor state in the connection constructor. |
-| R9 | The core message enums contain no research variants. Extensions are negotiated by name before use. | change 7 | The core crate compiles with the research workspace absent; an unnegotiated extension frame closes the connection. |
-| R10 | Every violation class has exactly one defined outcome, either a connection close with a code or an error response that leaves the connection open. | A.6 | A table-driven conformance suite, one vector per row of C.7. |
-| R11 | The wire never relies on the frame layer for confidentiality or authentication. The deployment refuses to carry it in the clear off-loopback. | P3; `config.rs:414-416` | Existing check kept; a test that a non-loopback bind without a secure transport fails to start. |
-| R12 | Error responses carry a stable machine-readable `code` and a human `message`. | P1 (typed), P5 | Every error path in the daemon returns a code from a published list. |
-| R13 | The server declares a per-connection in-flight request cap, and a request over the cap is answered with an error immediately, without being executed. | P7 | Send cap + 1 requests; the extra one is answered `overloaded`. |
-| R14 | A second implementer can build a conformant peer from this document and its vectors alone. | change 6 | Hex vectors for every frame type, produced by the reference implementation and decoded by an independent decoder in another language, run in CI. |
-| R15 | Deadlines are defined for connection setup: a peer that has not completed HELLO within a fixed time is closed. | P7; A.6 | Open a socket and send nothing; assert close within the deadline. |
-
-## C. Proposed format: spine-wire v1
-
-This is a refinement of the direction in the brief. Deviations are listed in C.13.
-
-### C.1 Frame
-
-All integers are big-endian. One frame:
+### 2.1 Layout
 
 ```
  0                   4   5   6   7                  15
@@ -275,185 +52,481 @@ All integers are big-endian. One frame:
 length = 11 + len(body)           (the bytes after the length field)
 ```
 
+Source: `frame.rs` (`HEADER_AFTER_LENGTH = 11`, `HEADER_LEN = 15`, `encode_frame`, `read_frame`, `decode_frame`).
+
+### 2.2 Header fields
+
 | Field | Size | Rule |
 | --- | --- | --- |
-| `length` | 4 | Count of all bytes after this field. Minimum 11. Maximum is the negotiated `max_frame` (default and absolute ceiling 16,777,216, which is the current `MAX_TRANSPORT_FRAME_BYTES`, `wire.rs:64`, and is large enough for the 8 MiB resource upload, `resource.rs:6,19-37`). Before HELLO has been processed the maximum is 65,536. If `length` is below 11 or above the maximum the receiver closes the connection without reading the body and without allocating for it. It MAY send `CLOSE` first on a best-effort basis. |
-| `version` | 1 | The connection's selected version. `1` in this document. `HELLO` always carries `1` (C.6). A frame whose version differs from the selected one closes the connection (`unsupported_version`). |
-| `type` | 1 | C.3. |
-| `flags` | 1 | Bit 0: body is compressed (C.4). Bits 1 to 7 MUST be zero; a frame with any of them set closes the connection (`malformed_frame`). |
-| `request id` | 8 | C.8. |
-| `body` | `length - 11` | Exactly one deterministic CBOR data item (C.5), possibly compressed. A frame type that defines an empty body is still one CBOR item (`null`, byte `f6`). |
+| `length` | 4 | The count of bytes after this field, at least 11 and at most the maximum in force (2.3). |
+| `version` | 1 | MUST be 1. Any other value is rejected with `unsupported_version` (`frame.rs` `parse_header`). `HELLO` and `HELLO_ACK` carry 1 like every frame; the selected version in `HELLO_ACK` is 1 because it is the only version implemented (6.4). |
+| `type` | 1 | One of section 3. `0x00` and every unallocated value is rejected with `unknown_frame_type`. |
+| `flags` | 1 | Bit 0: the body is compressed (section 4). Bits 1 to 7 MUST be zero; any of them set is rejected with `malformed_frame`. |
+| `request id` | 8 | Section 8. Frame-level rules: `HELLO`, `HELLO_ACK` and `CLOSE` MUST carry 0; `REQUEST` and `PING` MUST carry a nonzero id. A violation is `protocol_violation` (`frame.rs` `check_request_id`). Other types are not constrained at this layer. |
+| `body` | `length - 11` | Exactly one deterministic CBOR item (section 5), possibly compressed. A frame type with nothing to say still carries one item (`null`, byte `f6`, or an empty map `a0`, as that type defines). An empty body is not a CBOR item and is `malformed_frame`. |
 
-Buffer allocation: the receiver SHOULD grow its buffer as bytes arrive, not reserve `length` up front. The as-built code zero-fills the announced length first (`handler.rs:916-918`).
+### 2.3 Length and limits
 
-### C.2 Transport assumptions
+The maximum in force is `min(m, 16,777,216)` where `m` is 65,536 before `HELLO` and `HELLO_ACK` have been exchanged and the negotiated `max_frame` afterwards (`frame.rs` `effective_max`, `PRE_HELLO_MAX_FRAME`, `MAX_FRAME`; `connection.rs` `Connection`). A caller that supplies a larger maximum is capped at 16,777,216.
 
-The frame layer needs an ordered, reliable byte stream: TCP, TLS over TCP, one QUIC bidirectional stream, or WebSocket Binary messages treated as a stream. Frame boundaries do not have to align with transport messages. One native connection uses one stream. The frame layer adds no confidentiality, no peer authentication and no replay protection (C.11).
+A receiver MUST reject `length` below 11 or above the maximum in force with `frame_too_large`, and it MUST NOT read or allocate for the body of such a frame (`frame.rs` `check_length` is evaluated on the first four bytes, before anything else). Within the maximum, `read_frame` reads the body in chunks of at most 64 KiB, so memory grows with the bytes that arrive and not with the announced length. A receiver SHOULD do the same.
 
-### C.3 Frame types
+A sender MUST NOT produce a frame whose uncompressed length (`11 + len(body)`) exceeds the maximum in force, even if compression would make it smaller (`frame.rs` `encode_frame`). The negotiated `max_frame` applies in both directions.
+
+### 2.4 Transports
+
+The frame layer needs an ordered, reliable byte stream. Frame boundaries do not have to align with transport messages. One connection uses one stream.
+
+| Transport | Notes |
+| --- | --- |
+| TCP | Optionally wrapped in rustls TLS (`tls.enabled`). |
+| WebSocket | Optionally TLS. The byte stream is the concatenation of Binary messages; a message that is not Binary and not Close is skipped (`spine-transport` `websocket.rs` `WebSocketStream::poll_read`). The server accepts messages and frames up to 16 MiB. No path, subprotocol or Origin check exists. |
+| QUIC | One bidirectional stream, the first, which must arrive within 10 seconds of the connection. Feature `quic` of `spine-core`, off by default; no test and no client in the workspace speaks it (section 16, item 6). |
+
+## 3. Frame types
 
 | Type | Name | Sender | Request id | Body |
 | --- | --- | --- | --- | --- |
-| `0x00` | invalid | none | | receiving it closes the connection (`unknown_frame_type`) |
-| `0x01` | `HELLO` | client, first frame only | 0 | map, C.6 |
-| `0x02` | `HELLO_ACK` | server, first frame only | 0 | map, C.6 |
-| `0x03` | `CLOSE` | either | 0 | `{code, message[, supported]}`; sender closes after sending |
-| `0x04` | `PING` | either | nonzero | CBOR unsigned integer token |
-| `0x05` | `PONG` | either | echoes `PING` | the same token |
-| `0x10` | `REQUEST` | client | nonzero, unique among that client's in-flight requests | a command, C.5 and D |
-| `0x11` | `RESPONSE` | server | echoes the request | `{ok: any}` or `{err: {code, message[, details]}}` |
-| `0x20` | `STREAM_START` | server | echoes the request | `{role, model[, trace]}` plus fields from D |
-| `0x21` | `STREAM_TOKEN` | server | echoes the request | `{seq, data[, usage]}` |
-| `0x22` | `STREAM_END` | server | echoes the request | `{reason[, usage]}` |
-| `0x23` | `STREAM_CANCEL` | client | names the stream's request | `{[reason]}` |
-| `0x80` | `EXT` | either | extension-defined | array `[index, kind, payload]`, C.10 |
+| `0x00` | invalid | none | | rejected: `unknown_frame_type` |
+| `0x01` | `HELLO` | client, first frame only | 0 | map, 6.2 |
+| `0x02` | `HELLO_ACK` | server, first frame only | 0 | map, 6.3 |
+| `0x03` | `CLOSE` | either | 0 | `{code, message[, supported]}`, 6.5 |
+| `0x04` | `PING` | either | nonzero | uint token, section 9 |
+| `0x05` | `PONG` | either | the `PING`'s id | the same token |
+| `0x10` | `REQUEST` | client | nonzero, not in flight | a command, section 12 |
+| `0x11` | `RESPONSE` | server | the request's id | `{ok: any}` or `{err: {code, message[, details]}}`, 8.4 |
+| `0x20` | `STREAM_START` | server | the request's id | `{role, model[, trace][, decode_hints]}`, section 10 |
+| `0x21` | `STREAM_TOKEN` | server | the request's id | `{seq, data[, usage]}` |
+| `0x22` | `STREAM_END` | server | the request's id | `{reason[, usage]}` |
+| `0x23` | `STREAM_CANCEL` | client | the stream's id | `{[reason]}`; with no reason, the empty map `a0` |
+| `0x80` | `EXT` | either | extension-defined | array `[index, kind, payload]`, section 11 |
 
-All other values (`0x06` to `0x0f`, `0x12` to `0x1f`, `0x24` to `0x7f`, `0x81` to `0xff`) are unallocated.
+All other values (`0x06` to `0x0f`, `0x12` to `0x1f`, `0x24` to `0x7f`, `0x81` to `0xff`) are unallocated. Source: `frame.rs` `FrameType`.
 
-### C.4 Compression
+## 4. Compression
 
-Flag bit 0 set means the body is `u32 uncompressed_len || zstd frame`, where `uncompressed_len` counts the CBOR bytes. Rules:
+Flag bit 0 set means the body is `u32 uncompressed_len || zstd frame`, where `uncompressed_len` is big-endian and counts the CBOR bytes. Receivers need no setting to accept it.
 
-1. The receiver checks `uncompressed_len <= max_frame - 11` before it calls the decompressor. If not, it closes the connection (`frame_too_large`).
-2. The receiver decompresses with an output limit of `uncompressed_len` (it may read one byte more to detect overflow, as `decode_zstd_limited` does, `wire.rs:68-78`) and a window limit of 2^23 bytes (the as-built `window_log_max(23)`, `wire.rs:70`). If the output length differs from `uncompressed_len` it closes the connection (`malformed_frame`).
-3. The zstd stream is a single frame with no dictionary.
-4. Sender policy, not enforced by the receiver: do not compress a frame whose body is smaller than 1 KiB, keep the compressed form only if it is smaller, and do not compress a body that carries a secret chosen by one party and an attacker-influenced value from another (the compression-oracle concern the as-built code notes at `handler.rs:665-668`). The thresholds are proposals; the as-built values are 64 and 128 (`handler.rs:303`, `wire.rs:101`).
+1. The receiver checks `uncompressed_len <= maxinforce - 11` before it calls the decompressor, and a larger value is `frame_too_large`, not `malformed_frame` (`frame.rs` `decompress_body`, `FrameError::UncompressedTooLarge`). A body shorter than the four prefix bytes is `malformed_frame`.
+2. The receiver decompresses with an output cap of `uncompressed_len + 1` bytes and a zstd window limit of 2^23 bytes (`window_log_max(23)`). Output whose length differs from `uncompressed_len`, a stream that is not zstd, and any other decompression error are `malformed_frame`.
+3. The sender MUST emit a single zstd frame with no dictionary. What the receiver does with several concatenated frames, a skippable frame or trailing bytes is whatever the zstd decoder in use does; it is not specified here (unverified, `decompress_body` hands the slice to `zstd::stream::read::Decoder`).
+4. Sender policy, not checked by the receiver: do not compress a body of fewer than 1,024 bytes, keep the compressed form only if `4 + compressed length < body length`, use zstd level 3 (`frame.rs` `COMPRESS_THRESHOLD`, `ZSTD_LEVEL`, `encode_frame`). A sender SHOULD NOT compress a body that mixes a secret with attacker-influenced data.
+5. `Connection` compresses only after `set_compression(true)`; no caller in the workspace enables it, so no frame the daemon or the SDK sends is compressed (searched).
 
-The bound is per frame. A frame of `max_frame` zeros compresses to a very small compressed size (not measured here), so the amplification per frame is large and only the request rate limit bounds a stream of such frames. v1 therefore also requires a per-connection budget of decompressed bytes per second, configured by the deployment. The as-built limiter counts commands, not bytes (`main.rs:372-384`).
+Compression is per frame. A frame of `max_frame` zeros compresses to a tiny frame, so the amplification per frame is large and only the request rate limit bounds a stream of them; the daemon has no per-connection byte budget (section 16, item 14).
 
-### C.5 Body encoding: deterministic CBOR
+## 5. Deterministic CBOR profile
 
-A body is one CBOR data item that satisfies RFC 8949 section 4.2.1 (core deterministic encoding), plus the following v1 rules:
+Every body is one CBOR data item that satisfies RFC 8949 section 4.2.1 (core deterministic encoding) and the rules below. The scanner is `cbor.rs` `check_deterministic`; the encoder is `cbor.rs` `to_vec`; typed decoding is `cbor.rs` `from_slice` (scan first, then ciborium).
 
-1. Definite lengths only. No indefinite-length strings, arrays or maps.
-2. Integers and lengths in the shortest form. Floats in the shortest of binary16, binary32 and binary64 that preserves the value; NaN is `f9 7e 00`. No integer to float conversion.
-3. Map keys sorted by the bytewise lexicographic order of their encodings; no duplicate keys.
-4. No tags. Simple values limited to `false`, `true`, `null`. No `undefined`.
-5. Text strings are valid UTF-8; no normalisation is applied.
-6. Nothing may follow the item. Nesting depth at most 32 (a proposal; ciborium's own recursion limit was not checked).
-7. Messages are modelled as follows, matching serde's defaults so the Rust types need no custom serialisers: a struct is a map with text keys; an enum with data is a single-entry map `{variant: fields}`; a unit variant is the text string of its name; `Option` fields are omitted when absent and a present `null` for an optional field is rejected; byte-string fields (hashes, keys, payloads) are CBOR byte strings, never arrays of integers. Variant and field names are wire identifiers. v1 uses snake_case names chosen explicitly with `#[serde(rename)]`, because serde's `rename_all = "snake_case"` turns `GetUR` into `get_u_r` (from serde's algorithm, not run).
-8. Structs are closed: an unknown field in a known struct is a schema error (C.7). This differs from serde's default of ignoring unknown fields (no `deny_unknown_fields` was found in `agentic.rs` or `lib.rs`; not searched exhaustively).
-9. Only the `HELLO` and `HELLO_ACK` bodies are open: unknown keys are ignored, so later versions can add fields to negotiation.
+### 5.1 Encoding rules
 
-What the current stack guarantees, and what would have to change.
+1. Definite lengths only. An indefinite-length string, array or map is `IndefiniteLength`.
+2. Integers and the lengths in string, array and map heads are in the shortest form (`NonShortestInteger`). A float is in the shortest of binary16, binary32 and binary64 that preserves the value (`NonShortestFloat`), infinities included; NaN of any payload or sign is written `f9 7e 00` and any other NaN is `NonCanonicalNan`. An integer is never written as a float.
+3. Map keys are in strictly ascending bytewise order of their encodings, which also rejects duplicates (`UnsortedOrDuplicateKey`). Because the encoded key starts with its length, shorter text keys sort first.
+4. No tags (`Tag`). Simple values are limited to `false`, `true`, `null`; `undefined` and every other simple value, including the `f8 xx` form, is `UnsupportedSimple`.
+5. Text strings are valid UTF-8 (`InvalidUtf8`); no normalisation is applied.
+6. Nothing follows the item (`TrailingBytes`). Arrays and maps nest at most 32 deep; scalars do not count, so 32 nested arrays around a scalar are accepted and 33 are `DepthExceeded`. A break byte outside an indefinite item is `UnexpectedBreak`, additional information 28 to 31 where none is defined is `ReservedInfo`, and input that ends inside an item or declares a length beyond the input is `Truncated`.
 
-| Property | As built | Basis |
-| --- | --- | --- |
-| Map key order | Not sorted. Struct fields come out in declaration order (serde derive). `serde_json::Value::Object` is a `BTreeMap` (the lockfile shows `serde_json` has no `indexmap` dependency, so `preserve_order` is off; `Cargo.lock:3948-3959`) and sorts keys by code point and length-insensitively, which differs from RFC 8949 ordering (`"b"` sorts after `"aa"` in a `BTreeMap` and before it in CBOR). | serde derive; `Cargo.lock` |
-| Nondeterministic containers | `SpineBinary.exported_functions` is a `std::collections::HashMap` (`lib.rs:377`), whose iteration order is randomised per process. Two encodings of the same value can differ. | `lib.rs:377` |
-| Shortest-form integers, float width, definite lengths | Probably yes for integers and lengths; float width unknown. | unverified (ciborium source absent) |
-| Duplicate keys and non-canonical input on decode | `ciborium::from_reader` is a general decoder and, I expect, accepts non-shortest integers, indefinite lengths and duplicate map keys. | unverified |
-| `Vec<u8>` and `[u8; N]` | Arrays of integers unless `serde_bytes` is used. Used for `StreamData::Bytes`, `PublishResource.data` and `EncodedFrame` payloads; not used for `ReadResource.hash`, `ResolveName.if_none_match`, `TraceContext` ids, `MeshCall.peer_key`, which are `[u8; N]` and so encode as arrays (`lib.rs:611, 639, 658, 667`, `agentic.rs:286-293`). | `lib.rs`, `agentic.rs` |
-| Many encodings per message | yes (A.2) | `handler.rs`, `wire.rs` |
+The scanner evaluates a head's argument, then the depth, then the declared element count against the remaining input, then the elements. Every rejection above is a `malformed_frame` close (7.3).
 
-What would have to change (no code is changed by this document):
+### 5.2 Data-model rules
 
-- Add a validating scanner `check_deterministic(&[u8]) -> Result<(), Reason>` that walks the item once and enforces rules 1 to 6 before serde sees the bytes. Roughly 150 lines, no new dependency, testable against RFC 8949 Appendix A and a corpus of invalid inputs.
-- Encode through `ciborium::Value`: serialise, sort every map's entries by encoded key bytes, then write. `Value::Map` is a `Vec<(Value, Value)>`, so this needs no ordering assumptions about ciborium. Or hand-write the encoder. A one-time extra allocation per message.
-- Replace the `HashMap` in `SpineBinary` with a `BTreeMap` or a sorted `Vec`, or rely on the sorting pass above.
-- Use `serde_bytes` on every fixed-size byte field listed above.
-- Retire the three encodings of `wire.rs` (`FORMAT_JSON`, `FORMAT_CBOR`, `FORMAT_CBOR_ZSTD`), the headerless-JSON fallback (`wire.rs:266-270`) and `encode_json`.
+7. Messages follow serde's defaults for the Rust types: a struct is a map with text keys; an enum with data is a single-entry map `{variant: fields}`; a unit variant is the text of its name; an `Option` field is omitted when absent and a present `null` for it is rejected; a byte-string field (hash, key, payload) is a CBOR byte string and never an array of integers (`wirefmt.rs` `bytes`, `byte_array`, `opt_byte_array`, `reject_null`). Variant and field names are wire identifiers, spelt with `#[serde(rename)]` (serde's `rename_all` would turn `GetUR` into `get_u_r`). A list that is omitted when empty (`DecodeHints.stop_sequences`, `TraceContext.state`) rejects a present empty list (`wirefmt.rs` `non_empty_vec`).
+8. Structs are closed: an unknown field in a known struct is a schema error (`#[serde(deny_unknown_fields)]`). `CLOSE`, `RESPONSE.err`, every command and every type of section 12.3 is closed.
+9. `HELLO` and `HELLO_ACK` are open: unknown keys are ignored, so later versions can add fields to negotiation. The keys of a body MUST be text; a map with a non-text key is outside this specification (section 16, item 15).
 
-Why determinism: nothing on the native wire is signed today, but the layer-3 and layer-5 designs in `docs/FIRST_PRINCIPLES.md` (capability chains, receipts) will sign or hash bytes that travel in these bodies, and Stage 5's first item asks for one canonical encoding for everything signed or hashed. A decoder that rejects non-canonical input lets a signer cover the received bytes without re-encoding them. `src/spine-mesh/src/signed_frame.rs` already signs `wire::encode` output, and that output is not deterministic (above).
+A body that is deterministic CBOR but does not fit its type is a schema failure; the answer depends on the frame type (7.3).
 
-### C.6 First frames: HELLO and HELLO_ACK
+### 5.3 JSON-shaped values
 
-The client sends `HELLO` as its first frame, and the server answers with `HELLO_ACK` before any other frame. The client MUST NOT send any other frame before it has read `HELLO_ACK`. This costs one round trip; sending `REQUEST` frames optimistically is deferred (G10). The server closes a connection that has not completed a `HELLO` within 10 seconds (the existing handshake deadlines are 10 s, `main.rs:2299, 2444, 2479`). The deadline is a proposal and must be configurable: `scripts/smoke_candidate.py:303-318` holds idle sockets for several seconds.
+Several fields hold an arbitrary value (`store_knowledge.value`, `tool_call.args`, the `ok` of most replies). They are `serde_json::Value`. A JSON-shaped value is `null`, `true`, `false`, an integer in -2^63 to 2^64 - 1, a finite float, text, an array, or a map with text keys. It cannot hold a byte string, a tag, a non-text key, NaN or an infinity (`serde_json` turns NaN and infinities into `null`). A REQUEST that carries one of these in a JSON-shaped field is `invalid_request`, because `native.rs` `decode_strict` re-encodes the decoded value and rejects the body when the bytes differ. Integers below -2^63 are expected to fail in the same way (unverified: it rests on `serde_json::Value` having no 128-bit visitor).
 
-`HELLO` body (keys shown in the deterministic order for these names; unknown keys ignored):
+Consequence: bytes cannot be returned inside a JSON-shaped `ok`. `read_resource` and `capability_query` therefore answer with typed results. Name records carry their hashes inside a JSON-shaped value as arrays of integers (section 16, item 3).
 
-| Key | Type | Meaning |
-| --- | --- | --- |
-| `versions` | array of unsigned integers, strictly ascending | frame versions the client can speak |
-| `max_frame` | unsigned integer, 1024 to 16,777,216 | the largest frame the client will accept |
-| `extensions` | array of text, no duplicates | extension ids the client offers (C.10), possibly empty |
-| `agent` | text, at most 128 bytes, optional | software name and version, informational |
+## 6. Establishing a connection
 
-`HELLO_ACK` body:
+### 6.1 Sequence
 
-| Key | Type | Meaning |
-| --- | --- | --- |
-| `version` | unsigned integer | the selected version; must be one of the offered ones that the server supports |
-| `max_frame` | unsigned integer | `min(client max_frame, server maximum)`; applies to frames in both directions from now on |
-| `max_inflight` | unsigned integer, at least 1 | the number of requests the server will process concurrently per connection (R13) |
-| `extensions` | array of text | the accepted subset of the offered extensions, in the order that fixes the extension index (C.10) |
-| `agent` | text, optional | informational |
+The client sends `HELLO` as its first frame; the server answers with `HELLO_ACK` before any other frame. The client MUST NOT send another frame before it has read `HELLO_ACK` (`connection.rs` `Connection::client_handshake` returns a `Connection` only after the acknowledgement). Both frames are read and written under the pre-`HELLO` maximum of 65,536 bytes and are never compressed.
 
-If the server supports no offered version it sends `CLOSE` with code `unsupported_version` and `supported` listing its versions, then closes. The `HELLO` frame itself always has version byte 1, so that negotiation survives later versions.
+The server (`Connection::server_handshake`) reads the first frame under that maximum and a deadline (the daemon: `server.hello_timeout_secs`, default 10 s; the SDK waits 10 s for `HELLO_ACK`). The deadline covers the whole frame. On expiry the server sends `CLOSE(timeout)` and ends the connection. The same deadline bounds the write of `HELLO_ACK`.
 
-Reuse of existing types: `negotiation.rs` (`VersionOffer`, `VersionResponse`, `ProtocolFeature`) is the nearest existing code and does not fit. It is JSON (`negotiation.rs:279-319`), its magic and major/minor fields duplicate the frame header, its feature enum names the research features this proposal removes, and `evaluate_offer` ignores the client's minimum (A.10). `CapabilityQuery` and `CapabilityAdvertisement` (`agentic.rs:224-281`) advertise tools by URI with JSON schemas (layer 5 discovery); they are not transport capabilities and stay as a `REQUEST` command and its reply, usable after the handshake. The proposal replaces `negotiation.rs`.
+The first frame, in the order the code checks it: the frame-layer checks of 7.2 (length, version, type, flags, request id, decompression); then its type must be `HELLO` (otherwise `protocol_violation`, and the body is not examined); then the body must be deterministic CBOR (`malformed_frame`); then it must decode as a `HELLO` and satisfy 6.2 (`protocol_violation`); then negotiation (6.4) may fail with `unsupported_version`. Every failure is answered with a best-effort `CLOSE` and the connection ends. A stream that ends before the first byte ends without a `CLOSE`.
 
-### C.7 Error behaviour
+The client reads the reply under the same maximum. A `CLOSE` in place of `HELLO_ACK` ends the handshake and is reported with its code and message. Otherwise the reply must be a `HELLO_ACK` that passes 6.3 and `validate_against` (`hello.rs` `HelloAck::validate_against`); any failure is `protocol_violation`, and a selected version other than 1 is `unsupported_version`, each answered with a best-effort `CLOSE`.
 
-| Condition | Outcome |
+Sending requests before `HELLO_ACK` is not allowed in v1.
+
+### 6.2 HELLO
+
+A map; unknown keys are ignored (5.2 rule 9). In the deterministic order for these names:
+
+| Key | Type | Optional | Rule |
+| --- | --- | --- | --- |
+| `versions` | array of uint (u64) | no | Not empty. Strictly ascending. |
+| `max_frame` | uint (u32) | no | 1,024 to 16,777,216 inclusive. |
+| `extensions` | array of text | no | May be empty. Each id ASCII and at most 128 bytes. No duplicates. |
+| `agent` | text | yes | At most 128 bytes (UTF-8 length). A present `null` is rejected. Informational. |
+
+Any violation is `protocol_violation` (`hello.rs` `Hello::validate`, `Hello::from_frame`): a missing or mistyped key, an empty `versions`, a descending or repeated version, `max_frame` outside its range or above 2^32 - 1 or not an integer, a duplicate or non-ASCII or over-long extension id, an over-long `agent`, a body that is not a map, and a first frame of another type. A body that is not deterministic CBOR is `malformed_frame` instead.
+
+### 6.3 HELLO_ACK
+
+A map; unknown keys are ignored.
+
+| Key | Type | Optional | Rule |
+| --- | --- | --- | --- |
+| `version` | uint | no | The selected version: one the client offered. |
+| `max_frame` | uint (u32) | no | `min(client max_frame, server maximum)`; 1,024 to 16,777,216. Applies to frames in both directions from now on. |
+| `max_inflight` | uint (u32) | no | At least 1. The number of requests the server processes concurrently per connection. |
+| `extensions` | array of text | no | The accepted subset of the offered ids, in the order that fixes the extension index (11). No duplicates. |
+| `agent` | text | yes | Informational. Not length-limited. |
+
+A client MUST treat as `protocol_violation`: `max_frame` outside its range or above the one it offered, `max_inflight` of 0, a duplicate extension, a `version` it did not offer, an extension it did not offer (`HelloAck::validate`, `validate_against`).
+
+### 6.4 Negotiation
+
+`hello.rs` `negotiate`, with the daemon's `native.rs` `local_config`:
+
+- Version: the highest offered version that the server supports. If there is none the server sends `CLOSE(unsupported_version)` whose `supported` lists the server's versions sorted ascending without duplicates. The only version implemented is 1; a server whose configuration listed another version still answers `unsupported_version` with `supported = [1]` rather than select it. An offer of only version 0, or of `[1, 2^64 - 1]`, behaves as the rules say (the second selects 1).
+- `max_frame`: `min(client's, server's)`, where the server's own maximum is first clamped into 1,024 to 16,777,216 (a configured 100 becomes 1,024, a configured 0xFFFFFFFF becomes 16,777,216).
+- `max_inflight`: the server's value, but at least 1. The daemon sends 1.
+- `extensions`: the offered ids that the server supports, in the order of the client's `HELLO`. The server's own order is ignored. The position in the resulting array is the extension index for the connection.
+- `agent`: the server's own, omitted when it has none (the daemon has none). The SDK offers `spine-protocol/<crate version>`.
+
+The daemon accepts no extensions, so it answers an empty list.
+
+### 6.5 CLOSE
+
+`CLOSE` carries request id 0 and the closed map `{code: text, message: text[, supported: array of uint]}` (`hello.rs` `Close`). `supported` is meaningful only with `unsupported_version`. Codes: `unsupported_version`, `unknown_frame_type`, `malformed_frame`, `frame_too_large`, `protocol_violation`, `timeout`, `shutting_down` (7.3). A `message` is for people and is not specified. A receiver MUST accept an unknown `code` text as a close without interpreting it.
+
+The sender closes after sending: it writes the frame (at most one second, under the pre-`HELLO` maximum, never compressed), then shuts down its write side (`connection.rs` `best_effort_close`). A peer MUST NOT rely on receiving a `CLOSE`. After sending or receiving one, or after an error, `Connection` refuses further use.
+
+## 7. Error behaviour
+
+### 7.1 Two classes
+
+Byte-level non-conformance (a frame or body that breaks sections 2 to 6, or a state rule of section 8) ends the connection, normally with a `CLOSE` that carries a code. A well-formed request the server cannot serve is answered with a `RESPONSE` whose `err` carries a code, and the connection stays open.
+
+### 7.2 Check order
+
+The receive path checks, in this order, and the first failure decides the outcome. Steps 1 to 5 are `frame.rs` (`read_frame`, `decode_frame`); step 6 and 7 are `connection.rs` (`Connection::accept`).
+
+1. The first four bytes. If the stream ends cleanly before the first byte, the connection ended normally. If it ends after one to three bytes, the frame is truncated (no `CLOSE`).
+2. `length` below 11 or above the maximum in force: `CLOSE(frame_too_large)`. Nothing more is read.
+3. The 11 header bytes (truncation: no `CLOSE`), then in this order: `version` (`unsupported_version`), `type` (`unknown_frame_type`), `flags` bits 1 to 7 (`malformed_frame`), the request-id rule of the type (`protocol_violation`). The body has not been read yet.
+4. The body, in chunks (truncation: no `CLOSE`).
+5. If flag bit 0 is set: shorter than four bytes (`malformed_frame`); declared length above `maxinforce - 11` (`frame_too_large`); not zstd or a decoding error (`malformed_frame`); output length differs from the declared length (`malformed_frame`).
+6. The body is one deterministic CBOR item (`malformed_frame`). This applies to every type, including `CLOSE`, `PING` and a stray `HELLO`.
+7. By type: `CLOSE`: the closed `{code, message[, supported]}` map, else `CLOSE(protocol_violation)` or `malformed_frame` as the decoder reports it; a valid one is delivered to the caller as a close. `PING` and `PONG`: the body must be a uint, else `protocol_violation`. `HELLO` and `HELLO_ACK`: always `protocol_violation`. Any other type: the direction, id and state rules of section 8 and the `EXT` rule of section 11, each `protocol_violation`; at the cap, a server answers `overloaded` instead (8.3).
+
+During the handshake the order is the one in 6.1; step 7 does not apply and the first frame must be `HELLO`.
+
+After a frame is delivered, the daemon decodes a `REQUEST` body (`native.rs` `decode_command`): a name outside the command set is `unknown_command`, any other defect `invalid_request` (12.1). Then, for the session commands, the daemon creates the connection's session if it has none (`session_capacity` when the daemon holds `server.max_sessions`), applies the session rate limit (`rate_limit`), and runs the command, whose failures are in section 13. `tool_call` and `capability_query` need no session; `tool_call` is limited by a separate per-connection bucket and `capability_query` is not limited (`spine-core` `main.rs` `handle_session`).
+
+### 7.3 Close codes
+
+| Code | Sent when |
 | --- | --- |
-| `length` below 11 or above the maximum | close; best-effort `CLOSE(frame_too_large)`; body not read |
-| Bad `version`, or `HELLO` offering no supported version | `CLOSE(unsupported_version)` then close |
-| Flag bits 1 to 7 set; compressed-length rules violated | `CLOSE(malformed_frame)` then close |
-| Unknown frame type (unallocated or `0x00`) | `CLOSE(unknown_frame_type)` then close. Skipping would keep the byte stream in sync but not the state machines (a skipped `STREAM_END`). Types are added by a new version or an extension, never silently. |
-| A known type in the wrong direction, a `REQUEST` with id 0, a reused in-flight id, a frame other than `HELLO` first, a second `HELLO`, an `EXT` for an extension that was not accepted or an index out of range | `CLOSE(protocol_violation)` then close |
-| Body is not well-formed CBOR, or fails any rule of C.5 (indefinite length, non-shortest, unsorted or duplicate keys, trailing bytes, depth) | `CLOSE(malformed_frame)` then close |
-| `REQUEST` body is deterministic CBOR but names an unknown command variant | `RESPONSE` with `err.code = "unknown_command"`, same id; connection stays open |
-| `REQUEST` body is a known command with a missing, unknown or mistyped field | `RESPONSE` with `err.code = "invalid_request"`, same id; stays open |
-| The same schema failure in a `RESPONSE`, `STREAM_*`, `PONG` or `HELLO_ACK` | `CLOSE(protocol_violation)` then close: the receiver cannot recover the exchange |
-| Requests in flight already at `max_inflight` | `RESPONSE` with `err.code = "overloaded"`, same id, request not executed; stays open |
-| `STREAM_CANCEL` for an id that is unknown or already ended | ignored (it races with `STREAM_END`) |
-| Per-command failures (rate limit, not found, policy denial) | `RESPONSE` with `err`, stays open |
-| No `HELLO` within the deadline; idle beyond the configured idle timeout | `CLOSE(timeout)` then close |
-| Server shutting down | `CLOSE(shutting_down)` then close |
+| `unsupported_version` | A frame's `version` byte is not 1; a `HELLO` offers no version the server supports (with `supported`); a `HELLO_ACK` selects a version other than 1. |
+| `unknown_frame_type` | `type` is `0x00` or unallocated. |
+| `malformed_frame` | Flag bits 1 to 7 set; a compressed body shorter than 4 bytes, not zstd, undecodable or of the wrong length; a body that is not one deterministic CBOR item (any rule of 5.1, an empty body included). |
+| `frame_too_large` | `length` below 11 or above the maximum in force; a declared uncompressed length above `maxinforce - 11`. |
+| `protocol_violation` | A frame-level request-id rule broken; a well-formed frame that breaks a state rule (wrong direction, reused in-flight id, `RESPONSE` or `STREAM_*` for an id in the wrong state, a second `HELLO` or `HELLO_ACK`, a `PING` or `PONG` whose body is not a uint, an `EXT` for an extension that was not accepted); a `HELLO`, `HELLO_ACK` or `CLOSE` body that is deterministic CBOR but does not fit its type or breaks a bound of 6.2 or 6.3; a first frame that is not `HELLO`. |
+| `timeout` | No `HELLO` within the deadline; no frame within `server.idle_timeout_secs` (`Connection::recv_timeout`); a write that exceeded 30 seconds (`native.rs` `send_bounded`, best effort). |
+| `shutting_down` | Defined and accepted, never sent by the daemon (section 16, item 4). |
 
-`CLOSE` body: `{code: text, message: text}` and, for `unsupported_version`, `supported: [uint, ...]`. Codes: `unsupported_version`, `unknown_frame_type`, `malformed_frame`, `frame_too_large`, `protocol_violation`, `timeout`, `shutting_down`. A peer MUST NOT rely on receiving `CLOSE`. `RESPONSE.err`: `{code, message[, details]}`, which is the shape of the existing `ToolOutcome::Err` (`agentic.rs:81-96`).
+### 7.4 Error replies
 
-Strictness is deliberate. The as-built receiver accepts anything it can parse, and an unparsable message ends the connection with no code (A.6). v1 makes the two classes explicit: byte-level non-conformance ends the connection with a reason; a well-formed request the server cannot serve is an error response.
+These answer a `REQUEST` with a `RESPONSE` whose `err.code` is as shown, the same request id, and the connection stays open:
 
-### C.8 Requests, responses and concurrency
+| Code | Condition |
+| --- | --- |
+| `unknown_command` | The body is a text string, or a single-entry map with a text key, that names a command outside the 19 of section 12. |
+| `invalid_request` | The body fails to decode as a command for any other reason: a missing, unknown or mistyped field, a present `null` for an optional field, a known name with the wrong shape, a body that is not a command (a map with two entries, a non-text key), or a decoded value that does not re-encode to the same bytes. |
+| `overloaded` | The server is at `max_inflight`; the request is not executed and its id is not tracked (8.3). |
 
-- A client request id is a nonzero `u64` the client chooses (a counter from 1 is fine). It names the request until the reply (`RESPONSE`, or `STREAM_END` for a stream) is received. Using an id that is still in flight closes the connection. The two directions have independent id spaces: a `PING` from the server carries a server-chosen id and its `PONG` carries the same id back.
-- Id 0 is for frames that do not start an exchange: `HELLO`, `HELLO_ACK`, `CLOSE`, and extension notifications.
-- A server MAY run requests concurrently and answer in any order, up to `max_inflight`. A server that processes one request at a time (the as-built daemon does, `main.rs:2672-2685`) is conformant. The frame layer defines no priority and no flow-control window; head-of-line blocking at the transport (TCP) is not addressed (C.11).
-- Because ids replace the string ids inside bodies, `Request.id`, `ToolCall.id`, `CapabilityQuery.id` and the matching fields of `ToolResult`, `CapabilityAdvertisement` and the stream structs are removed in v1 (D).
+Every other code (section 13) comes from the command that ran. A `RESPONSE` body that does not fit its type is not a close condition in the implementation (section 16, item 8).
 
-### C.9 Streaming
+### 7.5 Where no CLOSE is sent
 
-A stream is the reply to a `REQUEST` whose command is defined to stream (none is implemented today; see D and G2). The id of the stream is the id of the request.
+- The stream ends or fails inside a frame, or the transport fails: nothing can be sent.
+- A connection refused at admission (`server.max_connections`, `server.max_connections_per_ip`, or during shutdown) is closed without a byte; QUIC uses `refuse()` (`spine-core` `connections.rs`, `main.rs`).
+- A TLS handshake or WebSocket upgrade that fails or exceeds 10 seconds ends without a frame.
+- After a `session_capacity` reply the daemon ends the connection without a `CLOSE`.
+- The daemon on shutdown (section 16, item 4).
 
-1. The server sends `STREAM_START` (type `0x20`), then zero or more `STREAM_TOKEN` (`0x21`) with `seq` starting at 0 and increasing by one, then `STREAM_END` (`0x22`). All carry the request id. The request receives no `RESPONSE` if `STREAM_START` was sent; if the request fails before that point the server sends `RESPONSE` with `err`.
-2. The bodies are the existing `StreamStart`, `StreamToken`, `StreamEnd` minus their `id` field (`agentic.rs:104-218`). `StreamEnd.reason` keeps the `StreamEndReason` set; `usage` stays optional. A `seq` gap or repeat is `protocol_violation`: the transport is reliable and ordered, so a gap is a bug.
-3. The client cancels with `STREAM_CANCEL` (type `0x23`, same id, optional `reason`). The server stops producing as soon as it reads the frame and sends `STREAM_END` with reason `cancelled`; tokens already in flight may still arrive before it. Cancel latency is one frame plus the time for the server to poll its input between tokens, which a server that processes frames one at a time cannot meet during a long computation (R7 needs a server that reads while producing).
-4. Interleaving: frames of several streams and responses may interleave; `seq` is per stream.
-5. `StreamData::Encoded` and `StreamStart.stream_codec` belong to the neural-codec extension (D). `StreamStart.decode_hints` is defined in `agentic_codec.rs`, the neural module (`agentic.rs:42` imports it); where it lives is open (G).
+## 8. Requests, responses and in-flight rules
 
-### C.10 Extensions
+### 8.1 Ids
 
-An extension id is an opaque, case-sensitive ASCII text of at most 128 bytes, conventionally `<domain>/<name>/<major>`, for example `nervosys.org/neural-codec/1`. A change that is not backward compatible changes the major number and so the id. Ids starting with `spine.` are reserved for extensions specified in the SPINE specification set.
+A client request id is a nonzero u64 the client chooses. It names the exchange until the reply (`RESPONSE`, or `STREAM_END` for a stream) has been received. `Connection::request` uses a counter from 1 that skips ids still in flight and 0. Reusing an id that is in flight is a protocol violation. The two directions have independent id spaces: a `PING` carries a sender-chosen id and its `PONG` echoes it. Id 0 is carried by `HELLO`, `HELLO_ACK` and `CLOSE`, and may be carried by `PONG`, `RESPONSE`, `STREAM_*` and `EXT` at the frame layer, where the state rules of this section then apply (`RESPONSE` and `STREAM_*` for id 0 are never in flight, so they are violations). No body carries an id; the header id is the only correlation.
 
-Negotiation: the client lists offered ids in `HELLO.extensions`; the server answers `HELLO_ACK.extensions` with the subset it accepts. The position in that array is the extension index for the connection. Only accepted extensions may be used.
+### 8.2 Direction
 
-`EXT` frame (`0x80`): body `[index, kind, payload]`, `index` an index into `HELLO_ACK.extensions`, `kind` an unsigned integer defined by the extension, `payload` any deterministic CBOR item. The request id follows the extension's own rules; 0 is allowed. An `EXT` frame whose index is out of range, or whose kind is unknown to a negotiated extension, closes the connection (`protocol_violation`). An extension specification must define its kinds, its payloads and its error handling; this document defines none.
+| Type | Client may send | Server may send |
+| --- | --- | --- |
+| `HELLO`, `HELLO_ACK` | only `HELLO`, first | only `HELLO_ACK`, first |
+| `CLOSE`, `PING`, `PONG`, `EXT` | yes | yes |
+| `REQUEST`, `STREAM_CANCEL` | yes | no |
+| `RESPONSE`, `STREAM_START`, `STREAM_TOKEN`, `STREAM_END` | no | yes |
 
-The core `REQUEST` command set and the core frame types are closed. An extension cannot add a variant to them. This is how the core enums never carry research variants (R9).
+A frame in the wrong direction is `protocol_violation` on receipt and `ConnectionError::Usage` on send (`Connection::check_incoming`, `check_outgoing`).
 
-### C.11 What the format does not provide
+### 8.3 REQUEST handling
 
-- Confidentiality, integrity, peer authentication, replay protection, forward secrecy: none. The frame is plaintext inside whatever carries it.
-- Resumption, migration, multi-stream flow control, priorities, head-of-line-blocking avoidance: none. One connection is one TCP or QUIC stream.
-- Authority: no capability chain, no delegation, no signed receipts (layer 3 and 5 designs). There is no header field for them; adding one is a new version (G8).
-- Content-level provenance, effect classes, dry-run and idempotency markers (P3, P5): not in the frame, to be defined with layers 4 and 5.
+A server that receives a `REQUEST` checks, in order: the id is already in flight (`protocol_violation`); the number in flight is already `max_inflight` (a `RESPONSE` with `err.code = "overloaded"`, same id, the request is neither tracked nor delivered, the connection stays open); otherwise the id is tracked and the request delivered. A client SHOULD NOT have more than `max_inflight` requests outstanding; `Connection::request` does not enforce it.
 
-Where security comes from today and the open question. As built, confidentiality and authentication are TLS 1.3 through rustls on the TCP and WebSocket listeners, off by default and required off-loopback unless a flag is set (`config.rs:414-416`, `main.rs:2441-2456`), with optional X.509 client certificates; there is no SPINE identity on this path. QUIC is unauthenticated and the repository's client verifier accepts any certificate. The mesh path instead runs the `spine-session` handshake (ML-KEM-768 key exchange, Ed25519 identities, AES-256-GCM records), which has had no external review (`src/spine-session/src/lib.rs:1-9`, `HANDSHAKE-REVIEW.md`).
+A server MAY run requests concurrently and answer in any order up to `max_inflight`. `Connection` supports it; the daemon does not: it sends `max_inflight = 1`, reads the next frame only after it has answered the last (`handle_session` runs each command inline), and so never produces `overloaded`. A server that processes one request at a time is conformant.
 
-Recommendation (question G1): run the native wire over the `spine-session` handshake once it has been independently reviewed, and keep TLS 1.3 as the interim binding. Reasoning:
-1. P3 and P2 need requests bound to a key the principal and name layers know; X.509 binds to a host name and a certificate authority, neither of which the stack otherwise has (`FIRST_PRINCIPLES.md` layer 1: "authenticated by the name itself with no certificate authority").
-2. One channel design for client and mesh removes a second security review.
-3. Costs: every client needs a key (the initiator signs `msg1` with an Ed25519 key, `handshake.rs:215-219`; an ephemeral per-connection key would give confidentiality without a stable client identity); browsers cannot use it except through a WebSocket bridge; the construction is unreviewed, so TLS stays the fallback until review finishes.
-4. The frame layer is agnostic: v1 frames are the plaintext carried inside session records (`Session::seal`/`open`, `handshake.rs:483-509`) or inside a TLS stream. The record's own length prefix then delimits it on the wire and the frame's `length` stays for streams without a record layer.
-5. Do not run both: layering TLS under the session handshake would add a certificate requirement without adding an identity.
+### 8.4 RESPONSE
 
-### C.12 Worked examples
+The server answers each `REQUEST` with exactly one `RESPONSE` carrying its id, unless it started a stream (section 10). The body is a single-entry map: `{ok: value}` or `{err: {code, message[, details]}}`. `err` is closed; `details`, when present, is any JSON-shaped value and a present `null` is rejected; the daemon never sets it. `code` is a stable snake_case identifier and `message` is for people. A client MUST branch on `code`, never on `message`, and MUST tolerate a code it does not know.
 
-Both are hand-computed, unverified by code. They were cross-checked with a throwaway Python encoder written from the rules above, kept outside the repository; no SPINE code was run, and they have not been checked against any Rust implementation (none exists).
+A `RESPONSE` for an id that is not in flight, or whose request is streaming, is `protocol_violation` on receipt, and a server that tries to send one gets `ConnectionError::Usage` (`Connection::check_incoming`, `check_outgoing`). The id is released when the `RESPONSE` is sent or received. When the daemon cannot send an answer it computed (for example it exceeds `max_frame`), it replaces it with `{err: {code: "internal"}}` so the id is released (`spine-core` `main.rs` `reply`).
 
-Example 1: the client's `HELLO` offering version 1, a 16 MiB frame limit and no extensions. Body is the map `{"versions": [1], "max_frame": 16777216, "extensions": []}`. Keys sorted by encoded bytes: `versions` (`68 ...`, 8 characters), `max_frame` (`69 ...`, 9), `extensions` (`6a ...`, 10).
+## 9. PING and PONG
+
+A `PING` carries a nonzero id and a uint token. The receiver MUST answer with a `PONG` carrying the same id and the same body bytes. `Connection::recv` answers inside the call and does not hand the `PING` to the caller. A `PONG` is handed to the caller; `Connection` does not match it to an outstanding `PING`, so an unsolicited `PONG` is accepted, and a `PING` id is never entered in the in-flight table and may equal a request id. A body that is not a uint (negative, float, text) is `protocol_violation` for both types (`Connection::accept`).
+
+Every frame read, `PING` included, restarts the idle timer of `recv_timeout`. The daemon never sends a `PING` and ignores a `PONG`. While the daemon executes a command it reads nothing, so a `PING` sent meanwhile is answered after that command's `RESPONSE` (section 16, item 9). The SDK's `ping` sends a `PING` with a counter id from 1 and the send time in milliseconds as the token and waits, with no timeout of its own, for the `PONG`.
+
+## 10. Streaming frames
+
+Specified; no producer exists. Nothing in the workspace sends `STREAM_START`, `STREAM_TOKEN` or `STREAM_END`, no command is defined to stream, and the daemon ignores `STREAM_CANCEL` (it is delivered only for an in-flight id and the daemon's loop discards every frame that is not a `REQUEST`). What is implemented is the frame types, the state machine in `Connection`, the body types and `native.rs` `encode_stream_body` and `decode_stream_body`.
+
+A stream is the reply to a `REQUEST` whose command is defined to stream; the stream id is the request id.
+
+1. The server sends `STREAM_START`, then zero or more `STREAM_TOKEN`, then `STREAM_END`, all with the request id. A request that has received `STREAM_START` receives no `RESPONSE`; a request that fails before then receives a `RESPONSE` with `err`. `Connection` enforces this: `STREAM_START` only while the request is pending, `STREAM_TOKEN` and `STREAM_END` only while it is streaming, a `RESPONSE` never while streaming; each violation is `protocol_violation`. `STREAM_END` releases the id.
+2. Bodies (`agentic.rs`), all closed: `STREAM_START` `{role: "assistant"|"tool"|"user"|"system", model: text[, trace: TraceContext][, decode_hints: DecodeHints]}`; `STREAM_TOKEN` `{seq: uint, data: StreamData[, usage: StreamUsage]}` with `StreamData` one of `{"text": text}`, `{"bytes": bytes}`, `{"tool_call": ToolCall}`; `STREAM_END` `{reason: StreamEndReason[, usage]}` with the reason one of the texts `"stop"`, `"length"`, `"tool_use"`, `"content_filter"`, `"cancelled"` or `{"error": {code: text, message: text}}`; `StreamUsage` `{input_tokens: uint, output_tokens: uint}`; `DecodeHints` is a map of optional sampling parameters (`temperature`, `top_p`, `repetition_penalty`, `presence_penalty`, `frequency_penalty` floats; `top_k`, `max_tokens` u32; `seed` u64; `stop_sequences` array of text).
+3. `seq` starts at 0 and increases by one per token per stream. A producer MUST NOT repeat or skip a value. No code checks it (section 16, item 12).
+4. The client cancels with `STREAM_CANCEL` (the stream's id, an optional `reason` text; with none, the empty map). `Connection` lets a client send it for any id; a server that receives it for an id that is not in flight ignores it silently, because it races with `STREAM_END`. A producer SHOULD stop within one token and send `STREAM_END` with reason `cancelled`. Cancel latency is bounded below by a server that reads frames while it produces; the daemon does not (section 16, item 9).
+5. Frames of several streams and responses may interleave; `seq` is per stream.
+6. The latent-codec chunk (`Encoded`) and `StreamStart.stream_codec` are not part of v1; they were removed with the research code (Appendix A).
+
+## 11. Extensions
+
+An extension id is opaque, case-sensitive ASCII text of at most 128 bytes, conventionally `<domain>/<name>/<major>`; a change that is not backward compatible changes the major number and so the id. Ids starting with `spine.` are reserved for extensions specified in the SPINE specification set. No extension is defined.
+
+The client lists ids in `HELLO.extensions`; the server answers the accepted subset in `HELLO_ACK.extensions`, in the client's order (6.4). The index of an extension is its position in that array. Only accepted extensions may be used.
+
+`EXT` (`0x80`) has the body `[index, kind, payload]`: a three-element array whose first element is a uint index into `HELLO_ACK.extensions`, `kind` a uint defined by the extension, `payload` any deterministic CBOR item. The request id follows the extension's rules; 0 is allowed. `Connection` checks only that the body is an array of three starting with a uint, and that the index is in range; otherwise `protocol_violation` (`connection.rs` `ext_index`, `check_ext`). It does not check `kind` or `payload`. The daemon accepts no extension, so every `EXT` frame it receives is a violation. An extension specification MUST define its kinds, payloads and error handling; this document defines none.
+
+The core command set and the frame types are closed; an extension cannot add a variant to them.
+
+## 12. Commands
+
+### 12.1 Encoding and decoding
+
+A `REQUEST` body is one of 19 commands (`lib.rs` `BrowserCommand`, `COMMAND_NAMES`). A command without fields is the text of its name; a command with fields is a single-entry map `{name: fields}`, where `fields` is a map with text keys. `execute_binary`, `tool_call` and `capability_query` carry one struct whose fields are the map. Names are lower snake_case and exactly as listed.
+
+The daemon decodes with `native.rs` `decode_command`: the body must be deterministic CBOR (else the connection closes, 7.2), must decode as a command, and the decoded command must re-encode to exactly the received bytes (`decode_strict`). The re-encode check catches bodies that the decoder alone would accept, for example `{"get_ur": {"x": 1}}`, which would otherwise read as the unit command. Failure is `unknown_command` if `claimed_command_name` finds a name outside `COMMAND_NAMES` (a text body, or a map with one entry and a text key), else `invalid_request`.
+
+Integer widths in the tables are those of the Rust fields: `usize` is read as a u64. Optional fields are omitted when absent and a present `null` is `invalid_request`. "JSON" means a JSON-shaped value (5.3).
+
+### 12.2 Field tables
+
+Commands with no fields: `get_ur`, `get_raw_html`, `get_binary_capabilities`, `namespace_status` (each is its name as text).
+
+| Command | Field | Type | Optional | Bytes |
+| --- | --- | --- | --- | --- |
+| `navigate` | `url` | text | no | |
+| `execute_binary` | `instructions`, `data`, `render_start`, `exported_functions`, `capabilities` | a `SpineBinary` (12.3) | no | |
+| `store_knowledge` | `key` | text | no | |
+| | `value` | JSON | no | |
+| | `tags` | array of text | no | |
+| `query_knowledge` | `query` | text | no | |
+| | `tags` | array of text | no | |
+| | `limit` | uint (usize) | no | |
+| `resolve_name` | `name` | text | no | |
+| | `if_none_match` | 32 bytes | yes | yes |
+| `resolve_names` | `names` | array of text | no | |
+| `find_providers` | `capability` | text | no | |
+| | `limit` | uint (usize) | yes | |
+| `publish_name` | `record` | JSON (a name record) | no | |
+| `fetch_name` | `name` | text | no | |
+| | `if_none_match` | 32 bytes | yes | yes |
+| `crawl_names` | `seed` | text | no | |
+| | `max_depth` | uint (u32) | yes | |
+| | `max_visits` | uint (usize) | yes | |
+| `publish_resource` | `record` | JSON (a name record) | no | |
+| | `content_type` | text | no | |
+| | `data` | bytes | no | yes |
+| `read_resource` | `hash` | 32 bytes | no | yes |
+| | `offset` | uint (u64) | no | |
+| | `max_bytes` | uint (u32) | no | |
+| `mesh_call` | `peer_id` | text | no | |
+| | `peer_key` | 32 bytes | no | yes |
+| | `payload` | JSON | no | |
+| `tool_call` | `name` | text | no | |
+| | `args` | JSON | no | |
+| | `trace` | `TraceContext` | yes | |
+| `capability_query` | `selector` | `CapabilitySelector` | no | |
+
+A byte field of the wrong length (not 32 bytes for the 32-byte fields) is `invalid_request`.
+
+### 12.3 Shared types
+
+All closed, all optional fields omitted when absent.
+
+| Type | Wire form |
+| --- | --- |
+| `TraceContext` | `{trace_id: 16 bytes, span_id: 8 bytes, flags: uint 0..255[, state: array of [text, text] pairs, omitted when empty]}` |
+| `CapabilitySelector` | the text `"all"`, or `{"exact": text}`, `{"prefix": text}`, `{"semantic": {embedding: array of float, top_k: uint (u32)}}` |
+| `Capability` | `{uri: text, description: text, input_schema: JSON, output_schema: JSON[, embedding: array of float]}` |
+| `CapabilityAdvertisement` | `{agent_id: text, capabilities: array of Capability}` |
+| `ResourceChunk` | `{hash: 32 bytes, offset: uint, total_bytes: uint, content_type: text, data: bytes, complete: bool}` |
+| `SpineBinary` | `{instructions: array of Instruction, data: bytes, render_start: uint, exported_functions: map text to uint, capabilities: array of text}` |
+
+`Instruction` (`lib.rs`) is externally tagged: a unit variant is its name as text, a one-field variant is `{name: value}`, a struct variant is `{name: {fields}}`. Variants and fields (ids and indexes are u32 unless noted, `uint` is usize or u64): `define_element {id, tag: text}`, `set_attribute {id, key: text, value: text}`, `add_child {parent_id, child_id}`, `emit_event {name: text, payload: JSON}`, `stream_latent {vector: array of float}`, `morph_protocol {seed: u64}`, `decoy {noise: array of float}`, `declare_state {name: text, initial_json: JSON}`, `update_state {name: text, value_json: JSON}`, `push` JSON, `pop`, `load` text, `store` text, `bin_op` one of `add sub mul div mod eq ne lt le gt ge and or concat`, `unary_op` one of `not neg`, `jump` uint, `jump_if` uint, `jump_if_not` uint, `call {name: text, num_args: uint}`, `call_target` uint, `return`, `define_element_from_stack {id}`, `set_attribute_from_stack {id, key: text}`, `add_child_from_stack {parent_id, child_id}`, `emit_event_from_stack {name: text}`, `define_text_from_stack`, `declare_state_from_stack {name: text}`, `update_state_from_stack {name: text}`, `navigate_from_stack`, `search_from_stack`, `store_knowledge_from_stack {tags: array of text}`, `query_knowledge_from_stack {tags: array of text, limit: uint}`.
+
+The name record inside `record` is a `spine_name::NameRecord`, specified by layer 2 and not here; for orientation its keys are `name`, `seq`, `ttl_secs`, `published_at`, `endpoints`, `capabilities`, `content_hash`, `links`, `meta`, `signature` (`spine-name` `record.rs`).
+
+### 12.4 Reply shapes
+
+The `ok` value, by command (`spine-core` `main.rs` `handle_command`, `handle_session`). "JSON" values are JSON-shaped.
+
+| Command | `ok` value |
+| --- | --- |
+| `navigate` | `{status: "success", session_id: text}` |
+| `get_ur` | `{parsed_ur: JSON, vdom_tree: JSON or null, vdom_ur: JSON or null}` |
+| `get_raw_html` | `{html: text}` |
+| `execute_binary` | `{status: "executed", stats: {instructions_executed, compile_time_us, execution_time_us, wasm_size_bytes, memory_used_bytes}, elements, events, actions, latent_streams_count: uint, patches}` |
+| `store_knowledge` | `{status: "knowledge_stored"}` |
+| `query_knowledge` | `{results: array of {key: text, value: JSON, tags: array of text, timestamp_ns: uint}}`, at most `limit` entries, from this connection's session only |
+| `get_binary_capabilities` | `{capabilities: array of text}` of the session's current binary, empty if none |
+| `resolve_name` | a `NameResolution` (below) |
+| `resolve_names` | `{resolutions: array of NameResolution}`, in request order |
+| `find_providers` | `{capability: text, providers: array of name record, count: uint}` |
+| `publish_name`, `publish_resource` | a publication report: `{status: "published", name, stored, local_persistent, replicas, replication_sent, replication_failed, replication_broadcast, replication_error, replication_acknowledged, durable, retry}` |
+| `fetch_name` | `{resolution: NameResolution, endpoints: array of text}` |
+| `crawl_names` | `{visited: array of {name, depth, capabilities, links} or {name, depth, unresolved: true}, skipped: uint, pending: uint}` |
+| `read_resource` | a `ResourceChunk` (typed, byte strings) |
+| `namespace_status` | `{enabled: bool, connectivity: text, peers: array[, agent_id, public_key, tasks_enabled]}` |
+| `mesh_call` | the peer application's reply, JSON; the SDK reads `result`, or `error.{code, message}`, from it |
+| `tool_call` | the tool's content, JSON |
+| `capability_query` | a `CapabilityAdvertisement` (typed); `agent_id` is the node's DID when a namespace is configured, else `"spine-core:local-unattested"`; a `semantic` selector matches nothing |
+
+`NameResolution` is externally tagged: `{"resolved": {record, provenance}}`, `{"unchanged": {ttl_secs}}`, `{"not_found": {name}}`, `{"invalid": {name, reason}}` or `{"unavailable": {name, reason}}`, with `provenance` one of `cache`, `stale_cache`, `local`, `network`, `address`. `resolve_name` always answers `ok`; a bad or missing name is a variant, not an `err`.
+
+The daemon's tools (`tool_call`) are `spine.html/parse` and `spine.content/hash`, each taking `{text}` of at most 1 MiB.
+
+## 13. Error codes
+
+Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 45 codes), with the condition and the place that raises it. A client MUST tolerate a code not in this list.
+
+| Code | Condition | Raised in |
+| --- | --- | --- |
+| `overloaded` | server at `max_inflight` (never by the daemon, 8.3) | `connection.rs` `accept` |
+| `unknown_command` | 7.4 | `native.rs` `decode_command` |
+| `invalid_request` | 7.4; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` beyond the resource (section 16, item 1) | `native.rs`; `main.rs` `handle_command` |
+| `internal` | an answer too large to send; a `resolve_names` task failed; a `read_resource` failure that is neither of the above (including a stored blob that fails its integrity check); a `spine.html/parse` result that could not be encoded; the unreachable arm for `tool_call` and `capability_query` in `handle_command` | `main.rs` `reply`, `handle_command`; `tools.rs` `invoke` |
+| `rate_limit` | the session's bucket (burst 100, 10 per second) is empty for a session command; the connection's separate bucket is empty for a `tool_call` | `main.rs` `check_rate_limit`, `handle_session` |
+| `session_capacity` | the connection's first session command found `server.max_sessions` sessions; the connection ends after this reply | `main.rs` `handle_session`, `create_session` |
+| `session_not_found` | `get_ur` or `get_raw_html`, and the session record is gone | `main.rs` `handle_command` |
+| `session_expired` | `navigate` fetched a page and the session record was gone | `main.rs` `handle_command` |
+| `no_page_loaded` | `get_ur` or `get_raw_html` before a successful `navigate`; `get_ur` also when the page does not parse (section 16, item 10) | `main.rs` `handle_command` |
+| `navigation_failed` | `navigate` failed with an error that is not a listed `outbound_*` code (`outbound_url_limit`, `outbound_dns_limit`, `outbound_http_status_<n>`); the message carries the text (section 16, item 2) | `main.rs` `navigation_failure` |
+| `capability_denied` | `execute_binary` lists a capability other than `network`, `storage`, `memory`, `search` | `main.rs` `handle_command` |
+| `execution_failed` | `execute_binary`: the program failed to compile, instantiate or run, or ran out of fuel | `main.rs` `handle_command` |
+| `namespace_unavailable` | `mesh_call` and no namespace is configured (checked before `peer_id`) | `main.rs` `handle_command` |
+| `invalid_peer_id` | `mesh_call` with a namespace, and `peer_id` is not a UUID | `main.rs` `handle_command` |
+| `mesh_call_failed` | `mesh_call` could not be delivered or the peer refused it | `main.rs` `handle_command` |
+| `batch_too_large` | `resolve_names` with more than 256 names | `main.rs` `handle_command` |
+| `lookup_failed` | `find_providers`: the local index failed | `main.rs` `handle_command` |
+| `lookup_unavailable` | `find_providers`: the mesh lookup failed (only when peers are connected) | `main.rs` `handle_command` |
+| `record_expired` | `publish_name` or `publish_resource`: the record is past its expiry | `main.rs` `handle_command` |
+| `malformed_record` | `publish_name` or `publish_resource`: `record` does not decode as a name record | `main.rs` `handle_command` |
+| `record_rejected` | `publish_name`: the store refused the record (signature or policy); `publish_resource`: the same after the bytes were stored (a blob this request added is removed) | `main.rs` `handle_command` |
+| `publish_failed` | `publish_resource`: `put_tracked` failed (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, store quota) | `main.rs`; `resources.rs` `put_tracked` |
+| `resource_not_found` | `read_resource`: no blob for the hash | `main.rs` `handle_command` |
+| `invalid_seed` | `crawl_names`: `seed` does not parse as a name | `main.rs` `handle_command` |
+| `invalid_args` | `tool_call`: `args.text` is not text or exceeds 1 MiB (checked before the tool name) | `tools.rs` `invoke` |
+| `unsupported_tool` | `tool_call`: the name is neither tool, and `args.text` was valid | `tools.rs` `invoke` |
+| `parse_error` | `tool_call` `spine.html/parse`: parsing failed | `tools.rs` `invoke` |
+| `outbound_disabled` | `navigate` and `outbound.enabled` is false | `outbound.rs` `fetch_checked` |
+| `outbound_address_denied` | a resolved address is not public and the origin is not in `outbound.internal_origins` | `outbound.rs` `fetch` |
+| `outbound_scheme_denied` | the scheme is not `http` or `https` | `outbound.rs` `parse_url` |
+| `outbound_credentials_denied` | the URL has a user name or password | `outbound.rs` `parse_url` |
+| `outbound_fragment_denied` | the URL has a fragment | `outbound.rs` `parse_url` |
+| `outbound_redirect_denied` | the origin answered 3xx | `outbound.rs` `fetch` |
+| `outbound_encoding_denied` | the response has a `Content-Encoding` other than `identity` | `outbound.rs` `fetch` |
+| `outbound_response_limit` | the body exceeds `outbound.max_response_bytes` | `outbound.rs` `fetch` |
+| `outbound_busy` | `outbound.max_concurrent` fetches are running | `outbound.rs` `fetch` |
+| `outbound_timeout` | the fetch exceeded `outbound.timeout_secs` | `outbound.rs` `fetch_checked`, `fetch` |
+| `outbound_invalid_url` | the URL does not parse | `outbound.rs` `parse_url` |
+| `outbound_invalid_host` | the URL has no host | `outbound.rs` `parse_url`, `fetch` |
+| `outbound_invalid_port` | no port can be determined | `outbound.rs` `fetch` |
+| `outbound_dns_failed` | name resolution failed | `outbound.rs` `fetch` |
+| `outbound_client_failed` | the HTTP client could not be built | `outbound.rs` `fetch` |
+| `outbound_request_failed` | sending the request failed other than by timeout | `outbound.rs` `fetch` |
+| `outbound_body_failed` | reading the body failed other than by timeout | `outbound.rs` `fetch` |
+| `outbound_invalid_utf8` | the body is not UTF-8 | `outbound.rs` `fetch` |
+
+`navigate` passes an `outbound_*` code through unchanged only when the fetcher's error text is exactly one of the listed codes (`main.rs` `navigation_failure`).
+
+## 14. Limits, timeouts and configuration
+
+Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environment variable is named. Source: `spine-core` `config.rs` unless another is named. Validation ranges are those of `SpineConfig::validate`.
+
+| Limit | Value | Key or source | On violation |
+| --- | --- | --- | --- |
+| Frame length, before `HELLO` | 65,536 | `frame.rs` `PRE_HELLO_MAX_FRAME`; fixed | `CLOSE(frame_too_large)` |
+| Frame length, after | negotiated `max_frame`, 1,024 to 16,777,216 | the daemon and the SDK both offer 16,777,216 and it is not configurable (`native.rs` `local_config`, `client_hello`) | `CLOSE(frame_too_large)` |
+| Declared uncompressed length | `max_frame - 11` | fixed | `CLOSE(frame_too_large)` |
+| zstd window | 2^23 bytes | `frame.rs`; fixed | `CLOSE(malformed_frame)` |
+| CBOR depth | 32 | `cbor.rs` `MAX_DEPTH`; fixed | `CLOSE(malformed_frame)` |
+| Requests in flight | 1 | `native.rs` `local_config`; not configurable | `overloaded` (unreachable) |
+| `HELLO` deadline | 10 s | `server.hello_timeout_secs` (`SPINE_HELLO_TIMEOUT`); must be above 0 | `CLOSE(timeout)` |
+| Idle | 300 s | `server.idle_timeout_secs` (`SPINE_IDLE_TIMEOUT`); must be above 0. Restarted by every frame read, `PING` included, and covers a half-sent frame. | `CLOSE(timeout)` |
+| Connections, total | 256, 1 to 65,536 | `server.max_connections`; counts TCP, WebSocket and QUIC, handshakes included | closed without a byte |
+| Connections per IP | 50, above 0 | `server.max_connections_per_ip` | closed without a byte |
+| Sessions | 1,000, 1 to 65,536 | `server.max_sessions` (`SPINE_MAX_SESSIONS`) | `session_capacity` |
+| Request rate | burst 100, refill 10 per second, per session; `tool_call` has its own bucket per connection | `main.rs` `check_rate_limit`; fixed | `rate_limit`, connection stays open |
+| Write deadline | 30 s per frame | `native.rs` `WRITE_DEADLINE`; fixed | connection closed (`CLOSE(timeout)` best effort) |
+| Best-effort `CLOSE` write | 1 s | `connection.rs`; fixed | abandoned |
+| TLS handshake, WebSocket upgrade, QUIC connect, QUIC first stream | 10 s each | `main.rs`; fixed | dropped |
+| WebSocket message and frame, server | 16 MiB | `websocket.rs`; fixed | transport error |
+| Listener ports | 8080, +1, +2 | `server.port`, `server.ws_port_offset`, `server.quic_port_offset` | |
+| Bind address | `127.0.0.1` | `server.host`; non-loopback needs `tls.mutual_tls` or `server.allow_unauthenticated_remote` | startup refused |
+| Shutdown drain | 30 s | `server.shutdown_timeout_secs` (`SPINE_SHUTDOWN_TIMEOUT`) | process exits |
+| `resolve_names` batch | 256 names | `main.rs`; fixed | `batch_too_large` |
+| Resource upload | 8 MiB (`MAX_RESOURCE_BYTES`) | `resource.rs`; fixed | `publish_failed` |
+| Resource read chunk | 1 to 65,536 bytes | `resource.rs` `MAX_RESOURCE_CHUNK`; fixed | `invalid_request` |
+| Resource store | 256 MiB serialised | `resources.rs` `MAX_STORED_BYTES`; fixed | `publish_failed` |
+| Tool text | 1 MiB | `tools.rs`; fixed | `invalid_args` |
+| Navigation | `[outbound]`: `enabled` true, `internal_origins` [] (at most 64), `max_response_bytes` 2 MiB (1 to 8 MiB), `timeout_secs` 30 (1 to 300), `max_concurrent` 16 (1 to 256); URL at most 8,192 bytes | `outbound.rs` `FetchConfig` | `outbound_*` |
+| SDK TCP connect, TLS handshake | 10 s each | `spine-agent` `AgentClient::connect`, `connect_tls` | error |
+| SDK `HELLO_ACK` | 10 s | `native.rs` `DEFAULT_HELLO_DEADLINE` | error |
+| SDK `capabilities`, `call_tool` | 10 s, 30 s | `spine-agent` | error; the client MUST then reconnect (`recv` is not cancel safe) |
+
+No other SDK call has a deadline of its own.
+
+## 15. Conformance
+
+### 15.1 Vectors and checker
+
+`docs/spec/00-wire.vectors.json` holds conformance vectors generated by `scripts/wire_v1.py`, an implementation of this specification written independently of the Rust code in Python 3 with only the standard library. Two commands, run from the repository root, check them:
+
+```
+python scripts/wire_v1.py check docs/spec/00-wire.vectors.json
+python scripts/wire_v1.py generate | diff - docs/spec/00-wire.vectors.json
+```
+
+The first runs every vector through the reference; the second fails if the committed file differs from what the generator writes (compare with line endings normalised when a checkout has converted them; the committed file is LF, `.gitattributes`). The CI job `wire-vectors` runs both. The Rust side is `src/spine-protocol/tests/conformance_vectors.rs`, which feeds every vector to `cbor::check_deterministic`, `frame::decode_frame`, `frame::encode_frame`, the typed decoders of `native.rs`, `Hello::from_frame` and `hello::negotiate`.
+
+The file has these sections: `valid_bodies` (deterministic CBOR the decoder must accept), `invalid_bodies` (each with the rejecting `CborError` variant), `valid_frames` (decode, re-encode and typed read), `invalid_frames` (each with the `FrameError` variant and close code), `incomplete_frames` (valid prefixes; the number of further bytes needed) and `handshakes` (a `HELLO` frame, the server configuration and the expected `HELLO_ACK` or `CLOSE`). Frames with flag bit 0 hold their body in a zstd frame of raw blocks, which is valid zstd and not smaller. A `note` on a vector explains a rule; since this revision no note records a disagreement between the text and the implementation.
+
+### 15.2 What conforming means
+
+An implementation conforms to v1 as a sender if every frame it emits satisfies sections 2 to 5, 6 (client or server side), 8 and 9, and as a receiver if it rejects, with the outcome of 7.2 to 7.4, what those sections tell it to reject. It passes the vectors if it gives each vector's stated result. Behaviour left to a command (what `navigate` does) is outside the wire layer.
+
+### 15.3 Worked examples
+
+Each is reproduced byte for byte by the reference and by the Rust test (vectors `c12_hello`, `c12_request_tool_call`, `c12_ping_token_42_id_7`).
+
+Example 1: the client's `HELLO` offering version 1, a 16 MiB frame limit and no extensions. The body is the map `{"versions": [1], "max_frame": 16777216, "extensions": []}`; keys sort by encoded bytes: `versions` (`68 ...`, 8 characters), `max_frame` (`69 ...`, 9), `extensions` (`6a ...`, 10).
 
 ```
 00 00 00 32                     length = 0x32 = 50 = 11 + 39
@@ -470,158 +543,219 @@ a3                              map(3)
   80                              []
 ```
 
-Total 54 bytes: `00 00 00 32 01 01 00 00 00 00 00 00 00 00 00 a3 68 76 65 72 73 69 6f 6e 73 81 01 69 6d 61 78 5f 66 72 61 6d 65 1a 01 00 00 00 6a 65 78 74 65 6e 73 69 6f 6e 73 80`.
-
-Example 2: `REQUEST`, request id 1, calling the tool `spine.content/hash` with `{"text": "hi"}`. The command is externally tagged with the proposed wire name `tool_call`; the inner map's keys sort `args` (`64 61 ...`) before `name` (`64 6e ...`).
+Example 2: `REQUEST`, id 1, the command `tool_call` with `{"name": "spine.content/hash", "args": {"text": "hi"}}`; inside the inner map `args` (`64 61 ...`) sorts before `name` (`64 6e ...`).
 
 ```
 00 00 00 3d                     length = 0x3d = 61 = 11 + 50
-01                              version = 1
-10                              type = REQUEST
-00                              flags = 0
+01 10 00                        version 1, REQUEST, flags 0
 00 00 00 00 00 00 00 01         request id = 1
-a1                              map(1)
-  69 74 6f 6f 6c 5f 63 61 6c 6c   "tool_call"
-  a2                              map(2)
-    64 61 72 67 73                  "args"
-    a1 64 74 65 78 74 62 68 69      {"text": "hi"}
-    64 6e 61 6d 65                  "name"
-    72 73 70 69 6e 65 2e 63 6f 6e 74 65 6e 74 2f 68 61 73 68   "spine.content/hash" (18 bytes)
+a1 69 74 6f 6f 6c 5f 63 61 6c 6c   map(1), "tool_call"
+a2                              map(2)
+  64 61 72 67 73                  "args"
+  a1 64 74 65 78 74 62 68 69      {"text": "hi"}
+  64 6e 61 6d 65                  "name"
+  72 73 70 69 6e 65 2e 63 6f 6e 74 65 6e 74 2f 68 61 73 68   "spine.content/hash"
 ```
 
-Total 65 bytes: `00 00 00 3d 01 10 00 00 00 00 00 00 00 00 01 a1 69 74 6f 6f 6c 5f 63 61 6c 6c a2 64 61 72 67 73 a1 64 74 65 78 74 62 68 69 64 6e 61 6d 65 72 73 70 69 6e 65 2e 63 6f 6e 74 65 6e 74 2f 68 61 73 68`.
+A `PING` with token 42 and request id 7 is `00 00 00 0d 01 04 00 00 00 00 00 00 00 00 07 18 2a`: 4 + 11 + 2 = 17 bytes.
 
-For comparison, the as-built `Ping` of A.2 is 19 bytes of CBOR plus 8, wrapped to 177 bytes of JSON, then compressed and framed. A v1 `PING` with token 42 and request id 7 is `00 00 00 0d 01 04 00 00 00 00 00 00 00 00 07 18 2a`: 4 + 11 + 2 = 17 bytes (also hand-computed, unverified by code).
+### 15.4 What the vectors do not cover
 
-### C.13 Deviations from the brief, and why
+The vectors cover the frame codec, the CBOR profile, the first-frame bodies and negotiation. They do not cover, and the reference does not implement:
 
-1. `HELLO` is always version 1 and negotiates; the other frames carry the selected version. The brief fixed `version = 1`; this keeps the one-byte version useful once a second version exists.
-2. Compressed bodies carry a 4-byte `uncompressed_len` prefix. This lets the receiver reject a bomb before inflating and allocate exactly. The brief asked for a bomb bound but not a mechanism.
-3. A `max_frame` is negotiated, below an absolute 16 MiB ceiling, and a 64 KiB limit applies before `HELLO`. The brief asked for a stated maximum; the pre-`HELLO` limit keeps an unauthenticated peer from forcing large allocations.
-4. Correlation ids replace the string ids inside bodies (C.8), and `PING`/`PONG` carry ids. The brief asked for a header id; the consequence is to delete the redundant body ids (D).
-5. Structs are closed and the CBOR rules are stricter than RFC 8949 section 4.2 alone (no tags, depth bound, absent rather than null optionals, bytes as byte strings). This is for R4 (one encoding per value).
-6. Unknown frame type closes the connection; unknown command in a `REQUEST` is an error response. The brief asked for both to be defined; the split is by whether the byte stream and state machines can continue.
-7. One frame type for streams per phase, with the stream id equal to the request id, instead of a separate stream-id space.
+- Connection state: id reuse, direction, `HELLO` first, a second `HELLO`, extension indexes, `max_inflight`, timeouts, the streaming state machine. These are covered by the unit tests in `connection.rs` only.
+- Real zstd compression. The reference reads a zstd frame only as far as its structure goes (magic number, declared length against the limit, raw and RLE blocks) and reports others as opaque. So no vector exercises the window limit, a checksum, concatenated or skippable frames, or trailing bytes after the zstd frame (4, rule 3), where the Rust decoder and the reference may differ.
+- Request classification. There is no vector for `unknown_command` or `invalid_request`. The reference's command check looks at names and field names only, not at field types, byte-field lengths or the re-encode rule, so it accepts bodies the daemon rejects (for example `navigate` with a number as `url`). JSON-shaped fields holding an integer below -2^63 are accepted by the reference and expected to be rejected by the daemon (5.3).
+- Non-text map keys in `HELLO`, `HELLO_ACK` and `CLOSE` (section 16, item 15).
+- `HELLO_ACK` and `CLOSE` bodies as invalid inputs: only `HELLO` has invalid-body vectors.
+- Transports, TLS, the daemon's session and rate behaviour and every reply shape of 12.4.
 
-## D. Message set v1
+## 16. Known deviations and defects
 
-### D.1 `Message` variants (24)
+Behaviour the implementation has that the specification author would change. Each is specified above as implemented; the right behaviour is what to do instead.
 
-Disposition: Keep (stays, in the form shown), Extension (moves out of the core, named), Delete (nothing sends or consumes it).
+1. **Error code chosen from error text in `read_resource`.** `main.rs` `handle_command` maps the error's text: "not held by this origin" gives `resource_not_found`, text containing "chunk must be" or "offset" gives `invalid_request`, anything else `internal`. A wording change in `resources.rs` `read` or `load_verified` silently changes the code, and `invalid_request` is the code 7.4 reserves for undecodable requests. Right: `ResourceStore::read` returns a typed error; an out-of-range `max_bytes` or `offset` gets its own code (for example `invalid_range`).
+2. **`navigate` derives its code from error text too.** `main.rs` `navigation_failure` treats the fetcher's error text as the code when it starts with `outbound_` and is in `ALL_ERROR_CODES`. `outbound_url_limit`, `outbound_dns_limit` and `outbound_http_status_<n>` (`outbound.rs` `parse_url`, `fetch`) are not in the list, so they collapse into `navigation_failed` with the code only inside the message. Right: a typed fetch error with a code each, and a code for an HTTP status that is not success.
+3. **Bytes inside JSON-shaped results travel as arrays of integers.** `NameRecord.content_hash` is a `[u8; 32]` and `serde_json::to_value` turns it into 32 integers inside the `record` of `publish_name`, `publish_resource`, `resolve_name`, `fetch_name` and `find_providers` (`spine-name` `record.rs`; `main.rs` `resolve_one`). The signature of the same record is base32 text, so one record uses two byte conventions, and the integer array is about twice the size. Right: one encoding, a typed `NameRecord` with byte strings on this wire.
+4. **No `CLOSE(shutting_down)` on shutdown.** The code is defined and the SDK tests accept it, but the daemon on shutdown only stops accepting (dropping new sockets with no frame), waits up to `server.shutdown_timeout_secs` for connections to end, and exits (`main.rs` `main`, `grep ShuttingDown` finds no sender outside tests). Established connections see the stream end. Right: send `CLOSE(shutting_down)` to every connection once its current request is answered.
+5. **A connection refused at admission, and the end after `session_capacity`, carry no frame.** The peer sees an end of stream, indistinguishable from a network fault (`connections.rs`, `main.rs` `handle_session`). Right: a `CLOSE` with a code before the socket is dropped.
+6. **The QUIC listener is untested and unreachable from the SDK.** `spine-core`'s `quic` feature is off by default and no CI job builds `spine-core` with it; no test and no client in the workspace connects over QUIC; the listener's certificate is self-signed with no client authentication, and the library's client builder skips server certificate verification (`spine-protocol` `lib.rs` `SkipServerVerification`). Startup is refused when `tls.enabled`. Right: either test and document it, or remove the listener.
+7. **A duplicated null-rejecting helper.** `hello.rs` defines a private `reject_null` that is identical to `wirefmt.rs` `reject_null` (which `lib.rs`, `agentic.rs` and `body.rs` use). Right: `hello.rs` uses the shared one.
+8. **A schema failure in a `RESPONSE` or a `STREAM_*` body does not close the connection.** The original design closed with `protocol_violation`. `Connection` delivers any deterministic body; the client library's `native.rs` `decode_reply` and `decode_stream_body` report `NativeError::Body` to the caller, the in-flight id has already been released, and the connection stays open. Only `HELLO_ACK`, `CLOSE`, `PING` and `PONG` bodies are checked inside `Connection`. Right: the connection layer closes with `protocol_violation`, or the specification says the failure is local (as 7.4 now does); the two should not both be true.
+9. **The daemon does not read while it executes a command.** `main.rs` `handle_session` awaits each command inline, so during a slow `navigate` or `execute_binary`: a `PING` is answered only afterwards, a `STREAM_CANCEL` could not be acted on, and a client's second request waits in the socket buffer (which is why `overloaded` never occurs). The idle timer is unaffected because it measures time between reads. Right: split reading from execution so liveness frames and cancels are handled during a command.
+10. **`get_ur` reports a page that fails to parse as `no_page_loaded`.** `main.rs` `handle_command` does `parse_html(&html).ok()`, discarding the parse error, so a loaded but unparseable page and no page at all give the same code. Right: a distinct code, such as `parse_error`.
+11. **`tool_call` checks `args.text` before the tool name.** `tools.rs` `invoke` returns `invalid_args` for an unknown tool whose `args` has no text, and `unsupported_tool` only when `text` is valid. Right: check the name first.
+12. **Stream `seq` is not enforced.** Neither `Connection` nor any helper checks that `STREAM_TOKEN.seq` starts at 0 and increments by one, and no producer exists, so the rule of section 10 is unexercised. Right: the receiver closes with `protocol_violation` on a gap or repeat, once a producer exists.
+13. **`CLOSE` after an interrupted write follows a partial frame.** `native.rs` `send_bounded` drops the write future at 30 seconds and then writes a `CLOSE` on the same stream; if the dropped write left a partial frame the peer reads garbage, not a `CLOSE`. Right: after a timeout, close the transport without writing.
+14. **No per-connection decompression byte budget.** Section 4 notes the amplification of compressed frames. No sender in the workspace compresses, so it is latent. Right: a budget of decompressed bytes per second per connection, configured by the deployment.
+15. **Non-text map keys in `HELLO`, `HELLO_ACK` and `CLOSE` (unverified).** These bodies are decoded with `cbor::from_slice`, without the re-encode check that commands and replies get (`native.rs` `decode_strict`). By reading serde's derive, a struct's field visitor accepts an integer key as an index, and ignores an integer key it does not know, so ciborium may accept `{0: [1], 1: 1024, 2: []}` as a `HELLO`, or a `HELLO` with an extra integer key. The reference rejects any map with a non-text key as `protocol_violation`. Not run, no vector. Right: decode these three through `decode_strict` or reject non-text keys, then add a vector.
+16. **`max_frame`, `max_inflight` and the HELLO `agent` string are not configurable.** `native.rs` `local_config` fixes them, so the statement that a deployment can lower `max_frame` by configuration (Appendix C, G3) is true of the protocol and not of the daemon. Right: configuration keys for them.
+17. **The rate limiter's constants are hard-coded and a rate-limited first command still creates a session.** `main.rs` `check_rate_limit` (100 and 10 per second) and `handle_session` (the session is created before the limit is applied). Right: configuration keys, and the limit applied before a session slot is spent.
+18. **The SDK has no deadline on most calls.** Only the handshake (10 s), `capabilities` (10 s), `call_tool` (30 s) and a frame write (30 s) have one; `ping`, `navigate` and the rest wait indefinitely for a reply. Right: a per-call deadline option, with the reconnect rule of section 14.
 
-| # | Variant | Disposition | v1 form |
+## Appendix A. History: the pre-v1 wire
+
+The text below condenses the description that this document originally contained, written against `156f7e6` (before the migration of Appendix B). Everything in it has been removed. Its line citations refer to that commit and do not resolve now.
+
+### A.1 Layers
+
+One logical message passed through seven layers, in the default build with no cipher and no morph:
+
+```
+L1  cbor      ciborium::into_writer(Message)
+L2  sp_body   'S' 'P' 0x01 0x02 || u32_be(len(L1)) || L1
+L3  json      serde_json::to_vec(SpeculativeFrame{ payload: Full(L2 as Vec<u8>), ... })
+              (a Vec<u8> serialises as a JSON array of decimal integers)
+L4  padded    apply_padding(L3) per morphology.padding_mode
+L5  flagged   0x01 || zstd_level3(L4) if len(L4) >= 64, else 0x00 || L4
+L6  sealed    L5, or nonce12 || AES-256-GCM(key, nonce, L5), after enable_encryption() (no production caller)
+L7  frame     length:u32 (BE if morphology.big_endian, else LE) || version || filler || L6
+```
+
+The default header was `u32_be length || 0x00` plus the flag byte. The `Ping { timestamp: 42 }` message was 19 bytes of CBOR, 27 with the `SP` header, 177 as the JSON wrapper, and then compressed: the wrapper alone was 87 bytes, so the "compress at 64 bytes" threshold was always met on that path and the raw branch was reachable only through `send_message_raw`. The receiver accepted headerless JSON, `SP` plus JSON, CBOR or CBOR plus zstd, each optionally wrapped in one of four speculative shapes, each padded and flagged in several ways: maximally permissive, and the sender was not canonical. There was no handshake and no version exchange.
+
+### A.2 Morphology, speculation, limits
+
+`BrowserCommand::Morph` and a 30-second daemon task changed the frame header of every later frame (5 to 16 bytes, byte order, filler, padding) under an HMAC with an all-zero key unless a research chameleon was enabled, so the evolution was not secret. The speculative layer (`SpeculativeFrame`, predictors, caches, `PreComputed`) was dead in the default build (`predict_next` returned `(0, 0.0)`) and its `enable_speculation` set two booleans nothing read. Limits: a 16 MiB frame (zero-filled before the body arrived), 64 MiB decompressed, a 16 MiB inner message, a version-1 `SP` header, idle 300 s, 256 connections and 50 per IP, 1,000 sessions, a 100-token bucket refilling 10 per second, 30-second writes. Messages the daemon did not handle were dropped silently. A malformed message ended the connection with no code. The two recorded findings of that review were an `ExecuteBinary` that aborted the daemon on a failed program (fixed in `e3e5a2d`) and the unused JSON `negotiation.rs` (deleted with step 3).
+
+### A.3 Message inventory
+
+`Message` had 24 variants. The fate column is the disposition of the proposal as carried out.
+
+| # | Variant | Pre-v1 role | Fate in v1 |
 | --- | --- | --- | --- |
-| 1 | `Request` | Keep | frame type `REQUEST` (0x10); body is the command; `id` moves to the header |
-| 2 | `Response` | Keep | frame type `RESPONSE` (0x11); `{ok: any}` or `{err: {code, message[, details]}}`; the `Option<Value>` plus `Option<String>` pair is replaced |
-| 3 | `Event` | Delete | only the decoy path sends it. The type number 0x12 stays unallocated. |
-| 4 | `BinaryProgram` | Delete | nothing sends it; `SpineBinary` stays as the argument of `ExecuteBinary` |
-| 5 | `LatentMessage` | Extension `nervosys.org/neural-codec/1` | the daemon's `ExecuteBinary` latent output (`main.rs:2704-2716`) is the one live sender; without the extension negotiated the daemon sends nothing (G9) |
-| 6 | `Sync` | Delete | |
-| 7 | `Speculative` | Delete | |
-| 8 | `PreComputed` | Delete | |
-| 9 | `MorphRequest` | Delete | |
-| 10 | `Ping` | Keep | `PING` (0x04) |
-| 11 | `Pong` | Keep | `PONG` (0x05) |
-| 12 | `ToolCall` | Keep | command `tool_call` `{name, args[, trace]}` in a `REQUEST` |
-| 13 | `ToolResult` | Keep | `RESPONSE`; `trace` is not echoed |
-| 14 | `StreamStart` | Keep (specified, unimplemented) | `STREAM_START` |
-| 15 | `StreamToken` | Keep (specified, unimplemented) | `STREAM_TOKEN` |
-| 16 | `StreamEnd` | Keep (specified, unimplemented) | `STREAM_END` |
-| 17 | `StreamCancel` | Keep (specified, unimplemented) | `STREAM_CANCEL` |
-| 18 | `CapabilityQuery` | Keep | command `capability_query` `{selector}` |
-| 19 | `CapabilityAd` | Keep | the `ok` value of its `RESPONSE`: `{agent_id, capabilities}` |
-| 20 | `Encoded` | Extension `nervosys.org/neural-codec/1` | kind 1 |
-| 21 | `CodecAd` | Extension `nervosys.org/neural-codec/1` | kind 2 |
-| 22 | `CodecNegotiation` | Extension `nervosys.org/neural-codec/1` | kind 3 |
-| 23 | `EmbeddingRequest` | Extension `nervosys.org/neural-codec/1` | kind 4 |
-| 24 | `EmbeddingResponse` | Extension `nervosys.org/neural-codec/1` | kind 5 |
+| 1 | `Request` | the command, with a string id | frame `REQUEST`; the id moved to the header |
+| 2 | `Response` | `{id, result: Option<Value>, error: Option<String>}` | frame `RESPONSE`, `{ok}` or `{err}` |
+| 3 | `Event` | only the decoy path sent it | deleted |
+| 4 | `BinaryProgram` | nothing sent it | deleted |
+| 5 | `LatentMessage` | daemon after `ExecuteBinary` with `StreamLatent` | moved to the research crate; the reply carries `latent_streams_count` |
+| 6 | `Sync` | tests only | deleted |
+| 7 | `Speculative` | nothing | deleted |
+| 8 | `PreComputed` | built and never transmitted | deleted |
+| 9 | `MorphRequest` | daemon, every 30 s | deleted |
+| 10 | `Ping` | either | frame `PING` |
+| 11 | `Pong` | either | frame `PONG` |
+| 12 | `ToolCall` | client | command `tool_call` |
+| 13 | `ToolResult` | server | the `RESPONSE` |
+| 14 | `StreamStart` | nothing sent it | frame `STREAM_START` |
+| 15 | `StreamToken` | nothing | frame `STREAM_TOKEN` |
+| 16 | `StreamEnd` | nothing | frame `STREAM_END` |
+| 17 | `StreamCancel` | nothing | frame `STREAM_CANCEL` |
+| 18 | `CapabilityQuery` | client | command `capability_query` |
+| 19 | `CapabilityAd` | server | the `ok` of its `RESPONSE` |
+| 20 to 24 | `Encoded`, `CodecAd`, `CodecNegotiation`, `EmbeddingRequest`, `EmbeddingResponse` | nothing outside tests | moved to the research crate |
 
-Count: 12 kept (of which 6 become frame types or commands rather than enum variants and 4 are specified but have no implementation), 6 moved to an extension (kinds 1 to 5 plus `LatentMessage` as kind 6), 6 deleted. 12 + 6 + 6 = 24. The streaming types are kept because token streaming and cancel are named premises (P4, P8), the gateway already maps these structs to SSE (`agentic_sse.rs`), and deleting them would discard the one design for them; the cost is four frame types with tests and no sender until Stage 9. If the owner prefers the strict "nothing sends it" rule, the count becomes 8 kept, 6 extension, 10 deleted.
+Count: 12 kept, 6 moved, 6 deleted. `Message` in `lib.rs` is now a record type for traces (`replay.rs`) and not a wire body.
 
-### D.2 `BrowserCommand` variants (35)
+### A.4 Command inventory
 
-| # | Variant | Disposition | Note |
+`BrowserCommand` had 35 variants. The 17 kept commands plus `tool_call` and `capability_query` are the 19 of section 12.
+
+| # | Variant | Pre-v1 behaviour in the research-free daemon | Fate in v1 |
 | --- | --- | --- | --- |
-| 1 | `Navigate` | Keep | wire name `navigate` |
-| 2 | `GetUR` | Keep | `get_ur` |
-| 3 | `GetRawHTML` | Keep | `get_raw_html` |
-| 4 | `Click` | Delete | stub |
-| 5 | `Type` | Delete | stub |
-| 6 | `ExecuteBinary` | Keep | `execute_binary`; the panic on failure (A.10) is fixed independently of the wire |
-| 7 | `HandleEvent` | Delete | no sender but examples |
-| 8 | `GetLatentUR` | Extension `nervosys.org/research-session/1` | |
-| 9 | `Morph` | Delete | with morphology (E) |
-| 10 | `Search` | Delete | returns a canned result |
-| 11 | `TransferSession` | Extension `nervosys.org/research-session/1` | |
-| 12 | `StoreKnowledge` | Keep | |
-| 13 | `QueryKnowledge` | Keep | |
-| 14 | `DeleteKnowledge` | Delete | no sender; return it with a designed knowledge object |
-| 15 | `GetSessionHistory` | Delete | no sender but examples |
-| 16 | `GetCapabilities` | Keep | rename to `get_binary_capabilities`: it lists the loaded program's capabilities, not the origin's tools |
-| 17 | `SetAutonomousMode` | Extension `nervosys.org/research-session/1` | its reader is research-gated |
-| 18 to 22 | `SwarmSearch`, `DelegateTask`, `ProposeKnowledge`, `CreateSwarmPlan`, `ExecutePlanTask` | Delete | refused in every build |
-| 23 | `NeuralTransmit` | Extension `nervosys.org/research-session/1` | |
-| 24 | `GetAgenticState` | Extension `nervosys.org/research-session/1` | |
-| 25 | `SendSpeechAct` | Delete | refused in every build |
-| 26 to 35 | `ResolveName`, `ResolveNames`, `FindProviders`, `PublishName`, `FetchName`, `CrawlNames`, `PublishResource`, `ReadResource`, `NamespaceStatus`, `MeshCall` | Keep | |
+| 1 to 3 | `Navigate`, `GetUR`, `GetRawHTML` | worked | `navigate`, `get_ur`, `get_raw_html` |
+| 4, 5 | `Click`, `Type` | stubs returning success | deleted |
+| 6 | `ExecuteBinary` | worked (aborted the daemon on failure) | `execute_binary` |
+| 7 | `HandleEvent` | implemented, no sender | deleted |
+| 8 | `GetLatentUR` | `unsupported_without_research` | moved to the research crate |
+| 9 | `Morph` | worked | deleted |
+| 10 | `Search` | a hard-coded result | deleted |
+| 11 | `TransferSession` | `unsupported_without_research` | moved |
+| 12, 13 | `StoreKnowledge`, `QueryKnowledge` | worked | kept |
+| 14, 15 | `DeleteKnowledge`, `GetSessionHistory` | worked, no sender | deleted |
+| 16 | `GetCapabilities` | listed the loaded program's capabilities | `get_binary_capabilities` |
+| 17 | `SetAutonomousMode` | set a flag its reader (research) used | moved |
+| 18 to 22 | `SwarmSearch`, `DelegateTask`, `ProposeKnowledge`, `CreateSwarmPlan`, `ExecutePlanTask` | refused in every build | deleted |
+| 23, 24 | `NeuralTransmit`, `GetAgenticState` | `unsupported_without_research` | moved |
+| 25 | `SendSpeechAct` | refused in every build | deleted |
+| 26 to 35 | `ResolveName`, `ResolveNames`, `FindProviders`, `PublishName`, `FetchName`, `CrawlNames`, `PublishResource`, `ReadResource`, `NamespaceStatus`, `MeshCall` | worked | kept, with snake_case names |
 
-Count: 17 kept, 5 moved to an extension, 13 deleted (17 + 5 + 13 = 35). The command set of v1 is the 17 kept plus `tool_call` and `capability_query` from D.1: 19 commands. `SwarmPlan`, `PlanTask`, `PlanStatus`, `TaskStatus` in `lib.rs:715-749` are used by `research/spine-cluster/src/lib.rs` and `research/spine-browser/src/main.rs` (`spine_protocol::SwarmPlan`, `TaskStatus`); they are not wire types after the commands go and can stay or move with the cluster crate (F, step 7).
+Count: 17 kept, 5 moved, 13 deleted.
 
-Not message types but part of the HLB program format and unaffected by this table: `Instruction::MorphProtocol`, `Decoy`, `StreamLatent` (`lib.rs:398-410`), consumed in `src/spine-core/src/vdom.rs:311` and `src/spine-wasm/src/lib.rs:403`.
+## Appendix B. Migration record
 
-## E. Morphology, chameleon, speculation
+The 14-step plan, all executed on branch `completion/agent-web` (pull request 49) and CI-verified as of `c4439cb`. Hashes are from `git log` of that branch and `COMPLETION_PLAN.md`.
 
-| Feature | Status under v1 | Consequence |
+| # | Step | What changed | Commits |
+| --- | --- | --- | --- |
+| 1 | `cbor-core` | `cbor.rs`: scanner, encoder, decoder | `68109a0` |
+| 2 | `frame-codec` | `frame.rs`: the 15-byte frame, limits, bounded decompression | `f556e26` |
+| 3 | `hello-close` | `hello.rs`; the unused `negotiation.rs` deleted | `ce795e6`, clippy fix `9b37a10` |
+| 4 | `drop-speculation` | the speculative layer and three `Message` variants removed | `eb46c69` |
+| 5 | `drop-morphology` | morphology, padding, `MorphRequest`, `Morph`, the 30 s monitor removed | `838d363` |
+| 6 | `relocate-research` | `research.rs`, chameleon and the PSK AES layer moved to `research/spine-protocol-research` or deleted | `254e642` |
+| 7 | `trim-commands` | 13 commands deleted, 5 moved: 17 remain | `930fed7` |
+| 8 | `trim-messages` | 6 `Message` variants deleted, 6 moved: 12 remain | `8bf13c8`, manifest fix `b841fae` |
+| 9 | `connection` | `connection.rs`: handshake, ids, in-flight cap, `PING`, close codes | `53a982c` |
+| 10 | `cutover` | the daemon and every client switched; `ProtocolHandler` and the `SP` header deleted | `96ae4b5`, fixes `6fc82b6`, `fbf1b64`, `8ee8a67` |
+| 11 | `bodies-v1` | header ids replace body ids; `{ok}` / `{err}` with codes; closed structs; byte strings; `native.rs`, `body.rs`, `wirefmt.rs` | `f9ce5c3`, `b3b1ec3` |
+| 12 | `signed-frame` | `spine-mesh/src/signed_frame.rs` deleted (no callers) | `96ae4b5` |
+| 13 | `bindings-scripts-docs` | Go, FFI, Python, extension notes, scripts, documents | `2774c31`, `6d197b5`, `fa5b63c`, `b029b52`, `c4439cb` |
+| 14 | `conformance-vectors` | `docs/spec/00-wire.vectors.json`, `scripts/wire_v1.py`, `tests/conformance_vectors.rs` | `68810d6`, clippy fix `b9088df` |
+
+The plan itself (the document that held this table) was committed in `f4f0a67`. Documentation commits that recorded the steps: `7d82c0a`, `4959358`, `9a5706a`, `ebcc059`, `3c41221`, `1734ce8`. This reconciliation (the document you are reading) closes the item that `c33e52b` added to `COMPLETION_PLAN.md`.
+
+## Appendix C. Open questions
+
+Questions the earlier document put to the owner, with what became of each. The labels G1 to G12 are kept because other documents cite them (for example `extension/README.md` cites G11).
+
+| # | Question | Status |
 | --- | --- | --- |
-| Morphology (`ProtocolMorphology`, `PaddingMode`, header size, endianness, `MorphRequest`, `Morph`, `morph_now`, the daemon's 30 s monitor) | Removed. It changes framing mid-connection, which R1 forbids, so it cannot be layered above the frame. Without a chameleon it uses an all-zero key (A.4). | The framing is the 15-byte header of C.1. The `PROTOCOL_MORPHS` metric (`main.rs:2691`) and the Grafana panel that uses it (`deploy/grafana/spine-dashboard.json`) are removed. |
-| Padding | Removed (it is part of morphology). Traffic-shape hiding, if wanted, is a frame-level option for the session layer or an extension. | `apply_padding`/`remove_padding` go. |
-| Speculation (`SpeculativeFrame`, `SpeculativePayload`, `SpeculationStats`, the predictors, `precompute_response`, `speculate_responses`, `Message::Speculative`, `PreComputed`, `Sync`) | Removed. It is dead in a default build and half-dead in a research build (A.5); I did not look for a measured benefit and did not find one cited in the places I read. | `get_speculation_stats` disappears from the SDK and from three CLI commands. |
-| Chameleon (`ChameleonKey`, `enable_chameleon*`, `latent_aead`, `LatentVector` bytes) | Not in the core. Its own source says it is not confidentiality (`lib.rs:113-120`). If kept, it is a research crate that depends on the public frame API and, if it needs to transform bodies, defines an extension (`EXT`). It cannot change framing. | `src/spine-protocol/src/research.rs` leaves the crate; the `research` feature and the optional `spine-neural` and `spine-crypto` dependencies of `spine-protocol` go. |
-| Pre-shared-key AES-GCM layer (`enable_encryption`) | Removed. No production caller; confidentiality comes from the session or TLS layer (C.11). | `cipher` and `fresh_nonce` go from the handler. |
-| Decoy traffic (`send_decoy`) | Removed with `Event`. | |
+| G1 | Run the native path over the `spine-session` handshake instead of TLS? | Still open. TLS 1.3 stays the only protection; the session handshake needs independent review first; not both at once (1.4). |
+| G2 | Keep the four streaming frame types though nothing implements them? | Resolved: kept. They are specified (section 10) and enforced by `Connection`; the gateway maps the structs to SSE. A producer is still to be written. |
+| G3 | The 16 MiB ceiling is set by the 8 MiB single-frame upload; lower it and chunk uploads? | Resolved: 16 MiB kept for v1 (`MAX_FRAME`); uploads stay one frame, downloads are chunked at 64 KiB. Lowering `max_frame` is possible in the protocol, not by daemon configuration (section 16, item 16). |
+| G4 | Closed structs or open? | Resolved: closed everywhere except `HELLO` and `HELLO_ACK` (5.2). |
+| G5 | Deterministic CBOR: a validator and a sorting pass over ciborium, or another crate? | Resolved: `cbor.rs` hand-written scanner and a sorting encoder through `ciborium::Value`; no new dependency. |
+| G6 | Move chameleon and the neural codec to a research crate, or delete? | Resolved: morphology, padding and speculation deleted; chameleon and the neural-codec types moved to `research/spine-protocol-research`. |
+| G7 | Compression: keep the flag? | Resolved: kept, off by default, sender threshold 1 KiB, receiver always accepts (section 4). No sender in the workspace enables it. |
+| G8 | Capability chains in the frame header? | Resolved for v1: no. Authority (layer 3) is a draft; a header field would be a new version. |
+| G9 | `LatentMessage`: an extension or inside the `ExecuteBinary` result? | Resolved: removed from the wire; the result carries only `latent_streams_count`. |
+| G10 | Allow `REQUEST` before `HELLO_ACK`? | Resolved: no (6.1). Revisit with measurements. |
+| G11 | The browser extension speaks JSON to `ws://localhost:9800/ws`, where nothing listens. | Still open. `extension/README.md` marks it as not speaking the native wire; it is neither removed nor given a v1 client. |
+| G12 | The `ExecuteBinary` panic path. | Resolved: fixed in `e3e5a2d`; a failed program is `execution_failed` (section 13). |
 
-Consequence for `ProtocolHandler` (`handler.rs`, 1,222 lines): it ceases to exist in its current form. Its replacement is a connection type that owns the stream, the negotiated limits (`max_frame`, `max_inflight`, accepted extensions), and a frame reader and writer implementing C.1 to C.4. It holds no predictor, no cache, no morphology, no cipher and no statistics. `AgentClient.handler` is a public field (`spine-agent/src/lib.rs:21-23`), so its type changes for SDK users; nothing outside the repository is known to depend on it.
+## Appendix D. Concordance with the earlier section labels
 
-## F. Migration inventory
+Source comments, other documents and the generator cite labels of the document this one replaced. This table resolves them.
 
-Constraints from CI (`.github/workflows/ci.yml`): `cargo fmt --check`; `cargo clippy --workspace --all-targets -D warnings` (the job's `RUSTFLAGS` also has `-D warnings`); the same clippy for `spine-protocol` with `--no-default-features`, with `--no-default-features --features quic`, and with `--features research`; for `spine-web`, `spine-core`, `spine-agent`, `spine-gateway` with `--features research`; for `spine-mesh` alone (`ci.yml:44-71`); the `research` job runs clippy and tests over `research/` excluding `spine-browser` (`:73-110`); tests on Linux, macOS and Windows for the workspace libs, integration tests and doc tests, plus `spine-protocol --features research` tests on Linux only (`:112-169`); `cargo doc --workspace --no-deps` (`:340-341`). `research/spine-cluster` and `research/spine-human` depend on `spine-protocol` (`research/spine-cluster/Cargo.toml:15`, `research/spine-human/Cargo.toml:16`), so the research job re-compiles against every protocol change. `spine-python`, `spine-js` and `spine-browser` are not built by any job.
+| Earlier label | Now |
+| --- | --- |
+| A (as built), A.1 to A.10 | Appendix A |
+| B, requirements R1 to R15 | D.1 below |
+| C.1 | 2.1 to 2.3 |
+| C.2 | 2.4 |
+| C.3 | 3 and 8.4 |
+| C.4 | 4 |
+| C.5 (rules 1 to 9) | 5.1 (rules 1 to 6), 5.2 (rules 7 to 9), 5.3 |
+| C.6 | 6.1 to 6.4 |
+| C.7 | 7 and 6.5 |
+| C.8 | 8 |
+| C.9 | 10 |
+| C.10 | 11 and 6.4 |
+| C.11 | 1.4 |
+| C.12 | 15.3 |
+| C.13 | folded into the sections it concerned |
+| D.1, D.2 | 12, and the fate columns of A.3 and A.4 |
+| E | A.2 |
+| F | Appendix B |
+| G1 to G12 | Appendix C |
 
-No step may be compiled locally. Each is sized to be reviewed by reading. Steps 1 to 3 are additive. Steps 4 to 8 delete and are independent of the new frame. Step 9 is additive and step 10 is the cut-over.
+### D.1 The requirements of the earlier document
 
-| # | Name | Files | What changes | Tests to rewrite or add | Risk |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `cbor-core` | new `src/spine-protocol/src/cbor.rs`; `lib.rs` (add `pub mod cbor;`) | `to_vec`, `from_slice` and `check_deterministic` per C.5; no caller yet. Sorting pass over `ciborium::Value` or a hand encoder. | New unit tests: RFC 8949 Appendix A examples, the C.12 bodies, a rejected-input corpus (indefinite length, non-shortest integer, unsorted keys, duplicate keys, trailing bytes, depth 33), float cases. | Low: additive. The first compile happens in CI, so keep it to one file. The unverified ciborium behaviour is exactly what the new tests establish. |
-| 2 | `frame-codec` | new `src/spine-protocol/src/frame.rs`; `lib.rs` | `FrameHeader`, `FrameType`, `encode_frame`, `decode_frame`, async `read_frame`/`write_frame` with the checks of C.1 and C.4, the error enum with the close codes of C.7. Streaming frame types exist as constants only. No caller. | New: the two hex vectors of C.12 decoded and re-encoded byte for byte; oversize length reads no body (a reader that panics on read); flag bits; every row of C.7 that concerns framing; compressed body with a lying `uncompressed_len`. Add a proptest round trip. | Low: additive. |
-| 3 | `hello-close` | `frame.rs` or new `handshake.rs`; delete `src/spine-protocol/src/negotiation.rs` and `pub mod negotiation` (`lib.rs:7`); `fuzz/fuzz_targets/fuzz_negotiation.rs` | `Hello`, `HelloAck`, `Close` bodies and `negotiate(hello, local) -> Result<Ack, Close>`. Remove the unused JSON negotiation. Retarget the fuzz target at `check_deterministic` and `decode_frame`. | Replace the unit tests inside `negotiation.rs` (its 15 `#[test]` functions) with: no shared version, extension subset, unknown `HELLO` keys ignored, `max_frame` clamp. | Low. Removing a `pub mod` is an API break for nobody in the workspace (only the fuzz crate uses it, and the fuzz crate is not in CI). |
-| 4 | `drop-speculation` | `handler.rs` (`SpeculativePredictor` stand-in 27-63, caches, `enable_speculation`, `precompute_response`, `get_precomputed`, `speculate_responses`, `get_speculation_stats`, `classify_message`, `MessageType`, the wrapper in `send_message`, the `SpeculativeFrame` branch in `receive_message`); `lib.rs` (`SpeculativeFrame`, `SpeculativePayload`, `Message::{Speculative, PreComputed, Sync}`, `PreComputedResponse`, `SyncPayload`); `research.rs` (`SpeculativePredictor` and its users); `spine-core/src/main.rs:2718-2754`; `spine-agent/src/lib.rs` (`get_speculation_stats`); `spine-cli/src/commands/init.rs:228`, `connect.rs:112`, `benchmark.rs:97`; `spine-agent/examples/{simple_agent,encrypted_agent,agent_autonomous,research_swarm}.rs` (`enable_speculation` calls); `fuzz` unaffected. | The sender emits the `SP` body directly (today's `send_message_raw` format); the receiver drops the JSON-wrapper branch. | `handler.rs` tests `a_default_handler_emits_a_full_speculative_frame` (delete) and `handlers_exchange_small_and_large_messages_both_ways`, `handlers_stay_in_sync_when_both_morph_with_one_seed`, `a_receiver_that_did_not_morph_cannot_read_the_next_frame` (they decode the wrapper in a helper; adjust); `wire.rs` `encode_never_compresses_but_encode_compressed_can` (uses `SyncPayload`; switch to another large message); `tests/proptest_protocol.rs` (`arb_message` and the chameleon block); `tests/e2e_protocol.rs` `e2e_all_command_types_over_tcp`; `tests/integration.rs` `protocol_all_command_types`. | Medium: wide but mechanical. Both research and default clippy configurations must still compile: the `#[cfg(feature = "research")]` branches in `handler.rs` and `research.rs` change in the same commit. |
-| 5 | `drop-morphology` | `handler.rs` (`ProtocolMorphology`, `PaddingMode`, `apply_padding`, `remove_padding`, `morph_now`, `write_morphed_frame` becomes a fixed 5-byte header `u32_be length || 0x00`, the `MorphRequest` handling at 802-821); `lib.rs` (`Message::MorphRequest`, `BrowserCommand::Morph`); `spine-core/src/main.rs` (`needs_morph` at 48 and 72, the monitor task 2230-2250, the proactive block 2636-2650, the `Morph` interception 2656-2671 and 2689-2692, the `PROTOCOL_MORPHS` metric, the dead arms at 1351 and 1612); `spine-agent/src/lib.rs` (`morph`); `spine-ffi/src/lib.rs:315-336` and `include/spine.h:79-83`; `src/spine-go/spine.go:172-` (`Morph`); `src/spine-python/src/lib.rs:223-` (`morph`); `spine-cli/src/commands/connect.rs` (the `morph` command); `deploy/grafana/spine-dashboard.json`; `research.rs` (every use of `morphology`). | The header is fixed; there is no padding. | `handler.rs` `test_protocol_morphology`, `handlers_stay_in_sync_when_both_morph_with_one_seed`, `a_receiver_that_did_not_morph_cannot_read_the_next_frame` (delete); `tests/e2e_protocol.rs` `e2e_morph_mid_session`; `tests/integration.rs` `protocol_morph_changes_morphology`; `tests/proptest_protocol.rs` (`arb_message` `MorphRequest` line); `src/spine-ffi/src/lib.rs` `test_morph_null_handle`; `src/spine-core/tests/agent_web.rs` `configured_mutual_tls_protects_tcp_and_websocket_origins` (remove the `agent.morph()` steps at 663-665); `src/spine-agent/src/lib.rs` tests that construct `BrowserCommand::Morph` (`test_request_response_protocol`, `test_message_variants`). | Medium. The Go file and `spine.h` are not compiled by root CI, so a stale reference there would not fail CI; review them by reading. |
-| 6 | `relocate-research` | `src/spine-protocol/src/research.rs` (982 lines) to a new crate in `research/` (name open, G6) or deleted; `handler.rs` (`chameleon_*` methods, `enable_chameleon*`, `latent_aead`, `enable_encryption`, `cipher`, `fresh_nonce`, `send_decoy`); `src/spine-protocol/Cargo.toml` (`research` feature, the optional `spine-neural` and `spine-crypto` dependencies, the `neural_codec_bench` entry, the `chameleon_demo` example); `agentic_codec.rs` (`TitansLatentCodec` gate moves with it); `spine-core`, `spine-agent`, `spine-gateway`, `spine-web` `Cargo.toml` (drop `spine-protocol/research` from their `research` features); `.github/workflows/ci.yml` (remove the two `spine-protocol ... research` steps at 55-56 and 166-169); `spine-agent/examples/{simple_agent,encrypted_agent,agent_autonomous,research_swarm,offline_demo}.rs` (use `enable_chameleon*`); `spine-protocol/examples/chameleon_demo.rs`; `spine-protocol/benches/neural_codec_bench.rs`. | The core crate loses every research dependency. | Delete `tests/integration.rs` `protocol_chameleon_encoding` (165 cfg), `tests/e2e_protocol.rs` `e2e_chameleon_tcp_send_path` (248 cfg), `tests/proptest_protocol.rs` `chameleon_encode_produces_output` and `chameleon_epoch_monotonic` (162 cfg), and the PSK tests `protocol_encrypted_roundtrip`, `protocol_encrypted_multiple_messages`, `e2e_encrypted_tcp_roundtrip`, `e2e_encrypted_multiple_messages`, `chaos_encrypted_connection_drop`, `chaos_mismatched_encryption_keys`. The new research crate gets the moved tests. | High. It is the largest diff and touches CI configuration, three Cargo manifests and the research workspace lockfile. If the owner prefers deletion over relocation, the risk drops to medium. Keep `quic` as the only feature of `spine-protocol`. |
-| 7 | `trim-commands` | `lib.rs` (`BrowserCommand`: delete 13 variants, move 5 per D.2, rename `GetCapabilities`); `spine-core/src/main.rs` (`handle_command` arms, the unsupported arms at 1557-1565 and 1610-1623, `last_command` bookkeeping); `spine-agent/src/lib.rs` (delete `click`, `type_text`, `handle_event`, `search`, `delete_knowledge`, `get_history`, the five swarm methods, `send_speech_act`; the five extension methods leave the SDK with the extension); `spine-ffi/src/lib.rs` (`spine_search`) and `include/spine.h`, `spine.go`; `src/spine-python/src/lib.rs` (`click`, `type_text`, `search`, `get_latent_ur`); `spine-cli/src/commands/{init,query,connect,benchmark}.rs`; `spine-gateway/src/main.rs:430` if it calls `search` on the SDK; `research/spine-browser/src/main.rs` (not in CI, will break; list in the PR); `spine-agent/examples/*`. | The command set is the 17 kept plus the two from D.1. | `tests/agent_web.rs` `signed_mesh_tasks_dependencies_knowledge_restart_and_authorization` (the refusal assertions at 462-478 change from "`unsupported_*` error" to a decode failure or are deleted); `tests/e2e_protocol.rs` `e2e_all_command_types_over_tcp`; `tests/integration.rs` `protocol_all_command_types`; `tests/proptest_protocol.rs` `arb_browser_command`; `src/spine-ffi/src/lib.rs` tests that call the removed functions; `src/spine-agent/src/lib.rs` `test_message_variants`. | Medium. Many call sites; a missed one fails a clippy configuration. `rg` for each removed SDK method name before review. |
-| 8 | `trim-messages` | `lib.rs` (`Message`: delete `Event`, `BinaryProgram`; move `LatentMessage`, `Encoded`, `CodecAd`, `CodecNegotiation`, `EmbeddingRequest`, `EmbeddingResponse` out); `agentic_codec.rs` and `agentic.rs` (`StreamData::Encoded`, `StreamStart.stream_codec`, `decode_hints` placement); `spine-core/src/main.rs:2704-2716` (the latent stream, now absent); `spine-agent/src/lib.rs` (`send_request` forwarding of `LatentMessage` and `Event`, `start_listener`, `subscribe_latent`); `spine-cli/src/commands/benchmark.rs` (latent measurement); `spine-protocol/benches/hot_path_bench.rs` and `examples/wire_sizes.rs` (use removed variants); `spine-gateway`, `spine-grpc` only if they name the moved types. | `Message` shrinks to the 12 kept variants. | `tests/wire_encoding.rs` (`representative_frames_roundtrip` and the size tests use `Encoded`); `tests/integration.rs` `protocol_plaintext_latent_vector`; `tests/proptest_protocol.rs` (`arb_message`, `message_json_roundtrip`); `src/spine-agent/src/lib.rs` `test_latent_message`; `src/spine-protocol/src/agentic.rs` `message_envelope_dispatch`. | Medium. |
-| 9 | `connection` | new `src/spine-protocol/src/connection.rs`; `lib.rs` | `Connection<S>` owning `S`, the negotiated limits and the frame reader and writer; `client_handshake` and `server_handshake` per C.6; request id table, in-flight cap, `PING`/`PONG`, `CLOSE` on every violation row of C.7. Still no caller in the daemon or SDK. | New, over `tokio::io::duplex`: one test per row of C.7; two requests in flight answered out of order; `max_inflight + 1`; HELLO deadline with paused time; stream start, tokens, cancel, end (the daemon does not produce them; the test uses a scripted peer). | Low to medium: additive but the first user of async I/O in the new code. |
-| 10 | `cutover` | `spine-core/src/main.rs` (`handle_session` 2519-2763, the three listener spawns at 2279-2323, 2441-2456 and 2476-2487, `handle_websocket` 2500-2517); `spine-agent/src/lib.rs` (`AgentClient` fields and the five `connect*` constructors, `send_request`, `call_tool`, `capabilities`, `ping`; the public `handler` field becomes `conn`); delete `handler.rs` and the `SP`-header functions `wire::{encode, encode_compressed, encode_json, decode}`, `SpineWireHeader`, the headerless-JSON fallback, `FORMAT_*`; `replay.rs:359-368` (`replay_sends` uses `send_message_raw`); `spine-mesh/src/signed_frame.rs` if it still calls `wire::encode` (step 12); `spine-protocol/examples/{wire_sizes,mcp_stdio_server}.rs`; `spine-protocol/benches/hot_path_bench.rs`. The daemon answers `HELLO`, applies `max_inflight` of 1 at first (sequential, as now) and closes with codes per C.7. Bodies are still the current structs with ids in them; header ids are set and ignored on receive. | The wire changes in one commit. | `tests/chaos.rs` all 11 (`chaos_connection_drop_mid_session`, `chaos_abrupt_client_drop`, `chaos_corrupted_frame_header`, `chaos_truncated_message`, `chaos_zero_length_message`, `chaos_rapid_reconnection`, `chaos_many_small_messages`, `chaos_large_payload`, `chaos_bidirectional_flood`, plus the two encrypted ones deleted in step 6); `tests/e2e_protocol.rs` (`e2e_tcp_request_response`, `e2e_tcp_ping_pong`, `e2e_concurrent_tcp_sessions`, `e2e_rapid_reconnect`, `e2e_stress_tcp_100_messages`, `e2e_all_command_types_over_tcp`, and `spawn_echo_server`); `tests/integration.rs` (all remaining); `src/spine-core/tests/agent_web.rs` (`connect` helper 419-444 now waits for `HELLO_ACK`, which makes it a better readiness probe; `configured_mutual_tls_protects_tcp_and_websocket_origins` constructs `ProtocolHandler` at 672; `native_idle_connections_release_global_admission` at 592 relies on `idle_timeout_secs = 6` and an `excess` client that must see an error); `src/spine-agent/src/lib.rs` tests `test_connect_invalid_address`, `test_connect_with_retry_fails_fast`. | High. It is the one commit where every client and the daemon must change together. The idle test, the admission test and `scripts/smoke_candidate.py` (idle sockets held up to 8 s while the HELLO deadline is 10 s) are the likeliest to regress. |
-| 11 | `bodies-v1` | `lib.rs`, `agentic.rs`, `resource.rs`, `main.rs`, SDK | Remove `Request.id`, `ToolCall.id`, `CapabilityQuery.id` and their echoes; replace `Response` with `{ok}`/`{err}` and replace free-text errors with codes; route every body through `cbor::to_vec`/`from_slice`; `serde_bytes` on all byte fields; closed structs (`deny_unknown_fields`); snake_case renames; replace the `HashMap` in `SpineBinary`. Add the stream frames to the daemon's vocabulary but not a producer. | `tests/wire_encoding.rs` (rewrite on the new bodies), `tests/proptest_protocol.rs` (add `decode(encode(x)) == x` and `encode(decode(b)) == b`), `src/spine-protocol/src/resource.rs` `maximum_upload_fits_the_native_frame_limit` (asserts the CBOR size of `PublishResource` with 8 MiB), every SDK test that matches on `Response.error` strings such as `unsupported_speech_act`, `outbound_address_denied` (`agent_web.rs:17-66` asserts substrings of the error text; these become `err.code` assertions). | Medium to high: the error strings are asserted in several acceptance tests. |
-| 12 | `signed-frame` | `src/spine-mesh/src/signed_frame.rs`, `src/spine-mesh/src/lib.rs`, `research/spine-agentic/src/lib.rs:83` | Delete (no callers), or re-point at `cbor::to_vec` of a v1 body. | Its five tests (`sign_then_verify_roundtrips`, `tampered_payload_is_rejected`, `swapped_key_is_rejected`, `bad_magic_is_rejected`, `short_buffer_is_rejected`) are deleted or rewritten. | Low. |
-| 13 | `bindings-scripts-docs` | `src/spine-ffi/include/spine.h`, `src/spine-go/{spine.go,types.go,spine_test.go}`, `src/spine-python/src/lib.rs`, `extension/*`, `scripts/smoke_candidate.py`, `docs/spec/01-session.md` section 4, `docs/spec/04-objects.md` section 3, `docs/spec/05-interaction.md:17`, `README.md`, `ARCHITECTURE.md`, `docs/src/architecture/protocol.md`, `docs/NATIVE_OPERATIONS.md`, `SECURITY.md`, `BENCHMARK_REPORT.md` | The FFI, Go and Python layers need no wire change after step 10 because they wrap `AgentClient`; they need the removed-command cleanups of steps 5 and 7. The extension speaks JSON to a port with no listener (A.1): delete it or give it a purpose (G11). The smoke script needs a longer or configurable HELLO deadline, or its held sockets must send `HELLO`. Update every document that describes `SpeculativeFrame`, morphology or the `SP` header. | `src/spine-go/spine_test.go`; the smoke script (not run by CI as far as I found; not verified). | Low, except that the Go, Python and extension changes are not covered by CI. |
-| 14 | `conformance-vectors` | new `docs/spec/00-wire.vectors.json` (or `.md`), a test in `spine-protocol` that reads it, an independent decoder under `scripts/` | Hex vectors for every frame type and every row of C.7, produced by the reference implementation and re-decoded by a second implementation (R14). An optional CI job runs the second decoder. | New. | Low. |
-
-Reviewability: steps 1 to 3 and 9 are additive and can be read in isolation. Steps 4 and 5 are the largest deletions that touch only the existing wire. Step 6 should be reviewed with `cargo tree` output from CI for each configuration. Step 10 should be the smallest possible cut-over: it keeps the current body types so that 11 is a separate review.
-
-Ordering constraint: steps 4 to 6 must precede 10 because each leaves the old wire working and shrinks what 10 must replace. Step 5 depends on step 6's decision about `research.rs` only in that `research.rs` also reads `morphology`; if step 6 comes first, step 5 does not touch that file.
-
-## G. Open questions for the owner
-
-| # | Question | Recommendation |
+| Req | Statement | Status at `c33e52b` |
 | --- | --- | --- |
-| G1 | Should the native path run over the `spine-session` handshake instead of TLS? | Yes, after independent review of the handshake; TLS 1.3 until then, and not both (C.11). Clients need an Ed25519 key; an ephemeral one per connection is enough for confidentiality. |
-| G2 | Keep the four streaming frame types though nothing implements them? | Keep. They are the design for P4 and P8, and the gateway already maps the structs. Implement a producer in Stage 9. |
-| G3 | The 16 MiB frame ceiling is set by the 8 MiB single-frame resource upload. Lower it and chunk uploads as downloads already are (64 KiB)? | Keep 16 MiB for v1; chunked upload is a layer-4 change (Stage 9). Negotiation already lets a deployment lower `max_frame`. |
-| G4 | Closed structs (reject unknown fields) or open? | Closed in v1, open only in `HELLO`/`HELLO_ACK` (C.5). Additive evolution goes through extensions or a new version. |
-| G5 | Deterministic CBOR: a validator plus a sorting pass over ciborium, or another crate? | Validator plus sorting pass, no new dependency (`docs/DEPENDENCY_EXCEPTIONS.md` governs new ones; its content was not read for this document). Revisit only if the extra allocation shows up in a measurement. |
-| G6 | Move the chameleon and neural-codec code to a `research/` crate, or delete it? | Delete morphology, padding and speculation. Move chameleon and the neural-codec types to a research crate; git history keeps the rest. |
-| G7 | Compression: keep the flag, or drop compression from v1? | Keep the flag, default off below 1 KiB, never on frames carrying secrets (C.4). If no measurement supports it, drop the flag in v1 and let a later version add it. |
-| G8 | Capability chains in the frame header (`FIRST_PRINCIPLES.md`, change 1)? | Not in v1. Authority (layer 3) is not designed (`docs/spec/03-authority.md` is a draft); adding a header field is a new version, and that is acceptable because nothing is released. |
-| G9 | `LatentMessage` is the only live research message (`ExecuteBinary` with `StreamLatent`). Return the vectors inside the `ExecuteBinary` result instead of an extension? | Extension only if a user needs streaming; otherwise return them in the result, bounded, and drop the extension kind. |
-| G10 | Allow `REQUEST` before `HELLO_ACK` to save a round trip (P8, time to first token)? | Not in v1. Revisit with measurements; the cost is one RTT per connection, and connections are long-lived. |
-| G11 | The browser extension speaks JSON to `ws://localhost:9800/ws`, where nothing listens. | Delete it from this repository or give it a v1 client (WebSocket plus the frame codec in JavaScript); do not leave a second protocol. |
-| G12 | The panic path in `ExecuteBinary` (A.10) is independent of this proposal. Fix before any release? | Yes, as its own change: map the error to a `RESPONSE` error. Not part of this migration. |
+| R1 | Framing is fixed for the life of a connection | Met. |
+| R2 | Every length is bounded before an allocation or read depends on it | Met (2.3). |
+| R3 | Decompressed size is declared and checked before and after inflation | Met (4). |
+| R4 | One encoding per value; non-canonical input is rejected | Met for commands, replies and stream bodies (`decode_strict`); for `HELLO`, `HELLO_ACK` and `CLOSE` the profile is enforced but typed re-encoding is not checked (section 16, item 15). |
+| R5 | A version exchange precedes any message | Met (6). |
+| R6 | A header correlation id; several requests in flight | Met by `Connection`; the daemon runs one at a time (8.3). |
+| R7 | Streams and cancel are frame types; cancel is processed during production | Frame types and state rules met; no producer; the daemon cannot read during a command (section 16, items 9 and 12). |
+| R8 | A fixed 15-byte overhead; no per-connection predictor | Met. |
+| R9 | The core carries no research variants; an unnegotiated extension closes | Met (11). |
+| R10 | Every violation class has one defined outcome | Met except the `RESPONSE` and `STREAM_*` schema case (section 16, item 8). |
+| R11 | The wire does not rely on the frame for confidentiality; no clear off-loopback by default | Met (1.4). |
+| R12 | Error responses carry a stable code | Met; two codes are derived from text (section 16, items 1 and 2). |
+| R13 | A per-connection in-flight cap answered with `overloaded` | Met in `Connection`; the daemon's cap of 1 never trips it. |
+| R14 | A second implementer can build a conformant peer from the document and vectors | Partly: the vectors do not cover connection state, commands or real zstd (15.4). |
+| R15 | A deadline for connection setup | Met (6.1, `server.hello_timeout_secs`). |

@@ -12,9 +12,9 @@
     "valid_frames: whole frames. 'type', 'request_id', 'flags' and 'body' (or 'body_hex') describe 'hex'. 'typed' names the body type that decodes it: command, reply, ping, pong, stream, hello, hello_ack, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
     "A frame with flags 1 has the body u32 uncompressed_len, then a zstd frame. These vectors store the body in a raw-block zstd frame (valid zstd, not smaller). A receiver must decode them to 'body_hex'; they are not byte-for-byte what a compressing sender would emit, so re-encoding is not part of the check.",
     "invalid_frames: whole frames (or the prefix needed to decide) that a receiver using 'max_frame' as the maximum in force must reject with 'error' (the Rust frame::FrameError variant) and 'close_code' (C.7 wire text). 'build' re-derives 'hex'. incomplete_frames: valid prefixes; 'needed' is the least number of further bytes (FrameError::NeedMore).",
-    "The order of the stateless frame checks is: length, version, type, flags, request id, then the body. The specification does not fix it; the Rust implementation does, and so do these vectors.",
+    "The order of the stateless frame checks is: length, version, type, flags, request id, then the body (specification section 7.2).",
     "handshakes: 'hello_frame' is a whole HELLO frame, 'local' the server configuration, 'expect' the outcome of validating the HELLO and negotiating: an 'ack' (with the whole 'ack_frame') or a 'close' with its code and 'supported'. CLOSE 'message' text is not specified and not part of a vector.",
-    "A vector with a 'note' marks a place where the specification text and the Rust implementation differ or the text is silent; the vector follows the implementation.",
+    "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
     "Not covered: connection state (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression."
   ],
   "format": "spine-wire-vectors",
@@ -214,6 +214,79 @@
         "code": "unsupported_version",
         "result": "close",
         "supported": [
+          1
+        ]
+      },
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738100696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            0
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "version_zero_only_offered",
+      "note": "version 0 is not supported (section 6.4)"
+    },
+    {
+      "expect": {
+        "ack": {
+          "agent": null,
+          "extensions": [],
+          "max_frame": 16777216,
+          "max_inflight": 1,
+          "version": 1
+        },
+        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "result": "ack"
+      },
+      "hello_frame": "0000003b0101000000000000000000a36876657273696f6e7382011bffffffffffffffff696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1,
+            {
+              "$int": "18446744073709551615"
+            }
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "u64_max_version_offered_with_one",
+      "note": "the highest common version is 1 (section 6.4)"
+    },
+    {
+      "expect": {
+        "code": "unsupported_version",
+        "result": "close",
+        "supported": [
           2,
           4
         ]
@@ -243,7 +316,7 @@
         ]
       },
       "name": "no_common_version_supported_sorted_deduplicated",
-      "note": "the supported list is sorted ascending without duplicates"
+      "note": "the supported list is sorted ascending without duplicates (section 6.4)"
     },
     {
       "expect": {
@@ -388,7 +461,7 @@
         ]
       },
       "name": "max_frame_server_below_minimum_is_clamped",
-      "note": "a server maximum below 1024 is raised to 1024 before the minimum is taken"
+      "note": "a server maximum below 1024 is raised to 1024 before the minimum is taken (section 6.4)"
     },
     {
       "expect": {
@@ -657,6 +730,44 @@
         "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
+      "hello_frame": "000000ba0101000000000000000000a4656167656e747880c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a96876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "agent": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "agent_128_bytes_multibyte",
+      "note": "the agent limit counts UTF-8 bytes (section 6.2)"
+    },
+    {
+      "expect": {
+        "ack": {
+          "agent": null,
+          "extensions": [],
+          "max_frame": 16777216,
+          "max_inflight": 1,
+          "version": 1
+        },
+        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "result": "ack"
+      },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
       "hello_spec": {
         "body": {
@@ -821,7 +932,7 @@
         ]
       },
       "name": "extensions_subset_keeps_client_order",
-      "note": "C.10 says the position in HELLO_ACK.extensions is the index but not whose order builds it; the implementation uses the client's"
+      "note": "the index is the position in HELLO_ACK.extensions, and the server builds that list in the client's HELLO order (section 6.4)"
     },
     {
       "expect": {
@@ -867,7 +978,7 @@
         ]
       },
       "name": "extensions_server_order_ignored",
-      "note": "C.10 does not say whose order fixes the index; the implementation uses the client's"
+      "note": "the server's own order is ignored; the client's HELLO order fixes the index (section 6.4)"
     },
     {
       "expect": {
@@ -1020,7 +1131,7 @@
         ]
       },
       "name": "invalid_versions_empty",
-      "note": "C.6 does not forbid an empty versions array (it would then be 'no common version'); the implementation rejects it as protocol_violation"
+      "note": "versions MUST NOT be empty: protocol_violation (section 6.2)"
     },
     {
       "expect": {
@@ -1052,7 +1163,7 @@
         ]
       },
       "name": "invalid_versions_descending",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1084,7 +1195,7 @@
         ]
       },
       "name": "invalid_versions_duplicate",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1115,7 +1226,7 @@
         ]
       },
       "name": "invalid_max_frame_1023",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1146,7 +1257,7 @@
         ]
       },
       "name": "invalid_max_frame_over_ceiling",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1177,7 +1288,7 @@
         ]
       },
       "name": "invalid_max_frame_zero",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1208,7 +1319,7 @@
         ]
       },
       "name": "invalid_max_frame_over_u32",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1239,7 +1350,7 @@
         ]
       },
       "name": "invalid_max_frame_negative",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1270,7 +1381,7 @@
         ]
       },
       "name": "invalid_max_frame_float",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1304,7 +1415,7 @@
         ]
       },
       "name": "invalid_extension_duplicate",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1337,7 +1448,7 @@
         ]
       },
       "name": "invalid_extension_not_ascii",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1370,7 +1481,7 @@
         ]
       },
       "name": "invalid_extension_129_bytes",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1402,7 +1513,39 @@
         ]
       },
       "name": "invalid_agent_129_bytes",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close",
+        "supported": null
+      },
+      "hello_frame": "000000bc0101000000000000000000a4656167656e747882c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a96876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "agent": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "versions": [
+          1
+        ]
+      },
+      "name": "invalid_agent_130_bytes_multibyte",
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1434,7 +1577,7 @@
         ]
       },
       "name": "invalid_agent_null",
-      "note": "a present null for an optional field is rejected (C.5 rule 7)"
+      "note": "a present null for an optional field is rejected (section 5 rule 7)"
     },
     {
       "expect": {
@@ -1464,7 +1607,7 @@
         ]
       },
       "name": "invalid_missing_extensions",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1492,7 +1635,7 @@
         ]
       },
       "name": "invalid_missing_versions",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1523,7 +1666,7 @@
         ]
       },
       "name": "invalid_versions_has_text",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1556,7 +1699,7 @@
         ]
       },
       "name": "invalid_extension_is_not_text",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1583,7 +1726,7 @@
         ]
       },
       "name": "invalid_body_is_array",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1608,7 +1751,7 @@
         ]
       },
       "name": "invalid_body_is_null",
-      "note": "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
+      "note": "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
     },
     {
       "expect": {
@@ -1633,7 +1776,7 @@
         ]
       },
       "name": "invalid_body_indefinite_map",
-      "note": "a CBOR rule failure in the body is malformed_frame (C.7)"
+      "note": "a CBOR rule failure in the body is malformed_frame (section 7.3)"
     },
     {
       "expect": {
@@ -1658,7 +1801,7 @@
         ]
       },
       "name": "invalid_body_trailing_bytes",
-      "note": "trailing bytes: malformed_frame (C.7)"
+      "note": "trailing bytes: malformed_frame (section 7.3)"
     },
     {
       "expect": {
@@ -1683,7 +1826,7 @@
         ]
       },
       "name": "invalid_body_unsorted_keys",
-      "note": "unsorted keys: malformed_frame (C.7)"
+      "note": "unsorted keys: malformed_frame (section 7.3)"
     },
     {
       "expect": {
@@ -1733,7 +1876,7 @@
         ]
       },
       "name": "invalid_frame_type_is_ping",
-      "note": "a frame other than HELLO where HELLO is required: protocol_violation (C.7)"
+      "note": "a frame other than HELLO where HELLO is required: protocol_violation (section 7.3)"
     }
   ],
   "incomplete_frames": [
@@ -2401,7 +2544,7 @@
       "hex": "000100010104000000000000000001",
       "max_frame": 65536,
       "name": "length_65537_over_pre_hello_maximum",
-      "note": "before HELLO is processed the maximum is 65536 (C.1)"
+      "note": "before HELLO is processed the maximum is 65536 (section 2.3)"
     },
     {
       "build": {
@@ -2467,7 +2610,7 @@
       "hex": "010000010104000000000000000001",
       "max_frame": 4294967295,
       "name": "length_over_ceiling_even_if_caller_allows_more",
-      "note": "a caller maximum above 16777216 is capped at 16777216"
+      "note": "a caller maximum above 16777216 is capped at 16777216 (section 2.3)"
     },
     {
       "build": {
@@ -2918,7 +3061,7 @@
       "hex": "0000000c02ff00000000000000000100",
       "max_frame": 16777216,
       "name": "order_version_before_type",
-      "note": "the specification does not fix the order of the stateless checks; the implementation checks version first"
+      "note": "the stateless checks run in the order length, version, type, flags, request id, then the body (section 7.2)"
     },
     {
       "build": {
@@ -2935,7 +3078,7 @@
       "hex": "0000000c01ff80000000000000000100",
       "max_frame": 16777216,
       "name": "order_type_before_flags",
-      "note": "implementation order: version, type, flags, request id"
+      "note": "the stateless checks run in the order length, version, type, flags, request id, then the body (section 7.2)"
     },
     {
       "build": {
@@ -2952,7 +3095,7 @@
       "hex": "0000000c010102000000000000000100",
       "max_frame": 16777216,
       "name": "order_flags_before_request_id",
-      "note": "implementation order: version, type, flags, request id"
+      "note": "the stateless checks run in the order length, version, type, flags, request id, then the body (section 7.2)"
     },
     {
       "build": {
@@ -2969,7 +3112,7 @@
       "hex": "0000000a0204000000000000000001",
       "max_frame": 16777216,
       "name": "order_length_before_version",
-      "note": "the length is checked as soon as its four bytes are present"
+      "note": "the length is checked as soon as its four bytes are present (section 7.2 step 2)"
     },
     {
       "build": {
@@ -3018,7 +3161,7 @@
       "hex": "00000019010401000000000000000100fffff628b52ffd200109000078",
       "max_frame": 16777216,
       "name": "compressed_declared_over_limit",
-      "note": "C.4 rule 1 says frame_too_large; the C.7 row 'compressed-length rules violated' says malformed_frame. The implementation sends frame_too_large for this case (limit = max_frame - 11 = 16777205)."
+      "note": "a declared uncompressed length above max_frame - 11 is frame_too_large and is checked before decompression (section 4 rule 1); limit = 16777205"
     },
     {
       "build": {
@@ -3035,7 +3178,7 @@
       "hex": "000000190104010000000000000001000003f628b52ffd200109000078",
       "max_frame": 1024,
       "name": "compressed_declared_over_limit_1024",
-      "note": "C.4 rule 1 against C.7: frame_too_large, as in compressed_declared_over_limit (limit 1013)"
+      "note": "frame_too_large (section 4 rule 1), as in compressed_declared_over_limit; limit 1013"
     },
     {
       "build": {
@@ -3052,7 +3195,7 @@
       "hex": "000000190104010000000000000001ffffffff28b52ffd200109000078",
       "max_frame": 16777216,
       "name": "compressed_declared_ffffffff",
-      "note": "C.4 rule 1 against C.7: frame_too_large, as in compressed_declared_over_limit"
+      "note": "frame_too_large (section 4 rule 1), as in compressed_declared_over_limit"
     },
     {
       "build": {
@@ -3134,7 +3277,7 @@
       "hex": "0000001401040100000000000000010000000568656c6c6f",
       "max_frame": 16777216,
       "name": "compressed_not_zstd",
-      "note": "no zstd magic; the implementation reports Decompress, a malformed_frame close"
+      "note": "no zstd magic: malformed_frame (section 4 rule 2)"
     }
   ],
   "valid_bodies": [
@@ -6290,7 +6433,7 @@
     {
       "hex": "f97e00",
       "name": "nan_is_f97e00",
-      "note": "NaN of any payload or sign is written as f9 7e 00 (C.5 rule 2)",
+      "note": "NaN of any payload or sign is written as f9 7e 00 (section 5 rule 2)",
       "value": {
         "$float": "nan"
       }
@@ -6360,7 +6503,7 @@
     {
       "hex": "a36876657273696f6e7302696d61785f6672616d65016a657874656e73696f6e7303",
       "name": "keys_by_first_byte",
-      "note": "the HELLO order of C.12: versions (68), max_frame (69), extensions (6a)",
+      "note": "the HELLO order of section 15.3: versions (68), max_frame (69), extensions (6a)",
       "value": {
         "extensions": 3,
         "max_frame": 1,
@@ -6762,7 +6905,7 @@
       "flags": 0,
       "hex": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
       "name": "c12_hello",
-      "note": "spec C.12 example 1",
+      "note": "worked example 1 (section 15.3)",
       "request_id": 0,
       "type": "HELLO",
       "type_code": 1,
@@ -6781,7 +6924,7 @@
       "flags": 0,
       "hex": "0000003d0110000000000000000001a169746f6f6c5f63616c6ca26461726773a16474657874626869646e616d65727370696e652e636f6e74656e742f68617368",
       "name": "c12_request_tool_call",
-      "note": "spec C.12 example 2",
+      "note": "worked example 2 (section 15.3)",
       "request_id": 1,
       "type": "REQUEST",
       "type_code": 16,
@@ -6793,7 +6936,7 @@
       "flags": 0,
       "hex": "0000000d0104000000000000000007182a",
       "name": "c12_ping_token_42_id_7",
-      "note": "spec C.12, last paragraph",
+      "note": "worked example, last paragraph (section 15.3)",
       "request_id": 7,
       "type": "PING",
       "type_code": 4,
@@ -6868,7 +7011,7 @@
       "flags": 0,
       "hex": "0000005d0102000000000000000000a5656167656e74687370696e65642f306776657273696f6e01696d61785f6672616d651a000100006a657874656e73696f6e738267622f74776f2f3167612f6f6e652f316c6d61785f696e666c6967687408",
       "name": "hello_ack_extensions_and_agent",
-      "note": "the order of extensions fixes the extension index (C.10)",
+      "note": "the order of extensions fixes the extension index (sections 6.4 and 11)",
       "request_id": 0,
       "type": "HELLO_ACK",
       "type_code": 2,
@@ -6958,6 +7101,18 @@
       "typed": "pong"
     },
     {
+      "body": 42,
+      "body_hex": "182a",
+      "flags": 0,
+      "hex": "0000000d0105000000000000000000182a",
+      "name": "pong_with_id_zero",
+      "note": "the frame layer does not constrain the id of a PONG; the connection layer applies further rules (sections 2.2 and 9)",
+      "request_id": 0,
+      "type": "PONG",
+      "type_code": 5,
+      "typed": "pong"
+    },
+    {
       "body": "get_ur",
       "body_hex": "666765745f7572",
       "flags": 0,
@@ -7035,7 +7190,7 @@
       "flags": 0,
       "hex": "0000002f0110000000000000000006a16c7265736f6c76655f6e616d65a1646e616d656f7370696e653a2f2f6578616d706c65",
       "name": "request_optional_absent_resolve_name",
-      "note": "an absent optional field is omitted, not null (C.5 rule 7)",
+      "note": "an absent optional field is omitted, not null (section 5 rule 7)",
       "request_id": 6,
       "type": "REQUEST",
       "type_code": 16,
@@ -7290,7 +7445,7 @@
       "flags": 0,
       "hex": "000000e60110000000000000000010a169746f6f6c5f63616c6ca26461726773a564696e7473920017181818ff19010019ffff1a000100001affffffff1b00000001000000001bffffffffffffffff2037381838ff39010039ffff3a000100003b7fffffffffffffff646b657973a460046161036162016261610266666c6f6174738af90000f98000f93e00f97bfffa47c35000fb3ff199999999999afb7e37e43c8800759cf90001fbc010666666666666fa7f7fffff666e657374656482818180a16178a16179a1617a80677363616c61727385f5f4f66069c3a9e29c93f09d849e646e616d656174",
       "name": "request_tool_call_nested_json_arguments",
-      "note": "integers keep their integer type, floats the shortest width (C.5 rule 2); no NaN or infinity: a JSON-shaped value cannot hold them",
+      "note": "integers keep their integer type, floats the shortest width (section 5 rule 2); no NaN or infinity: a JSON-shaped value cannot hold them",
       "request_id": 16,
       "type": "REQUEST",
       "type_code": 16,
@@ -7305,6 +7460,20 @@
       "hex": "000000100111000000000000000001a1626f6bf6",
       "name": "response_ok_null",
       "request_id": 1,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
+    },
+    {
+      "body": {
+        "ok": null
+      },
+      "body_hex": "a1626f6bf6",
+      "flags": 0,
+      "hex": "000000100111000000000000000000a1626f6bf6",
+      "name": "response_with_id_zero",
+      "note": "the frame layer accepts id 0 on a RESPONSE; the connection layer rejects it because no request is in flight (section 8.1)",
+      "request_id": 0,
       "type": "RESPONSE",
       "type_code": 17,
       "typed": "reply"
@@ -7661,7 +7830,7 @@
       "flags": 0,
       "hex": "0000000c0123000000000000000005a0",
       "name": "stream_cancel_empty",
-      "note": "spec C.3 writes the body as {[reason]}: with no reason it is the empty map a0",
+      "note": "a STREAM_CANCEL without a reason is the empty map a0 (section 10)",
       "request_id": 5,
       "type": "STREAM_CANCEL",
       "type_code": 35,

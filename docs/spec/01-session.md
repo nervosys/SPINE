@@ -253,7 +253,7 @@ Summary of the relationship: the mesh handshake and TLS are independent. The mes
 
 ## 4. Native framing
 
-> As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md; the following describes the earlier wire.
+> As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md (normative, sections 2 to 14; the earlier wire is its Appendix A); the following describes the earlier wire.
 >
 > Correction: the native wire has no morphology, padding, speculative frames, Chameleon latent encoding or pre-shared-key AES-GCM any more; confidentiality on it comes from TLS only. The mesh handshake in sections 2 and 3 is a different protocol and is unchanged.
 

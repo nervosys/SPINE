@@ -2,7 +2,7 @@
 
 ## Bodies
 
-The body of a frame is one deterministic CBOR item (`docs/spec/00-wire.md` C.3).
+The body of a frame is one deterministic CBOR item (`docs/spec/00-wire.md` section 5).
 The frame header's request id is the only correlation id; no body carries one.
 
 A `REQUEST` body is a command from a closed set of 19. A command without
@@ -42,34 +42,35 @@ are byte strings, `capability_query` answers a capability advertisement
 Every body struct rejects unknown fields. Optional fields are omitted when
 absent. Byte fields are CBOR byte strings, never arrays of integers. A
 `serde_json::Value` field stays a value and is encoded as CBOR, with integer and
-float widths as in C.5.
+float widths as in section 5 of `docs/spec/00-wire.md`.
 
 ### Error codes
 
 `spine_protocol::body` holds the constants (`ERR_*`) and `ALL_ERROR_CODES`.
-Clients branch on `code`; `message` is for people.
+Clients branch on `code`; `message` is for people. The complete table with the raising function for each code is section 13 of `docs/spec/00-wire.md`.
 
 | Code | Raised when |
 | --- | --- |
-| `overloaded` | the connection already has `max_inflight` requests in flight |
+| `overloaded` | the connection already has `max_inflight` requests in flight (the daemon processes one request at a time and sends `max_inflight` 1, so it never produces this) |
 | `unknown_command` | the body names a command outside the set |
-| `invalid_request` | the body is a known command with a defect |
+| `invalid_request` | the body is a known command with a defect; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` past the end |
 | `internal` | the daemon failed in a way the client cannot fix |
 | `rate_limit` | the session's or the connection's request rate was exceeded |
 | `session_capacity` | the daemon holds its maximum number of sessions |
-| `session_not_found`, `session_expired` | the session is gone or timed out |
-| `no_page_loaded` | a page command arrived before `navigate` |
-| `navigation_failed` | the page could not be loaded (see `outbound_*`) |
-| `capability_denied` | the session lacks a capability the command needs |
-| `execution_failed` | a binary failed to run |
+| `session_not_found` | `get_ur` or `get_raw_html` and the session record is gone |
+| `session_expired` | `navigate` fetched a page and the session record was gone |
+| `no_page_loaded` | `get_ur` or `get_raw_html` arrived before a successful `navigate`; `get_ur` also reports a page that fails to parse this way |
+| `navigation_failed` | the page could not be loaded for a reason with no `outbound_*` code of its own (`outbound_url_limit`, `outbound_dns_limit` and `outbound_http_status_<n>` land here, with the text in the message) |
+| `capability_denied` | an `execute_binary` program declares a capability other than `network`, `storage`, `memory` or `search` |
+| `execution_failed` | a binary failed to compile, instantiate or run |
 | `namespace_unavailable` | no namespace or mesh is configured |
 | `invalid_peer_id`, `mesh_call_failed` | a `mesh_call` target is malformed or the call failed |
 | `batch_too_large` | `resolve_names` exceeded its limit |
 | `lookup_failed`, `lookup_unavailable` | provider lookup failed or is not configured |
 | `record_expired`, `malformed_record`, `record_rejected`, `publish_failed` | a published record or resource was refused |
-| `resource_not_found` | no resource has the requested hash |
+| `resource_not_found` | `read_resource`: this origin holds no blob for the hash |
 | `invalid_seed` | a crawl seed is not a valid name |
-| `invalid_args`, `unsupported_tool`, `parse_error` | a `tool_call` failed |
+| `invalid_args`, `unsupported_tool`, `parse_error` | a `tool_call` failed; `invalid_args` (no text, or over 1 MiB) is checked before the tool name, so an unknown tool with bad args reports it |
 | `outbound_*` | the daemon's outbound HTTP policy refused or failed a fetch: `disabled`, `address_denied`, `scheme_denied`, `credentials_denied`, `fragment_denied`, `redirect_denied`, `encoding_denied`, `response_limit`, `busy`, `timeout`, `invalid_url`, `invalid_host`, `invalid_port`, `dns_failed`, `client_failed`, `request_failed`, `body_failed`, `invalid_utf8` |
 
 The SDK returns an error as `NativeError::Remote { code, message, details }`

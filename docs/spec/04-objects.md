@@ -104,7 +104,7 @@ Quota accounting detail. The store counts serialized bytes (`resources.rs:49-64`
 
 ## 3. Transfer protocol
 
-> As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md; the following describes the earlier wire.
+> As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md (normative, sections 2 to 14; the earlier wire is its Appendix A); the following describes the earlier wire.
 >
 > Correction for this section: a request is now a command from a closed set of 19 in a REQUEST frame; the request id is in the 15-byte frame header, not in the body; a response is `{ok: ...}` or `{err: {code, message}}`; bodies are deterministic CBOR (no JSON format byte, no `SP` header). Byte fields travel as CBOR byte strings.
 

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """spine-wire v1: an independent reference implementation and the vector generator.
 
-Written from the specification text (docs/spec/00-wire.md, sections C and D),
-not from the Rust code. It shares nothing with `src/spine-protocol` and uses
+Written from the specification text (docs/spec/00-wire.md), not from the Rust
+code, and since the reconciliation of the specification with the implementation
+the two agree. Section numbers in the code comments below ("C.5 rule 2") use the
+labels of the earlier document; Appendix D of the specification maps them to the
+current sections. It shares nothing with `src/spine-protocol` and uses
 only the Python standard library (3.8 or later). It is the "second
 implementation" of requirement R14: the vectors in
 `docs/spec/00-wire.vectors.json` are produced by it, and
@@ -36,8 +39,8 @@ What it does not cover:
   Those need a stream of frames, not one frame, and have no vectors here.
 * Semantics of commands (what `navigate` does). Only the wire shape.
 
-Where the specification text and the Rust implementation differ, the vectors
-follow the implementation and carry a "note" saying so.
+A "note" on a vector explains the rule it exercises and cites the section of
+the specification that states it.
 """
 
 import json
@@ -186,7 +189,7 @@ class Map:
 
 
 def head(major, n):
-    """A CBOR head with the shortest argument form (C.5 rule 2)."""
+    """A CBOR head with the shortest argument form (section 5 rule 2)."""
     if n < 0 or n > U64_MAX:
         raise ValueError("argument out of range: %r" % n)
     m = major << 5
@@ -207,7 +210,7 @@ def _bits64(x):
 
 def encode_float(x):
     """The shortest of binary16, binary32, binary64 that keeps the value;
-    NaN is f9 7e 00 (C.5 rule 2). No integer to float conversion."""
+    NaN is f9 7e 00 (section 5 rule 2). No integer to float conversion."""
     if x != x:
         return b"\xf9\x7e\x00"
     for fmt, marker in ((">e", 0xF9), (">f", 0xFA)):
@@ -808,7 +811,7 @@ def _check_unique(extensions):
 
 
 def parse_hello(frame_type_code, body):
-    """C.6 HELLO validation. Unknown keys are ignored (C.5 rule 9)."""
+    """C.6 HELLO validation. Unknown keys are ignored (section 5 rule 9)."""
     value = _parse_body(frame_type_code, FRAME_TYPES["HELLO"], body)
     versions = _need(value, "versions", lambda v: isinstance(v, list) and all(_is_uint(x) for x in v), "an array of unsigned integers")
     max_frame = _need(value, "max_frame", lambda v: _is_uint(v, U32_MAX), "an unsigned 32-bit integer")
@@ -871,7 +874,7 @@ def negotiate(hello, local):
     max_frame: the smaller of the client's and the server's (the server's is
     clamped to 1024 .. 16777216). max_inflight: the server's, at least 1.
     Extensions: those offered that the server supports, in the CLIENT's order
-    (C.10 does not say whose order fixes the index; this is the Rust
+    (section 6.4: the client's order fixes the index; this is the Rust
     implementation's choice)."""
     common = [v for v in hello["versions"] if v in local["versions"]]
     if not common:
@@ -1009,10 +1012,10 @@ CONVENTIONS = [
     "A receiver must decode them to 'body_hex'; they are not byte-for-byte what a compressing sender would emit, so re-encoding is not part of the check.",
     "invalid_frames: whole frames (or the prefix needed to decide) that a receiver using 'max_frame' as the maximum in force must reject with 'error' (the Rust frame::FrameError variant) and 'close_code' (C.7 wire text). "
     "'build' re-derives 'hex'. incomplete_frames: valid prefixes; 'needed' is the least number of further bytes (FrameError::NeedMore).",
-    "The order of the stateless frame checks is: length, version, type, flags, request id, then the body. The specification does not fix it; the Rust implementation does, and so do these vectors.",
+    "The order of the stateless frame checks is: length, version, type, flags, request id, then the body (specification section 7.2).",
     "handshakes: 'hello_frame' is a whole HELLO frame, 'local' the server configuration, 'expect' the outcome of validating the HELLO and negotiating: "
     "an 'ack' (with the whole 'ack_frame') or a 'close' with its code and 'supported'. CLOSE 'message' text is not specified and not part of a vector.",
-    "A vector with a 'note' marks a place where the specification text and the Rust implementation differ or the text is silent; the vector follows the implementation.",
+    "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
     "Not covered: connection state (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression.",
 ]
 
@@ -1130,7 +1133,7 @@ def make_valid_bodies():
     ]
     for name, f in floats:
         add("float_" + name, f)
-    add("nan_is_f97e00", float("nan"), note="NaN of any payload or sign is written as f9 7e 00 (C.5 rule 2)")
+    add("nan_is_f97e00", float("nan"), note="NaN of any payload or sign is written as f9 7e 00 (section 5 rule 2)")
     # Simple values and text.
     add("false", False)
     add("true", True)
@@ -1143,7 +1146,7 @@ def make_valid_bodies():
     add("keys_shorter_first", {"b": 1, "aa": 2, "a": 3},
         note="encoded keys sort as 61 61 ('a'), 61 62 ('b'), 62 61 61 ('aa')")
     add("keys_by_first_byte", {"max_frame": 1, "versions": 2, "extensions": 3},
-        note="the HELLO order of C.12: versions (68), max_frame (69), extensions (6a)")
+        note="the HELLO order of section 15.3: versions (68), max_frame (69), extensions (6a)")
     add("keys_mixed_types", Map([("a", 1), (10, 2), (-1, 3), (b"\x00", 4), (False, 5), (None, 6)]),
         note="keys of different types sort by encoded bytes: 0a, 20, 41 00, 61 61, f4, f6")
     add("keys_equal_prefix_text", {"ab": 1, "abc": 2, "b": 3, "": 4})
@@ -1311,13 +1314,13 @@ def make_invalid_frames():
         add("length_%d_below_minimum" % n, _frame_build(length=n, body_hex=""))
     add("length_below_minimum_pre_hello", _frame_build(length=10, body_hex=""), PRE_HELLO_MAX_FRAME)
     add("length_65537_over_pre_hello_maximum", _frame_build(length=65537, body_hex=""), PRE_HELLO_MAX_FRAME,
-        note="before HELLO is processed the maximum is 65536 (C.1)")
+        note="before HELLO is processed the maximum is 65536 (section 2.3)")
     add("length_16777217_over_default_maximum", _frame_build(length=16777217, body_hex=""))
     add("length_ffffffff", _frame_build(length=0xFFFFFFFF, body_hex=""),
         note="the body is not read and nothing is allocated for it (R2)")
     add("length_1025_over_negotiated_1024", _frame_build(length=1025, body_hex=""), 1024)
     add("length_over_ceiling_even_if_caller_allows_more", _frame_build(length=16777217, body_hex=""), 0xFFFFFFFF,
-        note="a caller maximum above 16777216 is capped at 16777216")
+        note="a caller maximum above 16777216 is capped at 16777216 (section 2.3)")
     # Version (C.7 row 2).
     for ver in (0, 2, 255):
         add("version_%d" % ver, _frame_build(version=ver))
@@ -1337,30 +1340,30 @@ def make_invalid_frames():
     add("ping_with_id_zero", _frame_build(ftype=0x04, request_id=0))
     # Order of the checks.
     add("order_version_before_type", _frame_build(version=2, ftype=0xFF),
-        note="the specification does not fix the order of the stateless checks; the implementation checks version first")
+        note="the stateless checks run in the order length, version, type, flags, request id, then the body (section 7.2)")
     add("order_type_before_flags", _frame_build(ftype=0xFF, flags=0x80),
-        note="implementation order: version, type, flags, request id")
+        note="the stateless checks run in the order length, version, type, flags, request id, then the body (section 7.2)")
     add("order_flags_before_request_id", _frame_build(ftype=0x01, flags=0x02, request_id=1),
-        note="implementation order: version, type, flags, request id")
+        note="the stateless checks run in the order length, version, type, flags, request id, then the body (section 7.2)")
     add("order_length_before_version", _frame_build(version=2, length=10, body_hex=""),
-        note="the length is checked as soon as its four bytes are present")
+        note="the length is checked as soon as its four bytes are present (section 7.2 step 2)")
     # Compressed bodies (C.4).
     add("compressed_body_empty", _frame_build(flags=1, body_hex=""))
     add("compressed_body_three_bytes", _frame_build(flags=1, body_hex="000000"))
     add("compressed_declared_over_limit", _frame_build(flags=1, body_hex=_compressed(16777206)),
-        note="C.4 rule 1 says frame_too_large; the C.7 row 'compressed-length rules violated' says malformed_frame. "
-             "The implementation sends frame_too_large for this case (limit = max_frame - 11 = 16777205).")
+        note="a declared uncompressed length above max_frame - 11 is frame_too_large and is checked before decompression "
+             "(section 4 rule 1); limit = 16777205")
     add("compressed_declared_over_limit_1024", _frame_build(flags=1, body_hex=_compressed(1014)), 1024,
-        note="C.4 rule 1 against C.7: frame_too_large, as in compressed_declared_over_limit (limit 1013)")
+        note="frame_too_large (section 4 rule 1), as in compressed_declared_over_limit; limit 1013")
     add("compressed_declared_ffffffff", _frame_build(flags=1, body_hex=_compressed(0xFFFFFFFF)),
-        note="C.4 rule 1 against C.7: frame_too_large, as in compressed_declared_over_limit")
+        note="frame_too_large (section 4 rule 1), as in compressed_declared_over_limit")
     add("compressed_declared_at_limit_then_mismatch", _frame_build(flags=1, body_hex=_compressed(1013)), 1024,
         note="1013 equals the limit, so the declared-length check passes; the real output is 1 byte")
     add("compressed_declared_one_too_many", _frame_build(flags=1, body_hex=_compressed(2, b"x")))
     add("compressed_declared_one_too_few", _frame_build(flags=1, body_hex=_compressed(1, b"xy")))
     add("compressed_declared_zero_but_not_empty", _frame_build(flags=1, body_hex=_compressed(0, b"x")))
     add("compressed_not_zstd", _frame_build(flags=1, body_hex="00000005" + "68656c6c6f"),
-        note="no zstd magic; the implementation reports Decompress, a malformed_frame close")
+        note="no zstd magic: malformed_frame (section 4 rule 2)")
     return out
 
 
@@ -1397,10 +1400,10 @@ def make_valid_frames():
         out.append(valid_frame(name, ftype, rid, body, typed, **kw))
 
     # The worked examples of C.12 (and the PING of its last paragraph).
-    add("c12_hello", "HELLO", 0, hello_body([1], 16777216, []), "hello", note="spec C.12 example 1")
+    add("c12_hello", "HELLO", 0, hello_body([1], 16777216, []), "hello", note="worked example 1 (section 15.3)")
     add("c12_request_tool_call", "REQUEST", 1, command("tool_call", {"name": "spine.content/hash", "args": {"text": "hi"}}),
-        "command", note="spec C.12 example 2")
-    add("c12_ping_token_42_id_7", "PING", 7, 42, "ping", note="spec C.12, last paragraph")
+        "command", note="worked example 2 (section 15.3)")
+    add("c12_ping_token_42_id_7", "PING", 7, 42, "ping", note="worked example, last paragraph (section 15.3)")
     # HELLO, HELLO_ACK, CLOSE.
     add("hello_with_agent_and_extension", "HELLO", 0,
         hello_body([1, 2], 65536, ["nervosys.org/neural-codec/1"], "conformance/1"), "hello")
@@ -1408,7 +1411,7 @@ def make_valid_frames():
     add("hello_ack_minimal", "HELLO_ACK", 0, hello_ack_body(1, 16777216, 1, []), "hello_ack")
     add("hello_ack_extensions_and_agent", "HELLO_ACK", 0,
         hello_ack_body(1, 65536, 8, ["b/two/1", "a/one/1"], "spined/0"), "hello_ack",
-        note="the order of extensions fixes the extension index (C.10)")
+        note="the order of extensions fixes the extension index (sections 6.4 and 11)")
     add("close_without_supported", "CLOSE", 0, close_body("malformed_frame", "body is not deterministic CBOR"), "close")
     add("close_with_supported", "CLOSE", 0, close_body("unsupported_version", "no offered version is supported", [1, 2]), "close")
     add("close_shutting_down_empty_message", "CLOSE", 0, close_body("shutting_down", ""), "close")
@@ -1416,6 +1419,8 @@ def make_valid_frames():
     add("ping_token_zero", "PING", 1, 0, "ping")
     add("ping_token_max_id_max", "PING", U64_MAX, U64_MAX, "ping")
     add("pong_echoes_ping", "PONG", 7, 42, "pong")
+    add("pong_with_id_zero", "PONG", 0, 42, "pong",
+        note="the frame layer does not constrain the id of a PONG; the connection layer applies further rules (sections 2.2 and 9)")
     # REQUEST: unit commands, struct commands, optional fields, byte strings, nested arguments.
     add("request_unit_get_ur", "REQUEST", 1, command("get_ur"), "command")
     add("request_unit_namespace_status", "REQUEST", 2, command("namespace_status"), "command")
@@ -1425,7 +1430,7 @@ def make_valid_frames():
         command("read_resource", {"hash": b"\x11" * 32, "offset": 0, "max_bytes": 16}), "command",
         note="same body as bodies_v1_read_resource")
     add("request_optional_absent_resolve_name", "REQUEST", 6, command("resolve_name", {"name": "spine://example"}), "command",
-        note="an absent optional field is omitted, not null (C.5 rule 7)")
+        note="an absent optional field is omitted, not null (section 5 rule 7)")
     add("request_optional_present_resolve_name", "REQUEST", 7,
         command("resolve_name", {"name": "spine://example", "if_none_match": key32}), "command")
     add("request_optional_absent_find_providers", "REQUEST", 8, command("find_providers", {"capability": "spine:cap/web"}), "command")
@@ -1450,9 +1455,11 @@ def make_valid_frames():
         "nested": [[[[]]], {"x": {"y": {"z": []}}}],
     }
     add("request_tool_call_nested_json_arguments", "REQUEST", 16, command("tool_call", {"name": "t", "args": args}), "command",
-        note="integers keep their integer type, floats the shortest width (C.5 rule 2); no NaN or infinity: a JSON-shaped value cannot hold them")
+        note="integers keep their integer type, floats the shortest width (section 5 rule 2); no NaN or infinity: a JSON-shaped value cannot hold them")
     # RESPONSE.
     add("response_ok_null", "RESPONSE", 1, reply_ok(None), "reply")
+    add("response_with_id_zero", "RESPONSE", 0, reply_ok(None), "reply",
+        note="the frame layer accepts id 0 on a RESPONSE; the connection layer rejects it because no request is in flight (section 8.1)")
     add("response_ok_integers", "RESPONSE", 2, reply_ok([0, -1, U64_MAX, -(2**63)]), "reply")
     add("response_ok_nested", "RESPONSE", 3, reply_ok({"agent_id": "a", "capabilities": [{"uri": "u", "input_schema": {}, "output_schema": {"type": "object"}}]}), "reply")
     add("response_ok_floats", "RESPONSE", 4, reply_ok({"relevance": 0.92, "half": 0.5}), "reply")
@@ -1480,7 +1487,7 @@ def make_valid_frames():
     add("stream_end_error_with_usage", "STREAM_END", 5,
         {"reason": {"error": {"code": "internal", "message": "boom"}}, "usage": {"input_tokens": 5, "output_tokens": 6}}, "stream")
     add("stream_cancel_empty", "STREAM_CANCEL", 5, {}, "stream",
-        note="spec C.3 writes the body as {[reason]}: with no reason it is the empty map a0")
+        note="a STREAM_CANCEL without a reason is the empty map a0 (section 10)")
     add("stream_cancel_with_reason", "STREAM_CANCEL", 5, {"reason": "user aborted"}, "stream")
     # EXT: [index, kind, payload].
     add("ext_id_zero_null_payload", "EXT", 0, [0, 1, None], "ext")
@@ -1534,14 +1541,16 @@ def make_handshakes():
     add("highest_common_version_server_unsorted", hello([1, 2, 5]), _local([5, 1, 2]))
     add("lower_common_version_only", hello([2, 7, 9]), _local([1, 2, 3]))
     add("no_common_version", hello([3, 4]), _local([1, 2]))
+    add("version_zero_only_offered", hello([0]), note="version 0 is not supported (section 6.4)")
+    add("u64_max_version_offered_with_one", hello([1, 2**64 - 1]), note="the highest common version is 1 (section 6.4)")
     add("no_common_version_supported_sorted_deduplicated", hello([9]), _local([4, 2, 2]),
-        note="the supported list is sorted ascending without duplicates")
+        note="the supported list is sorted ascending without duplicates (section 6.4)")
     # max_frame.
     add("max_frame_client_smaller", hello(max_frame=65536))
     add("max_frame_client_minimum", hello(max_frame=1024))
     add("max_frame_server_smaller", hello(max_frame=MAX_FRAME), _local([1], 65536))
     add("max_frame_server_below_minimum_is_clamped", hello(max_frame=4096), _local([1], 100),
-        note="a server maximum below 1024 is raised to 1024 before the minimum is taken")
+        note="a server maximum below 1024 is raised to 1024 before the minimum is taken (section 6.4)")
     add("max_frame_server_above_ceiling_is_clamped", hello(max_frame=MAX_FRAME), _local([1], 0xFFFFFFFF))
     add("max_frame_equal", hello(max_frame=4096), _local([1], 4096))
     # max_inflight, agent.
@@ -1550,6 +1559,7 @@ def make_handshakes():
     add("agent_in_ack_from_server", hello(agent="client/1"), _local([1], agent="spined/0"))
     add("agent_in_hello_only", hello(agent="client/1"))
     add("agent_128_bytes", hello(agent="a" * 128))
+    add("agent_128_bytes_multibyte", hello(agent="é" * 64), note="the agent limit counts UTF-8 bytes (section 6.2)")
     # Extensions: subset and order.
     ex = ["x/a/1", "x/b/1", "x/c/1"]
     add("extensions_none_offered", hello(), _local([1], extensions=ex))
@@ -1557,17 +1567,17 @@ def make_handshakes():
     add("extensions_all_accepted", hello(extensions=ex), _local([1], extensions=ex))
     add("extensions_subset_keeps_client_order", hello(extensions=["x/c/1", "x/z/1", "x/a/1", "x/b/1"]),
         _local([1], extensions=["x/a/1", "x/b/1", "x/c/1"]),
-        note="C.10 says the position in HELLO_ACK.extensions is the index but not whose order builds it; the implementation uses the client's")
+        note="the index is the position in HELLO_ACK.extensions, and the server builds that list in the client's HELLO order (section 6.4)")
     add("extensions_server_order_ignored", hello(extensions=["x/b/1", "x/a/1"]), _local([1], extensions=["x/a/1", "x/b/1"]),
-        note="C.10 does not say whose order fixes the index; the implementation uses the client's")
+        note="the server's own order is ignored; the client's HELLO order fixes the index (section 6.4)")
     add("extension_id_128_bytes", hello(extensions=["a" * 128]), _local([1], extensions=["a" * 128]))
     add("extension_ids_are_case_sensitive", hello(extensions=["X/A/1"]), _local([1], extensions=["x/a/1"]))
-    # Open HELLO: unknown keys are ignored (C.5 rule 9).
+    # Open HELLO: unknown keys are ignored (section 5 rule 9).
     add("unknown_hello_keys_ignored", hello(zz_future=1, aa_future={"k": [1]}))
     # Invalid HELLOs. The specification gives a code only for a schema failure in HELLO_ACK;
     # the implementation uses protocol_violation for HELLO as well.
-    schema = "C.7 names protocol_violation for a schema failure in HELLO_ACK and malformed_frame for a CBOR failure; it is silent for HELLO. The implementation treats HELLO the same way."
-    add("invalid_versions_empty", hello(versions=[]), note="C.6 does not forbid an empty versions array (it would then be 'no common version'); the implementation rejects it as protocol_violation")
+    schema = "a body that is deterministic CBOR but does not fit the HELLO type or breaks a bound of section 6.2 is protocol_violation (the same rule applies to HELLO_ACK)"
+    add("invalid_versions_empty", hello(versions=[]), note="versions MUST NOT be empty: protocol_violation (section 6.2)")
     add("invalid_versions_descending", hello([2, 1]), note=schema)
     add("invalid_versions_duplicate", hello([1, 1]), note=schema)
     add("invalid_max_frame_1023", hello(max_frame=1023), note=schema)
@@ -1580,9 +1590,10 @@ def make_handshakes():
     add("invalid_extension_not_ascii", hello(extensions=["x/é/1"]), note=schema)
     add("invalid_extension_129_bytes", hello(extensions=["a" * 129]), note=schema)
     add("invalid_agent_129_bytes", hello(agent="a" * 129), note=schema)
+    add("invalid_agent_130_bytes_multibyte", hello(agent="é" * 65), note=schema)
     add("invalid_agent_null", {"type": "HELLO", "request_id": 0, "flags": 0,
                                "body": {"versions": [1], "max_frame": 1024, "extensions": [], "agent": None}},
-        note="a present null for an optional field is rejected (C.5 rule 7)")
+        note="a present null for an optional field is rejected (section 5 rule 7)")
     add("invalid_missing_extensions", {"type": "HELLO", "request_id": 0, "flags": 0,
                                        "body": {"versions": [1], "max_frame": 1024}}, note=schema)
     add("invalid_missing_versions", {"type": "HELLO", "request_id": 0, "flags": 0,
@@ -1593,12 +1604,12 @@ def make_handshakes():
                                           "body": {"versions": [1], "max_frame": 1024, "extensions": [1]}}, note=schema)
     add("invalid_body_is_array", {"type": "HELLO", "request_id": 0, "flags": 0, "body": [1]}, note=schema)
     add("invalid_body_is_null", {"type": "HELLO", "request_id": 0, "flags": 0, "body": None}, note=schema)
-    add("invalid_body_indefinite_map", raw("bf ff"), note="a CBOR rule failure in the body is malformed_frame (C.7)")
-    add("invalid_body_trailing_bytes", raw("a0 00"), note="trailing bytes: malformed_frame (C.7)")
-    add("invalid_body_unsorted_keys", raw("a2 61 62 01 61 61 02"), note="unsorted keys: malformed_frame (C.7)")
+    add("invalid_body_indefinite_map", raw("bf ff"), note="a CBOR rule failure in the body is malformed_frame (section 7.3)")
+    add("invalid_body_trailing_bytes", raw("a0 00"), note="trailing bytes: malformed_frame (section 7.3)")
+    add("invalid_body_unsorted_keys", raw("a2 61 62 01 61 61 02"), note="unsorted keys: malformed_frame (section 7.3)")
     add("invalid_body_empty", raw(""), note="an empty body is not a CBOR item: malformed_frame")
     add("invalid_frame_type_is_ping", {"type": "PING", "request_id": 1, "flags": 0, "body": 1},
-        note="a frame other than HELLO where HELLO is required: protocol_violation (C.7)")
+        note="a frame other than HELLO where HELLO is required: protocol_violation (section 7.3)")
     return out
 
 
