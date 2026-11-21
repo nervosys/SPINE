@@ -3,6 +3,7 @@
 
 pub mod agentic;
 pub mod agentic_codec;
+pub mod frame;
 pub mod mcp;
 pub mod negotiation;
 pub mod replay;
