@@ -83,7 +83,9 @@ set -uo pipefail
 # ignored count and any passed total below were measured on the earlier wire.
 # Re-measure on the next full run and update EXPECTED_SUITES_MIN, EXPECTED_IGNORED
 # and the total passed as $1 (see scripts/release_gate.py, SPINE_EXPECTED_TESTS).
-EXPECTED_SUITES_MIN=45
+# Re-measured on the Linux CI run for c4439cb after the v1 wire: 47 suites,
+# 1,078 passed, 0 failed, 3 ignored.
+EXPECTED_SUITES_MIN=47
 # 5 -> 3: all five ignored tests are `ignore`-fenced doctests. Two (research)
 # left with the move: research/spine-cluster/src/marketplace.rs:27 and
 # research/spine-recursive/src/lib.rs:49. Three remain at the root:
