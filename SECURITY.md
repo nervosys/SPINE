@@ -55,7 +55,7 @@ shipped components target these properties:
 
 | Asset                            | Property protected             | Mechanism                                  |
 |----------------------------------|--------------------------------|--------------------------------------------|
-| Message payloads on the wire     | Confidentiality                | rustls 0.23 TLS or QUIC; the mesh uses AES-256-GCM. `ProtocolHandler` itself does no sealing |
+| Message payloads on the wire     | Confidentiality                | rustls 0.23 TLS or QUIC; the mesh uses AES-256-GCM. The native frame itself does no sealing |
 | Long-lived agent identity        | Authenticity, non-repudiation  | Ed25519 signing in `spine-agentic`         |
 | Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (research crate, gateway `research` feature) |
 | Certificate Transparency proofs  | Integrity                      | RFC 6962 + Google v3 JSON log list         |

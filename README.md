@@ -848,7 +848,7 @@ The Chameleon key encodes messages into a keyed latent space and changes that
 encoding as a session proceeds. It is experimental and unreviewed. It is not in
 `spine-protocol` or the SDK: it lives in `research/spine-protocol-research`
 (`ChameleonKey`, `SpineConnection`, `connect_auto`), and the native wire
-(`ProtocolHandler`) has no chameleon, no pre-shared-key AES layer and no decoy
+(spine-wire v1, `spine_protocol::connection::Connection`) has no chameleon, no pre-shared-key AES layer and no decoy
 traffic.
 
 **What it is:** a lossy, keyed projection of a byte string. The encoder's
@@ -869,7 +869,7 @@ To try it: `cd research && cargo run -p spine-protocol-research --example chamel
 
 ### Compression
 
-All messages are automatically compressed using **Zstd** (compression level 3) to reduce bandwidth for large UR payloads.
+A spine-wire v1 frame body of at least 1 KiB can be compressed with **Zstd** (level 3) when the sender enables it; it is off by default and the receiver always accepts it.
 
 ### Binary Execution
 
@@ -877,10 +877,7 @@ Agents can send compiled HLB programs to the core for execution:
 
 ```rust
 let binary = Compiler::compile("element App {}")?;
-client.handler.send_message(&Message::Request(Request {
-    id: "exec-1".to_string(),
-    command: BrowserCommand::ExecuteBinary(binary),
-})).await?;
+let result = client.execute_binary(binary).await?;
 ```
 
 ## Architecture

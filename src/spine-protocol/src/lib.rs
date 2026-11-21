@@ -7,13 +7,10 @@ pub mod connection;
 pub mod frame;
 pub mod hello;
 pub mod mcp;
+pub mod native;
 pub mod replay;
 pub mod resource;
 pub mod tasks;
-pub mod wire;
-
-mod handler;
-pub use handler::*;
 
 pub use agentic::{
     Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, DecodeHints,

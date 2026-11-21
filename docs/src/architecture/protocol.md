@@ -23,27 +23,43 @@ pub enum Message {
 
 ## Frame Format
 
-Messages are framed with a fixed 5-byte header. The header never changes
-during a connection:
+The native wire is spine-wire v1 (specified in `docs/spec/00-wire.md`). Every
+frame has a fixed 15-byte header, all integers big-endian:
 
 ```
-┌───────────┬──────────┐
-│ Length(4) │ 0x00 (1) │
-└───────────┴──────────┘
-│       Payload        │
-└──────────────────────┘
+┌────────────┬─────────┬──────────┬──────────┬────────────────┬──────┐
+│ Length (4) │ Ver (1) │ Type (1) │ Flags(1) │ Request id (8) │ Body │
+└────────────┴─────────┴──────────┴──────────┴────────────────┴──────┘
 ```
 
-- **Length**: 4 bytes, big-endian, payload size (at most 16 MiB)
-- **Fifth byte**: written as `0x00`, ignored on read
-- **Payload**: starts with a flag byte, `0x01` = zstd compressed, `0x00` = raw
+- **Length**: bytes after this field, `11 + len(body)`, at most the negotiated
+  maximum (16 MiB; 64 KiB before the handshake completes)
+- **Ver**: `1`
+- **Type**: `HELLO`, `HELLO_ACK`, `CLOSE`, `PING`, `PONG`, `REQUEST`,
+  `RESPONSE`, `STREAM_*` and `EXT`
+- **Flags**: bit 0 means the body is zstd compressed; other bits must be zero
+- **Request id**: correlates a `RESPONSE` with its `REQUEST`; a `PING` and its
+  `PONG` share one
+- **Body**: exactly one deterministic CBOR item
+
+A connection starts with `HELLO` from the client and `HELLO_ACK` from the
+server; nothing else may be sent first. The daemon closes a connection that has
+not sent `HELLO` within `server.hello_timeout_secs` (default 10 seconds) with
+`CLOSE(timeout)`. A violation ends the connection with a `CLOSE` code
+(`malformed_frame`, `frame_too_large`, `protocol_violation`, ...).
+
+The current daemon runs one request per connection at a time
+(`max_inflight = 1`). A `Request`, `ToolCall` or `CapabilityQuery` travels as a
+`REQUEST`; the daemon's `Response`, `ToolResult` or `CapabilityAd` travels as
+the `RESPONSE` with the same request id. `Ping` and `Pong` are the `PING` and
+`PONG` frames, whose body is an unsigned integer token.
 
 ## Compression
 
-Adaptive compression using a 1-byte flag protocol:
-- Payloads < 64 bytes are sent raw (compression overhead exceeds savings)
-- Larger payloads use zstd compression
-- Stack-allocated `[u8; 5]` headers avoid heap allocation
+Compression is off unless the sender turns it on. A body of at least 1 KiB is
+then compressed with zstd when that makes it smaller, and the compressed flag
+is set in the header. Smaller bodies are never compressed. The receiver needs
+no setting.
 
 ## Transport Options
 

@@ -3,7 +3,7 @@
 //! Demonstrates SPINE features that work without a running server:
 //! - HTML parsing → Unified Representation
 //! - HLS compilation → SpineBinary
-//! - Protocol handler framing over an in-memory duplex
+//! - spine-wire v1 connection framing over an in-memory duplex
 //! - Latent vector operations
 //! - Embedded agent message routing
 //! - Fixed-point math
@@ -18,7 +18,8 @@ use spine_nostd::hash::{fnv1a_32, fnv1a_64};
 use spine_nostd::math::{cosine_similarity_fixed, dot_product_fixed};
 use spine_nostd::types::{AgentIdBytes, FrameHeader, LatentVectorFixed};
 use spine_parser::parse_html;
-use spine_protocol::{Message, ProtocolHandler};
+use spine_protocol::connection::Connection;
+use spine_protocol::{native, BrowserCommand, Message, Request};
 use std::time::Instant;
 
 fn demo_parser() {
@@ -145,7 +146,7 @@ fn demo_protocol() {
 
 fn demo_handler_duplex() {
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ 4. Protocol Handler over In-Memory Duplex                    │");
+    println!("│ 4. spine-wire v1 Connection over In-Memory Duplex           │");
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -155,23 +156,41 @@ fn demo_handler_duplex() {
 
     rt.block_on(async {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-        let mut client = ProtocolHandler::new(client_io);
-        let mut server = ProtocolHandler::new(server_io);
+        let (client, server) = tokio::join!(
+            Connection::client_handshake(
+                client_io,
+                native::client_hello(),
+                native::DEFAULT_HELLO_DEADLINE
+            ),
+            Connection::server_handshake(
+                server_io,
+                &native::local_config(),
+                native::DEFAULT_HELLO_DEADLINE
+            )
+        );
+        let mut client = client.unwrap();
+        let mut server = server.unwrap();
 
-        // Send 10 messages through the handler
+        // Send 10 requests through the connection, answering each.
         let start = Instant::now();
         for i in 0..10u64 {
-            client
-                .send_message_raw(&Message::Ping { timestamp: i })
+            let request = Message::Request(Request {
+                id: i.to_string(),
+                command: BrowserCommand::GetUR,
+            });
+            let id = native::send_request(&mut client, &request).await.unwrap();
+            let frame = server.recv().await.unwrap().unwrap();
+            let msg = native::decode_request(&frame.body).unwrap();
+            assert!(matches!(msg, Message::Request(_)));
+            native::send_reply(&mut server, frame.request_id, &native::error_reply("ok"))
                 .await
                 .unwrap();
-            let msg = server.receive_message().await.unwrap();
-            assert!(matches!(msg, Message::Ping { .. }));
+            native::await_reply(&mut client, id).await.unwrap();
         }
         let elapsed = start.elapsed();
 
         println!(
-            "  10 messages through the handler: {:.1}µs total ({:.1}µs/msg)",
+            "  10 request/response pairs through the connection: {:.1}µs total ({:.1}µs/msg)",
             elapsed.as_nanos() as f64 / 1000.0,
             elapsed.as_nanos() as f64 / 10000.0
         );

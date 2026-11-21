@@ -168,7 +168,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 
 **Purpose**: Low-latency, secure communication protocol between agents and the core.
 
-**Research, not in this crate**: the Chameleon key (latent-space encoding with per-message key evolution, `ChameleonKey`), `SpineConnection`, the protocol evolution framework and `TitansLatentCodec` are in the experimental, unreviewed `research/spine-protocol-research` crate. `spine-protocol` has no dependency on `spine-neural` or `spine-crypto`. The frame header is fixed (`u32` big-endian length, then `0x00`) and there is no padding.
+**Research, not in this crate**: the Chameleon key (latent-space encoding with per-message key evolution, `ChameleonKey`), `SpineConnection`, the protocol evolution framework and `TitansLatentCodec` are in the experimental, unreviewed `research/spine-protocol-research` crate. `spine-protocol` has no dependency on `spine-neural` or `spine-crypto`. The native wire is spine-wire v1: a fixed 15-byte frame header (length, version, type, flags, request id) and a deterministic-CBOR body, after a `HELLO`/`HELLO_ACK` handshake. There is no padding.
 
 **Message Format**:
 
@@ -179,7 +179,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 └─────────────────┴──────────────────────────┘
 ```
 
-**Encryption Layer** (the mesh and session layers, not `ProtocolHandler`, which does no sealing; confidentiality on the client wire comes from TLS):
+**Encryption Layer** (the mesh and session layers, not the native frame, which does no sealing; confidentiality on the client wire comes from TLS):
 
 - Algorithm: AES-256-GCM (Authenticated Encryption with Associated Data)
 - Key Exchange: X3DH (Extended Triple Diffie-Hellman) for initial trust establishment
@@ -400,10 +400,7 @@ for element in ur.elements {
 
 // Compile and execute HLS
 let binary = Compiler::compile("element App {}")?;
-client.handler.send_message(&Message::Request(Request {
-    id: "exec-1".to_string(),
-    command: BrowserCommand::ExecuteBinary(binary),
-})).await?;
+let result = client.execute_binary(binary).await?;
 ```
 
 ### 10. spine-human

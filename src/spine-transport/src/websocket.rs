@@ -16,7 +16,7 @@
 //! │  └─ TransportBackend impl        │
 //! └──────────────────────────────────┘
 //!     ↕ Frame
-//! TransportBackend / ProtocolHandler
+//! TransportBackend / Connection
 //! ```
 //!
 //! # Usage
@@ -357,7 +357,7 @@ impl<S: AsyncRead + AsyncWrite + Send + Sync + Unpin> TransportBackend
 // =============================================================================
 
 /// Wraps a `WebSocketServerBridge` as an `AsyncRead + AsyncWrite` stream
-/// for compatibility with `ProtocolHandler<S>`.
+/// for compatibility with `Connection<S>`.
 ///
 /// This adapts the message-oriented WebSocket protocol to the byte-stream
 /// interface expected by the SPINE protocol handler. Binary WebSocket messages
@@ -492,7 +492,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for WebSocketStream<S> {
 // =============================================================================
 
 /// Wraps a client-side `WebSocketBridge` as an `AsyncRead + AsyncWrite` stream
-/// for compatibility with `ProtocolHandler<S>`.
+/// for compatibility with `Connection<S>`.
 ///
 /// Same concept as `WebSocketStream` (server-side) but works with the
 /// `MaybeTlsStream` inner type of client connections.
@@ -621,7 +621,7 @@ impl AsyncWrite for WebSocketClientStream {
 }
 
 /// Helper function to convert a client-side `WebSocketBridge` into an
-/// `AsyncRead + AsyncWrite` stream for use with `ProtocolHandler`.
+/// `AsyncRead + AsyncWrite` stream for use with `Connection`.
 pub fn client_to_stream(bridge: WebSocketBridge) -> WebSocketClientStream {
     WebSocketClientStream::new(bridge)
 }
@@ -631,9 +631,9 @@ pub fn client_to_stream(bridge: WebSocketBridge) -> WebSocketClientStream {
 // =============================================================================
 
 /// Wraps QUIC send/recv streams as a unified `AsyncRead + AsyncWrite` stream
-/// for compatibility with `ProtocolHandler<S>`.
+/// for compatibility with `Connection<S>`.
 ///
-/// This allows existing ProtocolHandler code to work over QUIC streams
+/// This allows existing Connection code to work over QUIC streams
 /// without modification.
 #[cfg(feature = "quic")]
 pub struct QuicStream {

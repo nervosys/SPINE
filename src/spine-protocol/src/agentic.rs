@@ -373,11 +373,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// All agentic types must survive the wire format SPINE actually uses
-    /// (`serde_json::to_vec` — see ProtocolHandler::send_message). Bincode
-    /// 1.x cannot round-trip `serde_json::Value` because it relies on
-    /// `deserialize_any`, so this helper matches production rather than
-    /// papering over the gap with bincode.
+    /// All agentic types must survive a self-describing serde format.
+    /// Bincode 1.x cannot round-trip `serde_json::Value` because it relies on
+    /// `deserialize_any`, so this helper uses JSON rather than papering over
+    /// the gap with bincode. The native wire's CBOR bodies are covered by the
+    /// tests in `native.rs`.
     fn round_trip<T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug>(v: &T) {
         let bytes = serde_json::to_vec(v).expect("encode");
         let back: T = serde_json::from_slice(&bytes).expect("decode");

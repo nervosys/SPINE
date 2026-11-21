@@ -10,7 +10,7 @@
 //! Three things matter for agentic use, and each is measured here:
 //!   1. **encode throughput** of the neural projector at common embed dims
 //!      (`neural_codec_encode`),
-//!   2. **full agentic path latency** — `codec.encode` then `wire::encode`
+//!   2. **full agentic path latency** — `codec.encode` then `cbor::to_vec`
 //!      (`neural_codec_agentic_path`),
 //!   3. **on-wire frame size** — SPINE binary (CBOR byte-string latent) vs the
 //!      JSON an HTTP+JSON agent would send (printed once at startup).

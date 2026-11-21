@@ -2,7 +2,10 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use spine_parser::UnifiedRepresentation;
-use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
+use spine_protocol::connection::Connection;
+use spine_protocol::frame::{Frame, FrameType};
+use spine_protocol::native;
+use spine_protocol::{BrowserCommand, Message, Request, Response, SpineBinary};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
@@ -15,9 +18,17 @@ pub use spine_compiler::Compiler;
 // Re-export WebSocket stream for CLI and external consumers
 pub use spine_transport::WebSocketClientStream;
 
+/// A client of a SPINE daemon, speaking spine-wire v1.
+///
+/// Requests are serialized on one connection: each call sends one `REQUEST`
+/// frame and waits for the `RESPONSE` with the same frame id. The `id` fields
+/// inside the message bodies are carried but not cross-checked; the frame id
+/// is what correlates. Every constructor performs the `HELLO` handshake and
+/// fails with the server's `CLOSE` code and message if the server refuses.
 pub struct AgentClient<S> {
-    /// Public handler for direct framed send and receive.
-    pub handler: ProtocolHandler<S>,
+    /// The v1 connection, for direct frame access. Use it with care: a
+    /// request left unanswered keeps its id in flight until its reply is read.
+    pub conn: Connection<S>,
     request_counter: u64,
 }
 
@@ -27,11 +38,7 @@ impl AgentClient<TcpStream> {
             tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
                 .await
                 .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
-        let handler = ProtocolHandler::new(stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-        })
+        Self::over(stream).await
     }
 
     /// Connect with exponential backoff retry.
@@ -153,11 +160,7 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
         .await
         .map_err(|_| anyhow::anyhow!("native TLS handshake deadline exceeded"))??;
 
-        let handler = ProtocolHandler::new(tls_stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-        })
+        Self::over(tls_stream).await
     }
 
     /// Connect to a SPINE server over TLS with automatic retry and exponential backoff.
@@ -201,11 +204,7 @@ impl AgentClient<spine_transport::WebSocketClientStream> {
             .await
             .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
         let stream = spine_transport::WebSocketClientStream::new(bridge);
-        let handler = ProtocolHandler::new(stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-        })
+        Self::over(stream).await
     }
 }
 
@@ -213,32 +212,45 @@ impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    /// Run the spine-wire v1 handshake over an already-connected `stream`.
+    ///
+    /// Fails if the server answers with `CLOSE` (the error names its code and
+    /// message), sends something other than `HELLO_ACK`, or does not answer
+    /// within the handshake deadline of ten seconds.
+    pub async fn over(stream: S) -> anyhow::Result<Self> {
+        let conn = native::client_connect(stream).await?;
+        Ok(Self {
+            conn,
+            request_counter: 0,
+        })
+    }
+
     pub async fn capabilities(
         &mut self,
     ) -> anyhow::Result<spine_protocol::CapabilityAdvertisement> {
         self.request_counter += 1;
         let id = format!("cap-{}", self.request_counter);
-        self.handler
-            .send_message(&Message::CapabilityQuery(spine_protocol::CapabilityQuery {
-                id: id.clone(),
-                selector: spine_protocol::CapabilitySelector::All,
-            }))
-            .await?;
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            loop {
-                if let Message::CapabilityAd(result) = self.handler.receive_message().await? {
-                    if result.id == id {
-                        return Ok(result);
-                    }
-                }
-            }
-        })
+        let query = Message::CapabilityQuery(spine_protocol::CapabilityQuery {
+            id,
+            selector: spine_protocol::CapabilitySelector::All,
+        });
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            native::call(&mut self.conn, &query),
+        )
         .await
         .map_err(|_| {
             anyhow::anyhow!(
                 "capability discovery deadline exceeded; reconnect before another request"
             )
-        })?
+        })??;
+        match reply {
+            Message::CapabilityAd(advertisement) => Ok(advertisement),
+            Message::Response(Response {
+                error: Some(error), ..
+            }) => anyhow::bail!(error),
+            _ => anyhow::bail!("unexpected reply to a capability query"),
+        }
     }
 
     pub async fn namespace_status(&mut self) -> anyhow::Result<serde_json::Value> {
@@ -284,17 +296,10 @@ where
     async fn send_request(&mut self, command: BrowserCommand) -> anyhow::Result<Response> {
         self.request_counter += 1;
         let id = self.request_counter.to_string();
-        let req = Request {
-            id: id.clone(),
-            command,
-        };
-        self.handler.send_message(&Message::Request(req)).await?;
-
-        loop {
-            match self.handler.receive_message().await? {
-                Message::Response(res) if res.id == id => return Ok(res),
-                _ => continue,
-            }
+        let req = Message::Request(Request { id, command });
+        match native::call(&mut self.conn, &req).await? {
+            Message::Response(res) => Ok(res),
+            _ => anyhow::bail!("unexpected reply to a request"),
         }
     }
 
@@ -307,28 +312,27 @@ where
     ) -> anyhow::Result<spine_protocol::ToolResult> {
         self.request_counter += 1;
         let id = format!("tool-{}", self.request_counter);
-        let call = spine_protocol::ToolCall {
-            id: id.clone(),
+        let call = Message::ToolCall(spine_protocol::ToolCall {
+            id,
             name: name.into(),
             args,
             trace: None,
-        };
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            self.handler.send_message(&Message::ToolCall(call)).await?;
-            loop {
-                match self.handler.receive_message().await? {
-                    Message::ToolResult(result) if result.id == id => return Ok(result),
-                    Message::Ping { timestamp } => {
-                        self.handler
-                            .send_message(&Message::Pong { timestamp })
-                            .await?
-                    }
-                    _ => {}
-                }
-            }
-        })
+        });
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            native::call(&mut self.conn, &call),
+        )
         .await
-        .map_err(|_| anyhow::anyhow!("tool deadline exceeded; reconnect before another request"))?
+        .map_err(|_| {
+            anyhow::anyhow!("tool deadline exceeded; reconnect before another request")
+        })??;
+        match reply {
+            Message::ToolResult(result) => Ok(result),
+            Message::Response(Response {
+                error: Some(error), ..
+            }) => anyhow::bail!(error),
+            _ => anyhow::bail!("unexpected reply to a tool call"),
+        }
     }
 
     #[instrument(skip(self))]
@@ -449,19 +453,28 @@ where
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as u64;
 
-        self.handler
-            .send_message(&Message::Ping { timestamp: now })
-            .await?;
+        // A PING frame whose token is the send time in milliseconds; the
+        // server's connection layer echoes it in a PONG.
+        self.request_counter += 1;
+        let id = self.request_counter;
+        let ping = Frame {
+            frame_type: FrameType::Ping,
+            request_id: id,
+            body: native::ping_body(now)?,
+        };
+        native::send_bounded(&mut self.conn, ping).await?;
 
         loop {
-            match self.handler.receive_message().await? {
-                Message::Pong { timestamp } => {
+            match self.conn.recv().await? {
+                Some(frame) if frame.frame_type == FrameType::Pong && frame.request_id == id => {
+                    let token = native::ping_token(&frame.body)?;
                     let end = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)?
                         .as_millis() as u64;
-                    return Ok(end - timestamp);
+                    return Ok(end.saturating_sub(token));
                 }
-                _ => continue,
+                Some(_) => {}
+                None => anyhow::bail!("connection closed before the pong"),
             }
         }
     }
@@ -702,6 +715,188 @@ mod tests {
                 .await;
         assert!(result.is_err());
         assert!(result.is_err());
+    }
+
+    // ---- spine-wire v1 over an in-process stream ----
+
+    use std::time::Duration;
+    use tokio::io::{duplex, DuplexStream};
+
+    const LIMIT: Duration = Duration::from_secs(20);
+
+    /// A v1 server that answers every `REQUEST` with `reply(request)` until the
+    /// client hangs up.
+    fn spawn_server(
+        io: DuplexStream,
+        reply: fn(Message) -> Message,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut conn = Connection::server_handshake(
+                io,
+                &native::local_config(),
+                native::DEFAULT_HELLO_DEADLINE,
+            )
+            .await
+            .unwrap();
+            while let Ok(Some(frame)) = conn.recv().await {
+                if frame.frame_type != FrameType::Request {
+                    continue;
+                }
+                let request = native::decode_request(&frame.body).unwrap();
+                native::send_reply(&mut conn, frame.request_id, &reply(request))
+                    .await
+                    .unwrap();
+            }
+        })
+    }
+
+    fn answer(request: Message) -> Message {
+        match request {
+            Message::Request(r) => Message::Response(Response {
+                id: r.id,
+                result: Some(serde_json::json!({"html": "<p>hi</p>"})),
+                error: None,
+            }),
+            Message::ToolCall(call) => Message::ToolResult(spine_protocol::ToolResult {
+                id: call.id,
+                trace: None,
+                outcome: spine_protocol::ToolOutcome::Ok { content: call.args },
+            }),
+            Message::CapabilityQuery(query) => {
+                Message::CapabilityAd(spine_protocol::CapabilityAdvertisement {
+                    id: query.id,
+                    agent_id: "test".to_string(),
+                    capabilities: Vec::new(),
+                })
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn client_round_trips_requests_tools_capabilities_and_pings() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, answer);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let html = tokio::time::timeout(LIMIT, client.get_raw_html())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(html, "<p>hi</p>");
+
+        let result = tokio::time::timeout(
+            LIMIT,
+            client.call_tool("spine.content/hash", serde_json::json!({"text": "x"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            result.outcome,
+            spine_protocol::ToolOutcome::Ok { .. }
+        ));
+
+        let ads = tokio::time::timeout(LIMIT, client.capabilities())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ads.agent_id, "test");
+
+        tokio::time::timeout(LIMIT, client.ping())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(client.conn.in_flight_len(), 0);
+
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_error_response_surfaces_as_an_error() {
+        fn refuse(request: Message) -> Message {
+            match request {
+                Message::Request(r) => Message::Response(Response {
+                    id: r.id,
+                    result: None,
+                    error: Some("Rate limit exceeded".to_string()),
+                }),
+                other => panic!("unexpected request {other:?}"),
+            }
+        }
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, refuse);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+        let error = tokio::time::timeout(LIMIT, client.get_raw_html())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("Rate limit exceeded"));
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_reports_the_servers_close_code() {
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let hello = spine_protocol::frame::read_frame(
+                &mut server_io,
+                spine_protocol::frame::PRE_HELLO_MAX_FRAME,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(hello.frame_type, FrameType::Hello);
+            let close = spine_protocol::hello::Close::new(
+                spine_protocol::frame::CloseCode::ShuttingDown,
+                "draining",
+            );
+            spine_protocol::frame::write_frame(
+                &mut server_io,
+                &close.to_frame().unwrap(),
+                spine_protocol::frame::PRE_HELLO_MAX_FRAME,
+                false,
+            )
+            .await
+            .unwrap();
+        });
+        let error = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .err()
+            .expect("the handshake must fail");
+        let text = error.to_string();
+        assert!(
+            text.contains("shutting_down") && text.contains("draining"),
+            "{text}"
+        );
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_to_a_peer_that_is_not_spine_fails() {
+        // A pre-v1 style peer: it answers a HELLO with something that is not
+        // a HELLO_ACK, so the handshake ends in an error and not a hang.
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            server_io.write_all(&[0xff; 32]).await.unwrap();
+            // Keep the stream open until the client has given up.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let result = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        server.abort();
     }
 
     #[test]

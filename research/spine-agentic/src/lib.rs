@@ -79,9 +79,7 @@ pub mod workflow;
 // The production mesh stack lives in `spine-mesh`; re-exported so the existing
 // `spine_agentic::mesh::..` and `spine_agentic::AgentId` paths keep resolving.
 pub use spine_mesh::AgentId;
-pub use spine_mesh::{
-    identity, mesh, mesh_quic, mesh_tcp, mesh_ws, naming, naming_mesh, signed_frame,
-};
+pub use spine_mesh::{identity, mesh, mesh_quic, mesh_tcp, mesh_ws, naming, naming_mesh};
 
 use dashmap::DashMap;
 use petgraph::graph::{DiGraph, NodeIndex};

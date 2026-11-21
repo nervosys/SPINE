@@ -18,7 +18,7 @@ use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use spine_crypto::{LatticeParams, QuantumSpeculativeProtocol, TransformerConfig};
 use spine_neural::{MirasNeuralEncoder, MirasVariant, NeuralEncoderConfig, NeuralLatentEncoder};
 use spine_protocol::{
-    wire, write_header_body, AsyncReadWrite, Message, QuicEndpointBuilder, QuicTransport,
+    cbor, write_header_body, AsyncReadWrite, Message, QuicEndpointBuilder, QuicTransport,
     TransportConfig, TransportMode,
 };
 use std::collections::hash_map::DefaultHasher;
@@ -41,6 +41,32 @@ pub use neural_codec::{
 };
 pub use titans::TitansLatentCodec;
 
+/// Largest frame this experimental transport reads or writes (16 MiB). A
+/// private copy of the limit `spine-protocol`'s pre-v1 transport used.
+const MAX_TRANSPORT_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Largest body this transport inflates after its zstd layer (64 MiB). A
+/// private copy of the limit `spine-protocol`'s pre-v1 transport used.
+const MAX_DECODED_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// The body codec of this experimental transport: deterministic CBOR from
+/// `spine-protocol`. The `SP`-header `wire::encode` it used before the v1
+/// cut-over is gone from `spine-protocol`; this crate's peers are other
+/// instances of itself, so the header carried nothing it needs.
+fn encode_body(msg: &Message) -> anyhow::Result<Vec<u8>> {
+    let body = cbor::to_vec(msg)?;
+    anyhow::ensure!(
+        body.len() <= MAX_TRANSPORT_FRAME_BYTES,
+        "message body exceeds {MAX_TRANSPORT_FRAME_BYTES} bytes"
+    );
+    Ok(body)
+}
+
+/// Inverse of [`encode_body`].
+fn decode_body(data: &[u8]) -> anyhow::Result<Message> {
+    Ok(cbor::from_slice(data)?)
+}
+
 /// A fresh 96-bit AES-GCM nonce from the operating system's CSPRNG. A private
 /// copy of the helper that used to live in `spine-protocol`'s handler.
 fn fresh_nonce() -> [u8; 12] {
@@ -50,7 +76,7 @@ fn fresh_nonce() -> [u8; 12] {
 }
 
 /// Inflate a zstd body, refusing to produce more than `limit` bytes. A private
-/// copy of `spine-protocol`'s crate-private `wire::decode_zstd_limited`. A
+/// copy of the pre-v1 `spine-protocol` `wire::decode_zstd_limited`. A
 /// one-byte lookahead tells a body exactly at the limit from an oversized one.
 fn decode_zstd_limited(payload: &[u8], limit: usize) -> anyhow::Result<Vec<u8>> {
     use std::io::Read;
@@ -414,10 +440,10 @@ impl SpineConnection {
                 transport.read_exact(&mut len_buf).await?;
                 let len = u32::from_le_bytes(len_buf) as usize;
                 // The length prefix is peer-controlled; bound it before allocating.
-                if len > wire::MAX_TRANSPORT_FRAME_BYTES {
+                if len > MAX_TRANSPORT_FRAME_BYTES {
                     anyhow::bail!(
                         "QUIC frame of {len} bytes exceeds the {} byte limit",
-                        wire::MAX_TRANSPORT_FRAME_BYTES
+                        MAX_TRANSPORT_FRAME_BYTES
                     );
                 }
                 let mut buf = vec![0u8; len];
@@ -457,7 +483,7 @@ impl ProtocolHandlerState {
     }
 
     fn encode_message(&mut self, msg: &Message) -> anyhow::Result<Vec<u8>> {
-        let mut data = wire::encode(msg)?;
+        let mut data = encode_body(msg)?;
 
         // Adaptive compression with flag
         // SECURITY NOTE (L2): Compressing plaintext before encryption can leak
@@ -544,12 +570,12 @@ impl ProtocolHandlerState {
             return Err(anyhow::anyhow!("Empty message after decryption"));
         }
         data = if data[0] == 0x01 {
-            decode_zstd_limited(&data[1..], wire::MAX_DECODED_FRAME_BYTES)?
+            decode_zstd_limited(&data[1..], MAX_DECODED_FRAME_BYTES)?
         } else {
             data[1..].to_vec()
         };
 
-        let msg: Message = wire::decode(&data)?;
+        let msg: Message = decode_body(&data)?;
         Ok(msg)
     }
 
@@ -559,7 +585,7 @@ impl ProtocolHandlerState {
         data: &[u8],
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            data.len() <= wire::MAX_TRANSPORT_FRAME_BYTES,
+            data.len() <= MAX_TRANSPORT_FRAME_BYTES,
             "native transport frame exceeds size limit"
         );
         let mut header = [0u8; 5];
@@ -579,7 +605,7 @@ impl ProtocolHandlerState {
         let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as usize;
 
         anyhow::ensure!(
-            len <= wire::MAX_TRANSPORT_FRAME_BYTES,
+            len <= MAX_TRANSPORT_FRAME_BYTES,
             "native transport frame exceeds size limit"
         );
         let mut buf = vec![0u8; len];

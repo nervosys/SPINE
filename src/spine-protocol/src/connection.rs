@@ -78,7 +78,8 @@ pub enum ConnectionError {
     /// and the connection is finished.
     #[error("protocol violation ({0:?}): {1}")]
     Violation(CloseCode, String),
-    /// The handshake did not finish within its deadline.
+    /// The handshake did not finish within its deadline, or
+    /// [`Connection::recv_timeout`] saw no frame within its idle deadline.
     #[error("timed out")]
     Timeout,
     /// A frame was rejected or could not be encoded. For a received frame a
@@ -827,9 +828,49 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// This call is not cancel safe: dropping the future (for example in a
     /// timeout) can lose part of a frame, so abandon the connection if you do.
     pub async fn recv(&mut self) -> Result<Option<Frame>, ConnectionError> {
+        self.recv_within(None).await
+    }
+
+    /// Like [`Connection::recv`], with an idle deadline that restarts for every
+    /// frame read, including the `PING`s this call answers itself. A peer that
+    /// sends nothing for `idle` (or stalls inside a frame for that long) is
+    /// sent `CLOSE(timeout)` (best effort) and the result is
+    /// [`ConnectionError::Timeout`]; the connection is finished.
+    ///
+    /// Unlike wrapping [`Connection::recv`] in a timeout, this keeps a `PING`
+    /// keep-alive counting as activity and leaves the connection in a defined
+    /// state when the deadline fires.
+    pub async fn recv_timeout(&mut self, idle: Duration) -> Result<Option<Frame>, ConnectionError> {
+        self.recv_within(Some(idle)).await
+    }
+
+    /// The shared body of [`Connection::recv`] and [`Connection::recv_timeout`].
+    async fn recv_within(
+        &mut self,
+        idle: Option<Duration>,
+    ) -> Result<Option<Frame>, ConnectionError> {
         loop {
             self.ensure_open()?;
-            let frame = match read_frame(&mut self.stream, self.max_frame).await {
+            let read = match idle {
+                None => read_frame(&mut self.stream, self.max_frame).await,
+                Some(limit) => {
+                    match tokio::time::timeout(limit, read_frame(&mut self.stream, self.max_frame))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            self.finished = true;
+                            best_effort_close(
+                                &mut self.stream,
+                                &Close::new(CloseCode::Timeout, "idle timeout"),
+                            )
+                            .await;
+                            return Err(ConnectionError::Timeout);
+                        }
+                    }
+                }
+            };
+            let frame = match read {
                 Ok(Some(f)) => f,
                 Ok(None) => {
                     self.finished = true;
@@ -1173,6 +1214,52 @@ mod tests {
         let sent = read_frame(&mut peer, MAX_FRAME).await.unwrap().unwrap();
         assert_eq!(sent.frame_type, FrameType::Hello);
         expect_close(&mut peer, CloseCode::Timeout).await;
+    }
+
+    #[tokio::test]
+    async fn recv_timeout_closes_an_idle_peer_with_timeout() {
+        let (mut s, mut c) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let err = s
+            .recv_timeout(Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ConnectionError::Timeout));
+        assert!(s.is_finished());
+        let close = loop {
+            match c.recv().await {
+                Err(ConnectionError::Closed(close)) => break close,
+                Ok(Some(_)) => {}
+                other => panic!("expected a CLOSE, got {other:?}"),
+            }
+        };
+        assert_eq!(close.code, CloseCode::Timeout.as_str());
+    }
+
+    #[tokio::test]
+    async fn recv_timeout_restarts_on_a_ping_and_still_delivers_requests() {
+        let (mut s, mut c) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let ping = Frame {
+            frame_type: FrameType::Ping,
+            request_id: 5,
+            body: cbor::to_vec(&7u64).unwrap(),
+        };
+        let sender = tokio::spawn(async move {
+            // A ping at 150 ms and a request at 300 ms: more than the 200 ms
+            // deadline in total, less than it between frames.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            c.send(ping).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let id = c.request(NULL.to_vec()).await.unwrap();
+            (c, id)
+        });
+        let frame = s
+            .recv_timeout(Duration::from_millis(200))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.frame_type, FrameType::Request);
+        let (_c, sent) = sender.await.unwrap();
+        assert_eq!(frame.request_id, sent);
     }
 
     #[tokio::test]

@@ -18,7 +18,7 @@
 //!
 //! ## Features
 //!
-//! - **Encrypted transport**: Uses spine-protocol's `ProtocolHandler` for wire encryption
+//! - **Encrypted transport**: Runs over a stream the caller secures (TLS or the signed envelope); there is no frame-level encryption
 //! - **Multi-hop routing**: Messages traverse the mesh via shortest path with TTL
 //! - **Gossip discovery**: Peers periodically share their peer tables
 //! - **Signed messages**: Every message is signed with the sender's Ed25519 key

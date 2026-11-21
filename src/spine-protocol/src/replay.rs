@@ -19,12 +19,12 @@
 //! # Usage
 //!
 //! ```ignore
-//! use spine_protocol::{Message, ProtocolHandler};
+//! use spine_protocol::Message;
 //! use spine_protocol::replay::{TraceLog, RecordingHandler, ReplayHandler};
 //!
 //! // Record
 //! let trace = TraceLog::new();
-//! let mut handler = RecordingHandler::new(protocol_handler, trace.clone());
+//! let mut handler = RecordingHandler::new(connection, trace.clone());
 //! handler.send(msg).await;
 //!
 //! // Save
@@ -349,39 +349,6 @@ impl ReplayVerifier {
             prev_ts = entry.timestamp_us;
         }
         results
-    }
-
-    /// Replay against a live ProtocolHandler, comparing received messages
-    /// to what was recorded.
-    pub async fn replay_sends<S>(
-        &self,
-        handler: &mut crate::ProtocolHandler<S>,
-    ) -> anyhow::Result<Vec<VerifyResult>>
-    where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
-    {
-        let mut results = Vec::new();
-
-        for entry in &self.trace.entries {
-            if entry.direction == Direction::Send {
-                let start = std::time::Instant::now();
-                let send_result = handler.send_message_raw(&entry.message).await;
-                let dur = start.elapsed();
-
-                results.push(VerifyResult {
-                    seq: entry.seq,
-                    direction: Direction::Send,
-                    passed: send_result.is_ok(),
-                    detail: format!(
-                        "replay send: {:?} (original: {}μs, replay: {}μs)",
-                        send_result.is_ok(),
-                        entry.duration_us,
-                        dur.as_micros()
-                    ),
-                });
-            }
-        }
-        Ok(results)
     }
 
     /// Summary statistics

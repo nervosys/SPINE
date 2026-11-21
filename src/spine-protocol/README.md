@@ -17,9 +17,11 @@ API documentation: <https://docs.rs/spine-protocol>
 
 - `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
 There is no `research` feature. The crate has no dependency on any crate under
-`research/`. `ProtocolHandler` writes the `SP` body, a compression flag byte and
-the fixed 5-byte frame; it has no sealing (confidentiality comes from TLS or the
-session layer). The Chameleon latent-space key, `SpineConnection`, `connect_auto`,
+`research/`. The native wire is spine-wire v1: `connection::Connection` speaks
+length-prefixed frames with a version, type, flags and request id after a
+`HELLO`/`HELLO_ACK` handshake, and `native` maps the `Message` set onto those
+frames (bodies are deterministic CBOR). There is no sealing: confidentiality
+comes from TLS or the session layer. The Chameleon latent-space key, `SpineConnection`, `connect_auto`,
 the protocol evolution framework, `TitansLatentCodec` and the pre-shared-key AES
 layer are not part of this crate: the first four are in the experimental,
 unreviewed `research/spine-protocol-research` crate and the AES layer was

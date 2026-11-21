@@ -419,6 +419,12 @@ async fn signed_mesh_tasks_dependencies_knowledge_restart_and_authorization() {
 async fn connect(node: &mut Node, dir: &Path, port: u16) -> AgentClient<TcpStream> {
     // A debug-build daemon on a loaded CI runner can take well over ten seconds
     // to start listening; seven of these tests start daemons at once.
+    //
+    // `AgentClient::connect` returns only after the spine-wire handshake, so a
+    // returned client means the daemon's accept loop is running. An attempt is
+    // not cut short early: a connection that sits in the listener's backlog
+    // while the daemon starts must be the one that completes, or abandoned
+    // probes would be accepted later and counted against `max_connections`.
     for _ in 0..600 {
         if let Some(status) = node.0.try_wait().unwrap() {
             panic!(
@@ -427,7 +433,7 @@ async fn connect(node: &mut Node, dir: &Path, port: u16) -> AgentClient<TcpStrea
             );
         }
         if let Ok(Ok(client)) = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(30),
             AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{port}")),
         )
         .await
@@ -593,8 +599,11 @@ async fn native_idle_connections_release_global_admission() {
         assert_eq!(readiness["namespace"], "disabled");
         assert_eq!(http.get(format!("http://127.0.0.1:{metrics_port}/health")).send().await.unwrap().status().as_u16(), 200);
         first.ping().await.unwrap();
-        let mut excess = AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}")).await.unwrap();
-        assert!(excess.capabilities().await.is_err());
+        // The daemon refuses an excess connection at admission, before any
+        // frame is read, so the client's handshake fails instead of its first
+        // request (it used to connect and fail on the first message).
+        let excess = tokio::time::timeout(Duration::from_secs(15), AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}"))).await.expect("excess handshake deadline exceeded");
+        assert!(excess.is_err(), "an excess connection must not complete the handshake");
         drop(excess);
         let text = http.get(format!("http://127.0.0.1:{metrics_port}/metrics")).send().await.unwrap().text().await.unwrap();
         assert!(text.contains("spine_native_connections_rejected_global_total 1\n"));
@@ -630,7 +639,20 @@ async fn configured_mutual_tls_protects_tcp_and_websocket_origins() {
         let config = format!("[server]\nhost = \"127.0.0.1\"\nport = {origin}\nmetrics_port = {}\n[tls]\nenabled = true\nmutual_tls = true\n", port());
         std::fs::write(dir.path().join("spine.toml"), config).unwrap();
         let mut node = launch(dir.path());
-        drop(connect(&mut node, dir.path(), origin).await);
+        // The `connect` helper speaks plaintext spine-wire, which a TLS origin
+        // refuses by design, so readiness here is only that the port accepts.
+        let mut listening = false;
+        for _ in 0..600 {
+            if let Some(status) = node.0.try_wait().unwrap() {
+                panic!("core exited {status}: {}", std::fs::read_to_string(dir.path().join("server.log")).unwrap());
+            }
+            if TcpStream::connect(("127.0.0.1", origin)).await.is_ok() {
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(listening, "core did not start listening");
         let mut roots = RootCertStore::empty();
         for cert in spine_core::tls::load_certs(&certs.join("ca.pem")).unwrap() { roots.add(cert).unwrap(); }
         let anonymous = TlsConnector::from(Arc::new(ClientConfig::builder().with_root_certificates(roots.clone()).with_no_client_auth()));
@@ -649,9 +671,15 @@ async fn configured_mutual_tls_protects_tcp_and_websocket_origins() {
         // rejects its missing certificate; a successful application reply is
         // the authorization criterion.
         if let Ok(tls) = anonymous.connect(ServerName::try_from("localhost").unwrap(), TcpStream::connect(("127.0.0.1", origin)).await.unwrap()).await {
-            let mut handler = spine_protocol::ProtocolHandler::new(tls);
-            let _ = handler.send_message(&spine_protocol::Message::Ping { timestamp: 58 }).await;
-            assert!(handler.receive_message().await.is_err());
+            // A client without a certificate must not complete a spine-wire
+            // handshake, whatever its local TLS handshake said.
+            let handshake = spine_protocol::connection::Connection::client_handshake(
+                tls,
+                spine_protocol::native::client_hello(),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(handshake.is_err());
         }
         let upgrade = b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
         let mut tls = authorized.connect(ServerName::try_from("localhost").unwrap(), TcpStream::connect(("127.0.0.1", origin + 1)).await.unwrap()).await.unwrap();

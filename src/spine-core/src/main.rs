@@ -9,7 +9,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
-use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Response};
+use spine_protocol::connection::{Connection, ConnectionError};
+use spine_protocol::frame::FrameType;
+use spine_protocol::native;
+use spine_protocol::{BrowserCommand, Message, Response};
 use spine_transport::WebSocketStream;
 use spine_wasm::WasmRuntime;
 use std::sync::Arc;
@@ -1810,8 +1813,7 @@ async fn main() -> Result<()> {
                             {
                                 Ok(Ok((send, recv))) => {
                                     let stream = spine_transport::QuicStream::new(send, recv);
-                                    let mut handler = ProtocolHandler::new(stream);
-                                    handle_session(&mut handler, quic_state).await;
+                                    serve_native(stream, quic_state).await;
                                 }
                                 Ok(Err(e)) => debug!("QUIC stream accept failed: {e}"),
                                 Err(_) => debug!("QUIC stream accept deadline exceeded"),
@@ -1946,15 +1948,13 @@ async fn main() -> Result<()> {
                     if let Some(acceptor) = tls_acceptor {
                         match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
                             Ok(Ok(tls_stream)) => {
-                                let mut handler = ProtocolHandler::new(tls_stream);
-                                handle_session(&mut handler, conn_state.clone()).await;
+                                serve_native(tls_stream, conn_state.clone()).await;
                             }
                             Ok(Err(e)) => debug!("TLS handshake failed: {}", e),
                             Err(_) => debug!("TLS handshake deadline exceeded"),
                         }
                     } else {
-                        let mut handler = ProtocolHandler::new(socket);
-                        handle_session(&mut handler, conn_state.clone()).await;
+                        serve_native(socket, conn_state.clone()).await;
                     }
                 });
             }
@@ -2011,15 +2011,56 @@ where
     .await
     {
         Ok(Ok(bridge)) => {
-            let mut handler = ProtocolHandler::new(WebSocketStream::new(bridge));
-            handle_session(&mut handler, state).await;
+            serve_native(WebSocketStream::new(bridge), state).await;
         }
         Ok(Err(e)) => debug!("WebSocket upgrade failed: {e}"),
         Err(_) => debug!("WebSocket upgrade deadline exceeded"),
     }
 }
 
-async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>)
+/// Runs the spine-wire v1 handshake on `stream` and, if it succeeds, the
+/// session loop. The handshake deadline is `server.hello_timeout_secs`; a
+/// client that does not complete it is sent `CLOSE(timeout)` and dropped, which
+/// releases its admission when the caller's task ends.
+async fn serve_native<S>(stream: S, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
+    match Connection::server_handshake(stream, &native::local_config(), deadline).await {
+        Ok(mut conn) => handle_session(&mut conn, state).await,
+        Err(e) => debug!("native handshake failed: {e}"),
+    }
+}
+
+/// Sends `message` as the `RESPONSE` to `request_id`. Returns false when the
+/// connection is gone. A reply that cannot be sent but leaves the connection
+/// usable (for example one over the frame limit) is replaced by an error
+/// reply, so the request id is released and the client is not left waiting.
+async fn reply<S>(conn: &mut Connection<S>, request_id: u64, message: Message) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    match native::send_reply(conn, request_id, &message).await {
+        Ok(()) => true,
+        Err(e) => {
+            if conn.is_finished() {
+                debug!("Failed to send response: {e}");
+                return false;
+            }
+            warn!("Response could not be sent: {e}");
+            native::send_reply(
+                conn,
+                request_id,
+                &native::error_reply(format!("response could not be sent: {e}")),
+            )
+            .await
+            .is_ok()
+        }
+    }
+}
+
+async fn handle_session<S>(conn: &mut Connection<S>, state: Arc<BrowserState>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
@@ -2028,18 +2069,48 @@ where
         state: state.clone(),
         id: Uuid::new_v4().to_string(),
     };
+    let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
 
     loop {
-        let received = tokio::time::timeout(
-            std::time::Duration::from_secs(state.config.server.idle_timeout_secs),
-            handler.receive_message(),
-        )
-        .await;
-        let Ok(received) = received else {
-            break;
+        // `recv_timeout` restarts its deadline for every frame, including the
+        // PINGs it answers itself, so a keep-alive counts as activity. When the
+        // deadline fires the connection has already been closed with
+        // CLOSE(timeout); it is never read again.
+        let frame = match conn.recv_timeout(idle).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(ConnectionError::Timeout) => break,
+            Err(ConnectionError::Closed(close)) => {
+                debug!("Client closed the connection: {}", close.code);
+                break;
+            }
+            Err(e) => {
+                error!("Connection error: {}", e);
+                // Cleanup session if needed, or keep it for reconnection
+                break;
+            }
         };
-        match received {
-            Ok(Message::CapabilityQuery(query)) => {
+        // Only REQUEST frames start work. Nothing here streams, so a
+        // STREAM_CANCEL is moot; a PONG answers a ping this loop never sends.
+        if frame.frame_type != FrameType::Request {
+            continue;
+        }
+        let request_id = frame.request_id;
+        let message = match native::decode_request(&frame.body) {
+            Ok(message) => message,
+            Err(e) => {
+                // C.7: a well-formed frame whose request cannot be served is an
+                // error response, not the end of the connection. Codes arrive
+                // with the body redesign; for now the text says what failed.
+                let text = format!("invalid request: {e}");
+                if !reply(conn, request_id, native::error_reply(text)).await {
+                    break;
+                }
+                continue;
+            }
+        };
+        match message {
+            Message::CapabilityQuery(query) => {
                 let capabilities = spine_core::tools::capabilities()
                     .into_iter()
                     .filter(|capability| match &query.selector {
@@ -2062,15 +2133,11 @@ where
                     agent_id,
                     capabilities,
                 };
-                if handler
-                    .send_message(&Message::CapabilityAd(advertisement))
-                    .await
-                    .is_err()
-                {
+                if !reply(conn, request_id, Message::CapabilityAd(advertisement)).await {
                     break;
                 }
             }
-            Ok(Message::ToolCall(call)) => {
+            Message::ToolCall(call) => {
                 let result = if state.check_rate_limit(&tool_rate.id) {
                     spine_core::tools::invoke(call)
                 } else {
@@ -2084,18 +2151,11 @@ where
                         },
                     }
                 };
-                if handler
-                    .send_message(&Message::ToolResult(result))
-                    .await
-                    .is_err()
-                {
+                if !reply(conn, request_id, Message::ToolResult(result)).await {
                     break;
                 }
             }
-            Ok(Message::Ping { timestamp }) => {
-                let _ = handler.send_message(&Message::Pong { timestamp }).await;
-            }
-            Ok(Message::Request(req)) => {
+            Message::Request(req) => {
                 let req_span = span!(Level::INFO, "request", request_id = %req.id);
                 let _enter = req_span.enter();
                 debug!("Received request");
@@ -2112,13 +2172,16 @@ where
                         #[cfg(not(feature = "research"))]
                         let _ = lease;
                     } else {
-                        let _ = handler
-                            .send_message(&Message::Response(Response {
+                        let _ = reply(
+                            conn,
+                            request_id,
+                            Message::Response(Response {
                                 id: req.id,
                                 result: None,
                                 error: Some("Server busy: maximum sessions reached".into()),
-                            }))
-                            .await;
+                            }),
+                        )
+                        .await;
                         return;
                     }
                 }
@@ -2126,28 +2189,28 @@ where
 
                 // 3. Enforce rate limit
                 if !state.check_rate_limit(&id) {
-                    let _ = handler
-                        .send_message(&Message::Response(Response {
+                    let _ = reply(
+                        conn,
+                        request_id,
+                        Message::Response(Response {
                             id: req.id,
                             result: None,
                             error: Some("Rate limit exceeded".to_string()),
-                        }))
-                        .await;
+                        }),
+                    )
+                    .await;
                     continue;
                 }
 
                 let res = handle_command(&state, &id, req.command, req.id).await;
 
-                if let Err(e) = handler.send_message(&Message::Response(res)).await {
-                    error!("Failed to send response: {}", e);
+                if !reply(conn, request_id, Message::Response(res)).await {
+                    error!("Failed to send response");
+                    break;
                 }
             }
-            Ok(_) => {}
-            Err(e) => {
-                error!("Connection error: {}", e);
-                // Cleanup session if needed, or keep it for reconnection
-                break;
-            }
+            // `decode_request` admits only the three kinds above.
+            _ => {}
         }
     }
 }

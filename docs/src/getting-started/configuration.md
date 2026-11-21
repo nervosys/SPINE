@@ -16,6 +16,7 @@ metrics_port = 9090
 max_sessions = 1000
 max_connections_per_ip = 50
 idle_timeout_secs = 300
+hello_timeout_secs = 10
 session_watchdog_secs = 600
 persistence_interval_secs = 60
 shutdown_timeout_secs = 30
@@ -64,6 +65,7 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 | `server.port`              | `8080`      |
 | `server.max_sessions`      | `1000`      |
 | `server.idle_timeout_secs` | `300`       |
+| `server.hello_timeout_secs` | `10`      |
 | `tls.enabled`              | `false`     |
 | `logging.format`           | `pretty`    |
 | `logging.level`            | `info`      |

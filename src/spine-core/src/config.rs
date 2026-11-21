@@ -19,6 +19,7 @@
 //! max_sessions = 1000
 //! max_connections_per_ip = 50
 //! idle_timeout_secs = 300
+//! hello_timeout_secs = 10
 //! session_watchdog_secs = 600
 //!
 //! [tls]
@@ -149,6 +150,10 @@ pub struct ServerConfig {
     pub max_connections_per_ip: usize,
     /// Idle connection timeout (seconds)
     pub idle_timeout_secs: u64,
+    /// Seconds a native connection has to send `HELLO` (spine-wire v1, C.6)
+    /// before the daemon closes it with `CLOSE(timeout)`. A client that
+    /// connects and says nothing holds one admission slot for this long.
+    pub hello_timeout_secs: u64,
     /// Session watchdog interval (seconds) — kills sessions with no activity
     pub session_watchdog_secs: u64,
     /// Retain detached sessions for this many seconds; connected sessions are protected.
@@ -227,6 +232,7 @@ impl Default for ServerConfig {
             max_connections: 256,
             max_connections_per_ip: 50,
             idle_timeout_secs: 300,
+            hello_timeout_secs: 10,
             session_watchdog_secs: 600,
             session_retention_secs: 3600,
             persistence_interval_secs: 60,
@@ -397,7 +403,8 @@ impl SpineConfig {
             self.server.session_watchdog_secs > 0
                 && (1..=2_592_000).contains(&self.server.session_retention_secs)
                 && self.server.persistence_interval_secs > 0
-                && self.server.idle_timeout_secs > 0,
+                && self.server.idle_timeout_secs > 0
+                && self.server.hello_timeout_secs > 0,
             "maintenance intervals must be positive; session retention must be 1..=2592000 seconds"
         );
         anyhow::ensure!(
@@ -495,6 +502,11 @@ impl SpineConfig {
         if let Ok(v) = std::env::var("SPINE_REGION") {
             config.cluster.region = v;
         }
+        if let Ok(v) = std::env::var("SPINE_HELLO_TIMEOUT") {
+            if let Ok(s) = v.parse() {
+                config.server.hello_timeout_secs = s;
+            }
+        }
         if let Ok(v) = std::env::var("SPINE_IDLE_TIMEOUT") {
             if let Ok(s) = v.parse() {
                 config.server.idle_timeout_secs = s;
@@ -581,6 +593,29 @@ mod tests {
         assert_eq!(config.server.max_sessions, 1000);
         assert!(!config.tls.enabled);
         assert_eq!(config.logging.format, "pretty");
+        assert_eq!(config.server.hello_timeout_secs, 10);
+    }
+
+    #[test]
+    fn the_hello_deadline_is_configurable_and_must_be_positive() {
+        let config: SpineConfig = toml::from_str(
+            r#"
+[server]
+hello_timeout_secs = 3
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.server.hello_timeout_secs, 3);
+        assert!(config.validate().is_ok());
+
+        let config = SpineConfig {
+            server: ServerConfig {
+                hello_timeout_secs: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     /// A seed list should accept the namespace's own spelling for an address as
