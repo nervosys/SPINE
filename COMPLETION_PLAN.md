@@ -1,8 +1,8 @@
 # SPINE Project Completion Plan
 
-Revised 2026-11-19. This replaces the 2026-10-02 plan and carries every item that was still open in it. Nothing has changed in the repository since that date; what changed is the world around it: the toolchain, the advisory database, and the disk.
+Revised 2026-11-20. Stages 0 to 2 are the 2026-11-19 recovery plan and are nearly done. From Stage 3 onward the plan is reorganised around the seven-layer design in [SPINE from first principles](docs/FIRST_PRINCIPLES.md): the goal is an entirely new web stack for AI agents, built from the ground up, without regard to the existing install base. The 2026-11-19 stage list it replaces is in Git history at `7f7d1fc`.
 
-"Complete" means: independent agents can discover capabilities, resolve signed names, retrieve verified resources, invoke tools, stream model output, and coordinate work across nodes; the security boundaries are documented and reviewed; validation is reproducible on every supported platform; and a release installs from published packages and archives.
+"Complete" means: the seven layers (session, names, authority, objects, interaction, discovery, execution) are specified independently of the code, implemented, and reviewed; every action carries a verifiable delegation chain; content reaches a model with its provenance; validation is reproducible on every supported platform; and a release installs from published packages and archives.
 
 ## Where the project stands
 
@@ -28,9 +28,18 @@ Revised 2026-11-19. This replaces the 2026-10-02 plan and carries every item tha
 
 ## Order of work
 
-Stages 0 to 2 restore a trustworthy starting point and are short. Stages 3 to 5 are the remaining implementation. Stages 6 to 8 are evidence and release. External items run in parallel from day one because they have the longest lead time.
+Stages 0 to 2 restore a trustworthy starting point. Stage 3 fixes defects that exist today whatever the design becomes. Stage 4 shrinks the workspace to the stack so that later stages review less code. Stage 5 writes the waist down. Stages 6 to 10 build the layers, authority first because everything multi-party depends on it. Stages 11 to 13 are operability, evidence and release.
 
 Check an item only when its stated result has been demonstrated on the commit in question. Record the command and log beside it in the status report.
+
+**Working assumptions, 2026-11-20.** These follow the recommendations in the first-principles document and stand until changed:
+
+- SPINE owns everything from the session layer up and runs over QUIC packet machinery with its own key-based authentication. It does not write a new reliable transport over UDP.
+- Research code moves to a separate workspace.
+- Constrained devices are out of scope for the first specification.
+- The licence for the specification is undecided and blocks only its publication.
+
+**Local verification is constrained.** Since 2026-11-19 full workspace builds on the development machine have been stopped for low memory. Until that changes, CI on pull request #49 is the verification of record and local runs are limited to single crates.
 
 ## External items (start now, owner: account holder)
 
@@ -38,8 +47,8 @@ These cannot be closed from inside the repository.
 
 - [ ] Revoke the crates.io publish token identified in `HANDOFF.md` and record the confirmation without copying its value.
 - [ ] Commission the independent handshake review using `HANDSHAKE-REVIEW.md` and [the review packet](docs/CRYPTO_REVIEW_PACKET.md). Until findings are resolved, the custom handshake is described as unreviewed.
-- [ ] Decide the release scope: which of Python, JavaScript/WASM, Go, C, GUI, browser extension, embedded, GPU, Kubernetes, RDMA and io_uring are supported, experimental, or deferred for this release. Stage 6 only does the work this decision calls for.
-- [ ] Decide the release version (see Stage 8) and whether the result is published to crates.io.
+- [ ] Decide the release scope: which of Python, JavaScript/WASM, Go, C, GUI, browser extension, embedded, GPU, Kubernetes, RDMA and io_uring are supported, experimental, or deferred for this release. Stage 4 only does the work this decision calls for.
+- [ ] Decide the release version (see Stage 13) and whether the result is published to crates.io.
 - [ ] Supply real GPU/RDMA hardware evidence, or confirm those backends stay experimental.
 - [ ] Decide whether benchmark history may be served from a public `gh-pages` branch.
 
@@ -84,57 +93,129 @@ All figures are from `cargo audit` on 2026-11-19 against the current lockfile. R
 
 **Done when:** both tools are green on the Stage 1 commit and the register has a new review date.
 
-## Stage 3. Finish the supported agent workflow
+## Stage 3. Fix what the as-built review found
 
-The remaining implementation in the namespace, resource, tool, model and coordination paths.
+The as-built specifications in `docs/spec/` were written on 2026-11-20 by reading the source without running it. Each item below was reported there with file and line. Items marked done were confirmed in the source by the agent that fixed them and have regression tests that pass in CI on Linux, macOS and Windows.
 
-### Namespace lifecycle
+### Names
 
-- [ ] Add peer exchange to bounded bootstrap discovery (configured seeds and DNS seeds exist) and keep verifying identities learned through discovery.
-- [ ] Audit every path that turns a remote lookup error into an empty result; distinguish local-only operation, partial connectivity and confirmed absence everywhere, not only in disconnected resolution.
-- [ ] Exercise replica placement, maintenance, eviction, expiry, negative caching and conflicting sequences under node restart and churn.
-- [ ] Verify capability discovery ranking, freshness, completeness and result limits, and document them.
-- [ ] Add acknowledged replica storage and retry accounting, or state in the documentation that remote durability is not promised (`is_durable()` is false today).
-- [ ] Multi-node acceptance: publish, resolve from a node with no local copy, restart the publisher, renew with the same identity, and stay available through a replica failure. The last step is not yet covered.
+- [x] `SpineUri::parse` and `join` panic on multi-byte input at byte 8 (`src/spine-name/src/uri.rs`). Confirmed and fixed in `41c2b6e` with a regression test.
+- [x] A name lookup stops at the first valid record. It must prefer the highest sequence and refuse expired records; the resolver cache must not overwrite a newer record with an older one. Partly done: the resolver cache no longer replaces a newer record with an older one (`3d58059`). Still open: the lookup stops at the first valid answer and does not check expiry there; the fix is a quorum of the closest nodes. Done in `e9aea82`: a lookup waits for 3 distinct asked peers (fewer when no more are reachable), returns the superseding record, and drops expired ones.
+- [x] Two different records with equal sequence and publication time never converge. Add a deterministic tie-break. Done in `3d58059`: an exact tie breaks on the signature.
+- [x] `NotFound` is returned and cached when every known peer was unreachable; that case is `Unavailable`. A negative-cache hit must not trigger another mesh walk. Done in `25f1586`.
+- [x] `cap:` lookups target the hash of the capability term, but replication stores records only near the record's own name key, so remote capability discovery finds little. Place provider records under the capability key. Done in `4c5ed00`: records are also replicated near each advertised capability key, capped at 8 per record, and accepted there. Nodes holding a record only for its capability key do not re-offer it; the publisher's republish keeps it alive.
+- [x] Routing buckets replace their stalest entry when a newcomer claims a later `last_seen`, which the newcomer supplies. Verify liveness before eviction. Done in `be9eee6`: a full bucket keeps its entries; a newcomer replaces only an entry this node marked unreachable; a referral cannot change a known node's endpoints or identity. `NameService::mark_unreachable` still removes outright and does not yet use the soft mark.
+- [x] Bound `NameService.peers` and the size of a record accepted from the mesh. Mostly done in `be9eee6`: registry capped at 1,024 and records from peers size-checked in the name service. Still open: the same check where `naming_mesh.rs` stores records directly, and a bound on referred endpoint lists. Finished in `e9aea82`: referred nodes capped at 8 endpoints of 256 bytes and 20 nodes per response; `publish` size-checks.
 
-### Resources and tools
+### Signatures and envelopes
 
-- [ ] Write the resource request/response contract: name, representation, content type, validator, size, streaming, cancellation, structured errors.
-- [ ] Preserve which step failed (resolution, connection, authorization, transfer, validation) in errors surfaced through the SDK, CLI and gateway.
-- [ ] Add cancellation, deadlines and caller authorization to `ToolCall`/`ToolResult` handling; today the tools are serial, read-only, and available to any connected client.
-- [ ] Support bounded streaming and backpressure for large resources and encoded payloads (current ceiling: 8 MiB per representation, 64 KiB chunks).
-- [ ] Connect typed links to traversal and fetching with budgets, deduplication, and visible skipped or failed resources.
-- [ ] Extend automatic SDK endpoint selection beyond TCP, and let HTTP resource reads resolve beyond the configured origin, without hiding the provenance of unattested `host:` addresses.
+- [ ] `Link.title`, `Link.capabilities` and a resource's `content_type` are not covered by the record signature. Link fields done in `c6dd827` (v2 signing layout covering every record field). Still open: `content_type` is not a record field; it lives beside the blob and can be relabelled by whoever relays it.
+- [ ] Signed bytes use NUL-terminated strings and, for mesh envelopes, `serde_json` output. Move to a length-prefixed canonical encoding (decided in Stage 5). Name records done in `c6dd827` and mesh envelopes length-prefixed in `d89d5f9`; envelope payloads still pass through `serde_json` before signing.
+- [x] The mesh envelope signature omits the destination and timestamp, although the comment says the destination is covered (comment confirmed at `src/spine-agentic/src/mesh.rs`). If payload serialisation fails the payload is silently dropped from the signed bytes; fail closed. Done in `d89d5f9`. Hop count and time-to-live stay unsigned because forwarders change them.
+- [x] Use strict Ed25519 verification throughout. Done in `3476769` for name records, agent identities and the handshake. `swe.rs` switched in `a94fb6a`'s parent commit; an audit found no other non-strict call and no other signature library.
+- [x] The signed RPC path has no application-level replay or duplicate check; `MessageDedup` is never called on it. Safe today only because every operation is read-only or idempotent. Done in `d5cbf37` and `c1f2c89`: requests outside a 120-second window or already seen from the same sender are refused; the table holds 4,096 entries and refuses new requests when full of live ones. Unit-tested; no end-to-end replay test.
 
-### Models and coordination
+### Session and transport
 
-- [ ] Consolidate the HTTP model backend with the gRPC model abstraction and the recursive dispatchers, or document why they stay separate.
-- [ ] Verify upstream cancellation, bounded buffering, error propagation, timeouts and backpressure through native frames, SSE and gRPC. Only the SSE path has acceptance coverage.
-- [ ] Apply the IronGate routing contract to every supported remote model path; test required-gateway refusal and local-model exceptions against mock servers.
-- [ ] Test codec negotiation, shape and dtype validation, stateless defaults, and isolation for any session-specific stateful codec.
-- [ ] Decide whether arbitrary task execution is in scope. If yes, design the executor, its sandbox and its authorization; if no, record the read-only boundary as final. Add task eviction either way (256 tasks and 256 knowledge keys per worker, no eviction).
-- [ ] Decide whether model-issued tool calls are executed automatically; implement or document.
-- [ ] Document the quality and context limits of recursive retrieval and neural representations on representative tasks; remove claims beyond the evidence.
+- [ ] The identity-pin map has no production writer, so every DHT dial in `spine-core` is unpinned. `HANDSHAKE-REVIEW.md` says unpinned dialing happens once.
+- [ ] Mesh over QUIC runs the handshake on the first stream, discards the session keys, accepts any certificate, and serves later streams without consulting the authenticated identity. Refuse to start mesh QUIC until Stage 8 replaces it.
+- [ ] Unbounded or overflowing paths: native QUIC receive allocation, `Frame::decompress` output, `send_window` addition, and `seal` panicking when the counter is exhausted. Done in `3476769`, `30d3d94`, `6e6cddd` and `66fcc56`: QUIC receive bound, frame and batch decompression capped at 64 MiB, saturating window arithmetic, and an exhausted AEAD counter is an error (it previously wrapped in release builds, reusing nonces).
+- [ ] The native wire is plaintext unless TLS is enabled, and TLS is off by default. Make the default refuse to listen beyond loopback without it. Partly done in `bbaf7e9`: a non-loopback bind is refused without mutual TLS or an explicit `allow_unauthenticated_remote`.
+- [ ] Correct `HANDSHAKE-REVIEW.md` (the associated data is not empty) and `THREAT_MODEL.md` (it describes X3DH and ChaCha20, which are not deployed) before the reviewer reads them. Done on branch `docs/review-accuracy` (`65d35b8`), not merged pending the decision on publishing review material.
 
-**Done when:** a local model endpoint and an optional IronGate path both complete the workflow from a seed address alone, and cancelling a consumer terminates the corresponding upstream work on every supported protocol.
+### Native server
 
-## Stage 4. Security and tenancy
+- [ ] Any connected client can call tools, publish names and resources, execute binaries, and make the node sign mesh calls with its own key (`MeshCall` confirmed in `src/spine-core/src/main.rs`). This is the absence of layer 3; until Stage 6 lands, restrict these commands to loopback or mTLS-authenticated clients. Interim guard in `bbaf7e9` as above; per-client authorization is Stage 6.
+- [x] `fetch_resource` dials publisher-chosen addresses over plaintext TCP with no outbound policy. Done in `1d06dfc`: loopback, private, link-local and similar destinations are refused after DNS resolution unless the caller opts in. Still plaintext TCP.
+- [ ] Resources are never deleted and any client can fill the 256 MiB store; a failed name publication leaves its blob behind. Partly done in `8058df1`: a failed publication removes the blob it added; blobs are stored as base64 and hashed once per load. Still open: no deletion or per-client quota. Tasks done in `9f5d3a2`: oldest finished task evicted at capacity, 64 active tasks and 64 knowledge entries per owner. Eviction orders by creation time and crosses owners; knowledge deletion needs a new protocol message.
+- [ ] Tasks (256) and knowledge entries (256) are shared across all owners and never evicted.
 
-- [ ] Add authorization for session ownership and privileged operations, with scopes for reading, execution, publication and administration. The native server currently gives every connected client operator-level access. Keep a documented single-user mode.
-- [ ] Add a native reconnect/resume API consistent with that ownership model.
-- [ ] Specify secure connection modes for TCP, WebSocket and QUIC: peer identity checks, downgrade refusal, and the difference between encryption and endpoint authentication. Bring optional QUIC to runtime and TLS-policy parity or mark it experimental; it has only been compiled.
-- [ ] Define and enforce outbound fetch policy on the bridge and mesh paths; native and WASM navigation are done.
-- [ ] Apply and test request, frame, decompression, lookup, connection and execution limits on the remaining paths (optional mesh transports, auxiliary cluster and diagnostics listeners), in an isolated harness with malformed and excessive input. Bound parser memory, which the fetched-byte cap does not.
-- [ ] Verify identity-key creation, permissions (including Windows ACLs), redaction, backup, rotation and recovery. Define how rotation affects names whose authority is the old key.
-- [ ] Verify that logs, traces, metrics, error bodies and shared codec or memory state never disclose another session's inputs.
-- [ ] Keep research RLWE and Chameleon behaviour explicitly separate from standard AEAD, ML-KEM and TLS guarantees in code comments, configuration and documentation.
-- [ ] Complete the secret review beyond the bounded format scan: full Git history and release inputs, findings kept local and redacted.
-- [ ] Refresh `THREAT_MODEL.md` and `SECURITY_AUDIT.md` to verified behaviour. The audit is still titled "v1.2.1"; correct absolute claims about memory erasure and do not treat the `fips` feature flag as certification.
-- [ ] Resolve independent review findings and add a regression for each.
+## Stage 4. Reduce the workspace to the stack
 
-**Done when:** no unresolved critical or high finding remains in the supported scope, secure configurations are tested, and the reviewer's evidence is on file.
+Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source and `cargo metadata`; the "still compiles" claims in it are untested). 26 manifest edges run from stack or edge crates to research or undecided code.
 
-## Stage 5. Operability
+- [x] Delete the manifest entries nothing uses (`3476769`): `spine-transport` and `spine-stream` on `spine-protocol`, `spine-core` on `spine-compiler`, `spine-agent`'s dev-dependency on `spine-kernel`. After this, layer 1 no longer reaches neural or research crypto.
+- [x] Copy the 222-line `gateway_route.rs` into `spine-gateway` and drop its dependency on `spine-recursive` (`93dae14`).
+- [ ] Take research out of `spine-protocol` (`src/lib.rs`, 5,350 lines): `ChameleonKey`, the speculative predictor, and a 2,045-line evolution region nothing else uses. `ProtocolHandler::new` builds two Titans transformers on every connection. The `Message` and `BrowserCommand` enums carry research variants, so this changes the wire type and belongs with the Stage 5 version decision. Partly done in `d5fd129` and `638d333` (CI green, feature-off builds compiled in lint): research code moved to gated modules behind a default-on `research` feature; `spine-neural` and `spine-crypto` are optional. No wire type is gated, so the encoding is the same in both builds. Still open: `ProtocolHandler` is on the production path and holds the chameleon key and two predictors, so it is gated whole; the daemon and SDK therefore still need the feature on. Update `60d71d4` (CI green): `ProtocolHandler` now lives in an ungated module; only the chameleon key and the predictor are gated, and a stand-in predictor keeps the frame wrapper identical. `mesh_quic` and `signed_frame` moved to `spine-mesh` (`3c72906`). Not verified: a research-off peer talking to a research-on peer (each build is only tested against itself).
+- [ ] Split `spine-agentic`: the stack needs eight modules (identity, mesh, naming, naming_mesh, mesh_tcp, mesh_ws, mesh_quic, signed_frame; about 9,300 lines and 158 of its 401 tests) plus `AgentId`, which is defined in the 8,424-line `lib.rs`. `mesh_ws`, `mesh_quic` and `signed_frame` have no caller outside their own tests. Stack half done in `c5ccb56` and `6e47224` (every CI job green; Linux 1,538 passed, 0 failed, 5 ignored; `spine-mesh` 168 tests, `spine-agentic` 258): `identity`, `mesh`, `naming`, `naming_mesh`, `mesh_tcp`, `mesh_ws` and `AgentId` moved to a new `spine-mesh` crate depending only on `spine-name`, `spine-session` and `spine-transport`; `spine-agentic` re-exports them. `mesh_quic` and `signed_frame` stay behind because they import `spine-protocol`, which depends on `spine-neural` and `spine-crypto`. `spine-core` still needs `spine-agentic` for `AgenticWebRuntime` and related types.
+- [x] Split `spine-crypto`: `handshake.rs` (903 lines) is the only stack part and uses only external crates. The Titans predictor, RLWE ring and quantum key evolution are research. Stack signing does not use this crate at all. Done for the stack half in `820400e` (CI green): the handshake moved to a new `spine-session` crate with no workspace dependencies; `spine-crypto` re-exports it. `spine-agentic` still depends on `spine-crypto` for research types in its `lib.rs`.
+- [ ] Remove cluster, neural and human use from the `spine-core` daemon (`main.rs`). `SwarmPlan` and `TaskStatus` live in `spine-protocol`, so they move first. Partly done in `932d323`, `85bc93b`, `22c8e0a` (CI green): stack imports come from `spine-mesh`; cluster, neural, agentic, the autonomous loop and the Navigate transpile are behind a default-on `research` feature and answer `unsupported_without_research` when off. Feature-off the daemon drops `spine-cluster`, `spine-human` and `spine-agentic` but still reaches `spine-neural` and `spine-crypto` through `ProtocolHandler`. Update `60d71d4` (CI green): built with `--no-default-features` the daemon has no `spine-neural`, `spine-crypto`, `spine-agentic`, `spine-human` or `spine-cluster` in its tree (`cargo tree`). The feature is still on by default because the SDK, CLI (`benchmark`, `init`), Python bindings and browser call the gated commands; turning it off by default is an owner decision. Default flipped in `a109e45` (CI green): `spine-core` now builds research-free by default and the workspace tests run against that daemon; `--features research` restores the old one, and `spine-cli` forwards a `research` feature (effective only when both are built together, since the CLI launches the sibling binary). The CLI benchmark skips the latent measurement when unsupported.
+- [ ] Decide `spine-human`: its transpiler runs on every `Navigate`, so it is a feature on the gateway path, not an experiment. Either it becomes part of the edge or `Navigate` stops depending on it.
+- [ ] Keep `sybil.rs` when `spine-cluster` leaves: Argon2id proof of work and stake-weighted voting are the only admission-cost code in the repository, and Stage 10 needs one.
+- [ ] `spine-knowledge` and `spine-mechgen` follow the research half of `spine-agentic`. `spine-nostd` and `spine-embedded` have no runtime dependents and can move at any time.
+- [ ] Move the research crates to a separate workspace. In the same change lower `EXPECTED_SUITES_MIN` and the ignored count in `scripts/verify.sh`, and update `scripts/release_gate.py`, `scripts/publish.sh`, CI, the README and the status report.
+- [ ] Decide what happens to the 29 crates already on crates.io at 2.0.1; moving sources does not unpublish them (account holder).
+- [ ] Remove the remaining unused-dependency warnings as their crates are touched.
+
+## Stage 5. Specify the waist
+
+- [ ] Choose one canonical encoding for everything that is signed or hashed, and one version scheme for the formats.
+- [ ] Turn `docs/spec/02-names.md` and `docs/spec/04-objects.md` from as-built descriptions into normative specifications with the Stage 3 fixes applied.
+- [ ] Generate test vectors: keys, names, signing bytes, signatures, record hashes, chunk hashes. The existing tests contain none beyond RFC 4648 strings.
+- [ ] Resolve everything marked Undetermined in the five specification files.
+- [ ] Decide the licence for the specification and vectors (account holder).
+
+## Stage 6. Layer 3: authority
+
+- [ ] Review the draft in `docs/spec/03-authority.md` and resolve its seven open questions, offline revocation first.
+- [ ] Implement grants, chains, attenuation and the eleven-step verification in a new crate with no dependencies above layer 2.
+- [ ] Single-user mode: the node issues itself a root grant at first start. Remove operator-level access by connection.
+- [ ] Replace the coordinator allowlist with issued grants; tie task and knowledge ownership to the root issuer of the creating chain.
+- [ ] Stateful limits charged against every grant in the chain.
+- [ ] Revocation records published through layer 2, with per-effect-class staleness bounds.
+- [ ] Signed receipts for every invocation that had an effect.
+- [ ] Negative tests for every verification step, and a property test that no chain can broaden authority.
+
+## Stage 7. Layer 2: names with a life cycle
+
+- [ ] Identity that survives key change: a name commits to an inception key and a signed succession log. Define what rotation means for records signed by an old key.
+- [ ] Revocation of a name and of individual records; a maximum record lifetime.
+- [ ] Derive `AgentId` from the public key so a receiver can check it. Today it is a hash of the secret seed.
+- [ ] Human-meaningful labels as signed attestations layered on names, outside the trust path.
+- [ ] Acknowledged replica storage and retry accounting, or state that remote durability is not promised (`is_durable()` is false today).
+- [ ] Multi-node acceptance: publish, resolve from a node with no local copy, restart the publisher, rotate its key, renew, and stay available through a replica failure.
+
+## Stage 8. Layer 1: session
+
+- [ ] Replace the bespoke handshake with a published Noise pattern carrying a hybrid ML-KEM exchange. The as-built review maps the current design and lists the differences: no key confirmation, identities sent in clear, no rekeying, a replayed hello commits responder state.
+- [ ] Connect to a key: dial targets are identity names, and the channel is authenticated against the name with no certificate authority.
+- [ ] Run sessions over QUIC with authentication bound to the SPINE identity. Retire the parallel TCP and WebSocket mesh paths or reduce them to fallbacks with identical security.
+- [ ] One native codec. Two exist in `spine-protocol` today.
+- [ ] Connect `spine-stream` to the wire: enforced flow control, priority, cancel with a reason code, resumption after disconnect, migration across networks. None of it is wired today.
+- [ ] Carry the layer-3 grant chain as a distinct message class that content cannot occupy.
+- [ ] Write the Tamarin model for the handshake actually deployed and record its execution. The models in `formal/` cover other constructions and no execution record exists.
+- [ ] Commission the independent review against the new handshake (account holder); resolve findings with a regression each.
+- [ ] Replace the headline measurements: time to first token, cancel latency, resumption time, bytes per tensor.
+
+## Stage 9. Layers 4 and 5: objects and interaction
+
+### Objects
+
+- [ ] Schema-identified typed objects linked into a content-addressed graph; `blob:` names resolvable to bytes.
+- [ ] A signed provenance label on every object, delivered to the SDK caller with the content. Nothing carries provenance past the transfer boundary today.
+- [ ] The parser emits spans tagged with their source object; gateway-ingested web content is labelled unsigned third-party.
+- [ ] Declared size in bytes and approximate tokens, with a neutral definition of the token estimate; fetch at a budget.
+- [ ] Streaming and backpressure beyond the 8 MiB representation limit. Store blobs as bytes: they are JSON integer arrays today and every chunk read re-hashes the whole blob.
+- [ ] Evaluate budgeted representations and provenance tags with real models before freezing the object model.
+
+### Interaction
+
+- [ ] Every operation declares an effect class (read, reversible, irreversible), a cost and its idempotency. Enforce the advertised permissions, which are currently ignored.
+- [ ] Idempotency keys, dry-run, and resume after disconnect.
+- [ ] Decide whether arbitrary task execution is in scope. If so it runs in layer 7 under a grant. Task deadlines currently include downtime, and restart re-runs interrupted tasks, which is safe only for read-only tools.
+- [ ] Consolidate the HTTP model backend with the gRPC model abstraction; verify cancellation, bounded buffering and backpressure on native frames as well as SSE.
+- [ ] Decide whether model-issued tool calls execute automatically; under this design that requires a grant naming the effect class.
+
+## Stage 10. Layers 6 and 7: discovery and execution
+
+- [ ] Design study: Kademlia against a federated signed registry, judged on Sybil exposure, unprovable absence and operating cost.
+- [ ] An admission cost for publishing a capability (vouch, stake or proof of work). Today it costs one key generation.
+- [ ] Provider records carry attestations; ranking is computed by the caller's trust policy. Providers are ranked by self-declared endpoint count today.
+- [ ] Peer exchange in bounded bootstrap discovery, verifying identities learned through it.
+- [ ] Exercise replica placement, eviction, expiry and conflicting sequences under restart and churn.
+- [ ] Connect `spine-wasm` to tasks: a module receives only the capabilities passed to it, is metered in fuel and memory, and can be replayed deterministically for audit. Establish whether `ExecuteBinary` is metered or confined at all today.
+
+## Stage 11. Operability
 
 - [ ] Verify storage durability, migrations, backup and restore for names, sessions and knowledge against each component's persistence contract, including encrypted backups and power-loss behaviour.
 - [ ] Expose namespace connectivity, lookup failures, replication outcomes, renewal failures, stream pressure, model failures and resource consumption through metrics and readiness.
@@ -145,23 +226,7 @@ The remaining implementation in the namespace, resource, tool, model and coordin
 
 **Done when:** an operator can install, configure, start, monitor, back up, restart and recover a small mesh from the documented commands on each supported platform.
 
-## Stage 6. Interoperability and optional components
-
-Do only what the scope decision under *External items* requires; label everything else experimental with a named acceptance criterion.
-
-- [ ] Test Rust SDK, HTTP/SSE, gRPC and MCP clients against real local servers, including errors and cancellation. Test the MCP adapter in at least one third-party MCP host.
-- [ ] Add schema and wire compatibility fixtures, explicit version negotiation, and useful rejection of incompatible peers. Required before the `bincode` 1.x migration.
-- [ ] Build and smoke-test Python, JavaScript/WASM, Go and C bindings where supported; document installation and coverage. Python and JavaScript are outside the workspace and currently unverified.
-- [ ] Verify C ABI ownership, buffer lifetimes, error handling and binding parity for advertised APIs.
-- [ ] Verify embedded and `no_std` builds on a real target, not only on the host.
-- [ ] Audit the Kubernetes crate against the removed deployment assets; validate the operator workflow or deprecate it.
-- [ ] For GPU, RDMA, GPU-direct and io_uring, separate simulation from hardware execution. Unavailable backends fail explicitly or use a documented fallback; a no-op never counts as acceleration.
-- [ ] Review the stub and simulation markers that remain in `spine-transport` (30), `spine-agentic` (24) and `spine-agent` (21) and confirm each is either real, test-only, or returns an explicit unsupported error.
-- [ ] Promote the five ignored documentation examples to executable examples or delete them.
-
-**Done when:** every distributed package builds and passes a smoke test on its advertised platform, or is excluded from the supported scope in writing.
-
-## Stage 7. Evidence and documentation
+## Stage 12. Evidence, bridges and documentation
 
 - [ ] Extend the acceptance harness (`src/spine-core/tests/agent_web.rs`, seven process scenarios) to cover node loss, delayed replies, interrupted transfer, stale records, authorization failures, malformed input and consumer cancellation, and run it in CI on all three platforms.
 - [ ] Run the supported platform and feature matrix, including MSRV with the GUI, optional features and release builds; record results and exceptions.
@@ -173,8 +238,12 @@ Do only what the scope decision under *External items* requires; label everythin
 - [ ] Rewrite `HANDOFF.md` for the current state. It still describes Phase 38 and predates all of the October work.
 
 **Done when:** another developer reproduces the acceptance harness and benchmarks from the documented setup, and every public claim traces to recorded evidence.
+- [ ] Bridges are edge adapters and shape no layer: keep the OpenAI-compatible gateway, gRPC and MCP adapters working against real local servers, including errors and cancellation.
+- [ ] Review the stub and simulation markers that remain in stack crates and confirm each is real, test-only, or returns an explicit unsupported error.
+- [ ] Promote the five ignored documentation examples to executable examples or delete them.
+- [ ] Refresh `THREAT_MODEL.md` and `SECURITY_AUDIT.md` to the seven-layer design and verified behaviour.
 
-## Stage 8. Release
+## Stage 13. Release
 
 - [ ] Choose the version. The October work changes wire behaviour (unsupported-version rejection, frame limits), configuration (strict validation, internal origins must be listed, redirects refused) and persistence (session manifest, SQLite task and name stores). That argues for 2.1.0 at minimum and 3.0.0 if any change breaks existing peers; it cannot be 2.0.2. Keep `spine-embedded` on its own 0.2.x line.
 - [ ] Rename the candidate archive and update `package_candidate.py` to the chosen version.
@@ -190,16 +259,16 @@ Do only what the scope decision under *External items* requires; label everythin
 
 ## Final completion checklist
 
-- [x] Independent agents discover and use resources from a seed address without preconfigured provider endpoints (Windows, local).
-- [ ] Names, identity, renewal, replicas and required persistent state survive the documented restart and failure scenarios.
-- [ ] Real tools and models stream correctly, support cancellation, enforce authorization, and expose useful errors.
-- [ ] Supported transports have verified trust behaviour and bounded resource use; external review findings are closed.
-- [ ] Simulations, research cryptography and unavailable hardware are excluded from supported functionality and performance claims.
-- [ ] Operators can install and recover the supported deployment through documented native workflows.
-- [ ] All supported packages, platforms and bridges pass acceptance on the release commit.
-- [ ] Security, dependency, license, privacy and performance evidence is current and reproducible.
-- [ ] Documentation and release metadata agree with verified behaviour.
-- [ ] Release candidates install and run; publication, if authorized, is verified afterwards.
+- [ ] Layers 2 to 4 are specified with test vectors, and the implementation passes them.
+- [ ] No operation succeeds without a valid grant chain; no chain can broaden authority; every effect produces a signed receipt.
+- [ ] Names survive key rotation, and revoked names and grants are refused within the stated bound.
+- [ ] The session handshake is a published construction, formally modelled with the model executed, and independently reviewed with findings closed.
+- [ ] Content reaches the SDK caller with its provenance, and nothing in a content object can be interpreted as an instruction.
+- [ ] Operations declare effect and cost; irreversible effects require a grant that says so.
+- [ ] Capability discovery has an admission cost and caller-side ranking.
+- [ ] The workspace contains the stack and its edge adapters only; research lives elsewhere.
+- [ ] All supported platforms pass acceptance on the release commit; security, dependency and licence evidence is current.
+- [ ] Documentation and release metadata agree with verified behaviour; release candidates install and run.
 
 ## Already demonstrated on 2026-10-02
 
@@ -225,8 +294,29 @@ These were checked in the previous plan with evidence in the status report. They
 
 The run shared the machine with several unrelated builds, so the passing test count is not weakened by that, but timings are not meaningful. An earlier attempt the same day was interrupted mid-build and is disregarded. The MSRV check, release build, packaging and clean-install checks were not run.
 
+**2026-11-19 to 2026-11-20, pull request #49.** On `2801d13` every CI job passed except `audit` and `deny`: lint, docs, coverage, MSRV, builds, and tests on Linux, macOS and Windows. After the dependency upgrades and the MSRV change (`4ab39fc`), `audit` passed with zero vulnerabilities and `deny` failed on one unsound advisory in `tokio`, addressed in `7ea7eb8`. The full results for `7ea7eb8` were not available when this was written. Two local attempts to run the gate after the lockfile change were stopped for low memory before any test ran, so there is no local full run on the new lockfile.
+
+**2026-11-20, pull request #49, `e1cdc94`.** Every CI job passed after the Stage 3 fixes: lint, docs, coverage, bench, audit, deny, MSRV 1.89, and tests on Linux, macOS and Windows. The Linux test job reported 1,516 passed, 0 failed, 5 ignored across 69 suites; CI excludes `spine-browser`, so this is not directly comparable with the 1,478 across 70 suites that `scripts/verify.sh` expects from a full local run. The expected total passed to `verify.sh` and the README badge are stale until a full local run is possible. None of the Stage 3 changes was built locally.
+
+**2026-11-20, pull request #49, `a94fb6a`.** Lint, docs, coverage, deny, MSRV and tests on Linux, macOS and Windows passed. Linux: 1,538 passed, 0 failed, 5 ignored across 69 suites. The audit job reported zero vulnerabilities and then failed posting its result to the GitHub API ("Not Found"); that is an infrastructure error, not a finding. Added since `e1cdc94`: RPC replay guard (120-second window, 4,096 entries), lookup quorum and expiry, referral bounds, task eviction and per-owner caps, SQLite prefix-scan fix, strict verification in `swe.rs`.
+
+**2026-11-20, pull request #49, `0a2b5de`.** Audit passed on this commit after `rustix` 1.1.6 (RUSTSEC-2026-0486, unsound). Correction: the bump was not the cause. The same "Not Found" failure recurred on `8722dc8` with only the 14 unmaintained warnings, then passed on `b8a0a4e`; the job fails intermittently when the action posts its check, and has reported zero vulnerabilities every time. Cause not identified. 14 "unmaintained" warnings remain and do not fail the job. Lint, docs, coverage, bench, deny, MSRV and tests on Linux and macOS passed; Windows was still running when this was written. The `spine-session` split (`820400e`) passed tests on all three platforms.
+
+**2026-11-20, pull request #49, `638d333`.** Every job passed: lint (including three new steps that compile `spine-protocol` and `spine-core` without the `research` feature), docs, coverage, bench, audit, deny, MSRV, tests on Linux and Windows. The macOS test job failed once in `discover_fetch_restart_and_renew_over_independent_nodes` ("core did not become ready" during daemon start) and passed on re-run with no code change; treat that test as flaky on macOS until the cause is found. Staged but uncommitted in a subagent worktree (commit denied by the permission classifier, awaiting the owner): moving `mesh_quic` and `signed_frame` into `spine-mesh`.
+
+**2026-11-20, pull request #49, `60d71d4`.** Every job passed on the first run: lint (default features, `spine-protocol` without research with and without `quic`, `spine-core` without research, `spine-mesh` alone), docs, coverage, audit, deny, MSRV, tests on Linux, macOS and Windows. Acceptance-test deadlines were widened in this commit after two one-off timeouts (`3c72906` Linux, `638d333` macOS) that passed on re-run; the cause of the slow suite (about three minutes) is not established.
+
+Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes the server's framing before the response is sent while the SDK's `morph()` never calls `morph_now`, which would desynchronise the stream; not run. (2) On a default native connection two 4-layer transformers are built per connection and run on every message only to fill a prediction-hash field; `enable_speculation` flags are never read and the precompute cache is never consulted. (3) Each message is CBOR wrapped in a JSON structure carrying the body as an array of numbers, then zstd. Items 2 and 3 are inputs to the Stage 5 wire-format decision.
+
+**2026-11-20, pull request #49, `a109e45`.** Every job passed with the research-free daemon as the default. Linux: 1,540 passed, 0 failed, 5 ignored across 73 suites. The acceptance suite took 107 s on Linux, against 178 to 248 s while the daemon built its neural and cluster components at startup; that is consistent with startup cost having been the cause of the earlier one-off timeouts, though only one run supports it. `8722dc8` (CI pending) fixes the Morph desync: the daemon now answers under the old framing and morphs after the send, the SDK applies the seed from the response, and an acceptance test morphs and then pings.
+
+**2026-11-20, pull request #49, `b8a0a4e`.** Every job passed, including the acceptance check that calls `morph()` and then pings on the same connection, on Linux, macOS and Windows. Remaining hard dependencies from stack crates onto research crates, from `cargo metadata`: `spine-agent` on `spine-agentic` and `spine-human` (being gated). All others are optional (`spine-core`, `spine-protocol`, the `spine-web` facade) or dev-only (`spine-nostd`, `spine-embedded`).
+
+**2026-11-20, pull request #49, `62138e3`.** Every job passed with the SDK research-free by default (`spine-agent`: human mode and `transmit_neural` behind `research`; eight examples need the feature; `spine-cli` and `spine-compiler` take `spine-protocol` without research). `bc25f4f` (CI pending) does the same for `spine-gateway`: the Titans codec is behind `research`; without it `POST /v1/embeddings` answers 503 "no codecs registered" and the codec list is empty. After these, `cargo tree` shows no research crate reachable from `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway` or `spine-mesh` in their default builds. `spine-web` and the research-side crates `spine-cluster`, `spine-grpc`, `spine-human` still enable `spine-protocol/research`, which keeps the research code compiled and tested in the workspace run until it moves out.
+
 ## References
 
+- [SPINE from first principles](docs/FIRST_PRINCIPLES.md) and the layer specifications in `docs/spec/`
 - [Status and evidence, 2026-10-02](docs/COMPLETION_STATUS.md)
 - [Agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md) and [native operations](docs/NATIVE_OPERATIONS.md)
 - [Handoff through Phase 48 and the 2.0.1/2.0.2 releases](HANDOFF.md)
