@@ -1,6 +1,7 @@
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
+#[cfg(feature = "research")]
 use spine_human::HumanInteractionEngine;
 use spine_parser::UnifiedRepresentation;
 use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
@@ -23,7 +24,9 @@ pub struct AgentClient<S> {
     request_counter: u64,
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,
     event_tx: Option<mpsc::Sender<spine_protocol::Event>>,
+    #[cfg(feature = "research")]
     human_engine: Option<HumanInteractionEngine>,
+    #[cfg(feature = "research")]
     pub neural_protocol: Option<spine_agentic::NeuralProtocol>,
 }
 
@@ -39,7 +42,9 @@ impl AgentClient<TcpStream> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
+            #[cfg(feature = "research")]
             human_engine: None,
+            #[cfg(feature = "research")]
             neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
@@ -169,7 +174,9 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
+            #[cfg(feature = "research")]
             human_engine: None,
+            #[cfg(feature = "research")]
             neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
@@ -221,7 +228,9 @@ impl AgentClient<spine_transport::WebSocketClientStream> {
             request_counter: 0,
             latent_tx: None,
             event_tx: None,
+            #[cfg(feature = "research")]
             human_engine: None,
+            #[cfg(feature = "research")]
             neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
         })
     }
@@ -231,7 +240,8 @@ impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    /// Enable human-like interaction patterns
+    /// Enable human-like interaction patterns (needs the `research` feature)
+    #[cfg(feature = "research")]
     pub fn enable_human_mode(&mut self, engine: HumanInteractionEngine) {
         self.human_engine = Some(engine);
     }
@@ -421,6 +431,7 @@ where
     }
 
     pub async fn click(&mut self, element_id: &str) -> anyhow::Result<()> {
+        #[cfg(feature = "research")]
         if let Some(engine) = &self.human_engine {
             // Simulate reaction time
             tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
@@ -444,6 +455,7 @@ where
     }
 
     pub async fn type_text(&mut self, element_id: &str, text: &str) -> anyhow::Result<()> {
+        #[cfg(feature = "research")]
         if let Some(engine) = &self.human_engine {
             // Simulate reaction time
             tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
@@ -804,7 +816,9 @@ where
     /// Transmit data over the neural protocol.
     ///
     /// Needs a daemon built with the `research` feature; a research-free daemon
-    /// answers with an `unsupported_without_research` error.
+    /// answers with an `unsupported_without_research` error. The method itself
+    /// needs the SDK's `research` feature, for its argument and result types.
+    #[cfg(feature = "research")]
     pub async fn transmit_neural(
         &mut self,
         data: &[u8],

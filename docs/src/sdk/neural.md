@@ -6,6 +6,8 @@ The neural protocol enables learned message encoding using the Titans architectu
 
 ## Neural Transmission
 
+`transmit_neural` and the `ProtocolDomain` type exist only when `spine-agent` is built with its `research` feature (`cargo add spine-agent --features research`).
+
 ```rust
 use spine_agentic::ProtocolDomain;
 

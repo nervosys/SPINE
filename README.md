@@ -811,7 +811,7 @@ The GUI allows you to:
 In a separate terminal:
 
 ```bash
-cargo run --example simple_agent -p spine-agent
+cargo run --example simple_agent -p spine-agent --features research
 ```
 
 The example agent will:
@@ -854,7 +854,7 @@ cargo run --example knowledgeable_agent -p spine-agent
 
 ### Simple Agent Example
 
-The simple_agent example will:
+The simple_agent example uses the Chameleon protocol and human mode, so it needs the SDK's `research` feature (`--features research`, as above). The default `spine-agent` build has no research crate in its tree. The simple_agent example will:
 
 1. Connect to the core with encryption enabled
 2. Navigate to `https://example.com`
@@ -916,6 +916,8 @@ bits derived with a non-cryptographic hash.
 4. **Decoy Traffic**: Agents can inject noise traffic to confuse traffic analysis.
 
 #### Enabling Chameleon Protocol
+
+The `enable_chameleon*` methods on `client.handler` exist only when `spine-agent` is built with its `research` feature (`spine-agent = { ..., features = ["research"] }`).
 
 ```rust
 let secret: [u8; 32] = /* shared secret */;

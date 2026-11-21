@@ -92,7 +92,7 @@ Write-Host "    spine deploy -c spine.toml         — Deploy from config"
 Write-Section "Step 6: Research Swarm Demo"
 Write-Host "  Running collaborative research swarm..." -ForegroundColor Yellow
 try {
-    cargo run --example research_swarm -p spine-agent 2>&1
+    cargo run --example research_swarm -p spine-agent --features research 2>&1
 }
 catch {
     Write-Host "  Example requires running server" -ForegroundColor Yellow

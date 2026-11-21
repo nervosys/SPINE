@@ -55,6 +55,9 @@ jobs:
       - name: Clippy (spine-core with research code)
         run: cargo clippy -p spine-core --features research --all-targets -- -D warnings
 
+      - name: Clippy (spine-agent with research code)
+        run: cargo clippy -p spine-agent --features research --all-targets -- -D warnings
+
       - name: Clippy (spine-mesh alone)
         run: cargo clippy -p spine-mesh --all-targets -- -D warnings
 
