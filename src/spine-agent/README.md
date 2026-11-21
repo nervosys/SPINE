@@ -60,12 +60,14 @@ API documentation: <https://docs.rs/spine-agent>
 ## Workspace dependencies
 
 - `spine-agentic` (optional, `research`)
-- `spine-cluster`
 - `spine-compiler`
+- `spine-name`
 - `spine-parser`
 - `spine-protocol`
 - `spine-transport`
 - `spine-wasm`
+
+Dev-dependencies: `spine-nostd`, `spine-embedded` (research crates).
 
 ## License
 

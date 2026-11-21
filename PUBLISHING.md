@@ -126,7 +126,7 @@ you would rather not maintain a script at all.
   dependency to a new major. A published version is immutable, so the fix is a
   new version rather than a re-publish — and a crate that is versioned
   independently still has to be *versioned*, not merely left alone.
-- **2.0.0 is a breaking release, and the break is on the wire rather than in
+- **2.0.0 is a breaking release (historical note: the Chameleon layer it refers to has since left the native wire, which is now spine-wire v1), and the break is on the wire rather than in
   any signature.** A peer running the Chameleon layer from 2.0.0 cannot talk to
   one running 1.x: the encoder's key derivation changed (Phases 47-48) and so
   did the AEAD nonce construction (Phase 45). Cargo's semver rules do not see

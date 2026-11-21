@@ -2,7 +2,9 @@
 
 ## Project Status: AGENTIC WEB STACK 1.0 ✅
 
-**SPINE** is now a **headless semantic browser with adaptive encryption** - not a replacement for the web, but an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.
+**SPINE** is a **headless semantic browser** for AI agents - not a replacement for the web, but an efficient tool for agents to extract meaning and coordinate.
+
+> **Current facts (2026-11-21), which override the history below:** the native client to daemon wire is spine-wire v1 (`docs/spec/00-wire.md`): 15-byte frames, a HELLO/HELLO_ACK handshake, deterministic-CBOR bodies, 19 commands (`COMMAND_NAMES` in `src/spine-protocol/src/lib.rs`) answered with `{ok}` or `{err: {code, message}}` (`ALL_ERROR_CODES` in `body.rs`). Confidentiality on that path comes from TLS only. Protocol morphing and padding, the speculative layer, the Chameleon key, latent AEAD, the pre-shared-key AES layer, `ProtocolHandler` and the `SP` header are removed; research code is in `research/spine-protocol-research`. The SDK is `spine_agent::AgentClient` (no `morph`, `search`, `get_speculation_stats`). Do not run `cargo` on memory-constrained machines; test counts in the history below predate v1.
 
 ### Architecture Fix (v1.1)
 
@@ -34,8 +36,8 @@
 
 - [x] HLS Compiler: Full language with variables, state, conditionals, loops, expressions, and functions
 - [x] Virtual DOM Runtime: HLB execution with UR generation and reactive re-rendering
-- [x] Chameleon Protocol: Latent-space cryptography with moving-target defense
-- [x] Speculative Decoding: Bidirectional message prediction with Titans architecture
+- [x] Chameleon Protocol: latent-space encoding (history; now research-only in `research/spine-protocol-research`, not on the native wire, not a cipher)
+- [x] Speculative Decoding: bidirectional message prediction (history; removed from the wire)
 - [x] WebAssembly Runtime: HLB → WASM near-native execution with host function interop
 - [x] Distributed Clustering: Load balancing, session affinity, leader election, and distributed search
 - [x] Neural Latent Encoder: VAE, Titans Memory, Attention for learned projections
@@ -115,7 +117,7 @@
 
 - [x] **Transport plugin system**: Composable `TransportPlugin` trait with ordered pipeline (forward-send, reverse-recv)
 - [x] **Built-in plugins**: MetricsPlugin, RateLimiterPlugin, TaggingPlugin, LoggingPlugin, SizeLimiterPlugin
-- [x] **WebSocket bridge**: Client/server bridges with `AsyncRead + AsyncWrite` adapters for ProtocolHandler
+- [x] **WebSocket bridge**: Client/server bridges with `AsyncRead + AsyncWrite` adapters for the wire connection (`ProtocolHandler` was replaced by `spine_protocol::connection::Connection`)
 - [x] **WebSocket client stream**: `WebSocketClientStream` for agent→server connections over ws://wss://
 - [x] **Multi-transport server**: `tokio::select!` accept loop for TCP + WebSocket (+ QUIC via feature flag)
 - [x] **Agent `connect_ws()`**: WebSocket transport for `AgentClient` alongside existing TCP/TLS
@@ -139,7 +141,7 @@
 ### Phase 7: Testing & Verification ✅
 
 - [x] **Property-based testing**: proptest for protocol, parser, transport, and crypto (41 properties across 4 crates)
-- [x] **Fuzz testing**: 5 cargo-fuzz targets for parser HTML, latent vectors, frame decode, message deser, frame headers
+- [x] **Fuzz testing**: 7 cargo-fuzz targets in `fuzz/` (HTML parser, HLS compiler, v1 and transport frame decode, transport frame header, v1 body decoders, HELLO negotiation, semver); not built by CI
 - [x] **Integration test harness**: 11 multi-session in-process tests (plaintext, encrypted, chameleon, concurrent, stress)
 - [x] **Coverage tracking**: scripts/coverage.sh with HTML/JSON/LCOV modes via cargo-llvm-cov
 - [x] **Deterministic replay**: TraceLog, ReplayVerifier, TraceSummary in src/spine-protocol/src/replay.rs

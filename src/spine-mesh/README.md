@@ -21,6 +21,7 @@ API documentation: <https://docs.rs/spine-mesh>
 ## Workspace dependencies
 
 - `spine-name`
+- `spine-protocol` (default features off, `quic` on)
 - `spine-session`
 - `spine-transport`
 

@@ -1,5 +1,7 @@
 # SPINE Optimizations
 
+> **Note, 2026-11-21:** On this date the native client to daemon wire became spine-wire v1 (`docs/spec/00-wire.md`, `CHANGELOG.md` Unreleased). Removed since this text was written: the speculative layer, protocol morphing and padding, the Chameleon key and latent AEAD on the native path (research code is in `research/spine-protocol-research`), the pre-shared-key AES-GCM layer, `ProtocolHandler`, the `SP` header, and many commands. Sections about `ProtocolHandler` buffers, latent vector serialization, the speculation path and the encrypted/Chameleon hot path describe code that no longer exists; the proofs and figures were not redone for v1.
+
 This document details the optimizations applied to the SPINE stack and provides mathematical proofs of their correctness and performance improvements.
 
 ## Table of Contents

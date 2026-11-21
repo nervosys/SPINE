@@ -2,6 +2,8 @@ Current continuation also implements configurable TCP mesh admission/deadlines, 
 
 # Handoff — Phase 38: The Namespace
 
+> **Note, 2026-11-21:** this handoff is history. Since it was written the native client to daemon wire was replaced by spine-wire v1 (`docs/spec/00-wire.md`; `CHANGELOG.md` Unreleased). Mentions below of the Chameleon layer, `ProtocolHandler`, morphing or speculation describe the earlier wire. The test counts (1,418 tests, 68 suites) and `scripts/verify.sh 1418` were measured before that migration and have not been re-measured; do not pass 1418 to `verify.sh` now.
+
 **Local continuation, 2026-10-02:** the historical release status below does not describe completion of the current plan. Working-tree changes implement persistent publications/resources, configurable HTTP model forwarding, native tools and capability schemas, signed durable read-only task coordination, deployment configuration handoff, managed shutdown, and local archive preparation. Simulated legacy task completion is removed. See [current evidence and open gates](docs/COMPLETION_STATUS.md), the [operator quickstart](docs/AGENT_WEB_QUICKSTART.md), and [native operations](docs/NATIVE_OPERATIONS.md). No new publication or credential revocation was performed.
 
 **Status:** complete, verified, merged, **published to crates.io** at 2.0.1 —

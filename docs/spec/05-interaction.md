@@ -14,6 +14,10 @@ Three mechanisms exist and they are not connected to one another except where st
 
 Out of scope: channel establishment (layer 1), names (layer 2), resources (`04-objects.md`). The legacy swarm, delegation and planning commands are refused by the origin (`docs/AGENT_WEB_QUICKSTART.md`, "Durable work over the signed mesh"; test at `src/spine-core/tests/agent_web.rs:462-478`) and are not described.
 
+> As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md; the following describes the earlier wire.
+>
+> Correction: the `ToolResult` type is gone (a tool outcome is `ToolOutcome::Ok` or `ToolOutcome::Err`, carried in the `{ok}` body), correlation is the frame header's request id, and the framing described below is replaced by the v1 frame.
+
 Messages are encoded as in `04-objects.md` section 3: an 8-byte header (`SP`, version 1, format byte, big-endian length) and a CBOR or JSON body, maximum 16 MiB (`src/spine-protocol/src/wire.rs:52-64`, `wire.rs:90-94`).
 
 ## 2. Tool model

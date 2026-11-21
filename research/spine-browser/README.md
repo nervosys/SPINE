@@ -1,6 +1,6 @@
 # spine-browser
 
-Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, W3C tracing, and neural encoder-decoder protocols for LLM swarms
+Experimental desktop browser GUI (egui) for SPINE, built on `spine-agent`, `spine-human` and `spine-cluster` (research)
 
 Part of [SPINE](https://github.com/nervosys/SPINE), an agentic-first web
 stack. This crate is published from the SPINE workspace and versioned with

@@ -15,8 +15,7 @@ API documentation: <https://docs.rs/spine-recursive>
 
 ## Workspace dependencies
 
-- `spine-crypto`
-- `spine-neural`
+None.
 
 ## License
 

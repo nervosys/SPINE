@@ -27,15 +27,17 @@ API documentation: <https://docs.rs/spine-core>
 
 ## Workspace dependencies
 
-- `spine-agent`
 - `spine-cluster` (with `research`)
-- `spine-compiler`
 - `spine-human` (with `research`)
+- `spine-mesh`
 - `spine-name`
 - `spine-parser`
 - `spine-protocol`
+- `spine-storage`
 - `spine-transport`
 - `spine-wasm`
+
+Dev-dependency: `spine-agent`.
 
 ## License
 

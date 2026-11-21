@@ -20,16 +20,38 @@ API documentation: <https://docs.rs/spine-protocol>
 ## Features
 
 - `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
+
 There is no `research` feature. The crate has no dependency on any crate under
-`research/`. The native wire is spine-wire v1: `connection::Connection` speaks
-length-prefixed frames with a version, type, flags and request id after a
-`HELLO`/`HELLO_ACK` handshake, and `native` maps the `Message` set onto those
-frames (bodies are deterministic CBOR: a request is a command from a closed set of 19, a response is `{ok: ...}` or `{err: {code, message}}`; see `body` for the error codes and `wirefmt` for the byte-string helpers). There is no sealing: confidentiality
-comes from TLS or the session layer. The Chameleon latent-space key, `SpineConnection`, `connect_auto`,
-the protocol evolution framework, `TitansLatentCodec` and the pre-shared-key AES
-layer are not part of this crate: the first four are in the experimental,
-unreviewed `research/spine-protocol-research` crate and the AES layer was
-removed. `LatentVector` and the neural-codec types (`EncodedFrame`,
+`research/`.
+
+## The native wire
+
+The native wire is spine-wire v1 (specified in `docs/spec/00-wire.md`). The
+modules that implement it:
+
+- `frame`: the frame codec. A frame is a big-endian `u32` length, then a 15-byte
+  header (version, type, flags, `u64` request id) and the body; bit 0 of the
+  flags marks a zstd-compressed body. `CloseCode` lives here.
+- `hello`: the `HELLO` / `HELLO_ACK` messages and version and `max_frame`
+  negotiation.
+- `connection`: `Connection`, which runs the handshake and then sends and
+  receives frames.
+- `cbor`: the deterministic CBOR scanner, encoder and decoder used for every
+  body (one encoding per value; non-canonical input is rejected).
+- `body`: the request and response bodies. A request is a command from a closed
+  set of 19; a response is `{ok: ...}` or `{err: {code, message}}`. The stable
+  error codes are `ALL_ERROR_CODES`.
+- `native`: maps the `Message` set onto the frames, plus `NativeError` and the
+  `remote_error` / `remote_code` helpers.
+- `wirefmt`: byte-string helpers for fields that carry raw bytes.
+
+There is no SPINE-level sealing, obfuscation or padding on this wire:
+confidentiality and authentication come from TLS (or, between mesh nodes, the
+`spine-session` handshake). The Chameleon latent-space key, `SpineConnection`,
+`connect_auto`, the protocol evolution framework and `TitansLatentCodec` are not
+part of this crate: they are in the experimental, unreviewed
+`research/spine-protocol-research` crate. The pre-shared-key AES layer, the
+speculative layer, protocol morphing and padding were removed. `LatentVector` and the neural-codec types (`EncodedFrame`,
 `NeuralCodec`, `CodecRegistry`, `EmbeddingRequest`, ...) moved to the same research
 crate with the `Message` variants that carried them.
 

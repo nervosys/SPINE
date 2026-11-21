@@ -1,5 +1,7 @@
 # SPINE vs Standard WWW Stack — Audit & Benchmark Report
 
+> **Note, 2026-11-21:** On this date the native client to daemon wire became spine-wire v1 (`docs/spec/00-wire.md`, `CHANGELOG.md` Unreleased). Removed since this text was written: the speculative layer, protocol morphing and padding, the Chameleon key and latent AEAD on the native path (research code is in `research/spine-protocol-research`), the pre-shared-key AES-GCM layer, `ProtocolHandler`, the `SP` header, and many commands. Every figure and test count here was measured before that change and has not been re-measured. The `spine-transport` benches do not use `spine-protocol`, so they never measured the daemon's native wire; `hot_path_bench` in `spine-protocol` and the Chameleon items (`ProtocolHandler::write_morphed_frame`, Chameleon vs TLS) refer to removed code.
+
 Date: 2026-05-21
 Hardware: Windows 11, loopback (127.0.0.1) — no real network
 Workspace: 29 Rust crates, 1,016 tests passing, 0 failures, 5 ignored

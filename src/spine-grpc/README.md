@@ -1,6 +1,6 @@
 # spine-grpc
 
-gRPC/protobuf bridge for SPINE's agentic surface — exposes ToolCall/ToolResult/capabilities/streaming over a tonic AgentService
+gRPC/protobuf bridge for SPINE's agentic surface — exposes ToolCall/ToolOutcome/capabilities/streaming over a tonic AgentService
 
 Part of [SPINE](https://github.com/nervosys/SPINE), an agentic-first web
 stack. This crate is published from the SPINE workspace and versioned with

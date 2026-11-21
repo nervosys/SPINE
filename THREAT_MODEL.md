@@ -4,7 +4,7 @@ Corrected 2026-11-20 against the source at 3d58059; file paths updated after the
 
 ## Overview
 
-SPINE is a **headless semantic browser with adaptive encryption** for AI agents. This document defines our security assumptions, adversary model, and mitigations.
+SPINE is a **headless semantic browser** for AI agents. On the native client to daemon wire (spine-wire v1, `docs/spec/00-wire.md`) confidentiality and server authentication come from TLS only; there is no SPINE-level encryption, obfuscation, morphing, padding or traffic-analysis resistance on that path. This document defines our security assumptions, adversary model, and mitigations.
 
 ## What SPINE Is NOT
 

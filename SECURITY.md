@@ -19,7 +19,8 @@ audit — see [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md). Three of them (ephemeral
 key generation, AES-GCM nonce reuse, and record-store admission) affect anyone
 running a 1.x mesh. **Upgrading is a wire-breaking change:** 2.0.0 peers cannot
 speak to 1.x peers over the Chameleon layer, so a deployment upgrades together
-or not at all.
+or not at all. (Historical: the Chameleon layer is no longer on the native wire; as of
+2026-11-21 the native wire is spine-wire v1 and has no such layer.)
 
 The native origin TLS configuration now applies to TCP and WSS, including explicitly required client certificates and revocation lists. Transport admission, complete-message deadlines, bounded decompression, and cancelled mesh-write retirement reduce resource growth; they do not establish a process-wide memory budget. The legacy cluster and diagnostics remain trusted-network interfaces. Native origin clients have operator access; neither mTLS nor the HTTP gateway token defines per-user roles. See [the connection policy](docs/NATIVE_OPERATIONS.md#connection-and-tls-policy) for concrete limits and unsupported modes.
 
@@ -60,7 +61,7 @@ shipped components target these properties:
 | Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (research crate, gateway `research` feature) |
 | Certificate Transparency proofs  | Integrity                      | RFC 6962 + Google v3 JSON log list         |
 | Protocol fingerprint             | Resistance to passive analysis | None on the native wire. The Chameleon key (research, `research/spine-protocol-research`, unreviewed) is not a mitigation |
-| Tool calls and their results     | Correlation                    | Per-call `id` + W3C `traceparent`          |
+| Tool calls and their results     | Correlation                    | Frame request id (spine-wire v1) + W3C `traceparent` |
 
 ### What is **not** in scope
 

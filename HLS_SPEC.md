@@ -267,11 +267,15 @@ let num = num("42")
 // Print to console (debug)
 print("Debug message")
 
-// Protocol operations
-morph()              // Trigger protocol morphing
-decoy()              // Inject decoy traffic
-stream_latent([...]) // Stream latent vector
 ```
+
+HLS has no protocol built-ins. Earlier drafts listed `morph()`, `decoy()` and
+`stream_latent([...])`; `spine-compiler` never generated code for them, and the
+native wire no longer has protocol morphing, decoy traffic or latent streams
+(it is spine-wire v1, see `docs/spec/00-wire.md`). The HLB instruction set in
+`spine-protocol` still defines `MorphProtocol`, `Decoy` and `StreamLatent`, and
+`spine-wasm` accepts them as host imports that only count an instruction; they
+do nothing to the connection.
 
 ### Events
 

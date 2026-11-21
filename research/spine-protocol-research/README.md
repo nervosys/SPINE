@@ -5,8 +5,9 @@ native wire, and nothing here is a security feature.** Do not use it to protect
 data. Use TLS (or the session layer) for confidentiality and authentication.
 
 The code was part of `spine-protocol` behind a `research` cargo feature. It moved
-here when the native wire was cut down to the `SP` body, a compression flag byte
-and a fixed 5-byte frame. `spine-protocol` no longer has a `research` feature and
+here when the native wire was replaced by spine-wire v1 (see
+`docs/spec/00-wire.md`); none of it is on that wire. `spine-protocol` no longer
+has a `research` feature and
 no crate in the root workspace depends on this one except as an optional
 dependency behind a `research` feature (`spine-gateway`).
 
@@ -53,7 +54,7 @@ The crate has a crate-level `#![allow(dead_code)]`, carried over from
 The native wire spec (`docs/spec/00-wire.md`, D.2) moves five `BrowserCommand`
 variants out of the core command set and into the research extension
 `nervosys.org/research-session/1`. Extension (`EXT`) frames have no carrier
-until the wire cut-over, so these five were removed from `spine-protocol`, the
+in the daemon (it offers no extensions), so these five were removed from `spine-protocol`, the
 daemon, the SDK, the CLI and the bindings, and are recorded here so the
 extension can be rebuilt on `EXT` later. Payloads are the old serde shapes
 (externally tagged JSON, `Uuid` as its string form, `Vec<u8>` as an array of

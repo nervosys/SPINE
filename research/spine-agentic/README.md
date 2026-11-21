@@ -21,8 +21,7 @@ API documentation: <https://docs.rs/spine-agentic>
 - `spine-mesh`
 - `spine-name`
 - `spine-neural`
-- `spine-session`
-- `spine-wasm`
+- `spine-wasm` (optional, `wasm-exec`)
 
 ## License
 

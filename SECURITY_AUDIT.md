@@ -1,5 +1,7 @@
 # SPINE v1.2.1 Security Audit
 
+> **Note, 2026-11-21:** On this date the native client to daemon wire became spine-wire v1 (`docs/spec/00-wire.md`, `CHANGELOG.md` Unreleased). Removed since this text was written: the speculative layer, protocol morphing and padding, the Chameleon key and latent AEAD on the native path (research code is in `research/spine-protocol-research`), the pre-shared-key AES-GCM layer, `ProtocolHandler`, the `SP` header, and many commands. Findings about the Chameleon encoder, the pre-shared-key AEAD layer or the old frame concern code that is no longer on the native path; the audit does not cover spine-wire v1.
+
 ## Current checkout boundary — 2026-10-02
 
 The audit and closure statements below describe historical releases. They do not certify the current 30-crate checkout or its new development wire operations. Current dependency checks, implementation evidence, platform scope, and remaining gates are maintained in [the completion report](docs/COMPLETION_STATUS.md).

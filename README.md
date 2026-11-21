@@ -4,12 +4,11 @@
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Tests](https://img.shields.io/badge/test%20inventory-1478-blue.svg)](docs/COMPLETION_STATUS.md)
 [![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](CHANGELOG.md)
 
 **SPINE** (Synaptic Pathways INterconnecting Entities) is a Rust web stack for software agents. It provides semantic HTML parsing, native messages and tools, signed name discovery, resource transfer, authenticated durable read-only mesh tasks, and HTTP, MCP, and gRPC bridges. General agent orchestration and specialized hardware paths include experimental components.
 
-For the current local implementation, use the [agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md), [native installation and operations](docs/NATIVE_OPERATIONS.md), [completion status](docs/COMPLETION_STATUS.md), and [completion checklist](COMPLETION_PLAN.md). The source version is 2.0.2; the release badge refers to the historical 2.0.1 publication. Benchmark figures below are historical measurements, not results from the current validation run.
+For the current local implementation, use the [agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md), [native installation and operations](docs/NATIVE_OPERATIONS.md), [completion status](docs/COMPLETION_STATUS.md), and [completion checklist](COMPLETION_PLAN.md). The source version is 2.0.2; the release badge refers to the historical 2.0.1 publication. Benchmark figures and test counts below are historical measurements, not results from the current validation run, and they predate the native wire becoming spine-wire v1 on 2026-11-21 (specification: [`docs/spec/00-wire.md`](docs/spec/00-wire.md)). The transport benchmarks drive `spine-transport`'s own framing, not the daemon's native wire.
 
 > *"A digital nervous system for AI agents — semantic-first parsing, agentic-first framing, swarm-first coordination, all with the option to fall back to plain HTTP whenever a human or legacy client needs to talk to it."*
 
@@ -38,7 +37,7 @@ These are *comparative* results on TCP loopback: the direction and order of magn
 | gRPC                   | 0.83    | —         | —     | —        | —       | —        |
 | OpenAI API (baseline)  | 0.69    | —         | —     | —        | —       | —        |
 
-SPINE leads the composite, edging gRPC by +0.07 and the OpenAI API by **+0.21**. It is strongest on the agent-native axes it was designed for (token streaming, capability handshakes, inline W3C trace context) and at protobuf-parity on encoding (CBOR + byte-string tensor payloads — a 1536-dim embedding frame is **68% smaller than JSON** by default, 89% with opt-in compression; `wire_sizes.rs`). **Interop (0.67) is its weakest axis** — three deployable bridges (MCP stdio server, OpenAI-compatible gateway, reflection-enabled gRPC `AgentService`) map the agentic *surface*, not SPINE's native binary frames, and SPINE has ~zero native install base. Full methodology and every caveat: [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md) and the [Performance](#performance) section below.
+SPINE leads the composite, edging gRPC by +0.07 and the OpenAI API by **+0.21**. It is strongest on the agent-native axes it was designed for (token streaming, capability handshakes, inline W3C trace context) and at protobuf-parity on encoding (CBOR + byte-string tensor payloads — a 1536-dim embedding frame is **68% smaller than JSON** by default, 89% with opt-in compression; measured on the earlier body encoding before spine-wire v1, not re-measured; `wire_sizes.rs` now measures v1 bodies, so re-run it for current sizes). **Interop (0.67) is its weakest axis** — three deployable bridges (MCP stdio server, OpenAI-compatible gateway, reflection-enabled gRPC `AgentService`) map the agentic *surface*, not SPINE's native binary frames, and SPINE has ~zero native install base. Full methodology and every caveat: [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md) and the [Performance](#performance) section below.
 
 ## Why "SPINE"?
 
@@ -242,7 +241,7 @@ Reachable over the protocol as `ResolveName`, `ResolveNames` (batched — agents
 discover names a dozen at a time), `FindProviders`, `PublishName`, `FetchName`,
 and `CrawlNames`.
 
-**Resolution traffic is encrypted.** Records are signed, so they could never be
+**Resolution traffic on the mesh is encrypted** (the client to daemon native wire is not: it relies on TLS). Records are signed, so they could never be
 forged over a plaintext link — but a plaintext link leaks *what an agent is
 looking for*, which is usually a direct read on its task. `spine-session::handshake`
 gives the mesh an ML-KEM-768 (FIPS 203) + Ed25519 signed-ephemeral handshake with
@@ -259,9 +258,9 @@ The protocol layer (`spine-protocol::agentic`) defines four families that an LLM
 
 | Primitive | Frames | Maps to |
 |-----------|--------|---------|
-| **Tool calling (MCP-shaped)** | `ToolCall { id, name, args }` → `ToolResult { id, outcome }` | Anthropic MCP; OpenAI function calling |
-| **Token streaming** | `StreamStart` → `StreamToken { seq, data }`* → `StreamEnd { reason, usage }` | OpenAI SSE `chat.completion.chunk`; Anthropic streaming |
-| **Capability handshake** | `CapabilityQuery { selector }` → `CapabilityAdvertisement { capabilities }` | OpenAI tool list; MCP server `tools/list` |
+| **Tool calling (MCP-shaped)** | `ToolCall { name, args, trace }` (the `tool_call` command) → `ToolOutcome::Ok { content }` or `ToolOutcome::Err { code, message, details }` | Anthropic MCP; OpenAI function calling |
+| **Token streaming** | `StreamStart` → `StreamToken { seq, data }`* → `StreamEnd { reason, usage }` (frame types defined; the daemon sends no command streams yet) | OpenAI SSE `chat.completion.chunk`; Anthropic streaming |
+| **Capability handshake** | `CapabilityQuery { selector }` (the `capability_query` command) → `CapabilityAdvertisement { capabilities }` | OpenAI tool list; MCP server `tools/list` |
 | **Distributed tracing** | `TraceContext { trace_id, span_id, flags, state }` attached inline | W3C `traceparent`; OpenTelemetry |
 
 \* `StreamToken::data` is `Text` | `Bytes` | `ToolCall` — so function calling and raw byte payloads fall out of the same frame without a second framing layer.
@@ -293,7 +292,7 @@ SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesiv
 
 ### Two workspaces
 
-- **Stack (repository root, `src/`)**, 18 crates, built by default with `cargo build` at the root: `spine-name`, `spine-session`, `spine-mesh`, `spine-transport`, `spine-storage`, `spine-protocol`, `spine-parser`, `spine-cache`, `spine-wasm`, `spine-compiler`, `spine-stream`, `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway`, `spine-grpc`, `spine-ffi`, `spine-web`. No research crate is in their default dependency tree; `spine-protocol` (`research`) and `spine-web` (`research`, `agentic`, ...) take them only through opt-in features.
+- **Stack (repository root, `src/`)**, 18 crates, built by default with `cargo build` at the root: `spine-name`, `spine-session`, `spine-mesh`, `spine-transport`, `spine-storage`, `spine-protocol`, `spine-parser`, `spine-cache`, `spine-wasm`, `spine-compiler`, `spine-stream`, `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway`, `spine-grpc`, `spine-ffi`, `spine-web`. No research crate is in their default dependency tree; `spine-web` (`research`, `agentic`, ...), `spine-agent` (`research`, examples only) and `spine-core` (`research`) take them only through opt-in features. `spine-protocol` has no `research` feature.
 - **Research (`research/`)**, 15 crates, a separate workspace with its own `Cargo.toml` and `Cargo.lock`, built with `cd research && cargo build`: `spine-agentic`, `spine-browser`, `spine-cluster`, `spine-crypto`, `spine-embedded`, `spine-gpu`, `spine-human`, `spine-k8s`, `spine-kernel`, `spine-knowledge`, `spine-mechgen`, `spine-neural`, `spine-nostd`, `spine-protocol-research` (experimental, unreviewed: the Chameleon key, `SpineConnection`, protocol evolution and `TitansLatentCodec`, moved out of `spine-protocol`), `spine-recursive`. Stack crates reach them only through opt-in `research` cargo features (optional path dependencies) and through optional features of `spine-web`; research crates may depend on stack crates.
 - `research/Cargo.toml` copies `[workspace.package]`, `[workspace.dependencies]` and the profiles from the root `Cargo.toml`; the two must be kept in sync by hand.
 
@@ -310,7 +309,7 @@ SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesiv
 
 ### Transport Layer
 
-- **`spine-protocol`**: Low-latency TCP-based protocol with encryption, compression, binary program execution, and the agentic-first frame family (`ToolCall`, `StreamToken`, `CapabilityQuery`, `TraceContext`). See [`agentic.rs`](src/spine-protocol/src/agentic.rs).
+- **`spine-protocol`**: The native client to daemon wire, spine-wire v1: 15-byte frames, a HELLO/HELLO_ACK handshake, deterministic-CBOR bodies, optional zstd compression, 19 commands answered with `{ok}` or `{err: {code, message}}`, and the agentic-first message family (`ToolCall`, `StreamToken`, `CapabilityQuery`, `TraceContext`). It provides no encryption: confidentiality comes from TLS. See [`agentic.rs`](src/spine-protocol/src/agentic.rs).
 - **`spine-transport`**: High-performance zero-copy transport layer with BBR congestion control and connection pooling.
 - **`spine-stream`**: Reactive streaming layer with multiplexing, flow control, chunked transfer, and priority queuing.
 
@@ -447,10 +446,10 @@ Each agent has a persistent knowledge base with tagging and semantic querying:
 
 ```rust
 // Store knowledge
-client.store_knowledge("api_endpoint", json!("https://api.example.com"), vec!["config"]).await?;
+client.store_knowledge("api_endpoint", json!("https://api.example.com"), vec!["config".to_string()]).await?;
 
 // Query by tags
-let results = client.query_knowledge("endpoint", vec!["config"], 10).await?;
+let results = client.query_knowledge("endpoint", vec!["config".to_string()], 10).await?;
 ```
 
 ### Unified Bioinspired Memory (spine-knowledge)
@@ -594,8 +593,8 @@ let valid = count > 0 && enabled
 
 // Built-in Functions
 print("Debug message")
-morph()              // Emit a MorphProtocol instruction (recorded by the VDOM runtime; the wire framing is fixed)
-decoy()              // Inject decoy traffic
+morph()              // Emit a MorphProtocol instruction (recorded by the VDOM runtime only; the wire framing is fixed)
+decoy()              // Emit a Decoy instruction (recorded by the VDOM runtime only; no traffic is sent)
 let size = len(items)
 
 // Memory Operations
@@ -625,7 +624,7 @@ The HLS compiler generates these instructions:
 SPINE includes advanced features for high-security and low-latency agentic communication:
 
 - **Chameleon Protocol (research)**: An experimental latent-space encoding that evolves per message using neural encoders (`research/spine-protocol-research`, not on the native wire).
-- **Quantum-Resistant Keys**: Lattice-based key evolution that resists quantum computing attacks.
+- **Lattice keys (research)**: RLWE-based key evolution in `research/spine-crypto`. It is not used by the native wire, has had no external review, and no claim of quantum resistance is made for the daemon.
 - **Titans Neural Encoding**: Neural Long-Term Memory with VAE and Attention mechanisms to project web content into high-dimensional latent spaces.
 
 ## Intelligence Layer
@@ -682,19 +681,19 @@ SPINE is designed for high-performance native deployment in distributed clusters
 
 ### Quick Start (Local Cluster)
 
-The easiest way to deploy a local SPINE cluster is using the provided deployment script, which builds the daemon with `--features research` because cluster swarm is part of the research feature (the default daemon is research-free):
+`scripts/deploy.sh` builds the daemon with `--features research` and starts three independent `spine-core` processes on ports 8080 to 8082. It does not form a cluster: `spine-core` reads `PORT` only, not the `NODE_ID`, `SEED_NODES` or data-directory variables the script sets (see the note at the top of the script). The default daemon is research-free:
 
 ```bash
-# Start a 3-node local cluster (1 seed, 2 worker nodes)
+# Start three independent local daemons on 8080, 8081 and 8082
 ./scripts/deploy.sh
 ```
 
 This will start:
 
-- **Seed Node**: Port 8080 (Central orchestrator)
-- **Worker Nodes**: Ports 8081 and 8082, connected to the seed node.
+- **Node 1**: Port 8080
+- **Nodes 2 and 3**: Ports 8081 and 8082
 
-Logs and data will be stored in the `./data` directory.
+They are not connected to each other. Logs are written to the `./data` directory.
 
 ### Manual Deployment
 
@@ -714,10 +713,8 @@ The default `spine-core` is built without the `research` feature: the cluster no
 
 - `RUST_LOG`: Logging level (`info`, `debug`, `trace`)
 - `PORT`: The port to listen on for agent connections (default: `8080`)
-- `NODE_ID`: Unique identifier for the node
-- `SEED_NODES`: Comma-separated list of seed nodes (e.g., `127.0.0.1:8080`)
-- `SPINE_KNOWLEDGE_DIR`: Path for persistent knowledge storage
-- `SPINE_SESSIONS_DIR`: Path for session data storage
+
+Other settings live in `spine.toml` (see [docs/NATIVE_OPERATIONS.md](docs/NATIVE_OPERATIONS.md)). `NODE_ID`, `SEED_NODES`, `SPINE_KNOWLEDGE_DIR` and `SPINE_SESSIONS_DIR`, which earlier versions of this README listed, are not read by any code in the repository.
 
 ## Getting Started
 
@@ -756,7 +753,7 @@ Start the SPINE browser engine:
 cargo run -p spine-core
 ```
 
-The core will listen on `127.0.0.1:8082` for agent and browser connections.
+The core will listen on `127.0.0.1:8080` for agent and browser connections (spine-wire v1 over TCP).
 
 ### Running the GUI Browser (Human Mode)
 
@@ -822,7 +819,7 @@ cargo run --example knowledgeable_agent -p spine-agent
 
 The simple_agent example is built with the SDK's `research` feature (`--features research`, as above); the default `spine-agent` build has no research crate in its tree. The simple_agent example will:
 
-1. Connect to the core with encryption enabled
+1. Connect to the core (plain TCP unless the example is changed to use `connect_tls`)
 2. Navigate to `https://example.com`
 3. Fetch the Unified Representation
 4. Compile and execute an HLS program
@@ -860,7 +857,7 @@ Per-message key evolution is not forward secrecy: message hashes are derivable b
 anyone holding the transcript. Genuine forward secrecy lives in the mesh
 handshake (`spine-session::handshake`), described in
 [`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md). For confidentiality on the native
-wire use TLS (`AgentClient::connect_tls`) or the session layer. See
+wire use TLS (`AgentClient::connect_tls`); the native wire does not run over the session layer. See
 [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md): earlier versions of this section
 claimed rather more, and a 2.0.0 audit found the encoder had been keyed by 64
 bits derived with a non-cryptographic hash.
@@ -935,9 +932,9 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 ├─────────────────────────────────────┤
 │   Compression (Zstd)                │
 ├─────────────────────────────────────┤
-│   Frame: u32 BE length || 0x00      │
+│   Frame: 15-byte v1 header          │
 ├─────────────────────────────────────┤
-│   TCP (Port 8082)                   │
+│   TCP (Port 8080)                   │
 └─────────────────────────────────────┘
 ```
 
@@ -946,7 +943,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 1. **AI-First**: Every design decision prioritizes AI agent efficiency over human rendering.
 2. **Binary Execution**: Websites are programs, not static documents.
 3. **Latent Representations (research)**: embeddings and latent vectors are not on the native wire; they are extension candidates, recorded in `research/spine-protocol-research`.
-4. **Implicit Encryption**: High-dimensional projections provide encryption without explicit ciphertext.
+4. **Explicit Encryption**: confidentiality on the native wire comes from TLS. High-dimensional projections are not encryption (see the Chameleon note above).
 
 ## Roadmap
 
@@ -956,8 +953,8 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] Compression (Zstd)
 - [x] HLS/HLB basic compiler
 - [x] **Chameleon Protocol** (latent-space obfuscation; experimental, moved to `research/spine-protocol-research`)
-- [x] **Moving-Target Defense** (per-message Chameleon key evolution; research crate only. Frame-header morphing and padding were removed.)
-- [x] ~~Decoy Traffic injection~~ (removed with `ProtocolHandler::send_decoy`)
+- [x] **Moving-Target Defense** (per-message Chameleon key evolution; research crate only, not on the native wire. Protocol morphing and padding were removed.)
+- [x] ~~Decoy Traffic injection~~ (removed with `ProtocolHandler`, which no longer exists)
 - [x] **Advanced HLS Syntax** (variables, state, conditionals, loops, expressions)
 - [x] **Virtual DOM Runtime** (binary execution with UR generation)
 - [x] **WebAssembly Runtime** (HLB → WASM near-native execution)
@@ -976,10 +973,10 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Collaborative Roles** (coordinator, executor, expert, validator, innovator, mediator)
 - [x] **Adversarial Game Theory** (Nash equilibrium, minimax, regret matching)
 - [x] **Zero-Copy Message Pooling** (power-of-2 size classes for efficient reuse)
-- [x] **Compact Binary Protocol** (28-byte headers, minimal overhead)
+- [x] **Compact Binary Protocol** (this item named a `CompactMessage` type that no longer exists in the repository; the native wire is spine-wire v1 with a 15-byte header)
 - [x] **Full LTO Optimization** (30% binary size reduction)
 - [x] **Transport Plugin System** (composable pipeline: metrics, rate-limiting, logging, tagging, size-limiting)
-- [x] **WebSocket Bridge** (client/server `AsyncRead+AsyncWrite` adapters for `ProtocolHandler`)
+- [x] **WebSocket Bridge** (client/server `AsyncRead+AsyncWrite` adapters, used by the spine-wire v1 `Connection`)
 - [x] **Multi-Transport Server** (`tokio::select!` TCP + WebSocket + QUIC accept loop)
 - [x] **Agent `connect_ws()`** (WebSocket transport for `AgentClient`)
 - [x] **QUIC Server Integration** (feature-gated `quinn` endpoint)
@@ -1078,6 +1075,8 @@ let distribution = network.distribute_task("Build ML pipeline", &required_roles)
 
 ### Measured performance (2026-05 audit)
 
+> **Measured before the native wire became spine-wire v1 (2026-11-21); not re-measured.** Every figure in this section comes from `spine-transport`'s benches, which do not use `spine-protocol` and so never measured the daemon's native wire, before or after v1. Treat them as properties of `spine-transport`.
+
 Numbers below come from `src/spine-transport/benches/{spine_vs_www,spine_vs_http2,agentic_ai_workload,llm_tok_per_sec,llm_shm_ipc}.rs`, all of which compare against **real** protocol implementations (the `h2` crate for HTTP/2, the `aes-gcm` crate for AES-256-GCM, real `serde_json` for JSON) on real TCP loopback or in-process shared memory. Full methodology, every caveat, and reproduction commands are in [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md).
 
 > **Re-verification (2026-06-08).** The `spine_vs_http2`, `agentic_ai_workload`, and `llm_tok_per_sec` benches were re-run. All *comparative* findings reproduced directionally and to the same order of magnitude (single-stream HTTP/2 latency win 1.6–2.4×, throughput win 1.8–2.3×; embedding batches ~6–25× over HTTP/2+JSON; large-batch token throughput 9–15× over HTTP/2 binary while JSON-SSE stays near ~10M tok/s). The **absolute peaks vary by machine and load** — the 2026-06-08 token-throughput peak was 548M tok/s vs the 728M recorded below, and embedding multipliers were noisy (8.1× rather than 23× at batch-32). Treat the absolutes in the tables below as representative single-run medians from the original audit, not run-invariant constants.
@@ -1141,7 +1140,7 @@ The repo now contains an `RdmaTransport` trait (`src/spine-transport/src/rdma.rs
 
 ### Crypto
 
-Per-record AEAD overhead is **identical** to TLS when both use the same primitive — SPINE encrypts with the same `aes-gcm` crate (AES-256-GCM) as `rustls`. SPINE's *crypto layer* wins (Chameleon Protocol's moving-target defense, X3DH key exchange, RLWE post-quantum) operate *above* the AEAD primitive and are measured separately in their respective crates.
+The native wire has no AEAD layer of its own (the pre-shared-key AES-GCM layer was removed); confidentiality there is TLS. The AEAD comparison in the transport benchmarks measured the `aes-gcm` crate that `rustls` also uses, so per-record overhead is the same as TLS's with that primitive. The mesh handshake (`spine-session`) uses AES-256-GCM too. The Chameleon, X3DH and RLWE code is research, not on the native wire, and is not measured here.
 
 ### Reproduction
 
@@ -1209,45 +1208,9 @@ strip = true         # Strip symbols
 
 **Results**: 30% binary size reduction (20.6 MB → 14.4 MB for core)
 
-### Zero-Copy Message Pool
+### Removed: message pool, compact message and lightweight swarm snippets
 
-Efficient buffer management for high-throughput messaging:
-
-```rust
-let pool = MessagePool::new();
-
-// Allocate from pool (power-of-2 size classes)
-let mut buffer = pool.allocate(4096);
-buffer.write(&data);
-
-// Buffer returned to pool on drop (zero-copy reuse)
-```
-
-### Compact Binary Protocol
-
-Minimal overhead messaging (28-byte header):
-
-```rust
-let msg = CompactMessage::new(
-    message_types::TASK_ASSIGN,
-    sender_id,
-    receiver_id,
-    payload,
-);
-
-// Serialize directly to wire format
-let bytes = msg.to_bytes();
-```
-
-### Lightweight Swarm Coordination
-
-Optimized for minimal memory and CPU overhead:
-
-```rust
-let mut swarm = LightweightSwarm::new(swarm_id);
-swarm.add_agent(agent_id);
-swarm.broadcast(sender, message_types::BROADCAST, &payload);
-```
+Earlier versions of this README showed snippets using `MessagePool`, `CompactMessage` (a 28-byte header) and `LightweightSwarm`. None of those types exists anywhere in the repository now (checked 2026-11-21), so the snippets were removed. The native wire is spine-wire v1 (15-byte frame header; see [`docs/spec/00-wire.md`](docs/spec/00-wire.md)).
 
 ## Testing
 
@@ -1271,7 +1234,7 @@ cd research && cargo test -p spine-crypto
 > and `cargo test --workspace` at the root no longer includes the research
 > crates, so do not read the root total as the sum of this table.
 
-### Test Summary (1,418 tests, 0 failures)
+### Test Summary (1,418 tests, 0 failures; stale, predates the research split and spine-wire v1)
 
 Latest workspace run: `cargo test --workspace --no-fail-fast` →
 **1,418 passed / 0 failed / 5 ignored** across all 32 crates. The five

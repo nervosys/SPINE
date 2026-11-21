@@ -104,6 +104,10 @@ Quota accounting detail. The store counts serialized bytes (`resources.rs:49-64`
 
 ## 3. Transfer protocol
 
+> As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md; the following describes the earlier wire.
+>
+> Correction for this section: a request is now a command from a closed set of 19 in a REQUEST frame; the request id is in the 15-byte frame header, not in the body; a response is `{ok: ...}` or `{err: {code, message}}`; bodies are deterministic CBOR (no JSON format byte, no `SP` header). Byte fields travel as CBOR byte strings.
+
 All commands are `BrowserCommand` variants (`spine-protocol/src/lib.rs:1024-1195`) carried in `Message::Request { id, command }` and answered by `Message::Response { id, result: Option<json>, error: Option<string> }` (`lib.rs:1276-1287`). The session loop is `main.rs:2419-2637`.
 
 Message encoding: an 8-byte header (magic `SP`, version byte `1`, format byte, big-endian u32 payload length) followed by the body (`wire.rs:52-58`, `wire.rs:142-195`). Format `0x01` JSON, `0x02` CBOR, `0x03` CBOR with zstd (`wire.rs:90-94`). Maximum body 16 MiB (`wire.rs:60`).

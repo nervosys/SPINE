@@ -3,7 +3,9 @@
 Current local work is tracked in [the completion checklist](COMPLETION_PLAN.md) and [verification report](docs/COMPLETION_STATUS.md). Counts and completed phases below are historical; they do not close the remaining production and release gates.
 
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
-> 30 Rust crates · 1,418 tests · 0 warnings · AGPL-3.0-or-later
+> 30 Rust crates · 1,418 tests (measured before the v1 wire; not re-measured) · AGPL-3.0-or-later
+
+> **Note, 2026-11-21:** On this date the native client to daemon wire became spine-wire v1 (`docs/spec/00-wire.md`, `CHANGELOG.md` Unreleased). Removed since this text was written: the speculative layer, protocol morphing and padding, the Chameleon key and latent AEAD on the native path (research code is in `research/spine-protocol-research`), the pre-shared-key AES-GCM layer, `ProtocolHandler`, the `SP` header, and many commands. Items below that mention those features are history, not current capabilities.
 
 ---
 
@@ -21,8 +23,8 @@ Current local work is tracked in [the completion checklist](COMPLETION_PLAN.md) 
 
 - [x] HLS/HLB compiler (variables, state, conditionals, loops, expressions, functions)
 - [x] Virtual DOM runtime with reactive re-rendering
-- [x] Chameleon Protocol (latent-space cryptography with moving-target defense)
-- [x] Speculative Decoding (bidirectional Titans-based message prediction)
+- [x] Chameleon Protocol (latent-space encoding; since moved to `research/spine-protocol-research`, not on the native wire, not a cipher)
+- [x] Speculative Decoding (bidirectional Titans-based message prediction; since removed from the wire)
 - [x] WebAssembly runtime (HLB → WASM near-native execution)
 - [x] Distributed clustering (load balancing, session affinity, leader election)
 - [x] Neural Latent Encoder (VAE + Titans Memory + Attention)
@@ -316,7 +318,7 @@ Current local work is tracked in [the completion checklist](COMPLETION_PLAN.md) 
 ### Phase 25 — Ecosystem Expansion ✅
 
 - [x] ~~**Official Helm chart** (`deploy/kubernetes/spine/`): Production Kubernetes deployment with Chart.yaml, configurable values.yaml, StatefulSet (core), Deployment (gateway), headless + client Services, ConfigMap, ServiceAccount + RBAC, HPA autoscaling, Ingress, PodDisruptionBudget, NetworkPolicy, ServiceMonitor, NOTES.txt~~ **Removed 2026-08-25.** Containers are gone from this repo: no Dockerfile, no compose file, no chart, and no CI jobs for them. `scripts/deploy.sh` runs a 3-node cluster natively.
-- [x] **C FFI crate** (`spine-ffi`): `cdylib`/`staticlib` with 16 exported functions — connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, morph, get_capabilities, store/query_knowledge, parse_html, compile_hls, version, free_string; C header in `include/spine.h`; thread-local error handling
+- [x] **C FFI crate** (`spine-ffi`): `cdylib`/`staticlib` with 15 exported functions today (this item originally listed 16 including `search` and `morph`, both since removed) — connect, disconnect, navigate, get_ur, get_raw_html, execute_hls, ping, get_capabilities, store/query_knowledge, parse_html, compile_hls, version, free_string; C header in `include/spine.h`; thread-local error handling
 - [x] **Go bindings** (`spine-go`): cgo-based Go package with `Client` type, `UnifiedRepresentation`/`SpineBinary`/`ExecutionResult` structs, offline `ParseHTML`/`CompileHLS`/`Version` functions, 6 Go tests, README with usage examples
 - [x] 579 tests passing (+18 FFI tests), 0 failures, 0 Clippy warnings
 
@@ -779,7 +781,7 @@ derivation everyone was looking at.
 | `spine-kernel`    | SIMD, allocators, atomics, ring buffers, RDTSC timing           |
 | `spine-core`      | Multi-session orchestration engine (TCP + WS + QUIC server)     |
 | `spine-parser`    | Recursive semantic HTML → Unified Representation                |
-| `spine-protocol`  | Binary protocol with encryption, compression, Chameleon         |
+| `spine-protocol`  | spine-wire v1: frames, HELLO, CBOR bodies, compression (no encryption; TLS provides it) |
 | `spine-agent`     | High-level SDK: `AgentClient` (TCP/TLS/WS)                      |
 | `spine-name`      | The `spine://` namespace: URIs, signed records, DHT keyspace, resolution |
 | `spine-agentic`   | Swarm intelligence, game theory, social networks                |
