@@ -77,6 +77,12 @@ set -uo pipefail
 # and chameleon tests were deleted and the chameleon property tests and the
 # spine-nostd interop tests moved to research/spine-protocol-research, which the
 # `research` CI job runs.
+#
+# NOT RE-MEASURED since the native wire became spine-wire v1 (docs/spec/00-wire.md):
+# that migration deleted test files and added others, so the suite count, the
+# ignored count and any passed total below were measured on the earlier wire.
+# Re-measure on the next full run and update EXPECTED_SUITES_MIN, EXPECTED_IGNORED
+# and the total passed as $1 (see scripts/release_gate.py, SPINE_EXPECTED_TESTS).
 EXPECTED_SUITES_MIN=45
 # 5 -> 3: all five ignored tests are `ignore`-fenced doctests. Two (research)
 # left with the move: research/spine-cluster/src/marketplace.rs:27 and
