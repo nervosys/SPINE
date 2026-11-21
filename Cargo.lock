@@ -4568,11 +4568,8 @@ name = "spine-protocol"
 version = "2.0.2"
 dependencies = [
  "anyhow",
- "bincode",
- "bytemuck",
  "ciborium",
  "criterion",
- "parking_lot",
  "proptest",
  "quinn",
  "rcgen 0.12.1",
@@ -4593,6 +4590,8 @@ version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "bincode",
+ "bytemuck",
  "hkdf",
  "parking_lot",
  "rand 0.8.8",
@@ -4601,6 +4600,7 @@ dependencies = [
  "spine-crypto",
  "spine-neural",
  "spine-protocol",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "uuid",

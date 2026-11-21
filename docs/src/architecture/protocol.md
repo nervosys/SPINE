@@ -8,11 +8,16 @@ All communication uses the `Message` enum, serialized with serde:
 pub enum Message {
     Request(Request),
     Response(Response),
-    Event(Event),
-    BinaryProgram(SpineBinary),
-    LatentMessage(LatentVector),
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
+    ToolCall(ToolCall),
+    ToolResult(ToolResult),
+    StreamStart(StreamStart),
+    StreamToken(StreamToken),
+    StreamEnd(StreamEnd),
+    StreamCancel(StreamCancel),
+    CapabilityQuery(CapabilityQuery),
+    CapabilityAd(CapabilityAdvertisement),
 }
 ```
 

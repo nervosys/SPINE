@@ -21,7 +21,6 @@
 - [Navigation & URs](./sdk/navigation.md)
 - [HLS Scripting](./sdk/hls.md)
 - [Knowledge Base](./sdk/knowledge.md)
-- [Neural Protocol](./sdk/neural.md)
 
 # CLI Reference
 

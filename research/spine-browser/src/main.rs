@@ -91,16 +91,7 @@ impl SpineBrowser {
                 )))
                 .await;
             match AgentClient::connect(&addr.to_string()).await {
-                Ok(mut client) => {
-                    let (mut latent_rx, _) = client.start_listener().await;
-                    let tx_latent = tx.clone();
-
-                    tokio::spawn(async move {
-                        while let Some(vec) = latent_rx.recv().await {
-                            let _ = tx_latent.send(BrowserEvent::LatentUpdated(vec)).await;
-                        }
-                    });
-
+                Ok(client) => {
                     let mut lock = agent_clone.lock().await;
                     *lock = Some(client);
                     let _ = tx
@@ -166,14 +157,6 @@ impl SpineBrowser {
                                                     res
                                                 )))
                                                 .await;
-                                            if let Some(count) = res.get("latent_streams_count") {
-                                                let _ = tx
-                                                    .send(BrowserEvent::StatusChanged(format!(
-                                                        "Receiving {} latent streams...",
-                                                        count
-                                                    )))
-                                                    .await;
-                                            }
                                             if let Some(elements_val) = res.get("elements") {
                                                 if let Ok(elements) =
                                                     serde_json::from_value::<Vec<WasmElement>>(

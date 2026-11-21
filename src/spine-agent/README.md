@@ -26,7 +26,9 @@ simple_agent`).
 The SDK carries only the core command set: `navigate`, `get_ur`,
 `get_raw_html`, `execute_binary` / `execute_hls`, `store_knowledge`,
 `query_knowledge`, `get_binary_capabilities`, the namespace and resource
-calls, `call_tool`, `capabilities` and `ping`. The research-session commands
+calls, `call_tool`, `capabilities` and `ping`. The latent-stream listener
+(`start_listener`, `subscribe_latent`) is gone with `Message::LatentMessage` and
+`Message::Event`. The research-session commands
 (latent encoding, session transfer, neural transmit, agentic state, autonomous
 mode) are recorded in `research/spine-protocol-research/README.md`.
 

@@ -131,9 +131,11 @@ mod tests {
     /// to take the zstd path.
     fn sample_messages() -> (Message, Message) {
         let small = Message::Ping { timestamp: 7 };
-        let large = Message::Event(Event {
-            name: "large".to_string(),
-            data: serde_json::json!({ "payload": "x".repeat(300) }),
+        let large = Message::ToolCall(ToolCall {
+            id: "large".to_string(),
+            name: "payload".to_string(),
+            args: serde_json::json!({ "payload": "x".repeat(300) }),
+            trace: None,
         });
         (small, large)
     }

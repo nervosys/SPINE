@@ -18,8 +18,8 @@
 //! Run: `cargo bench -p spine-protocol-research --bench neural_codec_bench`
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use spine_protocol::{wire, CodecRegistry, Message, NeuralCodec};
-use spine_protocol_research::TitansLatentCodec;
+use spine_protocol::cbor;
+use spine_protocol_research::{CodecRegistry, NeuralCodec, TitansLatentCodec};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -64,9 +64,9 @@ fn bench_agentic_path(c: &mut Criterion) {
     eprintln!("  dim   json B   wire B   saved");
     for &dim in DIMS {
         let codec = TitansLatentCodec::new(dim);
-        let msg = Message::Encoded(codec.encode(&input).unwrap());
+        let msg = codec.encode(&input).unwrap();
         let json = serde_json::to_vec(&msg).unwrap().len();
-        let wire = wire::encode(&msg).unwrap().len();
+        let wire = cbor::to_vec(&msg).unwrap().len();
         let saved = 100 - (wire * 100 / json.max(1));
         eprintln!("  {dim:>4}  {json:>6}  {wire:>6}   {saved:>2}%");
     }
@@ -77,8 +77,7 @@ fn bench_agentic_path(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(dim), &dim, |b, _| {
             b.iter(|| {
                 let frame = codec.encode(black_box(&input)).unwrap();
-                let msg = Message::Encoded(frame);
-                black_box(wire::encode(black_box(&msg)).unwrap())
+                black_box(cbor::to_vec(black_box(&frame)).unwrap())
             });
         });
     }

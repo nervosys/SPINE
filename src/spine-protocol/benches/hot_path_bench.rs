@@ -106,35 +106,6 @@ fn bench_protocol_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
-// ======================== Latent Vector ========================
-
-fn bench_latent_vector(c: &mut Criterion) {
-    use spine_protocol::{LatentVector, Message};
-
-    let mut group = c.benchmark_group("latent_vector");
-
-    for dim in [8, 64, 256, 1024] {
-        let vec = LatentVector {
-            components: (0..dim).map(|i| i as f32 * 0.001).collect(),
-            dim_hint: dim as u16,
-            epoch: 1,
-        };
-        let msg = Message::LatentMessage(vec);
-
-        group.throughput(Throughput::Bytes((dim * 4) as u64));
-        group.bench_with_input(BenchmarkId::new("serialize", dim), &msg, |b, msg| {
-            b.iter(|| serde_json::to_vec(black_box(msg)).unwrap());
-        });
-
-        let bytes = serde_json::to_vec(&msg).unwrap();
-        group.bench_with_input(BenchmarkId::new("deserialize", dim), &bytes, |b, bytes| {
-            b.iter(|| serde_json::from_slice::<Message>(black_box(bytes)).unwrap());
-        });
-    }
-
-    group.finish();
-}
-
 // ======================== Wire codec: CBOR vs JSON ========================
 
 /// Head-to-head throughput for the v1.4.0+ binary wire codec (`wire::encode` /
@@ -144,23 +115,16 @@ fn bench_latent_vector(c: &mut Criterion) {
 /// `examples/wire_sizes.rs` with *speed* numbers.
 fn bench_wire_codec(c: &mut Criterion) {
     use spine_protocol::wire;
-    use spine_protocol::{DType, EncodedFrame, EncodedMetadata, Message, Modality, ToolCall};
+    use spine_protocol::{Message, StreamData, StreamToken, ToolCall};
 
     let embedding: Vec<u8> = (0..1024u32)
         .map(|i| (i.wrapping_mul(31) % 251) as u8)
         .collect();
-    let frame = Message::Encoded(EncodedFrame {
-        codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
-        variant: Some("layer=11".into()),
-        data: embedding,
-        metadata: EncodedMetadata {
-            modality: Modality::Embedding,
-            shape: vec![256],
-            dtype: DType::F32,
-            original_len: Some(4096),
-            source_hash: Some([0xAB; 32]),
-        },
-        trace: None,
+    let frame = Message::StreamToken(StreamToken {
+        id: "stream-7f3a".into(),
+        seq: 1,
+        data: StreamData::Bytes(embedding),
+        usage: None,
     });
     let tool_call = Message::ToolCall(ToolCall {
         id: "b3c1f2a4-0d8e-4c9a-9f1b-2e7d6c5a4b30".into(),
@@ -208,7 +172,6 @@ criterion_group!(
     protocol,
     bench_protocol_message_serde,
     bench_protocol_roundtrip,
-    bench_latent_vector,
     bench_wire_codec,
 );
 

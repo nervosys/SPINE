@@ -1,44 +1,23 @@
 //! Neural encoder-decoder protocols.
 //!
-//! Text on the wire is a lowest-common-denominator. Modern agents already
-//! produce latents — embeddings, hidden states, key/value caches, image
-//! patches, audio frames — and forcing every hop to round-trip back to
-//! tokens throws away both bandwidth and signal. SPINE makes the latent
-//! form a first-class payload.
+//! These types used to live in `spine-protocol::agentic_codec` and rode on the
+//! native wire as `Message::Encoded`, `Message::CodecAd`,
+//! `Message::CodecNegotiation`, `Message::EmbeddingRequest` and
+//! `Message::EmbeddingResponse`. They are not on the native wire any more; they
+//! are recorded in this crate's README as extension candidates.
 //!
-//! The contract has four parts, mirrored against the four families in
-//! [`crate::agentic`]:
-//!
-//! 1. **Self-describing payload** ([`EncodedFrame`] + [`EncodedMetadata`])
-//!    — every latent carries the codec id, shape, dtype, and modality so
-//!    the receiver knows how to reconstruct or forward it without an
-//!    out-of-band contract.
-//!
-//! 2. **Codec discovery** ([`CodecDescriptor`] + [`CodecAdvertisement`])
-//!    — peers advertise the encoders/decoders they speak, in the same
-//!    shape as capability advertisements. Selection can be exact,
-//!    by-modality, or by semantic similarity over an optional embedding.
-//!
-//! 3. **Codec negotiation** ([`CodecNegotiation`]) — when two peers
-//!    don't already agree, either side can offer a ranked list and the
-//!    other side picks one. Falls out naturally over the existing
-//!    [`crate::Message`] dispatch.
-//!
-//! 4. **Decoder hints** ([`DecodeHints`]) — sampling parameters
-//!    (temperature, top-p/k, stop sequences, seed, repetition penalty)
-//!    travel alongside the request that asks an autoregressive decoder
-//!    to produce output. Mirrors the OpenAI / Anthropic surface so an
-//!    existing client's knobs map 1:1.
-//!
-//! A minimal runtime — [`NeuralCodec`] trait plus [`CodecRegistry`] —
-//! lives below the types so encoders can be registered, looked up, and
-//! invoked symmetrically on either side of a connection.
+//! The contract has three parts: a self-describing payload ([`EncodedFrame`]
+//! with [`EncodedMetadata`]), codec discovery ([`CodecDescriptor`] with
+//! [`CodecAdvertisement`]) and codec negotiation ([`CodecNegotiation`]). A
+//! minimal runtime, the [`NeuralCodec`] trait plus [`CodecRegistry`], lets
+//! encoders be registered, looked up and invoked. `DecodeHints` stayed in
+//! `spine-protocol` (`StreamStart::decode_hints`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::agentic::TraceContext;
+use spine_protocol::TraceContext;
 
 // =============================================================================
 // Modality, dtype, direction taxonomies
@@ -108,9 +87,8 @@ pub enum CodecDirection {
 // Encoded payload
 // =============================================================================
 
-/// One self-describing latent. Drop this into a [`crate::Message`] (via
-/// [`crate::Message::Encoded`]) and the receiver can validate, decode, or
-/// forward without an out-of-band schema.
+/// One self-describing latent. The receiver can validate, decode, or forward it
+/// without an out-of-band schema.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncodedFrame {
     /// Codec identifier — stable URI like
@@ -227,41 +205,6 @@ pub struct CodecNegotiation {
     /// Optional reason if `accepted` is `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-}
-
-// =============================================================================
-// Decoder hints (sampling parameters)
-// =============================================================================
-
-/// Sampling parameters for an autoregressive decoder. Travels alongside
-/// the request that asks a model to produce output. Every field is
-/// optional so that the decoder's own defaults survive when the caller
-/// doesn't care.
-///
-/// Field names match the OpenAI / Anthropic surface, so an existing
-/// client SDK round-trips through the gateway without translation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct DecodeHints {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub top_k: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repetition_penalty: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub presence_penalty: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frequency_penalty: Option<f32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stop_sequences: Vec<String>,
-    /// Deterministic seed. Same seed + same inputs + same model →
-    /// same outputs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<u64>,
 }
 
 // =============================================================================
@@ -552,26 +495,6 @@ mod tests {
             reason: Some("no overlap; falling back to plain text".into()),
         };
         json_round_trip(&no_overlap);
-    }
-
-    #[test]
-    fn decode_hints_partial_round_trip() {
-        let h = DecodeHints {
-            temperature: Some(0.7),
-            top_p: Some(0.95),
-            max_tokens: Some(2048),
-            stop_sequences: vec!["</tool>".into(), "USER:".into()],
-            seed: Some(42),
-            ..Default::default()
-        };
-        json_round_trip(&h);
-        // Default DecodeHints serializes with no fields except the empty
-        // stop_sequences vector skipped — make sure the empty case is
-        // tiny on the wire.
-        let empty = DecodeHints::default();
-        let bytes = serde_json::to_vec(&empty).unwrap();
-        // "{}" is 2 bytes. Anything <= 4 means every Option got skipped.
-        assert!(bytes.len() <= 4, "empty hints encoded as {bytes:?}");
     }
 
     #[test]

@@ -39,7 +39,36 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agentic_codec::{DecodeHints, EncodedFrame};
+/// Sampling parameters for an autoregressive decoder. Travels alongside
+/// the request that asks a model to produce output. Every field is
+/// optional so that the decoder's own defaults survive when the caller
+/// doesn't care.
+///
+/// Field names match the OpenAI / Anthropic surface, so an existing
+/// client SDK round-trips through the gateway without translation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DecodeHints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repetition_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_penalty: Option<f32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
+    /// Deterministic seed. Same seed + same inputs + same model →
+    /// same outputs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+}
 
 // =============================================================================
 // Tool calling (MCP-shaped)
@@ -117,11 +146,6 @@ pub struct StreamStart {
     /// this stream.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decode_hints: Option<DecodeHints>,
-    /// Optional codec the producer will use for [`StreamData::Encoded`]
-    /// chunks in this stream. Lets the receiver pre-resolve the
-    /// decoder once instead of looking it up per token.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stream_codec: Option<String>,
 }
 
 /// Producer role for a stream.
@@ -164,9 +188,9 @@ pub struct StreamCancel {
 }
 
 /// What's in a token chunk. Most LLM streams are `Text`; multimodal
-/// agents emit `Bytes` (audio frames, image patches, tool deltas);
-/// latent-streaming agents emit `Encoded` so receivers can act on the
-/// raw representation without paying for a token detour.
+/// agents emit `Bytes` (audio frames, image patches, tool deltas).
+/// The latent `Encoded` chunk and `StreamStart::stream_codec` belong to the
+/// neural-codec extension (see `research/spine-protocol-research`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum StreamData {
     /// UTF-8 text fragment.
@@ -176,10 +200,6 @@ pub enum StreamData {
     Bytes(#[serde(with = "serde_bytes")] Vec<u8>),
     /// Tool invocation embedded mid-stream (function calling).
     ToolCall(ToolCall),
-    /// Self-describing latent chunk. The receiver can decode it locally
-    /// via a registered codec or forward it verbatim to a downstream
-    /// peer that speaks the same encoder/decoder pair.
-    Encoded(EncodedFrame),
 }
 
 /// Closes a token stream.
@@ -409,7 +429,6 @@ mod tests {
             model: "claude-opus-4-7".into(),
             trace: None,
             decode_hints: None,
-            stream_codec: None,
         };
         round_trip(&start);
 
@@ -432,49 +451,38 @@ mod tests {
         round_trip(&end);
     }
 
-    /// Latent streaming: every token chunk carries a self-describing
-    /// `EncodedFrame`. This is the path agents use when they want to
-    /// hand each other hidden states or embeddings rather than text.
+    /// `decode_hints` rides along on `StreamStart`.
     #[test]
-    fn stream_token_with_encoded_payload() {
-        use crate::agentic_codec::{DType, EncodedFrame, EncodedMetadata, Modality};
-
-        let frame = EncodedFrame {
-            codec: "spine:codec/titans/v1@dim=4,dtype=f32".into(),
-            variant: None,
-            data: vec![0; 16],
-            metadata: EncodedMetadata {
-                modality: Modality::Embedding,
-                shape: vec![4],
-                dtype: DType::F32,
-                original_len: Some(7),
-                source_hash: None,
-            },
-            trace: None,
-        };
-        let tok = StreamToken {
-            id: "s1".into(),
-            seq: 3,
-            data: StreamData::Encoded(frame.clone()),
-            usage: None,
-        };
-        round_trip(&tok);
-
-        // And in StreamStart, decode_hints + stream_codec ride along.
+    fn stream_start_with_decode_hints() {
         let start = StreamStart {
             id: "s1".into(),
             role: StreamRole::Assistant,
             model: "claude-opus-4-7".into(),
             trace: None,
-            decode_hints: Some(crate::agentic_codec::DecodeHints {
+            decode_hints: Some(DecodeHints {
                 temperature: Some(0.3),
                 top_p: Some(0.9),
                 max_tokens: Some(512),
                 ..Default::default()
             }),
-            stream_codec: Some(frame.codec.clone()),
         };
         round_trip(&start);
+    }
+
+    #[test]
+    fn decode_hints_partial_round_trip() {
+        let h = DecodeHints {
+            temperature: Some(0.7),
+            top_p: Some(0.95),
+            max_tokens: Some(2048),
+            stop_sequences: vec!["</tool>".into(), "USER:".into()],
+            seed: Some(42),
+            ..Default::default()
+        };
+        round_trip(&h);
+        // The empty case must be tiny on the wire: every Option is skipped.
+        let bytes = serde_json::to_vec(&DecodeHints::default()).unwrap();
+        assert!(bytes.len() <= 4, "empty hints encoded as {bytes:?}");
     }
 
     #[test]
@@ -598,7 +606,6 @@ mod tests {
                 model: "claude-opus-4-7".into(),
                 trace: None,
                 decode_hints: None,
-                stream_codec: None,
             }),
             Message::StreamToken(StreamToken {
                 id: "s1".into(),
@@ -619,43 +626,6 @@ mod tests {
                 id: "q1".into(),
                 agent_id: "agent_a".into(),
                 capabilities: vec![],
-            }),
-            // Neural codec frames slot into the same envelope.
-            Message::Encoded(crate::agentic_codec::EncodedFrame {
-                codec: "spine:codec/echo/v1".into(),
-                variant: None,
-                data: b"abc".to_vec(),
-                metadata: crate::agentic_codec::EncodedMetadata {
-                    modality: crate::agentic_codec::Modality::Text,
-                    shape: vec![3],
-                    dtype: crate::agentic_codec::DType::U8,
-                    original_len: Some(3),
-                    source_hash: None,
-                },
-                trace: None,
-            }),
-            Message::CodecAd(crate::agentic_codec::CodecAdvertisement {
-                id: "ad1".into(),
-                agent_id: "agent_b".into(),
-                codecs: vec![],
-            }),
-            Message::CodecNegotiation(crate::agentic_codec::CodecNegotiation {
-                id: "neg1".into(),
-                offered: vec!["spine:codec/echo/v1".into()],
-                accepted: None,
-                reason: None,
-            }),
-            Message::EmbeddingRequest(crate::agentic_codec::EmbeddingRequest {
-                id: "e1".into(),
-                input: crate::agentic_codec::EmbeddingInput::Text("hi".into()),
-                codec: None,
-                trace: None,
-            }),
-            Message::EmbeddingResponse(crate::agentic_codec::EmbeddingResponse {
-                id: "e1".into(),
-                codec: "spine:codec/echo/v1".into(),
-                embeddings: vec![],
-                trace: None,
             }),
         ];
 

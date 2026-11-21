@@ -23,7 +23,9 @@ session layer). The Chameleon latent-space key, `SpineConnection`, `connect_auto
 the protocol evolution framework, `TitansLatentCodec` and the pre-shared-key AES
 layer are not part of this crate: the first four are in the experimental,
 unreviewed `research/spine-protocol-research` crate and the AES layer was
-removed.
+removed. `LatentVector` and the neural-codec types (`EncodedFrame`,
+`NeuralCodec`, `CodecRegistry`, `EmbeddingRequest`, ...) moved to the same research
+crate with the `Message` variants that carried them.
 
 ## Workspace dependencies
 

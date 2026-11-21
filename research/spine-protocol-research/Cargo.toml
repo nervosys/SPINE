@@ -16,6 +16,9 @@ spine-protocol = { path = "../../src/spine-protocol", version = "2.0.2" }
 spine-neural = { path = "../spine-neural", version = "2.0.2" }
 spine-crypto = { path = "../spine-crypto", version = "2.0.2" }
 anyhow.workspace = true
+thiserror.workspace = true
+bincode = "1.3"
+bytemuck = { version = "1.14", features = ["derive"] }
 serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true

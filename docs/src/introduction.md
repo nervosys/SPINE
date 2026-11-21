@@ -9,7 +9,7 @@ SPINE provides a complete agentic web stack:
 - **Headless semantic browsing** — Navigate web pages and extract structured Unified Representations instead of raw HTML
 - **Encryption** — TLS and mTLS on the client wire, the ML-KEM and Ed25519 mesh handshake; Chameleon latent-space encoding and RLWE are research (`research/`), not on the wire
 - **Swarm intelligence** — Multi-agent coordination with capability discovery and task delegation
-- **Neural protocols** — Learned message encoding with Titans architecture for efficient communication
+- **Neural protocols (research)** — Titans-based latent encoding and neural codecs live in `research/spine-protocol-research`; they are not on the native wire
 - **HLS scripting** — Domain-specific language compiled to WebAssembly for server-side execution
 - **Knowledge base** — Distributed CRDT-based memory with episodic, semantic, working, and collective subsystems
 

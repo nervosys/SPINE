@@ -18,8 +18,8 @@ use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use spine_crypto::{LatticeParams, QuantumSpeculativeProtocol, TransformerConfig};
 use spine_neural::{MirasNeuralEncoder, MirasVariant, NeuralEncoderConfig, NeuralLatentEncoder};
 use spine_protocol::{
-    wire, write_header_body, AsyncReadWrite, LatentVector, Message, QuicEndpointBuilder,
-    QuicTransport, TransportConfig, TransportMode,
+    wire, write_header_body, AsyncReadWrite, Message, QuicEndpointBuilder, QuicTransport,
+    TransportConfig, TransportMode,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
@@ -29,8 +29,16 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use zstd::stream::encode_all;
 
 mod evolution;
+mod latent;
+mod neural_codec;
 mod titans;
 pub use evolution::*;
+pub use latent::LatentVector;
+pub use neural_codec::{
+    CodecAdvertisement, CodecDescriptor, CodecDirection, CodecError, CodecNegotiation,
+    CodecRegistry, DType, EmbeddingInput, EmbeddingRequest, EmbeddingResponse, EncodedFrame,
+    EncodedMetadata, Modality, NeuralCodec,
+};
 pub use titans::TitansLatentCodec;
 
 /// A fresh 96-bit AES-GCM nonce from the operating system's CSPRNG. A private

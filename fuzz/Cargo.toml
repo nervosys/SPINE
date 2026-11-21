@@ -27,11 +27,6 @@ path = "fuzz_targets/fuzz_parse_html.rs"
 doc = false
 
 [[bin]]
-name = "fuzz_latent_vector"
-path = "fuzz_targets/fuzz_latent_vector.rs"
-doc = false
-
-[[bin]]
 name = "fuzz_frame_decode"
 path = "fuzz_targets/fuzz_frame_decode.rs"
 doc = false

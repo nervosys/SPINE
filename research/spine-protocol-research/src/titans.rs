@@ -1,8 +1,8 @@
 //! `TitansLatentCodec`: a [`NeuralCodec`] over `spine-neural`'s Titans
-//! `NeuralLatentEncoder`. It moved here from `spine-protocol::agentic_codec`;
-//! the codec trait, registry and frame types stay in `spine-protocol`.
+//! `NeuralLatentEncoder`. It moved here from `spine-protocol::agentic_codec`,
+//! together with the codec trait, registry and frame types.
 
-use spine_protocol::{
+use crate::{
     CodecDescriptor, CodecDirection, CodecError, DType, EncodedFrame, EncodedMetadata, Modality,
     NeuralCodec,
 };
@@ -25,7 +25,7 @@ use spine_protocol::{
 /// resets the encoder's state via
 /// [`spine_neural::NeuralLatentEncoder::reset_state`] using the codec's
 /// stored seed. The codec is therefore safe to register in a process-
-/// wide [`spine_protocol::CodecRegistry`] and call from any number of concurrent
+/// wide [`crate::CodecRegistry`] and call from any number of concurrent
 /// requests; same input → same output regardless of history.
 ///
 /// Callers who specifically want context-aware encoding (e.g. a single
@@ -61,7 +61,7 @@ impl TitansLatentCodec {
     /// **Context-aware** Titans codec — keeps `message_history` and
     /// PRNG state across calls. Only use this for a single agent
     /// session you control end-to-end. Do **not** register in a shared
-    /// [`spine_protocol::CodecRegistry`] that might serve more than one tenant; that
+    /// [`crate::CodecRegistry`] that might serve more than one tenant; that
     /// would leak one user's content into another's embeddings via
     /// the moving-target morph.
     pub fn stateful(input_dim: usize, embed_dim: usize, heads: usize, seed: u64) -> Self {

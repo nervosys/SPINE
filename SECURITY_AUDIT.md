@@ -329,7 +329,7 @@ Focused on the families where SPINE has a concrete posture.
 | SC.L2-3.13.8      | **MET** — TLS in transit via rustls (0.23). |
 | SC.L2-3.13.10     | **PARTIAL** — Ed25519 keys are signed correctly but not zeroized in memory. |
 | SC.L2-3.13.11     | **PARTIAL FIPS** — algorithms approved by spec, modules not validated. See § 2. |
-| SC.L2-3.13.16     | **MET** — `EncodedFrame.metadata.source_hash` lets the receiver verify content integrity end-to-end. |
+| SC.L2-3.13.16     | **MET** — `EncodedFrame.metadata.source_hash` (research crate, not on the native wire) lets the receiver verify content integrity end-to-end. |
 | SI.L2-3.14.6/7    | **MET** — anomaly signal via Titans surprise scores in `spine-neural`. |
 
 **L2 verdict**: Substantial coverage with two deployer-actionable

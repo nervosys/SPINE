@@ -69,7 +69,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 - **Semantic Extraction**: Directly parses web content into structured representations without rendering pipelines.
 - **Binary Execution**: Treats websites as executable programs with instruction-based semantics.
 - **Adaptive Protocols (research)**: the Chameleon key with Titans neural memory, in `research/spine-protocol-research`. It is experimental and unreviewed, and the native wire does not use it.
-- **Latent Streaming**: Native support for streaming high-dimensional vectors (embeddings, latent representations) to agents.
+- **Latent Streaming (research)**: streaming high-dimensional vectors (embeddings, latent representations) is not on the native wire. `LatentVector` and the codec types live in `research/spine-protocol-research`.
 - **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats, and exposes an OpenAI-compatible `/v1/chat/completions` SSE endpoint so any existing LLM client can drive a SPINE stack without learning a new SDK.
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
 - **Long-Term Memory**: Persistent knowledge base with tagging, querying, and cross-cluster synchronization.
@@ -264,47 +264,28 @@ The protocol layer (`spine-protocol::agentic`) defines four families that an LLM
 | **Capability handshake** | `CapabilityQuery { selector }` → `CapabilityAdvertisement { capabilities }` | OpenAI tool list; MCP server `tools/list` |
 | **Distributed tracing** | `TraceContext { trace_id, span_id, flags, state }` attached inline | W3C `traceparent`; OpenTelemetry |
 
-\* `StreamToken::data` is `Text` | `Bytes` | `ToolCall` | `Encoded` — so function calling and **raw latent streaming** both fall out of the same frame without a second framing layer.
+\* `StreamToken::data` is `Text` | `Bytes` | `ToolCall` — so function calling and raw byte payloads fall out of the same frame without a second framing layer.
 
 The gateway crate ships an OpenAI-compatible bridge (`src/spine-gateway/src/agentic_sse.rs`):
 
 ```
 POST /v1/chat/completions              → SSE stream of OpenAI chat.completion.chunk
 GET  /v1/agentic/capabilities          → CapabilityAdvertisement as JSON
-POST /v1/embeddings                    → OpenAI-shaped embedding response, computed via the registered NeuralCodec
-GET  /v1/agentic/codecs                → CodecAdvertisement of registered encoder/decoder pairs
+POST /v1/embeddings                    → OpenAI-shaped embedding response (`research` feature only)
+GET  /v1/agentic/codecs                → advertisement of registered encoder/decoder pairs (`research` feature only)
 ```
 
-The default gateway build registers no codec: `GET /v1/agentic/codecs` lists none and `POST /v1/embeddings` answers `503 no codecs registered` until your deployment registers one on `agentic_sse::registry()`. Build with `--features research` to pre-register `TitansLatentCodec` (256-dim, f32, from `research/spine-protocol-research`) and default `model` to it.
+The codec routes do real work only in a gateway built with `--features research`, which pre-registers `TitansLatentCodec` (256-dim, f32, from `research/spine-protocol-research`) and defaults `model` to it. The default build keeps both routes registered and answers each with `503 Service Unavailable` and a message saying to rebuild with the `research` feature.
 
 `StreamEndReason` is the exact OpenAI/Anthropic finish-reason taxonomy (`stop`, `length`, `tool_calls`, `content_filter`, `cancelled`, `error`), so an existing SDK switches over a SPINE stream with no translator.
 
-## Neural Encoder-Decoder Protocols
+## Neural Encoder-Decoder Protocols (research)
 
-Text on the wire throws away both bandwidth and signal. SPINE makes the **latent form** a first-class payload — every encoded chunk carries its codec id, modality, shape, and dtype inline so the receiver can validate, decode, or forward without an out-of-band schema. The contract is defined in [`spine-protocol::agentic_codec`](src/spine-protocol/src/agentic_codec.rs).
+The neural-codec types are not part of the native protocol. `EncodedFrame`, `EncodedMetadata`, `CodecDescriptor`, `CodecAdvertisement`, `CodecNegotiation`, `EmbeddingRequest`, `EmbeddingResponse`, `Modality`, `DType`, `CodecError`, the `NeuralCodec` trait, `CodecRegistry`, `LatentVector` and `TitansLatentCodec` live in [`research/spine-protocol-research`](research/spine-protocol-research/README.md). `Message` carries none of them: the five codec variants (`Encoded`, `CodecAd`, `CodecNegotiation`, `EmbeddingRequest`, `EmbeddingResponse`) and `LatentMessage` were removed, as were `StreamData::Encoded` and `StreamStart::stream_codec`. They are recorded in that README as extension candidates for the wire's extension mechanism. `DecodeHints` stayed in `spine-protocol` and rides on `StreamStart`.
 
-| Family | Types | Purpose |
-|--------|-------|---------|
-| **Self-describing payload** | `EncodedFrame { codec, variant, data, metadata }` + `EncodedMetadata { modality, shape, dtype, original_len, source_hash }` | Every latent is its own schema. `declared_size_consistent()` is a one-line sanity check. |
-| **Codec discovery** | `CodecDescriptor { id, direction, modality, embedding_dim, vocab_size, dtype, semantic_embedding }` + `CodecAdvertisement` | Peers advertise what encoders/decoders they speak — match by id, by modality, or by semantic embedding. |
-| **Codec negotiation** | `CodecNegotiation { offered, accepted, reason }` | Either side offers a ranked list; the other picks one or falls back to plain text. |
-| **Decoder hints** | `DecodeHints { temperature, top_p, top_k, max_tokens, stop_sequences, repetition_penalty, presence_penalty, frequency_penalty, seed }` | Sampling parameters travel inline on `StreamStart`; field names match OpenAI/Anthropic so SDK knobs map 1:1. |
-| **Embedding endpoint** | `EmbeddingRequest { input: Text \| Texts \| Encoded, codec }` → `EmbeddingResponse { codec, embeddings: Vec<EncodedFrame> }` | OpenAI-compatible embed API at the wire level; `Encoded` input enables cross-codec transcoding. |
+Codec ids are stable URIs (e.g. `spine:codec/titans/v1@dim=256,dtype=f32`). `TitansLatentCodec` wraps `spine-neural::NeuralLatentEncoder` and is a real Titans projection of text into a fixed-width latent, not a stub.
 
-`Modality` covers `Text`, `Image`, `Audio`, `Video`, `Embedding`, `HiddenState`, `Multimodal`, `Other(String)`; `DType` covers `F32`, `F16`, `BF16`, `I8`, `U8`, `I16`, `I32`, `Q4`, `Q8`. Codec ids are stable URIs (e.g. `spine:codec/titans/v1@dim=256,dtype=f32`) so a peer's advertisement is decodable without prior knowledge.
-
-A symmetric runtime contract — `trait NeuralCodec { encode, decode, describe }` + `CodecRegistry` — sits alongside the types. The `research/spine-protocol-research` crate ships a working `TitansLatentCodec` (not part of `spine-protocol`) that wraps `spine-neural::NeuralLatentEncoder` so every layer of the protocol (advertise → negotiate → encode → decode) round-trips against a real Titans projector, not a stub. Streaming latents over the same wire that streams text:
-
-```rust
-StreamData::Encoded(EncodedFrame {
-    codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
-    metadata: EncodedMetadata { modality: Modality::HiddenState, shape: vec![256], dtype: DType::F32, .. },
-    data: latent_bytes,
-    ..
-})
-```
-
-**Benchmarked for agentic use** (`research/spine-protocol-research/benches/neural_codec_bench.rs`, moved from `spine-protocol`; re-measured 2026-06-08 before the move). The codec is a real Titans forward pass — a *semantic* projection of text into a fixed-width latent, not a memcpy — so encode cost scales with the projector and is the honest price of getting a latent: ~94 µs at dim 128, ~847 µs at dim 256, ~3.1 ms at dim 512, ~26 ms at dim 1024. The payoff is on the wire: the resulting self-describing `EncodedFrame` is **66–71 % smaller than its JSON form** (e.g. dim 256: 1241 B binary vs 3942 B JSON; dim 1024: 4314 B vs 14803 B), because the latent rides as a CBOR byte string instead of a JSON float array. The full agentic path (`codec.encode` → `wire::encode`) adds only the framing on top of the encode (e.g. 416 µs at dim 256).
+**Benchmarked for agentic use** (`research/spine-protocol-research/benches/neural_codec_bench.rs`, moved from `spine-protocol`; encode figures re-measured 2026-06-08 before the move). Encode cost scales with the projector and is the honest price of getting a latent: ~94 µs at dim 128, ~847 µs at dim 256, ~3.1 ms at dim 512, ~26 ms at dim 1024. The size figures (66–71 % smaller than JSON, e.g. dim 256: 1241 B binary vs 3942 B JSON; dim 1024: 4314 B vs 14803 B) were measured on the `Message::Encoded` frame before it was removed. The bench now serializes the bare frame with the CBOR codec, so re-run it before quoting a size.
 
 ## Core Components
 
@@ -967,7 +948,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 
 1. **AI-First**: Every design decision prioritizes AI agent efficiency over human rendering.
 2. **Binary Execution**: Websites are programs, not static documents.
-3. **Latent Representations**: Native support for streaming embeddings and high-dimensional vectors.
+3. **Latent Representations (research)**: embeddings and latent vectors are not on the native wire; they are extension candidates, recorded in `research/spine-protocol-research`.
 4. **Implicit Encryption**: High-dimensional projections provide encryption without explicit ciphertext.
 
 ## Roadmap

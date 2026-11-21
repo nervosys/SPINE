@@ -42,7 +42,6 @@ cargo test -p spine-protocol -- chaos
 | -------------------- | ---------------- | ------------------------ |
 | `fuzz_parse_html`    | Arbitrary HTML   | Parser crash resistance  |
 | `fuzz_frame_decode`  | Arbitrary bytes  | Frame decoder robustness |
-| `fuzz_latent_vector` | Arbitrary floats | Latent vector handling   |
 | `fuzz_message_deser` | Arbitrary JSON   | Message deserialization  |
 | `fuzz_frame_header`  | Arbitrary bytes  | Header parsing           |
 

@@ -20,7 +20,9 @@ dependency behind a `research` feature (`spine-gateway`).
   speak the native wire.
 - The protocol evolution framework (`ProtocolGenome`, `ProtocolPopulation`,
   `CoevolutionaryArena`, ...).
-- `TitansLatentCodec`: a `spine_protocol::NeuralCodec` over `spine-neural`'s
+- `LatentVector` and the neural-codec types (`EncodedFrame`, `CodecRegistry`, the
+  `NeuralCodec` trait, `EmbeddingRequest`, ...), moved here from `spine-protocol`.
+- `TitansLatentCodec`: a `NeuralCodec` over `spine-neural`'s
   `NeuralLatentEncoder`. The gateway registers it behind its own `research`
   feature.
 - Tests for `spine-nostd` and `spine-embedded` frame-header interop (they do not
@@ -30,7 +32,9 @@ dependency behind a `research` feature (`spine-gateway`).
 
 It uses only public items of `spine-protocol`, plus `spine-neural` and
 `spine-crypto`. Two small private helpers (`fresh_nonce`, `decode_zstd_limited`)
-are copied here rather than made public there.
+are copied here rather than made public there. The moved latent and codec types
+add `bincode`, `bytemuck` and `thiserror` (`spine-protocol` dropped `bincode`,
+`bytemuck` and `parking_lot`).
 
 ## Build
 
@@ -72,3 +76,39 @@ were the deleted `click` and `type_text`). `spine-core` dropped its optional
 `spine-neural` and `spine-agentic` dependencies, and `spine-agent`'s `research`
 feature dropped `spine-human`. The `Session` snapshot fields `history`,
 `last_command` and `autonomous_mode` are gone with them.
+
+## Extension candidates: `Message` variants removed from the core set
+
+Step 8 of the wire migration cut `Message` down to twelve variants (`Request`,
+`Response`, `Ping`, `Pong`, `ToolCall`, `ToolResult`, `StreamStart`,
+`StreamToken`, `StreamEnd`, `StreamCancel`, `CapabilityQuery`, `CapabilityAd`).
+The six neural-codec variants left the core. The types they carried moved here
+(`LatentVector` in `latent.rs`; the codec types, the `NeuralCodec` trait and
+`CodecRegistry` in `neural_codec.rs`), and the variants are recorded below so a
+neural-codec extension can carry them on `EXT` frames once there is a carrier.
+Payloads are the old serde shapes (externally tagged JSON as `Message`, CBOR on
+the native wire).
+
+| Old variant | Payload | Meaning |
+| --- | --- | --- |
+| `LatentMessage` | `LatentVector { components: Vec<f32>, dim_hint: u16, epoch: u64 }` | One latent vector. The daemon sent one per `latent_streams` entry after the `Response` to an `ExecuteBinary`, with `dim_hint: 0, epoch: 0`. The SDK forwarded `components` to `start_listener`/`subscribe_latent` receivers. Both are gone. The response to `ExecuteBinary` still reports `latent_streams_count`. |
+| `Encoded` | `EncodedFrame { codec, variant, data, metadata: EncodedMetadata { modality, shape, dtype, original_len, source_hash }, trace }` | A self-describing latent payload. |
+| `CodecAd` | `CodecAdvertisement { id, agent_id, codecs: Vec<CodecDescriptor> }` | Which encoders and decoders the sender speaks; the answer to a `CapabilityQuery` with selector `Exact("spine:codecs")`, or an unsolicited push. |
+| `CodecNegotiation` | `CodecNegotiation { id, offered, accepted, reason }` | Offer and select handshake: the offerer sends a ranked list and the responder echoes `id` with `accepted` set. |
+| `EmbeddingRequest` | `EmbeddingRequest { id, input: Text \| Texts \| Encoded, codec, trace }` | "Embed this for me." `Encoded` input asks for a transcode. |
+| `EmbeddingResponse` | `EmbeddingResponse { id, codec, embeddings: Vec<EncodedFrame>, trace }` | One frame per input element. |
+
+Two stream fields went the same way: `StreamData::Encoded(EncodedFrame)` (a latent
+chunk inside a token stream) and `StreamStart::stream_codec` (the codec the
+producer will use for those chunks, so the receiver can resolve it once).
+`StreamStart::decode_hints` and `DecodeHints` stayed in `spine-protocol`.
+
+Two variants were deleted outright, not recorded as extension candidates, because
+nothing produced them any more: `Event` (a name and a JSON value; the daemon never
+sent one and the SDK only forwarded it) and `BinaryProgram(SpineBinary)` (a
+duplicate of `BrowserCommand::ExecuteBinary`). The `Event` struct went with the
+variant.
+
+The gateway serves `POST /v1/embeddings` and `GET /v1/agentic/codecs` from the
+types here, behind its own `research` feature. A gateway built without the
+feature answers both routes with `503 Service Unavailable`.

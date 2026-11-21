@@ -18,7 +18,7 @@ use spine_nostd::hash::{fnv1a_32, fnv1a_64};
 use spine_nostd::math::{cosine_similarity_fixed, dot_product_fixed};
 use spine_nostd::types::{AgentIdBytes, FrameHeader, LatentVectorFixed};
 use spine_parser::parse_html;
-use spine_protocol::{LatentVector, Message, ProtocolHandler};
+use spine_protocol::{Message, ProtocolHandler};
 use std::time::Instant;
 
 fn demo_parser() {
@@ -122,12 +122,10 @@ fn demo_protocol() {
             },
         ),
         (
-            "LatentVector",
-            Message::LatentMessage(LatentVector {
-                components: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-                dim_hint: 8,
-                epoch: 1,
-            }),
+            "Pong",
+            Message::Pong {
+                timestamp: 1234567891,
+            },
         ),
     ];
 

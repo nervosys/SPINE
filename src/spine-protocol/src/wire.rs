@@ -351,9 +351,11 @@ mod tests {
     fn encode_never_compresses_but_encode_compressed_can() {
         // A large, compressible payload: plain `encode` stays CBOR (fast path);
         // `encode_compressed` selects CBOR+zstd and `decode` reads both.
-        let big = Message::Event(crate::Event {
-            name: "large".to_string(),
-            data: serde_json::json!({ "payload": "x".repeat(8192) }),
+        let big = Message::ToolCall(crate::ToolCall {
+            id: "large".to_string(),
+            name: "payload".to_string(),
+            args: serde_json::json!({ "payload": "x".repeat(8192) }),
+            trace: None,
         });
         let plain = encode(&big).unwrap();
         assert_eq!(plain[3], FORMAT_CBOR, "encode must never auto-compress");

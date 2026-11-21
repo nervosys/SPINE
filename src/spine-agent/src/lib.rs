@@ -6,7 +6,6 @@ use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
 use tracing::instrument;
 pub mod resources;
@@ -20,8 +19,6 @@ pub struct AgentClient<S> {
     /// Public handler for direct framed send and receive.
     pub handler: ProtocolHandler<S>,
     request_counter: u64,
-    latent_tx: Option<mpsc::Sender<Vec<f32>>>,
-    event_tx: Option<mpsc::Sender<spine_protocol::Event>>,
 }
 
 impl AgentClient<TcpStream> {
@@ -34,8 +31,6 @@ impl AgentClient<TcpStream> {
         Ok(Self {
             handler,
             request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
         })
     }
 
@@ -162,8 +157,6 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
         Ok(Self {
             handler,
             request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
         })
     }
 
@@ -212,8 +205,6 @@ impl AgentClient<spine_transport::WebSocketClientStream> {
         Ok(Self {
             handler,
             request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
         })
     }
 }
@@ -222,21 +213,6 @@ impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    pub async fn start_listener(
-        &mut self,
-    ) -> (
-        mpsc::Receiver<Vec<f32>>,
-        mpsc::Receiver<spine_protocol::Event>,
-    ) {
-        let (latent_tx, latent_rx) = mpsc::channel(100);
-        let (event_tx, event_rx) = mpsc::channel(100);
-
-        self.latent_tx = Some(latent_tx);
-        self.event_tx = Some(event_tx);
-
-        (latent_rx, event_rx)
-    }
-
     pub async fn capabilities(
         &mut self,
     ) -> anyhow::Result<spine_protocol::CapabilityAdvertisement> {
@@ -314,21 +290,9 @@ where
         };
         self.handler.send_message(&Message::Request(req)).await?;
 
-        // If we have a listener, we should wait for the response via a channel.
-        // For now, we'll keep the simple loop if no listener is active.
         loop {
             match self.handler.receive_message().await? {
                 Message::Response(res) if res.id == id => return Ok(res),
-                Message::LatentMessage(vec) => {
-                    if let Some(tx) = &self.latent_tx {
-                        let _ = tx.send(vec.components).await;
-                    }
-                }
-                Message::Event(ev) => {
-                    if let Some(tx) = &self.event_tx {
-                        let _ = tx.send(ev).await;
-                    }
-                }
                 _ => continue,
             }
         }
@@ -435,19 +399,6 @@ where
                 .ok_or_else(|| anyhow::anyhow!("Missing result in response"))?,
         )?;
         Ok(result)
-    }
-
-    /// Subscribe to latent streams from the core
-    pub async fn subscribe_latent(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<f32>>> {
-        if let Some(_tx) = &self.latent_tx {
-            // This is a bit tricky since we can only have one receiver for the channel.
-            // In a real implementation, we'd use a broadcast channel or multiple subscribers.
-            anyhow::bail!("Already subscribed to latent stream");
-        }
-
-        let (tx, rx) = mpsc::channel(100);
-        self.latent_tx = Some(tx);
-        Ok(rx)
     }
 
     pub async fn store_knowledge(
@@ -734,17 +685,6 @@ mod tests {
             Message::Ping { timestamp } => assert_eq!(timestamp, 1234567890),
             _ => panic!("Expected Ping variant"),
         }
-    }
-
-    #[test]
-    fn test_latent_message() {
-        let msg = Message::LatentMessage(spine_protocol::LatentVector {
-            components: vec![0.1, 0.2, 0.3],
-            dim_hint: 3,
-            epoch: 0,
-        });
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("0.1"));
     }
 
     #[tokio::test]

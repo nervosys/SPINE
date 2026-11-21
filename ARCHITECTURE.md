@@ -196,8 +196,6 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 
 - **Request**: Agent → Core (commands like Navigate, GetUR)
 - **Response**: Core → Agent (results or errors)
-- **Event**: Core → Agent (async notifications like page load completion)
-- **BinaryProgram**: Agent → Core (HLB execution request)
 
 **Processing Pipeline**:
 

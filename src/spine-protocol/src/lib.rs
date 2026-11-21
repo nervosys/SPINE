@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 
 pub mod agentic;
-pub mod agentic_codec;
 pub mod cbor;
 pub mod connection;
 pub mod frame;
@@ -17,14 +16,9 @@ mod handler;
 pub use handler::*;
 
 pub use agentic::{
-    Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamCancel,
-    StreamData, StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken, StreamUsage,
-    ToolCall, ToolOutcome, ToolResult, TraceContext,
-};
-pub use agentic_codec::{
-    CodecAdvertisement, CodecDescriptor, CodecDirection, CodecError, CodecNegotiation,
-    CodecRegistry, DType, DecodeHints, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
-    EncodedFrame, EncodedMetadata, Modality, NeuralCodec,
+    Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, DecodeHints,
+    StreamCancel, StreamData, StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken,
+    StreamUsage, ToolCall, ToolOutcome, ToolResult, TraceContext,
 };
 
 use serde::{Deserialize, Serialize};
@@ -107,101 +101,6 @@ async fn write_header_body_inner<W: AsyncWrite + Unpin + ?Sized>(
 }
 
 // =============================================================================
-// LATENT VECTORS
-// =============================================================================
-//
-// A latent vector is a payload type, not a security feature. The Chameleon key
-// that used to transform it lives in `research/spine-protocol-research` and is
-// not on the native wire. Use an authenticated transport for private sessions.
-
-/// A point in the latent space. The dimensionality and basis evolve per-message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LatentVector {
-    /// The high-dimensional representation
-    pub components: Vec<f32>,
-    /// Dimension hint (can be misleading as part of obfuscation)
-    pub dim_hint: u16,
-    /// Epoch number for transformation alignment
-    pub epoch: u64,
-}
-
-impl LatentVector {
-    /// Zero-copy serialization to bytes (22+ GiB/s for 1024-dim vectors)
-    /// Layout: [dim_hint: u16][epoch: u64][components: [f32; N]]
-    #[inline]
-    pub fn to_bytes_fast(&self) -> Vec<u8> {
-        let component_bytes = self.components.len() * 4;
-        let total = 2 + 8 + component_bytes;
-        let mut buf = Vec::with_capacity(total);
-
-        buf.extend_from_slice(&self.dim_hint.to_le_bytes());
-        buf.extend_from_slice(&self.epoch.to_le_bytes());
-        // SAFETY: f32 has no padding, transmute is valid
-        buf.extend_from_slice(bytemuck::cast_slice(&self.components));
-
-        buf
-    }
-
-    /// Zero-copy deserialization from bytes
-    #[inline]
-    pub fn from_bytes_fast(data: &[u8]) -> Option<Self> {
-        if data.len() < 10 {
-            return None;
-        }
-
-        let dim_hint = u16::from_le_bytes([data[0], data[1]]);
-        let epoch = u64::from_le_bytes(data[2..10].try_into().ok()?);
-
-        let component_bytes = &data[10..];
-        if !component_bytes.len().is_multiple_of(4) {
-            return None;
-        }
-
-        // Use try_cast_slice to handle unaligned data gracefully
-        let components: Vec<f32> = match bytemuck::try_cast_slice(component_bytes) {
-            Ok(s) => s.to_vec(),
-            Err(_) => component_bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|c| f32::from_le_bytes(*c))
-                .collect(),
-        };
-
-        Some(Self {
-            components,
-            dim_hint,
-            epoch,
-        })
-    }
-
-    /// Serialize to bytes into pre-allocated buffer (zero-alloc hot path)
-    #[inline]
-    pub fn to_bytes_into(&self, buf: &mut Vec<u8>) {
-        let component_bytes = self.components.len() * 4;
-        let total = 2 + 8 + component_bytes;
-        buf.clear();
-        buf.reserve(total);
-
-        buf.extend_from_slice(&self.dim_hint.to_le_bytes());
-        buf.extend_from_slice(&self.epoch.to_le_bytes());
-        buf.extend_from_slice(bytemuck::cast_slice(&self.components));
-    }
-
-    /// Bincode serialization (fallback, ~5x faster than JSON)
-    #[inline]
-    pub fn to_bincode(&self) -> Result<Vec<u8>, bincode::Error> {
-        bincode::serialize(self)
-    }
-
-    /// Bincode deserialization
-    #[inline]
-    pub fn from_bincode(data: &[u8]) -> Result<Self, bincode::Error> {
-        bincode::deserialize(data)
-    }
-}
-
-// =============================================================================
 // MESSAGE TYPES
 // =============================================================================
 
@@ -209,10 +108,6 @@ impl LatentVector {
 pub enum Message {
     Request(Request),
     Response(Response),
-    Event(Event),
-    BinaryProgram(SpineBinary),
-    /// Latent-encoded message (implicit encryption)
-    LatentMessage(LatentVector),
     /// Health check to verify connection
     Ping {
         timestamp: u64,
@@ -239,18 +134,6 @@ pub enum Message {
     CapabilityQuery(CapabilityQuery),
     /// Capability handshake response.
     CapabilityAd(CapabilityAdvertisement),
-
-    // ----- Neural encoder-decoder protocols (see crate::agentic_codec) -----
-    /// Self-describing latent payload (codec + shape + dtype inline).
-    Encoded(EncodedFrame),
-    /// What encoders/decoders the sender speaks.
-    CodecAd(CodecAdvertisement),
-    /// Offer/accept handshake for codec selection.
-    CodecNegotiation(CodecNegotiation),
-    /// "Embed this for me." Request.
-    EmbeddingRequest(EmbeddingRequest),
-    /// Embedding response (one [`EncodedFrame`] per input element).
-    EmbeddingResponse(EmbeddingResponse),
 }
 
 /// Virtual DOM patch for incremental updates
@@ -587,12 +470,6 @@ pub struct Response {
     pub id: String,
     pub result: Option<serde_json::Value>,
     pub error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Event {
-    pub name: String,
-    pub data: serde_json::Value,
 }
 
 // =============================================================================

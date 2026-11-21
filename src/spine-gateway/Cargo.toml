@@ -47,11 +47,10 @@ rustls = { workspace = true }
 [features]
 default = []
 
-# Restore the research codec: the process-wide registry is pre-populated with
-# `TitansLatentCodec` (256-dim, f32) and `POST /v1/embeddings` defaults to it.
+# Restore the research codec routes: `POST /v1/embeddings` and `GET /v1/agentic/codecs`,
+# backed by a process-wide registry pre-populated with `TitansLatentCodec` (256-dim, f32).
 # Needs `spine-protocol-research` (and through it spine-neural and spine-crypto). Without
-# it the registry starts empty (codecs list is empty, embeddings answer 503
-# until the deployment registers a codec).
+# it both routes stay registered and answer 503 with a message to rebuild with this feature.
 research = ["dep:spine-protocol-research"]
 
 # Compile spine-gateway against the FIPS-shaped rustls provider stack.

@@ -7,9 +7,7 @@
 //! - Bidirectional interleaved messaging
 //! - Stress testing
 
-use spine_protocol::{
-    BrowserCommand, Event, LatentVector, Message, ProtocolHandler, Request, Response,
-};
+use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response};
 /// Create a pair of ProtocolHandlers connected via in-process duplex stream
 fn handler_pair() -> (
     ProtocolHandler<tokio::io::DuplexStream>,
@@ -82,34 +80,6 @@ async fn protocol_plaintext_ping_pong() {
         .unwrap();
     let received = client.receive_message().await.unwrap();
     assert!(matches!(received, Message::Pong { timestamp: 42 }));
-}
-
-#[tokio::test]
-async fn protocol_plaintext_latent_vector() {
-    let (mut client, mut server) = handler_pair();
-
-    let vec = LatentVector {
-        components: vec![1.0, 2.0, 3.0, 4.0],
-        dim_hint: 4,
-        epoch: 7,
-    };
-    client
-        .send_message_raw(&Message::LatentMessage(vec.clone()))
-        .await
-        .unwrap();
-    let received = server.receive_message().await.unwrap();
-
-    match received {
-        Message::LatentMessage(v) => {
-            assert_eq!(v.components, vec.components);
-            assert_eq!(v.dim_hint, 4);
-            assert_eq!(v.epoch, 7);
-        }
-        other => panic!(
-            "Expected LatentMessage, got {:?}",
-            std::mem::discriminant(&other)
-        ),
-    }
 }
 
 // ========== CONCURRENT SESSIONS ==========
@@ -224,15 +194,12 @@ async fn protocol_bidirectional_interleaved() {
         _ => panic!("expected Response"),
     }
 
-    // Now server initiates (event)
+    // Now server initiates (a ping)
     server
-        .send_message_raw(&Message::Event(Event {
-            name: "navigation".into(),
-            data: serde_json::json!({"url": "https://test.com"}),
-        }))
+        .send_message_raw(&Message::Ping { timestamp: 9 })
         .await
         .unwrap();
 
-    let event = client.receive_message().await.unwrap();
-    assert!(matches!(event, Message::Event(_)));
+    let ping = client.receive_message().await.unwrap();
+    assert!(matches!(ping, Message::Ping { timestamp: 9 }));
 }

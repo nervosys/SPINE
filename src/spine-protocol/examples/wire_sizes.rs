@@ -10,8 +10,7 @@
 use serde_json::json;
 use spine_protocol::wire;
 use spine_protocol::{
-    Capability, CapabilityAdvertisement, DType, EncodedFrame, EncodedMetadata, Message, Modality,
-    StreamData, StreamToken, ToolCall,
+    Capability, CapabilityAdvertisement, Message, StreamData, StreamToken, ToolCall,
 };
 
 fn row(label: &str, msg: &Message) {
@@ -72,19 +71,12 @@ fn main() {
         .map(|i| (i.wrapping_mul(31) % 251) as u8)
         .collect();
     row(
-        "EncodedFrame/emb",
-        &Message::Encoded(EncodedFrame {
-            codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
-            variant: Some("layer=11".into()),
-            data: embedding,
-            metadata: EncodedMetadata {
-                modality: Modality::Embedding,
-                shape: vec![256],
-                dtype: DType::F32,
-                original_len: Some(4096),
-                source_hash: Some([0xAB; 32]),
-            },
-            trace: None,
+        "StreamToken/emb",
+        &Message::StreamToken(StreamToken {
+            id: "stream-7f3a".into(),
+            seq: 1,
+            data: StreamData::Bytes(embedding),
+            usage: None,
         }),
     );
 

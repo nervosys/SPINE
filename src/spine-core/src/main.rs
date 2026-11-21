@@ -533,11 +533,10 @@ async fn handle_command(
     session_id: &str,
     command: BrowserCommand,
     request_id: String,
-) -> (Response, Vec<Vec<f32>>) {
+) -> Response {
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
 
-    let mut latent_to_stream = Vec::new();
     let response = match command {
         BrowserCommand::NamespaceStatus => {
             let result = match &state.mesh_names {
@@ -664,14 +663,11 @@ async fn handle_command(
             // One round trip for the whole batch. Each name resolves
             // independently, so a single bad name never fails the others.
             if names.len() > 256 {
-                return (
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("resolution batch exceeds 256 names".into()),
-                    },
-                    Vec::new(),
-                );
+                return Response {
+                    id: request_id,
+                    result: None,
+                    error: Some("resolution batch exceeds 256 names".into()),
+                };
             }
             let mut results = Vec::with_capacity(names.len());
             for batch in names.chunks(16) {
@@ -688,14 +684,11 @@ async fn handle_command(
                     match task.await {
                         Ok(result) => results.push(result),
                         Err(_) => {
-                            return (
-                                Response {
-                                    id: request_id,
-                                    result: None,
-                                    error: Some("resolution task failed".into()),
-                                },
-                                Vec::new(),
-                            )
+                            return Response {
+                                id: request_id,
+                                result: None,
+                                error: Some("resolution task failed".into()),
+                            }
                         }
                     }
                 }
@@ -737,16 +730,11 @@ async fn handle_command(
                                     }
                                 }
                                 Err(e) => {
-                                    return (
-                                        Response {
-                                            id: request_id,
-                                            result: None,
-                                            error: Some(format!(
-                                                "capability lookup unavailable: {e}"
-                                            )),
-                                        },
-                                        Vec::new(),
-                                    )
+                                    return Response {
+                                        id: request_id,
+                                        result: None,
+                                        error: Some(format!("capability lookup unavailable: {e}")),
+                                    }
                                 }
                             }
                         }
@@ -785,14 +773,11 @@ async fn handle_command(
                 // record is rejected here rather than becoming servable state.
                 Ok(record) => {
                     if record.is_expired(unix_now()) {
-                        return (
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some("record is expired".into()),
-                            },
-                            Vec::new(),
-                        );
+                        return Response {
+                            id: request_id,
+                            result: None,
+                            error: Some("record is expired".into()),
+                        };
                     }
                     match state.names.publish(record.clone()) {
                         Ok(()) => {
@@ -939,14 +924,11 @@ async fn handle_command(
                         session.current_vdom = None;
                         session.cached_ur = None; // Invalidate cached UR on navigation
                     } else {
-                        return (
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some("Session expired".into()),
-                            },
-                            Vec::new(),
-                        );
+                        return Response {
+                            id: request_id,
+                            result: None,
+                            error: Some("Session expired".into()),
+                        };
                     }
                     Response {
                         id: request_id,
@@ -1035,14 +1017,11 @@ async fn handle_command(
                         // Allowed by default for now
                     }
                     _ => {
-                        return (
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some(format!("Unauthorized or unknown capability: {}", cap)),
-                            },
-                            Vec::new(),
-                        );
+                        return Response {
+                            id: request_id,
+                            result: None,
+                            error: Some(format!("Unauthorized or unknown capability: {}", cap)),
+                        };
                     }
                 }
             }
@@ -1057,18 +1036,13 @@ async fn handle_command(
             let result = match state.wasm_runtime.execute(&bin) {
                 Ok(result) => result,
                 Err(e) => {
-                    return (
-                        Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("execution failed: {e}")),
-                        },
-                        Vec::new(),
-                    );
+                    return Response {
+                        id: request_id,
+                        result: None,
+                        error: Some(format!("execution failed: {e}")),
+                    };
                 }
             };
-
-            latent_to_stream = result.latent_streams.clone();
 
             // Update session VDOM and compute patches
             let new_vdom = VirtualDom::from_wasm(&result);
@@ -1256,7 +1230,7 @@ async fn handle_command(
     };
 
     timer.observe_duration();
-    (response, latent_to_stream)
+    response
 }
 
 #[tokio::main]
@@ -2162,26 +2136,10 @@ where
                     continue;
                 }
 
-                let (res, latent_to_stream) =
-                    handle_command(&state, &id, req.command, req.id).await;
+                let res = handle_command(&state, &id, req.command, req.id).await;
 
                 if let Err(e) = handler.send_message(&Message::Response(res)).await {
                     error!("Failed to send response: {}", e);
-                }
-
-                // Stream any latent vectors produced
-                for vector in latent_to_stream {
-                    let latent_msg = spine_protocol::LatentVector {
-                        components: vector,
-                        dim_hint: 0,
-                        epoch: 0,
-                    };
-                    if let Err(e) = handler
-                        .send_message(&Message::LatentMessage(latent_msg))
-                        .await
-                    {
-                        error!("Failed to stream latent vector: {}", e);
-                    }
                 }
             }
             Ok(_) => {}
