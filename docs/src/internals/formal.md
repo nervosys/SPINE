@@ -6,7 +6,7 @@ SPINE uses multiple formal verification techniques to ensure correctness of crit
 
 **File**: `formal/tla/ChameleonProtocol.tla`
 
-Models the Chameleon Protocol state machine with:
+Models the Chameleon Protocol state machine (experimental code in `research/spine-protocol-research`, not on the native wire) with:
 - Epoch monotonicity invariant
 - Synchronized evolution between peers
 - Morphology abstraction for latent-space transformations

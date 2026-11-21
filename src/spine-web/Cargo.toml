@@ -49,11 +49,11 @@ spine-k8s       = { path = "../../research/spine-k8s",       version = "2.0.2", 
 default = ["protocol", "transport", "agent", "name"]
 
 # Every research crate except the heavy backends (`gpu`, `k8s`), plus the
-# research code paths of the stable crates that have them. Pulls in spine-neural
-# and spine-crypto (through `spine-protocol/research`), spine-agentic,
+# research code paths of the stable crates that have them. Pulls in spine-neural,
+# spine-crypto, spine-agentic,
 # spine-human and spine-cluster, and the rest of research/.
 research = [
-    "protocol", "spine-protocol/research",
+    "protocol",
     "spine-agent?/research", "spine-core?/research",
     "neural", "crypto", "agentic", "cluster", "human", "recursive",
     "knowledge", "kernel", "mechgen",

@@ -19,7 +19,7 @@ pub use spine_compiler::Compiler;
 pub use spine_transport::WebSocketClientStream;
 
 pub struct AgentClient<S> {
-    /// Public handler for advanced protocol operations (Chameleon, etc.)
+    /// Public handler for direct framed send and receive.
     pub handler: ProtocolHandler<S>,
     request_counter: u64,
     latent_tx: Option<mpsc::Sender<Vec<f32>>>,

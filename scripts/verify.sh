@@ -71,12 +71,12 @@ set -uo pipefail
 #
 # `research/` is not covered by this script; run it there with
 # `cd research && cargo test --workspace --exclude spine-browser --lib --tests`.
-# Unchanged when spine-protocol's `research` feature left its defaults: no test
-# target went away (chaos, e2e_protocol, integration, proptest_protocol,
-# wire_encoding and the lib and doctest targets all still build; only the
-# `#[cfg(feature = "research")]` tests inside them stopped running here, so the
-# passed count falls but the suite count does not). CI runs them with
-# `cargo test -p spine-protocol --features research --lib --tests`.
+# Unchanged when spine-protocol lost its `research` feature: no test target went
+# away (chaos, e2e_protocol, integration, proptest_protocol, wire_encoding and the
+# lib and doctest targets all still build). The passed count falls: the PSK AES
+# and chameleon tests were deleted and the chameleon property tests and the
+# spine-nostd interop tests moved to research/spine-protocol-research, which the
+# `research` CI job runs.
 EXPECTED_SUITES_MIN=45
 # 5 -> 3: all five ignored tests are `ignore`-fenced doctests. Two (research)
 # left with the move: research/spine-cluster/src/marketplace.rs:27 and

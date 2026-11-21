@@ -16,18 +16,11 @@ pub mod wire;
 mod handler;
 pub use handler::*;
 
-#[cfg(feature = "research")]
-mod research;
-#[cfg(feature = "research")]
-pub use research::*;
-
 pub use agentic::{
     Capability, CapabilityAdvertisement, CapabilityQuery, CapabilitySelector, StreamCancel,
     StreamData, StreamEnd, StreamEndReason, StreamRole, StreamStart, StreamToken, StreamUsage,
     ToolCall, ToolOutcome, ToolResult, TraceContext,
 };
-#[cfg(feature = "research")]
-pub use agentic_codec::TitansLatentCodec;
 pub use agentic_codec::{
     CodecAdvertisement, CodecDescriptor, CodecDirection, CodecError, CodecNegotiation,
     CodecRegistry, DType, DecodeHints, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
@@ -114,17 +107,12 @@ async fn write_header_body_inner<W: AsyncWrite + Unpin + ?Sized>(
 }
 
 // =============================================================================
-// CHAMELEON PROTOCOL
+// LATENT VECTORS
 // =============================================================================
 //
-// Experimental adaptive representation and compression. Vector transforms
-// and moving headers do not establish confidentiality or cryptographic
-// authenticity. Use an authenticated transport for private sessions; these
-// research codecs are not substitutes for TLS or reviewed AEAD.
-
-// =============================================================================
-// LATENT SPACE CRYPTOGRAPHY
-// =============================================================================
+// A latent vector is a payload type, not a security feature. The Chameleon key
+// that used to transform it lives in `research/spine-protocol-research` and is
+// not on the native wire. Use an authenticated transport for private sessions.
 
 /// A point in the latent space. The dimensionality and basis evolve per-message.
 #[derive(Debug, Clone, Serialize, Deserialize)]

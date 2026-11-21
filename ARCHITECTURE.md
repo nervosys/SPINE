@@ -13,7 +13,7 @@ SPINE is a headless semantic browser and native communication stack designed for
 │  • spine-agent: High-level SDK for AI applications  │
 └────────────────────┬─────────────────────────────────────┘
                      │
-                     │ Chameleon Protocol
+                     │ Native wire (SP body, zstd, fixed frame)
                      │
 ┌────────────────────▼─────────────────────────────────────┐
 │                  Protocol Layer                          │
@@ -170,11 +170,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 
 **Purpose**: Low-latency, secure communication protocol between agents and the core.
 
-**Chameleon Protocol**:
-
-- **Latent-Space Cryptography**: Messages are projected into a high-dimensional latent space using `spine-neural`.
-- **Per-message key evolution**: The latent encoder's key evolves with each message. The frame header is fixed (`u32` big-endian length, then `0x00`) and there is no padding.
-- **Quantum-Resistant**: Uses Ring-LWE lattice-based cryptography from `spine-crypto` for key evolution.
+**Research, not in this crate**: the Chameleon key (latent-space encoding with per-message key evolution, `ChameleonKey`), `SpineConnection`, the protocol evolution framework and `TitansLatentCodec` are in the experimental, unreviewed `research/spine-protocol-research` crate. `spine-protocol` has no dependency on `spine-neural` or `spine-crypto`. The frame header is fixed (`u32` big-endian length, then `0x00`) and there is no padding.
 
 **Message Format**:
 
@@ -185,7 +181,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 └─────────────────┴──────────────────────────┘
 ```
 
-**Encryption Layer**:
+**Encryption Layer** (the mesh and session layers, not `ProtocolHandler`, which does no sealing; confidentiality on the client wire comes from TLS):
 
 - Algorithm: AES-256-GCM (Authenticated Encryption with Associated Data)
 - Key Exchange: X3DH (Extended Triple Diffie-Hellman) for initial trust establishment
@@ -391,7 +387,6 @@ This is essential for:
 
 ```rust
 let mut client = AgentClient::connect("127.0.0.1:8080").await?;
-client.handler.enable_encryption(key);
 
 // Navigate to a website
 client.navigate("https://example.com").await?;
@@ -554,7 +549,7 @@ let variant = if anomaly > threshold * 2.0 {
 
 **MIRAS Integration Points**:
 
-1. **ChameleonKey (spine-protocol)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
+1. **ChameleonKey (research/spine-protocol-research)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
 2. **MirasTitansPredictor (spine-crypto)**: Dual-track surprise monitoring from both Titans and MIRAS encoders.
 3. **MirasNeuralEncoder (spine-neural)**: Core MIRAS memory implementations (YAAD, MONETA, MEMORA).
 
@@ -566,9 +561,9 @@ let combined_surprise = (titans_surprise + miras_surprise) / 2.0;
 
 This enables more robust anomaly detection by combining Titans' byte-level predictions with MIRAS's latent-space pattern recognition.
 
-### Chameleon Protocol
+### Chameleon Protocol (research, off the wire)
 
-A moving-target defense protocol that hides communication patterns in latent space.
+An experimental, unreviewed idea in `research/spine-protocol-research` that would hide communication patterns in latent space. It is not part of the native wire and is not a confidentiality mechanism.
 1. Messages are encoded into high-dimensional vectors using the `NeuralLatentEncoder`.
 2. The latent space is dynamically morphed using quantum-resistant seeds.
 3. To an outside observer, the traffic appears as random noise or a different protocol entirely.
@@ -707,7 +702,7 @@ Agents maintain persistent knowledge with embedding-based retrieval for similari
 
 | Agentic Layer   | SPINE Component | Purpose                                        |
 | --------------- | --------------- | ---------------------------------------------- |
-| Transport       | spine-protocol  | QUIC/TCP with Chameleon encryption             |
+| Transport       | spine-protocol  | QUIC/TCP framing (Chameleon is research-only)  |
 | Neural Encoding | spine-neural    | VAE + MIRAS latent projections                 |
 | Prediction      | spine-crypto    | Titans predictor (library only, not on the wire) |
 | Planning        | spine-compiler  | HLS→HLB for executable plans                   |

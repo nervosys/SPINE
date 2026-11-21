@@ -47,7 +47,7 @@ The name SPINE reflects the bioinspired principles at its core:
 - **Synaptic Communication**: Neural-inspired message passing with Titans architecture
 - **Adaptive Signal Routing**: Like biological spinal cords routing signals between brain and body
 - **Distributed Processing**: Swarm intelligence mimicking neural population coding
-- **Moving-Target Defense**: Chameleon Protocol inspired by biological camouflage
+- **Moving-Target Defense (research)**: the Chameleon key, inspired by biological camouflage, in `research/spine-protocol-research`; not on the native wire
 - **Memory Consolidation**: MIRAS variants implementing continual learning like hippocampal replay
 
 ## Why a Headless Semantic Browser?
@@ -59,7 +59,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 | Documents for human reading            | Programs for AI execution                |
 | Rendering-first (DOM → Layout → Paint) | Semantics-first (UR extraction)          |
 | Stateless request/response             | Persistent neural memory                 |
-| Static protocols (fingerprintable)     | Moving-target defense (Chameleon)        |
+| Static protocols (fingerprintable)     | Moving-target research (Chameleon, off the wire) |
 | Single-agent browsing                  | Multi-agent swarm coordination           |
 | No neural nets                         | Titans architecture (test-time training) |
 
@@ -68,7 +68,7 @@ The traditional web stack (HTTP/HTML/CSS/JS) serves humans well, but AI agents n
 - **Agentic-First Framing**: Tool calls, token streams, capability handshakes, and W3C trace context are first-class [`Message`](src/spine-protocol/src/agentic.rs) variants — not JSON glued on top of HTTP after the fact. See *Agentic-First Primitives* below.
 - **Semantic Extraction**: Directly parses web content into structured representations without rendering pipelines.
 - **Binary Execution**: Treats websites as executable programs with instruction-based semantics.
-- **Adaptive Protocols**: Chameleon Protocol with Titans neural memory for moving-target defense.
+- **Adaptive Protocols (research)**: the Chameleon key with Titans neural memory, in `research/spine-protocol-research`. It is experimental and unreviewed, and the native wire does not use it.
 - **Latent Streaming**: Native support for streaming high-dimensional vectors (embeddings, latent representations) to agents.
 - **Human Compatibility**: Transpiles legacy web content (HTML/CSS/JS) into AI-native formats, and exposes an OpenAI-compatible `/v1/chat/completions` SSE endpoint so any existing LLM client can drive a SPINE stack without learning a new SDK.
 - **Distributed Swarm Intelligence**: Skill-based task routing, DAG dependency tracking, and consensus-based knowledge sharing across agent clusters.
@@ -255,7 +255,7 @@ module docs state the threat model and its known limits.
 
 ## Agentic-First Primitives
 
-The protocol layer (`spine-protocol::agentic`) defines four families that an LLM-agent stack needs at the wire level. Every type is `serde`-round-trippable, lands on the same encrypted Chameleon path as the rest of SPINE, and is also reachable over plain HTTPS through the gateway.
+The protocol layer (`spine-protocol::agentic`) defines four families that an LLM-agent stack needs at the wire level. Every type is `serde`-round-trippable, rides the same frames as the rest of SPINE, and is also reachable over plain HTTPS through the gateway.
 
 | Primitive | Frames | Maps to |
 |-----------|--------|---------|
@@ -275,7 +275,7 @@ POST /v1/embeddings                    → OpenAI-shaped embedding response, com
 GET  /v1/agentic/codecs                → CodecAdvertisement of registered encoder/decoder pairs
 ```
 
-The default gateway build registers no codec: `GET /v1/agentic/codecs` lists none and `POST /v1/embeddings` answers `503 no codecs registered` until your deployment registers one on `agentic_sse::registry()`. Build with `--features research` to pre-register `TitansLatentCodec` (256-dim, f32) and default `model` to it.
+The default gateway build registers no codec: `GET /v1/agentic/codecs` lists none and `POST /v1/embeddings` answers `503 no codecs registered` until your deployment registers one on `agentic_sse::registry()`. Build with `--features research` to pre-register `TitansLatentCodec` (256-dim, f32, from `research/spine-protocol-research`) and default `model` to it.
 
 `StreamEndReason` is the exact OpenAI/Anthropic finish-reason taxonomy (`stop`, `length`, `tool_calls`, `content_filter`, `cancelled`, `error`), so an existing SDK switches over a SPINE stream with no translator.
 
@@ -293,7 +293,7 @@ Text on the wire throws away both bandwidth and signal. SPINE makes the **latent
 
 `Modality` covers `Text`, `Image`, `Audio`, `Video`, `Embedding`, `HiddenState`, `Multimodal`, `Other(String)`; `DType` covers `F32`, `F16`, `BF16`, `I8`, `U8`, `I16`, `I32`, `Q4`, `Q8`. Codec ids are stable URIs (e.g. `spine:codec/titans/v1@dim=256,dtype=f32`) so a peer's advertisement is decodable without prior knowledge.
 
-A symmetric runtime contract — `trait NeuralCodec { encode, decode, describe }` + `CodecRegistry` — sits alongside the types. The crate ships a working `TitansLatentCodec` that wraps `spine-neural::NeuralLatentEncoder` so every layer of the protocol (advertise → negotiate → encode → decode) round-trips against a real Titans projector, not a stub. Streaming latents over the same wire that streams text:
+A symmetric runtime contract — `trait NeuralCodec { encode, decode, describe }` + `CodecRegistry` — sits alongside the types. The `research/spine-protocol-research` crate ships a working `TitansLatentCodec` (not part of `spine-protocol`) that wraps `spine-neural::NeuralLatentEncoder` so every layer of the protocol (advertise → negotiate → encode → decode) round-trips against a real Titans projector, not a stub. Streaming latents over the same wire that streams text:
 
 ```rust
 StreamData::Encoded(EncodedFrame {
@@ -304,7 +304,7 @@ StreamData::Encoded(EncodedFrame {
 })
 ```
 
-**Benchmarked for agentic use** (`src/spine-protocol/benches/neural_codec_bench.rs`, re-measured 2026-06-08). The codec is a real Titans forward pass — a *semantic* projection of text into a fixed-width latent, not a memcpy — so encode cost scales with the projector and is the honest price of getting a latent: ~94 µs at dim 128, ~847 µs at dim 256, ~3.1 ms at dim 512, ~26 ms at dim 1024. The payoff is on the wire: the resulting self-describing `EncodedFrame` is **66–71 % smaller than its JSON form** (e.g. dim 256: 1241 B binary vs 3942 B JSON; dim 1024: 4314 B vs 14803 B), because the latent rides as a CBOR byte string instead of a JSON float array. The full agentic path (`codec.encode` → `wire::encode`) adds only the framing on top of the encode (e.g. 416 µs at dim 256).
+**Benchmarked for agentic use** (`research/spine-protocol-research/benches/neural_codec_bench.rs`, moved from `spine-protocol`; re-measured 2026-06-08 before the move). The codec is a real Titans forward pass — a *semantic* projection of text into a fixed-width latent, not a memcpy — so encode cost scales with the projector and is the honest price of getting a latent: ~94 µs at dim 128, ~847 µs at dim 256, ~3.1 ms at dim 512, ~26 ms at dim 1024. The payoff is on the wire: the resulting self-describing `EncodedFrame` is **66–71 % smaller than its JSON form** (e.g. dim 256: 1241 B binary vs 3942 B JSON; dim 1024: 4314 B vs 14803 B), because the latent rides as a CBOR byte string instead of a JSON float array. The full agentic path (`codec.encode` → `wire::encode`) adds only the framing on top of the encode (e.g. 416 µs at dim 256).
 
 ## Core Components
 
@@ -313,7 +313,7 @@ SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesiv
 ### Two workspaces
 
 - **Stack (repository root, `src/`)**, 18 crates, built by default with `cargo build` at the root: `spine-name`, `spine-session`, `spine-mesh`, `spine-transport`, `spine-storage`, `spine-protocol`, `spine-parser`, `spine-cache`, `spine-wasm`, `spine-compiler`, `spine-stream`, `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway`, `spine-grpc`, `spine-ffi`, `spine-web`. No research crate is in their default dependency tree; `spine-protocol` (`research`) and `spine-web` (`research`, `agentic`, ...) take them only through opt-in features.
-- **Research (`research/`)**, 14 crates, a separate workspace with its own `Cargo.toml` and `Cargo.lock`, built with `cd research && cargo build`: `spine-agentic`, `spine-browser`, `spine-cluster`, `spine-crypto`, `spine-embedded`, `spine-gpu`, `spine-human`, `spine-k8s`, `spine-kernel`, `spine-knowledge`, `spine-mechgen`, `spine-neural`, `spine-nostd`, `spine-recursive`. Stack crates reach them only through opt-in `research` cargo features (optional path dependencies) and through optional features of `spine-web`; research crates may depend on stack crates.
+- **Research (`research/`)**, 15 crates, a separate workspace with its own `Cargo.toml` and `Cargo.lock`, built with `cd research && cargo build`: `spine-agentic`, `spine-browser`, `spine-cluster`, `spine-crypto`, `spine-embedded`, `spine-gpu`, `spine-human`, `spine-k8s`, `spine-kernel`, `spine-knowledge`, `spine-mechgen`, `spine-neural`, `spine-nostd`, `spine-protocol-research` (experimental, unreviewed: the Chameleon key, `SpineConnection`, protocol evolution and `TitansLatentCodec`, moved out of `spine-protocol`), `spine-recursive`. Stack crates reach them only through opt-in `research` cargo features (optional path dependencies) and through optional features of `spine-web`; research crates may depend on stack crates.
 - `research/Cargo.toml` copies `[workspace.package]`, `[workspace.dependencies]` and the profiles from the root `Cargo.toml`; the two must be kept in sync by hand.
 
 ### Kernel Layer
@@ -411,9 +411,9 @@ let surprise = self.titans_memory.get_surprise(); // Anomaly detection
 > 
 > This makes Titans ideal for a headless semantic browser where protocols must continuously evolve to resist fingerprinting, agents must adapt to every interaction, and security requires instant anomaly detection.
 
-### Chameleon Protocol
+### Chameleon Protocol (research)
 
-A **moving-target defense system** where the protocol's latent basis and encryption keys evolve per-message based on neural projections.
+An **experimental, unreviewed moving-target idea** where a latent basis and key evolve per message based on neural projections. It lives in `research/spine-protocol-research`, not in `spine-protocol`, and the native wire does not use it.
 
 ## Virtual DOM & Incremental Updates
 
@@ -651,7 +651,7 @@ The HLS compiler generates these instructions:
 
 SPINE includes advanced features for high-security and low-latency agentic communication:
 
-- **Chameleon Protocol**: A latent-space cryptographic system that evolves the protocol's "shape" per-message using neural encoders.
+- **Chameleon Protocol (research)**: An experimental latent-space encoding that evolves per message using neural encoders (`research/spine-protocol-research`, not on the native wire).
 - **Quantum-Resistant Keys**: Lattice-based key evolution that resists quantum computing attacks.
 - **Titans Neural Encoding**: Neural Long-Term Memory with VAE and Attention mechanisms to project web content into high-dimensional latent spaces.
 
@@ -659,16 +659,15 @@ SPINE includes advanced features for high-security and low-latency agentic commu
 
 SPINE features a deep intelligence layer that optimizes for both performance and security in AI-to-AI communication.
 
-### Chameleon Protocol (Moving-Target Defense)
+### Chameleon Protocol (research, off the wire)
 
-The Chameleon Protocol uses **Titans Neural Long-Term Memory** to hide communication patterns.
+The Chameleon key (`research/spine-protocol-research`) uses **Titans Neural Long-Term Memory** to obscure communication patterns. It is experimental and unreviewed; `spine-protocol` no longer contains it.
 
 - **Latent Morphing**: Messages are projected into a high-dimensional latent space using a Variational Autoencoder (VAE).
 - **Dynamic Evolution**: The transformation matrices evolve over time based on quantum-resistant seeds, ensuring that the "language" of the protocol is constantly changing.
 - **Keyed encoding, not a cipher**: the model weights and Titans memory state
   are derived from the shared secret, so the encoding is unreproducible without
-  it — but confidentiality proper comes from the AES-256-GCM layer that
-  `enable_chameleon_aead` puts underneath.
+  it. It provides no confidentiality; use TLS or the session layer.
 
 ## Security
 
@@ -691,7 +690,8 @@ peer whose records I trust" are one fact.
 
 **What is not.** The handshake has had **no external cryptographic review** —
 the package to commission one is written and ready. The Chameleon layer is
-obfuscation, not a cipher; use `enable_chameleon_aead` when you need
+obfuscation, not a cipher, and it is not on the native wire (it is in
+`research/spine-protocol-research`); use TLS or the session layer for
 confidentiality. The lattice and X3DH paths are research-grade. No crate here
 is a FIPS 140-3 validated module.
 
@@ -847,7 +847,7 @@ cargo run --example knowledgeable_agent -p spine-agent
 
 ### Simple Agent Example
 
-The simple_agent example uses the Chameleon protocol and human mode, so it needs the SDK's `research` feature (`--features research`, as above). The default `spine-agent` build has no research crate in its tree. The simple_agent example will:
+The simple_agent example uses human mode, so it needs the SDK's `research` feature (`--features research`, as above). The default `spine-agent` build has no research crate in its tree. The simple_agent example will:
 
 1. Connect to the core with encryption enabled
 2. Navigate to `https://example.com`
@@ -869,66 +869,30 @@ Binary execution result: {"status": "executed", "instruction_count": 2}
 
 ## Protocol Features
 
-### Chameleon Protocol (Moving-Target Defense)
+### Chameleon Protocol (research, not on the native wire)
 
-The **Chameleon Protocol** encodes messages into a keyed latent space and
-changes that encoding as a session proceeds, so a passive observer sees traffic
-whose shape and statistics keep moving.
+The Chameleon key encodes messages into a keyed latent space and changes that
+encoding as a session proceeds. It is experimental and unreviewed. It is not in
+`spine-protocol` or the SDK: it lives in `research/spine-protocol-research`
+(`ChameleonKey`, `SpineConnection`, `connect_auto`), and the native wire
+(`ProtocolHandler`) has no chameleon, no pre-shared-key AES layer and no decoy
+traffic.
 
-**What it is:** obfuscation and traffic-analysis resistance. The encoder's
-weights are derived from the shared secret, so an observer without the secret
-cannot reproduce the encoding.
+**What it is:** a lossy, keyed projection of a byte string. The encoder's
+weights are derived from the shared secret.
 
 **What it is not:** a cipher. High-dimensional projection is not encryption, and
-a latent representation is not a ciphertext with a security proof behind it. For
-confidentiality use `enable_chameleon_aead`, which puts AES-256-GCM under the
-encoding with a key derived by HKDF-SHA-256 from the full 32-byte secret;
-Chameleon then contributes defence in depth rather than the guarantee itself.
-See [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) — earlier versions of this section
+a latent representation is not a ciphertext with a security proof behind it.
+Per-message key evolution is not forward secrecy: message hashes are derivable by
+anyone holding the transcript. Genuine forward secrecy lives in the mesh
+handshake (`spine-session::handshake`), described in
+[`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md). For confidentiality on the native
+wire use TLS (`AgentClient::connect_tls`) or the session layer. See
+[`SECURITY_AUDIT.md`](SECURITY_AUDIT.md): earlier versions of this section
 claimed rather more, and a 2.0.0 audit found the encoder had been keyed by 64
 bits derived with a non-cryptographic hash.
 
-#### Key Components
-
-1. **Latent-Space Cryptography**: Data is projected into a high-dimensional vector space using a dynamically evolving basis. The projection matrix serves as the encryption key.
-
-2. **Moving Target Defense**: After every message exchange:
-   - The basis vectors rotate
-   - The dimensionality may change (64-256 dimensions)
-
-3. **Per-message evolution**: each message's hash feeds the next key evolution, so the
-   encoding does not repeat across a session. This is *not* forward secrecy —
-   message hashes are derivable by anyone holding the transcript, and the
-   long-term secret still keys everything. Genuine forward secrecy lives in the
-   mesh handshake (`spine-session::handshake`), whose ML-KEM keypair is ephemeral
-   per connection and is described in
-   [`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md).
-
-4. **Decoy Traffic**: Agents can inject noise traffic to confuse traffic analysis.
-
-#### Enabling Chameleon Protocol
-
-The `enable_chameleon*` methods on `client.handler` exist only when `spine-agent` is built with its `research` feature (`spine-agent = { ..., features = ["research"] }`).
-
-```rust
-let secret: [u8; 32] = /* shared secret */;
-// AEAD variant: AES-256-GCM beneath the latent encoding. Prefer this — plain
-// `enable_chameleon` gives obfuscation with no cipher under it.
-client.handler.enable_chameleon_aead(secret);
-
-// Protocol now automatically:
-// - Encodes messages into latent space
-// - Evolves key material continuously
-```
-
-### Traditional Encryption (Fallback)
-
-For compatibility, SPINE also supports **AES-256-GCM** encryption:
-
-```rust
-let key = [0u8; 32]; // Use a secure key in production
-client.handler.enable_encryption(key);
-```
+To try it: `cd research && cargo run -p spine-protocol-research --example chameleon_demo`.
 
 ### Compression
 
@@ -954,7 +918,7 @@ SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
-3. **Transport Layer**: `spine-protocol` (Chameleon Protocol), `spine-transport` (zero-copy I/O, BBR), `spine-stream` (reactive streaming, multiplexing).
+3. **Transport Layer**: `spine-protocol` (fixed framing, zstd), `spine-transport` (zero-copy I/O, BBR), `spine-stream` (reactive streaming, multiplexing).
 4. **Intelligence Layer**: `spine-neural` (Titans architecture), `spine-crypto` (X3DH, quantum-resistant crypto), `spine-recursive` (extended context retrieval), `spine-knowledge` (CRDT-based distributed memory).
 5. **Namespace Layer**: `spine-name` — the `spine://` scheme, self-certifying names, signed records, DHT keyspace, and resolution.
 6. **Agent Layer**: `spine-agent` (SDK), `spine-agentic` (swarm intelligence + mesh-backed name resolution), `spine-cluster` (distributed coordination with Sybil resistance).
@@ -994,10 +958,10 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 │   ├─ Knowledge Consensus (2/3)      │
 │   └─ Autonomous Planning            │
 ├─────────────────────────────────────┤
-│   Chameleon Layer                   │
+│   Research (not on the wire)        │
 │   ├─ Titans Latent-Space Encoding   │
-│   ├─ Moving-Target Defense          │
-│   └─ Decoy Traffic Generation       │
+│   ├─ Chameleon key (experimental)   │
+│   └─ spine-protocol-research crate  │
 ├─────────────────────────────────────┤
 │   Compression (Zstd)                │
 ├─────────────────────────────────────┤
@@ -1018,12 +982,12 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 
 - [x] Recursive UR parsing
 - [x] Multi-session management
-- [x] Traditional encryption (AES-256-GCM)
+- [x] Transport encryption (TLS and mTLS; the pre-shared-key AES layer was removed)
 - [x] Compression (Zstd)
 - [x] HLS/HLB basic compiler
-- [x] **Chameleon Protocol** (latent-space obfuscation over AES-256-GCM)
-- [x] **Moving-Target Defense** (per-message Chameleon key evolution; research feature. Frame-header morphing and padding were removed.)
-- [x] **Decoy Traffic** injection
+- [x] **Chameleon Protocol** (latent-space obfuscation; experimental, moved to `research/spine-protocol-research`)
+- [x] **Moving-Target Defense** (per-message Chameleon key evolution; research crate only. Frame-header morphing and padding were removed.)
+- [x] ~~Decoy Traffic injection~~ (removed with `ProtocolHandler::send_decoy`)
 - [x] **Advanced HLS Syntax** (variables, state, conditionals, loops, expressions)
 - [x] **Virtual DOM Runtime** (binary execution with UR generation)
 - [x] **WebAssembly Runtime** (HLB → WASM near-native execution)
@@ -1220,7 +1184,7 @@ cargo bench --package spine-transport --bench spine_vs_http2
 cargo bench --package spine-transport --bench agentic_ai_workload
 cargo bench --package spine-transport --bench llm_tok_per_sec
 cargo bench --package spine-transport --bench llm_shm_ipc
-cargo bench --package spine-protocol  --bench neural_codec_bench  # Titans neural codec, agentic path
+(cd research && cargo bench -p spine-protocol-research --bench neural_codec_bench)  # Titans neural codec, agentic path
 cargo test  --package spine-transport rdma  # 4 trait tests
 ```
 
@@ -1354,7 +1318,7 @@ column sums to the workspace total.
 | --------------- | ----- | ------------------------------------------------------------- |
 | spine-agentic   | 244*  | Lifecycle, sandbox, scheduler, contracts, swarm               |
 | spine-mesh      | 182*  | Identity, mesh envelope/node, naming, TCP/WS/QUIC, signed frame |
-| spine-protocol  | 148   | Chameleon protocol, AEAD, chaos, integration, property        |
+| spine-protocol  | 148   | Wire codec, framing, chaos, integration, property (count predates the research move) |
 | spine-name      | 113   | The `spine://` namespace: URIs, records, keyspace, resolution |
 | spine-transport | 85    | Zero-copy I/O, BBR, connection pooling, property              |
 | spine-crypto    | 57    | RLWE, ML-KEM, Titans predictor, property                      |

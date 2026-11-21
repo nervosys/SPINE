@@ -1,7 +1,7 @@
 //! # Encrypted Agent
 //!
-//! Demonstrates connecting over TLS and enabling Chameleon Protocol
-//! for latent-space cryptography.
+//! Demonstrates connecting over TLS (server-authenticated, with an optional
+//! client certificate). Confidentiality on the native wire comes from TLS.
 
 use anyhow::Result;
 use spine_agent::AgentClient;
@@ -20,11 +20,6 @@ async fn main() -> Result<()> {
     .await?;
 
     println!("Connected with TLS");
-
-    // Enable Chameleon Protocol — latent-space encryption with moving target defense
-    let secret: [u8; 32] = *b"MySecretKeyForChameleonProtocol!";
-    client.handler.enable_chameleon(secret);
-    println!("Chameleon Protocol enabled");
 
     client.navigate("https://example.com").await?;
     println!("Navigated");

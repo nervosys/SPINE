@@ -15,9 +15,9 @@ what changed in this release.
 
 - `research` (off by default) restores `AgentClient::enable_human_mode` and the
   human-paced `click` / `type_text` delays (`spine-human`), the public
-  `neural_protocol` field and `transmit_neural` (`spine-agentic`), and the
-  `enable_chameleon*` methods on `client.handler` (`spine-protocol/research`,
-  which brings in `spine-neural` and `spine-crypto`).
+  `neural_protocol` field and `transmit_neural` (`spine-agentic`). The
+  Chameleon key is not part of the SDK: it is in
+  `research/spine-protocol-research` and nothing on the native wire uses it.
 
 The examples `agent_autonomous`, `encrypted_agent`, `latent_analysis`,
 `llm_workflow_demo`, `offline_demo`, `research_swarm`, `simple_agent` and

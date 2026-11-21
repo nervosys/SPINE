@@ -12,11 +12,6 @@ async fn main() -> Result<()> {
     println!("[INIT] Connecting to SPINE Browser...");
     let mut client = AgentClient::connect("127.0.0.1:8080").await?;
 
-    // Enable Chameleon Protocol
-    let secret: [u8; 32] = [0x42; 32];
-    client.handler.enable_chameleon(secret);
-    println!("[✓] Chameleon Protocol enabled");
-
     println!();
 
     println!("[1] Compiling autonomous HLS program...\n");

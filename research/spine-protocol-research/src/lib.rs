@@ -1,26 +1,58 @@
-//! Research-only protocol machinery, compiled when the `research` feature is on.
+//! Experimental, unreviewed protocol research for SPINE.
 //!
-//! Everything here is experimental: the Chameleon latent-space key,
-//! `SpineConnection`, and the protocol evolution framework. It is the only
-//! part of the crate that needs `spine-neural` and `spine-crypto`. The wire
-//! types, the codec and `ProtocolHandler` (which plugs the chameleon in when
-//! this feature is on) do not depend on it, so `--no-default-features` builds
-//! without either crate. With the feature on, every item below is re-exported
-//! from the crate root, so public paths are unchanged.
+//! This crate is not on the native wire and nothing in the root workspace
+//! depends on it. It holds the Chameleon latent-space key ([`ChameleonKey`]),
+//! [`SpineConnection`] (a second, older codec with its own pre-shared-key and
+//! chameleon layers), the protocol evolution framework and
+//! [`TitansLatentCodec`]. It uses only the public items of `spine-protocol`.
+//!
+//! Vector transforms and key evolution here do not establish confidentiality or
+//! authenticity. Use an authenticated transport (TLS) for private sessions.
+
+// The code moved here from `spine-protocol`, whose crate-level
+// `#![allow(dead_code)]` covered it. Kept on purpose: the evolution framework
+// has genome and record fields that only its own tests and serde read.
+#![allow(dead_code)]
 
 use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use spine_crypto::{LatticeParams, QuantumSpeculativeProtocol, TransformerConfig};
 use spine_neural::{MirasNeuralEncoder, MirasVariant, NeuralEncoderConfig, NeuralLatentEncoder};
+use spine_protocol::{
+    wire, write_header_body, AsyncReadWrite, LatentVector, Message, QuicEndpointBuilder,
+    QuicTransport, TransportConfig, TransportMode,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use zstd::stream::encode_all;
 
-use super::*;
-
 mod evolution;
+mod titans;
 pub use evolution::*;
+pub use titans::TitansLatentCodec;
+
+/// A fresh 96-bit AES-GCM nonce from the operating system's CSPRNG. A private
+/// copy of the helper that used to live in `spine-protocol`'s handler.
+fn fresh_nonce() -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    nonce
+}
+
+/// Inflate a zstd body, refusing to produce more than `limit` bytes. A private
+/// copy of `spine-protocol`'s crate-private `wire::decode_zstd_limited`. A
+/// one-byte lookahead tells a body exactly at the limit from an oversized one.
+fn decode_zstd_limited(payload: &[u8], limit: usize) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut decoder = zstd::stream::read::Decoder::new(payload)?;
+    decoder.window_log_max(23)?;
+    let mut output = Vec::new();
+    decoder.take(limit as u64 + 1).read_to_end(&mut output)?;
+    anyhow::ensure!(output.len() <= limit, "decoded frame exceeds {limit} bytes");
+    Ok(output)
+}
 
 /// Derive the Chameleon layer's seed from a shared secret.
 ///
@@ -269,13 +301,8 @@ pub struct SpineConnection {
 }
 
 enum TransportInner {
-    Tcp {
-        stream: Box<dyn AsyncReadWrite>,
-    },
-    #[cfg(feature = "quic")]
-    Quic {
-        transport: QuicTransport,
-    },
+    Tcp { stream: Box<dyn AsyncReadWrite> },
+    Quic { transport: QuicTransport },
 }
 
 struct ProtocolHandlerState {
@@ -298,7 +325,6 @@ impl SpineConnection {
     }
 
     /// Create from QUIC transport
-    #[cfg(feature = "quic")]
     pub fn from_quic(transport: QuicTransport) -> Self {
         Self {
             transport: TransportInner::Quic { transport },
@@ -331,13 +357,11 @@ impl SpineConnection {
     pub fn transport_mode(&self) -> TransportMode {
         match &self.transport {
             TransportInner::Tcp { .. } => TransportMode::Tcp,
-            #[cfg(feature = "quic")]
             TransportInner::Quic { .. } => TransportMode::Quic,
         }
     }
 
     /// Get RTT estimate (QUIC only, returns None for TCP)
-    #[cfg(feature = "quic")]
     pub fn rtt(&self) -> Option<std::time::Duration> {
         match &self.transport {
             TransportInner::Quic { transport } => Some(transport.rtt()),
@@ -353,7 +377,6 @@ impl SpineConnection {
             TransportInner::Tcp { stream } => {
                 self.handler.write_frame(stream.as_mut(), &data).await?;
             }
-            #[cfg(feature = "quic")]
             TransportInner::Quic { transport } => {
                 // QUIC: length-prefixed frame. QuicTransport has its own
                 // write_all; can't use the AsyncWrite-based vectored helper here.
@@ -378,7 +401,6 @@ impl SpineConnection {
     pub async fn recv(&mut self) -> anyhow::Result<Message> {
         let data = match &mut self.transport {
             TransportInner::Tcp { stream } => self.handler.read_frame(stream.as_mut()).await?,
-            #[cfg(feature = "quic")]
             TransportInner::Quic { transport } => {
                 let mut len_buf = [0u8; 4];
                 transport.read_exact(&mut len_buf).await?;
@@ -514,7 +536,7 @@ impl ProtocolHandlerState {
             return Err(anyhow::anyhow!("Empty message after decryption"));
         }
         data = if data[0] == 0x01 {
-            wire::decode_zstd_limited(&data[1..], wire::MAX_DECODED_FRAME_BYTES)?
+            decode_zstd_limited(&data[1..], wire::MAX_DECODED_FRAME_BYTES)?
         } else {
             data[1..].to_vec()
         };
@@ -559,7 +581,6 @@ impl ProtocolHandlerState {
 }
 
 /// Connect with automatic transport selection (QUIC with TCP fallback)
-#[cfg(feature = "quic")]
 pub async fn connect_auto(
     addr: SocketAddr,
     tcp_fallback: impl std::future::Future<Output = anyhow::Result<impl AsyncReadWrite + 'static>>,

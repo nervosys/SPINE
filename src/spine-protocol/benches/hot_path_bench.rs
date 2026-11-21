@@ -3,7 +3,6 @@
 //! Criterion benchmarks for SPINE protocol critical paths:
 //! - Message serialization/deserialization
 //! - Protocol handler duplex roundtrip
-//! - Encrypted protocol roundtrip
 //! - Parser HTML extraction (via dev-dep)
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
@@ -57,7 +56,6 @@ fn bench_protocol_message_serde(c: &mut Criterion) {
 
 // ======================== Protocol Roundtrip ========================
 
-#[cfg(feature = "research")]
 fn bench_protocol_roundtrip(c: &mut Criterion) {
     use spine_protocol::{Message, ProtocolHandler};
 
@@ -82,42 +80,6 @@ fn bench_protocol_roundtrip(c: &mut Criterion) {
                     .unwrap();
                 let msg = server.receive_message().await.unwrap();
                 black_box(msg);
-            });
-        });
-    });
-
-    group.bench_function("encrypted_ping_pong_duplex", |b| {
-        let key: [u8; 32] = [0x42; 32];
-        b.iter(|| {
-            rt.block_on(async {
-                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-                let mut client = ProtocolHandler::new(client_io);
-                let mut server = ProtocolHandler::new(server_io);
-                client.enable_encryption(key);
-                server.enable_encryption(key);
-
-                client
-                    .send_message_raw(&Message::Ping { timestamp: 42 })
-                    .await
-                    .unwrap();
-                let msg = server.receive_message().await.unwrap();
-                black_box(msg);
-            });
-        });
-    });
-
-    group.bench_function("chameleon_aead_send", |b| {
-        let secret: [u8; 32] = [0xCA; 32];
-        b.iter(|| {
-            rt.block_on(async {
-                let (client_io, _server_io) = tokio::io::duplex(64 * 1024);
-                let mut client = ProtocolHandler::new(client_io);
-                client.enable_chameleon_aead(secret);
-
-                client
-                    .send_message_raw(&Message::Ping { timestamp: 42 })
-                    .await
-                    .unwrap();
             });
         });
     });
@@ -242,21 +204,10 @@ fn bench_wire_codec(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "research")]
 criterion_group!(
     protocol,
     bench_protocol_message_serde,
     bench_protocol_roundtrip,
-    bench_latent_vector,
-    bench_wire_codec,
-);
-
-// `ProtocolHandler` is research code, so the handler roundtrip bench is only
-// built with the `research` feature.
-#[cfg(not(feature = "research"))]
-criterion_group!(
-    protocol,
-    bench_protocol_message_serde,
     bench_latent_vector,
     bench_wire_codec,
 );

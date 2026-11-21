@@ -12,16 +12,6 @@ async fn main() -> Result<()> {
     println!("[INIT] Connecting to SPINE Browser...");
     let mut client = AgentClient::connect("127.0.0.1:8080").await?;
 
-    // Enable Chameleon Protocol (latent-space cryptography + moving target)
-    let secret: [u8; 32] = [
-        0x48, 0x79, 0x70, 0x65, 0x72, 0x6c, 0x69, 0x67, // "Hyperlig"
-        0x68, 0x74, 0x43, 0x68, 0x61, 0x6d, 0x65, 0x6c, // "htChamel"
-        0x65, 0x6f, 0x6e, 0x50, 0x72, 0x6f, 0x74, 0x6f, // "eonProto"
-        0x63, 0x6f, 0x6c, 0x53, 0x65, 0x63, 0x72, 0x65, // "colSecre"
-    ];
-    client.handler.enable_chameleon(secret);
-    println!("[✓] Chameleon Protocol enabled");
-
     println!();
 
     // 1. Navigate to a website

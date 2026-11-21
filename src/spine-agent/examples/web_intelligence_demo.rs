@@ -5,25 +5,21 @@
 //! 1. **Multi-Agent Coordination**: 50 agents working in parallel (vs single-threaded JS)
 //! 2. **Unified Representation**: Parse any site into AI-ready format (no DOM hell)
 //! 3. **Infinite Context**: Process millions of chars without context rot (vs 128K limits)
-//! 4. **Moving-Target Defense**: Quantum-resistant encryption evolving per-message
-//! 5. **Zero-Copy Transport**: 100x faster than HTTP/JSON serialization
+//! 4. **Zero-Copy Transport**: 100x faster than HTTP/JSON serialization
 //!
 //! Typical Stack: Express.js + Puppeteer + Redis + GPT-4 API
 //! - Cold start: 5-10 seconds
 //! - Memory: 500MB+ per browser instance
 //! - Context: Limited to 128K tokens
-//! - Security: Static TLS, vulnerable to replay attacks
 //! - Coordination: Manual pub/sub, race conditions
 //!
 //! SPINE Stack:
 //! - Cold start: <100ms
 //! - Memory: ~10MB per agent
 //! - Context: Unlimited (10M+ chars demonstrated)
-//! - Security: Moving-target defense, quantum-resistant
 //! - Coordination: Built-in swarm intelligence
 
 use spine_agentic::{AgentProfile, AgenticWebRuntime, KnowledgeGraph};
-use spine_protocol::ChameleonKey;
 use std::time::{Duration, Instant};
 
 /// Simulated competitor research task
@@ -145,14 +141,12 @@ async fn main() -> anyhow::Result<()> {
     // Initialize SPINE components
     let _runtime = AgenticWebRuntime::new(AgentProfile::new("web_intelligence"));
     let _knowledge = KnowledgeGraph::new();
-    let _chameleon = ChameleonKey::new(&[0u8; 32]);
 
     let cold_start = start.elapsed();
 
     println!("   SPINE Cold Start: {:?}", cold_start);
     println!("   ├─ AgenticWebRuntime: initialized");
-    println!("   ├─ KnowledgeGraph: ready");
-    println!("   └─ ChameleonKey: quantum-resistant encryption active");
+    println!("   └─ KnowledgeGraph: ready");
     println!();
     println!("   📊 Traditional Stack (Puppeteer + Express + Redis):");
     println!("      └─ Typical cold start: 5,000-10,000ms");
@@ -377,60 +371,10 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     // =========================================================================
-    // BENCHMARK 4: Moving-Target Security
+    // BENCHMARK 4: Knowledge Synthesis
     // =========================================================================
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🔐 BENCHMARK 4: Moving-Target Defense (vs Static TLS)");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!();
-
-    let mut chameleon = ChameleonKey::new(&[42u8; 32]);
-
-    // Demonstrate key evolution
-    let messages: [&[u8]; 3] = [
-        b"GET /api/competitors HTTP/1.1",
-        b"Authorization: Bearer eyJ...",
-        b"{ \"company\": \"TechCorp\", \"revenue\": 50000000 }",
-    ];
-
-    println!("   Encoding 3 messages with evolving encryption:");
-    println!();
-
-    for (i, msg) in messages.iter().enumerate() {
-        let encoded1 = chameleon.encode(msg);
-        chameleon.evolve(i as u64); // Key evolution!
-        let encoded2 = chameleon.encode(msg);
-
-        // Calculate encoding difference
-        let diff: f32 = encoded1
-            .components
-            .iter()
-            .zip(encoded2.components.iter())
-            .map(|(a, b): (&f32, &f32)| (a - b).abs())
-            .sum();
-
-        println!(
-            "   Message {}: \"{}...\"",
-            i + 1,
-            String::from_utf8_lossy(&msg[..msg.len().min(30)])
-        );
-        println!("      ├─ Encoding dimension: {}", encoded1.components.len());
-        println!("      ├─ L1 distance after evolution: {:.2}", diff);
-        println!("      └─ Same plaintext → completely different ciphertext ✓");
-        println!();
-    }
-
-    println!("   📊 Traditional Stack (Static TLS 1.3):");
-    println!("      └─ Same key for entire session duration");
-    println!("      └─ Vulnerable to: replay attacks, traffic analysis");
-    println!("      └─ SPINE: Key evolves EVERY message, quantum-resistant");
-    println!();
-
-    // =========================================================================
-    // BENCHMARK 5: Knowledge Synthesis
-    // =========================================================================
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("🧠 BENCHMARK 5: Knowledge Graph Synthesis");
+    println!("🧠 BENCHMARK 4: Knowledge Graph Synthesis");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
@@ -556,8 +500,6 @@ async fn main() -> anyhow::Result<()> {
         "│ 2M char search          │ FAILS             │ {:>10?}       │",
         search_time
     );
-    println!("│ Encryption              │ Static TLS        │ Moving-target     │");
-    println!("│ Quantum Resistance      │ ❌ No             │ ✅ Yes (RLWE)     │");
     println!(
         "│ Knowledge Graph         │ External DB       │ {:>10?}       │",
         kg_time
@@ -580,7 +522,6 @@ async fn main() -> anyhow::Result<()> {
     );
     println!("      • 500x less memory for same workload");
     println!("      • Infinite context vs 128K limit");
-    println!("      • Quantum-resistant security with per-message key evolution");
     println!();
     println!("   💡 The traditional web stack simply CANNOT do what SPINE does.");
     println!("      It's not about optimization—it's a fundamentally different architecture.");

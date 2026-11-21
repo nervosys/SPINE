@@ -16,18 +16,20 @@ API documentation: <https://docs.rs/spine-protocol>
 ## Features
 
 - `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
-- `research` (off by default): research code that needs `spine-neural` and
-  `spine-crypto`: `ChameleonKey` (and `ProtocolHandler::enable_chameleon` and
-  `enable_chameleon_aead`), `SpineConnection`,
-  `connect_auto`, the protocol evolution framework and `TitansLatentCodec`.
-  Enable it with `spine-protocol = { version = "2", features = ["research"] }`.
-  Without it you get the wire types, the wire codec (`wire`), `Message`,
-  `BrowserCommand`, the task types and `ProtocolHandler` with neither research
-  crate in the tree. Through 2.0.2 this feature was on by default.
+There is no `research` feature. The crate has no dependency on any crate under
+`research/`. `ProtocolHandler` writes the `SP` body, a compression flag byte and
+the fixed 5-byte frame; it has no sealing (confidentiality comes from TLS or the
+session layer). The Chameleon latent-space key, `SpineConnection`, `connect_auto`,
+the protocol evolution framework, `TitansLatentCodec` and the pre-shared-key AES
+layer are not part of this crate: the first four are in the experimental,
+unreviewed `research/spine-protocol-research` crate and the AES layer was
+removed.
 
 ## Workspace dependencies
 
-- `spine-crypto` and `spine-neural`, only with the `research` feature
+None. The `research/` crates `spine-nostd` and `spine-embedded` were dev
+dependencies of the integration tests; those tests moved to
+`research/spine-protocol-research`.
 
 ## License
 

@@ -66,6 +66,5 @@ research = [
     "dep:spine-cluster",
     "dep:spine-neural",
     "dep:spine-human",
-    "spine-protocol/research",
 ]
 quic = ["spine-protocol/quic"]

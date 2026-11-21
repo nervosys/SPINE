@@ -47,7 +47,7 @@ SPINE is a headless semantic browser with adaptive encryption. It is organized a
 | Layer        | Component       | Purpose                     |
 | ------------ | --------------- | --------------------------- |
 | Transport    | TLS 1.3         | Channel encryption          |
-| Protocol     | Chameleon keys  | Moving-target defense       |
+| Protocol     | Fixed frame     | No sealing; TLS or session  |
 | Latent       | Neural encoding | Latent-space cryptography   |
 | Post-quantum | RLWE lattice    | Future-proof key exchange   |
 | Identity     | X3DH            | Initial trust establishment |

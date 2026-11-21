@@ -55,11 +55,11 @@ shipped components target these properties:
 
 | Asset                            | Property protected             | Mechanism                                  |
 |----------------------------------|--------------------------------|--------------------------------------------|
-| Message payloads on the wire     | Confidentiality                | AES-256-GCM + rustls 0.23 (or QUIC)        |
+| Message payloads on the wire     | Confidentiality                | rustls 0.23 TLS or QUIC; the mesh uses AES-256-GCM. `ProtocolHandler` itself does no sealing |
 | Long-lived agent identity        | Authenticity, non-repudiation  | Ed25519 signing in `spine-agentic`         |
-| Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (default)    |
+| Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (research crate, gateway `research` feature) |
 | Certificate Transparency proofs  | Integrity                      | RFC 6962 + Google v3 JSON log list         |
-| Protocol fingerprint             | Resistance to passive analysis | Chameleon Protocol (moving-target)         |
+| Protocol fingerprint             | Resistance to passive analysis | None on the native wire. The Chameleon key (research, `research/spine-protocol-research`, unreviewed) is not a mitigation |
 | Tool calls and their results     | Correlation                    | Per-call `id` + W3C `traceparent`          |
 
 ### What is **not** in scope
@@ -102,7 +102,7 @@ shipped components target these properties:
 - **Default config**: `CtPolicy::default()` ships with **no trusted
   CT logs** preloaded. Production deployments must call
   `add_logs_from_json_v3()` with the current Google v3 list.
-- **Stateful Titans codec**: `TitansLatentCodec::stateful(...)` is
+- **Stateful Titans codec**: `spine_protocol_research::TitansLatentCodec::stateful(...)` is
   context-aware by design — it leaks request history into subsequent
   encodings. Use only for a single-tenant session you control end to
   end. Never register in a shared `CodecRegistry`.

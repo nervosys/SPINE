@@ -6,7 +6,7 @@
 //! - Combined moving-target defense
 
 use spine_neural::MirasVariant;
-use spine_protocol::ChameleonKey;
+use spine_protocol_research::ChameleonKey;
 
 fn main() {
     println!("╔═══════════════════════════════════════════════════════════════╗");

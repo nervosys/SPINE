@@ -944,36 +944,6 @@ impl eframe::App for SpineBrowser {
                     });
                 }
 
-                if ui.button("Decoy").clicked() {
-                    let agent_clone = self.agent.clone();
-                    let tx = self.event_tx.clone();
-                    self.rt.spawn(async move {
-                        let mut lock = agent_clone.lock().await;
-                        let agent: &mut AgentClient<tokio::net::TcpStream> = match lock.as_mut() {
-                            Some(a) => a,
-                            None => return,
-                        };
-
-                        let _ = tx
-                            .send(BrowserEvent::StatusChanged(
-                                "Injecting decoy traffic...".to_string(),
-                            ))
-                            .await;
-                        match agent.handler.send_decoy().await {
-                            Ok(_) => {
-                                let _ = tx
-                                    .send(BrowserEvent::StatusChanged("Decoy Injected".to_string()))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = tx
-                                    .send(BrowserEvent::Error(format!("Decoy failed: {}", e)))
-                                    .await;
-                            }
-                        }
-                    });
-                }
-
                 ui.checkbox(&mut self.human_mode, "Human Mode");
                 ui.checkbox(&mut self.show_hls, "HLS");
                 ui.checkbox(&mut self.show_latent, "Latent");
@@ -1367,7 +1337,7 @@ impl eframe::App for SpineBrowser {
                     ui.heading("Cluster Status");
                     ui.label("Nodes: Active");
                     ui.label("Sync: Real-time");
-                    ui.label("Protocol: Chameleon");
+                    ui.label("Protocol: native wire");
                 });
         }
 

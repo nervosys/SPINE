@@ -2,7 +2,7 @@
 //!
 //! The other benches measure transport (frames on the wire) and the wire codec
 //! (a hand-built `EncodedFrame`). This one exercises the *real* neural codec —
-//! `spine_protocol::TitansLatentCodec`, which wraps `spine-neural`'s Titans
+//! `spine_protocol_research::TitansLatentCodec`, which wraps `spine-neural`'s Titans
 //! `NeuralLatentEncoder` — along the path an agent actually uses: take some
 //! natural-language content, project it into a fixed-width latent, and put a
 //! self-describing `EncodedFrame` on the SPINE wire.
@@ -15,10 +15,11 @@
 //!   3. **on-wire frame size** — SPINE binary (CBOR byte-string latent) vs the
 //!      JSON an HTTP+JSON agent would send (printed once at startup).
 //!
-//! Run: `cargo bench -p spine-protocol --bench neural_codec_bench`
+//! Run: `cargo bench -p spine-protocol-research --bench neural_codec_bench`
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use spine_protocol::{wire, CodecRegistry, Message, NeuralCodec, TitansLatentCodec};
+use spine_protocol::{wire, CodecRegistry, Message, NeuralCodec};
+use spine_protocol_research::TitansLatentCodec;
 use std::hint::black_box;
 use std::sync::Arc;
 

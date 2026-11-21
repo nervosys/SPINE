@@ -253,55 +253,6 @@ async fn chaos_bidirectional_flood() {
     let _ = server_send.await;
 }
 
-// ========== ENCRYPTED CHAOS ==========
-
-#[tokio::test]
-async fn chaos_encrypted_connection_drop() {
-    let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-    let mut client = ProtocolHandler::new(client_stream);
-    let mut server = ProtocolHandler::new(server_stream);
-
-    let key = [0xAB; 32];
-    client.enable_encryption(key);
-    server.enable_encryption(key);
-
-    // Send one encrypted message
-    let msg = Message::Ping { timestamp: 1 };
-    client.send_message_raw(&msg).await.unwrap();
-    let _ = server.receive_message().await.unwrap();
-
-    // Drop server mid-encrypted-session
-    drop(server);
-
-    // Client should error gracefully
-    let result = client
-        .send_message_raw(&Message::Ping { timestamp: 2 })
-        .await;
-    // May succeed due to buffering, but shouldn't panic
-    let _ = result;
-}
-
-#[tokio::test]
-async fn chaos_mismatched_encryption_keys() {
-    let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-    let mut client = ProtocolHandler::new(client_stream);
-    let mut server = ProtocolHandler::new(server_stream);
-
-    // Different keys — decryption should fail
-    client.enable_encryption([0xAA; 32]);
-    server.enable_encryption([0xBB; 32]);
-
-    let msg = Message::Ping { timestamp: 1 };
-    client.send_message_raw(&msg).await.unwrap();
-
-    // Server should fail to decrypt
-    let result = server.receive_message().await;
-    assert!(
-        result.is_err(),
-        "Expected error with mismatched encryption keys"
-    );
-}
-
 // ========== PROPTEST-DRIVEN CHAOS ==========
 
 use proptest::prelude::*;

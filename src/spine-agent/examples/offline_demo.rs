@@ -3,7 +3,7 @@
 //! Demonstrates SPINE features that work without a running server:
 //! - HTML parsing → Unified Representation
 //! - HLS compilation → SpineBinary
-//! - Chameleon protocol encoding/decoding
+//! - Protocol handler framing over an in-memory duplex
 //! - Latent vector operations
 //! - Embedded agent message routing
 //! - Fixed-point math
@@ -34,7 +34,7 @@ fn demo_parser() {
             <p>SPINE provides a headless semantic browser for AI agents.</p>
             <h2>Key Features</h2>
             <ul>
-                <li>Chameleon Protocol — latent-space cryptography</li>
+                <li>Native wire — framed and zstd-compressed</li>
                 <li>Unified Representation — semantic HTML extraction</li>
             </ul>
             <a href="https://github.com/nervosys/SPINE">Source Code</a>
@@ -145,9 +145,9 @@ fn demo_protocol() {
     println!();
 }
 
-fn demo_chameleon_duplex() {
+fn demo_handler_duplex() {
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ 4. Chameleon Protocol over In-Memory Duplex                  │");
+    println!("│ 4. Protocol Handler over In-Memory Duplex                    │");
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -160,11 +160,7 @@ fn demo_chameleon_duplex() {
         let mut client = ProtocolHandler::new(client_io);
         let mut server = ProtocolHandler::new(server_io);
 
-        let secret: [u8; 32] = [0x53; 32]; // "SSSS..."
-        client.enable_chameleon_aead(secret);
-        server.enable_chameleon_aead(secret);
-
-        // Send 10 messages through Chameleon protocol
+        // Send 10 messages through the handler
         let start = Instant::now();
         for i in 0..10u64 {
             client
@@ -177,7 +173,7 @@ fn demo_chameleon_duplex() {
         let elapsed = start.elapsed();
 
         println!(
-            "  10 messages through Chameleon AEAD: {:.1}µs total ({:.1}µs/msg)",
+            "  10 messages through the handler: {:.1}µs total ({:.1}µs/msg)",
             elapsed.as_nanos() as f64 / 1000.0,
             elapsed.as_nanos() as f64 / 10000.0
         );
@@ -309,7 +305,7 @@ fn main() {
     demo_parser();
     demo_compiler();
     demo_protocol();
-    demo_chameleon_duplex();
+    demo_handler_duplex();
     demo_fixed_point();
     demo_embedded_agent();
 

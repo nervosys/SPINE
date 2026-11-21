@@ -10,7 +10,7 @@ how the pieces fit together and the
 what changed in this release.
 
 The QUIC mesh transport and the signed-frame codec live here too. They use
-`spine-protocol` without its `research` feature, so `spine-neural` and
+`spine-protocol`, which has no research dependency, so `spine-neural` and
 `spine-crypto` are not in this crate's dependency tree. `spine-agentic`
 re-exports this crate's modules and `AgentId`.
 

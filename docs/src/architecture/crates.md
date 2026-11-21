@@ -58,6 +58,7 @@
 | `spine-kernel`   | Library | SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC |
 | `spine-nostd`    | Library | `#![no_std]` core primitives (Q8.8 fixed-point, FNV hashing, frame codec)  |
 | `spine-embedded` | Library | Minimal agent runtime for embedded/IoT targets                             |
+| `spine-protocol-research` | Library | Experimental, unreviewed: Chameleon key, `SpineConnection`, protocol evolution, `TitansLatentCodec` (not on the wire) |
 
 ### Bindings
 
@@ -75,7 +76,7 @@ spine-cli ------+
 spine-gateway --+
 spine-browser --+-- spine-agent -- spine-agentic --+-- spine-neural
                 |                                   +-- spine-crypto
-                |                                   +-- spine-mesh -- spine-session, spine-name, spine-transport, spine-protocol (no research feature)
+                |                                   +-- spine-mesh -- spine-session, spine-name, spine-transport, spine-protocol (no research dependency)
                 |                                   +-- spine-knowledge -- spine-storage
                 |                                                          spine-cache
                 |

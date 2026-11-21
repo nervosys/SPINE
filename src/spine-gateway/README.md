@@ -17,9 +17,9 @@ API documentation: <https://docs.rs/spine-gateway>
 
 - `research` (off by default): pre-registers the Titans neural codec
   (`spine:codec/titans/v1@dim=256,dtype=f32`, 256-dim f32) in the codec
-  registry and makes it the default `model` of `POST /v1/embeddings`. It
-  enables `spine-protocol/research`, which pulls in `spine-neural` and
-  `spine-crypto`. Without it the registry starts empty:
+  registry and makes it the default `model` of `POST /v1/embeddings`. The codec
+  comes from the optional `research/spine-protocol-research` dependency (which
+  pulls in `spine-neural` and `spine-crypto`). Without it the registry starts empty:
   `GET /v1/agentic/codecs` returns an empty list and `POST /v1/embeddings`
   answers `503 no codecs registered` until the deployment registers a codec
   on `agentic_sse::registry()`.

@@ -21,8 +21,7 @@ SPINE is a **headless semantic browser with adaptive encryption** for AI agents.
 
 **Mitigations**:
 - TLS 1.3 baseline encryption
-- Latent-space encoding obscures semantic content
-- Chameleon protocol varies packet patterns
+- Experimental latent-space encoding and a Chameleon key exist only in `research/spine-protocol-research`; they are not on the native wire and are not a mitigation
 
 ### Tier 2: Active Network Attacker (MITM)
 **Capabilities**: Packet injection, replay attacks, connection hijacking
@@ -81,7 +80,7 @@ SPINE is a **headless semantic browser with adaptive encryption** for AI agents.
 
 ### 4. Traffic Analysis
 **Problem**: Packet timing reveals communication patterns
-**Solution**: None in the native wire. The frame header is fixed and there is no padding; the Chameleon research feature changes the encoding of the body only.
+**Solution**: None in the native wire. The frame header is fixed and there is no padding; the Chameleon key in `research/spine-protocol-research` is not on the native wire.
 - **Limitation**: Message sizes and timing are visible to an observer
 
 ### 5. Memory Disclosure

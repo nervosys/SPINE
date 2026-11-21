@@ -374,7 +374,7 @@ use spine_protocol::{CodecRegistry, EmbeddingInput, EmbeddingRequest};
 /// Process-wide codec registry. Lazily initialised on first access.
 ///
 /// With the `research` feature it starts with the default
-/// `TitansLatentCodec` (256-dim, f32). Without it (the default build) the
+/// `spine_protocol_research::TitansLatentCodec` (256-dim, f32). Without it (the default build) the
 /// registry starts empty: `GET /v1/agentic/codecs` lists nothing and
 /// `POST /v1/embeddings` answers `503` until the deployment registers a
 /// codec. Production deployments pre-populate via
@@ -385,9 +385,9 @@ pub fn registry() -> &'static CodecRegistry {
     REG.get_or_init(|| {
         let r = CodecRegistry::new();
         #[cfg(feature = "research")]
-        r.register(std::sync::Arc::new(spine_protocol::TitansLatentCodec::new(
-            256,
-        )));
+        r.register(std::sync::Arc::new(
+            spine_protocol_research::TitansLatentCodec::new(256),
+        ));
         r
     })
 }

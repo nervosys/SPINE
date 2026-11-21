@@ -3,8 +3,6 @@
 //! Tests end-to-end communication between ProtocolHandler pairs
 //! over in-process duplex streams, verifying:
 //! - Plain text message exchange
-//! - Encrypted (AES-256-GCM) message exchange
-//! - Chameleon protocol message exchange
 //! - Multi-session concurrent communication
 //! - Bidirectional interleaved messaging
 //! - Stress testing
@@ -112,74 +110,6 @@ async fn protocol_plaintext_latent_vector() {
             std::mem::discriminant(&other)
         ),
     }
-}
-
-// ========== ENCRYPTED PROTOCOL (AES-256-GCM) ==========
-
-#[tokio::test]
-async fn protocol_encrypted_roundtrip() {
-    let (mut client, mut server) = handler_pair();
-    let key = [0x42u8; 32];
-
-    client.enable_encryption(key);
-    server.enable_encryption(key);
-
-    let req = Message::Request(Request {
-        id: "enc-1".into(),
-        command: BrowserCommand::GetUR,
-    });
-
-    client.send_message_raw(&req).await.unwrap();
-    let received = server.receive_message().await.unwrap();
-
-    match received {
-        Message::Request(r) => assert_eq!(r.id, "enc-1"),
-        other => panic!("Expected Request, got {:?}", std::mem::discriminant(&other)),
-    }
-}
-
-#[tokio::test]
-async fn protocol_encrypted_multiple_messages() {
-    let (mut client, mut server) = handler_pair();
-    let key = [0xAB; 32];
-
-    client.enable_encryption(key);
-    server.enable_encryption(key);
-
-    for i in 0..10 {
-        let msg = Message::Ping { timestamp: i };
-        client.send_message_raw(&msg).await.unwrap();
-        let received = server.receive_message().await.unwrap();
-        assert!(
-            matches!(received, Message::Ping { timestamp } if timestamp == i),
-            "message {} mismatch",
-            i
-        );
-    }
-}
-
-// ========== CHAMELEON PROTOCOL ==========
-
-// ========== CHAMELEON PROTOCOL ==========
-
-#[cfg(feature = "research")]
-#[tokio::test]
-async fn protocol_chameleon_encoding() {
-    // ChameleonKey uses neural latent-space encoding (inherently lossy)
-    // This test verifies the encoding path works without panics
-    let (mut client, _server) = handler_pair();
-    let secret = [0x13u8; 32];
-    client.enable_chameleon(secret);
-
-    let req = Message::Request(Request {
-        id: "cham-1".into(),
-        command: BrowserCommand::Search {
-            query: "test query".into(),
-        },
-    });
-
-    // Chameleon encoding + frame write should not panic
-    client.send_message_raw(&req).await.unwrap();
 }
 
 // ========== CONCURRENT SESSIONS ==========

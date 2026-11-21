@@ -22,6 +22,7 @@ members = [
     "spine-mechgen",
     "spine-neural",
     "spine-nostd",
+    "spine-protocol-research",
     "spine-recursive",
 ]
 resolver = "2"

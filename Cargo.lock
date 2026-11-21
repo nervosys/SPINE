@@ -4386,6 +4386,7 @@ dependencies = [
  "spine-name",
  "spine-parser",
  "spine-protocol",
+ "spine-protocol-research",
  "spine-transport",
  "subtle",
  "thiserror 1.0.69",
@@ -4569,37 +4570,43 @@ dependencies = [
 name = "spine-protocol"
 version = "2.0.2"
 dependencies = [
- "aes-gcm",
  "anyhow",
  "bincode",
  "bytemuck",
- "bytes",
  "ciborium",
  "criterion",
- "hkdf",
- "hmac",
- "log",
  "parking_lot",
  "proptest",
  "quinn",
- "rand 0.8.8",
  "rcgen 0.12.1",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_bytes",
  "serde_json",
- "sha2",
- "spine-crypto",
- "spine-embedded",
- "spine-neural",
- "spine-nostd",
  "thiserror 1.0.69",
  "tokio",
- "tokio-test",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "spine-protocol-research"
+version = "2.0.2"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "hkdf",
+ "parking_lot",
+ "rand 0.8.8",
+ "serde",
+ "sha2",
+ "spine-crypto",
+ "spine-neural",
+ "spine-protocol",
+ "tokio",
  "tracing",
  "uuid",
- "zeroize",
  "zstd",
 ]
 
