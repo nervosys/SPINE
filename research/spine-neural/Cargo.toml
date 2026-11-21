@@ -1,0 +1,23 @@
+[package]
+name = "spine-neural"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Neural network-based latent encoder for SPINE's Chameleon Protocol"
+
+[features]
+default = []
+simd = []    # Enable explicit SIMD optimizations
+
+[dependencies]
+serde.workspace = true
+rand.workspace = true
+smallvec = { version = "1.13", features = ["const_generics", "union", "serde"] }
+
+
+

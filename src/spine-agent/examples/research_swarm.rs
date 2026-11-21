@@ -5,7 +5,7 @@
 //! 2. Connects multiple agents over TCP
 //! 3. Agents collaboratively research a topic across multiple URLs
 //! 4. Results aggregated via knowledge base
-//! 5. Demonstrates Chameleon protocol, speculation, and HLS execution
+//! 5. Demonstrates HLS execution
 //!
 //! ```
 //! # Requires a running spine-core server:
@@ -25,15 +25,6 @@ const SERVER_ADDR: &str = "127.0.0.1:8080";
 /// A research agent that scrapes a URL and stores findings.
 async fn research_agent(agent_id: usize, url: &str, topic: &str) -> Result<serde_json::Value> {
     let mut client = AgentClient::<TcpStream>::connect(SERVER_ADDR).await?;
-
-    // Enable Chameleon Protocol for stealth browsing
-    let secret: [u8; 32] = [
-        0x53, 0x50, 0x49, 0x4E, 0x45, 0x2D, 0x52, 0x65, 0x73, 0x65, 0x61, 0x72, 0x63, 0x68, 0x2D,
-        0x44, 0x65, 0x6D, 0x6F, 0x2D, 0x53, 0x65, 0x63, 0x72, 0x65, 0x74, 0x4B, 0x65, 0x79, 0x21,
-        0x21, 0x21,
-    ];
-    client.handler.enable_chameleon_aead(secret);
-    client.handler.enable_speculation(true, true);
 
     println!("  [Agent {}] Navigating to {}...", agent_id, url);
     let start = Instant::now();
@@ -70,15 +61,6 @@ async fn research_agent(agent_id: usize, url: &str, topic: &str) -> Result<serde
             ],
         )
         .await?;
-
-    // Get speculation stats
-    let stats = client.get_speculation_stats();
-    println!(
-        "  [Agent {}] Speculation: {:.1}% output accuracy, {} bytes saved",
-        agent_id,
-        stats.output_accuracy() * 100.0,
-        stats.bytes_saved
-    );
 
     Ok(findings)
 }
@@ -201,7 +183,7 @@ async fn main() -> Result<()> {
         "║   Total time: {:.1}s                                         ║",
         elapsed.as_secs_f64()
     );
-    println!("║   Protocol: Chameleon AEAD + Speculative Decoding            ║");
+    println!("║   Protocol: native wire                                      ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
 
     Ok(())

@@ -1,43 +1,44 @@
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
-use spine_human::HumanInteractionEngine;
 use spine_parser::UnifiedRepresentation;
-use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
+use spine_protocol::connection::Connection;
+use spine_protocol::frame::{Frame, FrameType};
+use spine_protocol::native;
+use spine_protocol::{BrowserCommand, Message, Request, Response, SpineBinary};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
 use tracing::instrument;
+pub mod resources;
 
 // Re-export the compiler for convenience
 pub use spine_compiler::Compiler;
 // Re-export WebSocket stream for CLI and external consumers
 pub use spine_transport::WebSocketClientStream;
 
+/// A client of a SPINE daemon, speaking spine-wire v1.
+///
+/// Requests are serialized on one connection: each call sends one `REQUEST`
+/// frame and waits for the `RESPONSE` with the same frame id. The `id` fields
+/// inside the message bodies are carried but not cross-checked; the frame id
+/// is what correlates. Every constructor performs the `HELLO` handshake and
+/// fails with the server's `CLOSE` code and message if the server refuses.
 pub struct AgentClient<S> {
-    /// Public handler for advanced protocol operations (Chameleon, Speculation, etc.)
-    pub handler: ProtocolHandler<S>,
+    /// The v1 connection, for direct frame access. Use it with care: a
+    /// request left unanswered keeps its id in flight until its reply is read.
+    pub conn: Connection<S>,
     request_counter: u64,
-    latent_tx: Option<mpsc::Sender<Vec<f32>>>,
-    event_tx: Option<mpsc::Sender<spine_protocol::Event>>,
-    human_engine: Option<HumanInteractionEngine>,
-    pub neural_protocol: Option<spine_agentic::NeuralProtocol>,
 }
 
 impl AgentClient<TcpStream> {
     pub async fn connect(addr: &str) -> anyhow::Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        let handler = ProtocolHandler::new(stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
-            human_engine: None,
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
-        })
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
+        Self::over(stream).await
     }
 
     /// Connect with exponential backoff retry.
@@ -118,6 +119,7 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             }
         }
 
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
         let config = if let Some((cert_path, key_path)) = client_cert {
             let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
             let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
@@ -134,29 +136,31 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
                 .ok_or_else(|| anyhow::anyhow!("No key"))?
                 .into();
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_provider(provider.clone())
+                .with_safe_default_protocol_versions()?
                 .with_root_certificates(root_store)
                 .with_client_auth_cert(certs, key)?
         } else {
-            ClientConfig::builder()
+            ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()?
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         };
 
         let connector = TlsConnector::from(Arc::new(config));
-        let stream = TcpStream::connect(addr).await?;
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
         let domain = ServerName::try_from(domain.to_owned())?;
-        let tls_stream = connector.connect(domain, stream).await?;
+        let tls_stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connector.connect(domain, stream),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("native TLS handshake deadline exceeded"))??;
 
-        let handler = ProtocolHandler::new(tls_stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
-            human_engine: None,
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
-        })
+        Self::over(tls_stream).await
     }
 
     /// Connect to a SPINE server over TLS with automatic retry and exponential backoff.
@@ -200,15 +204,7 @@ impl AgentClient<spine_transport::WebSocketClientStream> {
             .await
             .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
         let stream = spine_transport::WebSocketClientStream::new(bridge);
-        let handler = ProtocolHandler::new(stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
-            human_engine: None,
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
-        })
+        Self::over(stream).await
     }
 }
 
@@ -216,52 +212,126 @@ impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    /// Enable human-like interaction patterns
-    pub fn enable_human_mode(&mut self, engine: HumanInteractionEngine) {
-        self.human_engine = Some(engine);
+    /// Run the spine-wire v1 handshake over an already-connected `stream`.
+    ///
+    /// Fails if the server answers with `CLOSE` (the error names its code and
+    /// message), sends something other than `HELLO_ACK`, or does not answer
+    /// within the handshake deadline of ten seconds.
+    pub async fn over(stream: S) -> anyhow::Result<Self> {
+        let conn = native::client_connect(stream).await?;
+        Ok(Self {
+            conn,
+            request_counter: 0,
+        })
     }
 
-    pub async fn start_listener(
+    pub async fn capabilities(
         &mut self,
-    ) -> (
-        mpsc::Receiver<Vec<f32>>,
-        mpsc::Receiver<spine_protocol::Event>,
-    ) {
-        let (latent_tx, latent_rx) = mpsc::channel(100);
-        let (event_tx, event_rx) = mpsc::channel(100);
+    ) -> anyhow::Result<spine_protocol::CapabilityAdvertisement> {
+        self.request_counter += 1;
+        let id = format!("cap-{}", self.request_counter);
+        let query = Message::CapabilityQuery(spine_protocol::CapabilityQuery {
+            id,
+            selector: spine_protocol::CapabilitySelector::All,
+        });
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            native::call(&mut self.conn, &query),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "capability discovery deadline exceeded; reconnect before another request"
+            )
+        })??;
+        match reply {
+            Message::CapabilityAd(advertisement) => Ok(advertisement),
+            Message::Response(Response {
+                error: Some(error), ..
+            }) => anyhow::bail!(error),
+            _ => anyhow::bail!("unexpected reply to a capability query"),
+        }
+    }
 
-        self.latent_tx = Some(latent_tx);
-        self.event_tx = Some(event_tx);
+    pub async fn namespace_status(&mut self) -> anyhow::Result<serde_json::Value> {
+        let response = self.send_request(BrowserCommand::NamespaceStatus).await?;
+        if let Some(error) = response.error {
+            anyhow::bail!(error);
+        }
+        response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("namespace status returned no result"))
+    }
 
-        (latent_rx, event_rx)
+    /// Pin the worker signing key. Never automatically retry a mutation after
+    /// uncertain delivery; resubmit the exact same task id and specification.
+    pub async fn mesh_call(
+        &mut self,
+        peer_id: &str,
+        peer_key: [u8; 32],
+        payload: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let response = self
+            .send_request(BrowserCommand::MeshCall {
+                peer_id: peer_id.into(),
+                peer_key,
+                payload,
+            })
+            .await?;
+        if let Some(error) = response.error {
+            anyhow::bail!("mesh call: {error}");
+        }
+        let value = response
+            .result
+            .ok_or_else(|| anyhow::anyhow!("mesh call returned no result"))?;
+        if let Some(error) = value.get("error") {
+            anyhow::bail!("application: {error}");
+        }
+        value
+            .get("result")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("application returned no result"))
     }
 
     async fn send_request(&mut self, command: BrowserCommand) -> anyhow::Result<Response> {
         self.request_counter += 1;
         let id = self.request_counter.to_string();
-        let req = Request {
-            id: id.clone(),
-            command,
-        };
-        self.handler.send_message(&Message::Request(req)).await?;
+        let req = Message::Request(Request { id, command });
+        match native::call(&mut self.conn, &req).await? {
+            Message::Response(res) => Ok(res),
+            _ => anyhow::bail!("unexpected reply to a request"),
+        }
+    }
 
-        // If we have a listener, we should wait for the response via a channel.
-        // For now, we'll keep the simple loop if no listener is active.
-        loop {
-            match self.handler.receive_message().await? {
-                Message::Response(res) if res.id == id => return Ok(res),
-                Message::LatentMessage(vec) => {
-                    if let Some(tx) = &self.latent_tx {
-                        let _ = tx.send(vec.components).await;
-                    }
-                }
-                Message::Event(ev) => {
-                    if let Some(tx) = &self.event_tx {
-                        let _ = tx.send(ev).await;
-                    }
-                }
-                _ => continue,
-            }
+    /// Invoke a native tool once. Calls are serialized on this client and are
+    /// never automatically replayed. Drop the connection after a timeout.
+    pub async fn call_tool(
+        &mut self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<spine_protocol::ToolResult> {
+        self.request_counter += 1;
+        let id = format!("tool-{}", self.request_counter);
+        let call = Message::ToolCall(spine_protocol::ToolCall {
+            id,
+            name: name.into(),
+            args,
+            trace: None,
+        });
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            native::call(&mut self.conn, &call),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!("tool deadline exceeded; reconnect before another request")
+        })??;
+        match reply {
+            Message::ToolResult(result) => Ok(result),
+            Message::Response(Response {
+                error: Some(error), ..
+            }) => anyhow::bail!(error),
+            _ => anyhow::bail!("unexpected reply to a tool call"),
         }
     }
 
@@ -303,55 +373,6 @@ where
         Ok(html)
     }
 
-    pub async fn click(&mut self, element_id: &str) -> anyhow::Result<()> {
-        if let Some(engine) = &self.human_engine {
-            // Simulate reaction time
-            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
-
-            // Simulate mouse movement (simplified for now, just a delay)
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-            // Simulate click duration
-            tokio::time::sleep(engine.simulate_click_duration()).await;
-        }
-
-        let res = self
-            .send_request(BrowserCommand::Click {
-                element_id: element_id.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn type_text(&mut self, element_id: &str, text: &str) -> anyhow::Result<()> {
-        if let Some(engine) = &self.human_engine {
-            // Simulate reaction time
-            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
-
-            let delays = engine.generate_typing_delays(text);
-            for (i, _c) in text.chars().enumerate() {
-                // In a real implementation, we might send each character individually
-                // but for now we'll just sleep and then send the whole text at the end
-                // or send it character by character if the protocol supports it.
-                tokio::time::sleep(delays[i]).await;
-            }
-        }
-
-        let res = self
-            .send_request(BrowserCommand::Type {
-                element_id: element_id.to_string(),
-                text: text.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
     pub async fn execute_binary(
         &mut self,
         binary: SpineBinary,
@@ -382,92 +403,6 @@ where
                 .ok_or_else(|| anyhow::anyhow!("Missing result in response"))?,
         )?;
         Ok(result)
-    }
-
-    pub async fn get_latent_ur(&mut self, dimensions: usize) -> anyhow::Result<Vec<f32>> {
-        let res = self
-            .send_request(BrowserCommand::GetLatentUR { dimensions })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let latent: Vec<f32> =
-            serde_json::from_value(res.result.unwrap_or_default()["latent_vector"].clone())?;
-        Ok(latent)
-    }
-
-    /// Subscribe to latent streams from the core
-    pub async fn subscribe_latent(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<f32>>> {
-        if let Some(_tx) = &self.latent_tx {
-            // This is a bit tricky since we can only have one receiver for the channel.
-            // In a real implementation, we'd use a broadcast channel or multiple subscribers.
-            anyhow::bail!("Already subscribed to latent stream");
-        }
-
-        let (tx, rx) = mpsc::channel(100);
-        self.latent_tx = Some(tx);
-        Ok(rx)
-    }
-
-    pub async fn morph(&mut self) -> anyhow::Result<()> {
-        let res = self.send_request(BrowserCommand::Morph).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    /// Get statistics about speculative decoding performance
-    pub fn get_speculation_stats(&self) -> &spine_protocol::SpeculationStats {
-        self.handler.get_speculation_stats()
-    }
-
-    #[instrument(skip(self))]
-    pub async fn search(&mut self, query: &str) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::Search {
-                query: query.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
-    }
-
-    pub async fn transfer_session(&mut self, target_node_id: uuid::Uuid) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::TransferSession { target_node_id })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn handle_event(
-        &mut self,
-        element_id: u32,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> anyhow::Result<Vec<spine_protocol::VDomPatch>> {
-        let res = self
-            .send_request(BrowserCommand::HandleEvent {
-                element_id,
-                event_name: event_name.to_string(),
-                payload,
-            })
-            .await?;
-
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-
-        let patches: Vec<spine_protocol::VDomPatch> = serde_json::from_value(
-            res.result.unwrap_or(serde_json::json!({"patches": []}))["patches"].clone(),
-        )?;
-
-        Ok(patches)
     }
 
     pub async fn store_knowledge(
@@ -512,203 +447,48 @@ where
         Ok(results)
     }
 
-    pub async fn delete_knowledge(&mut self, key: &str) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::DeleteKnowledge {
-                key: key.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn get_history(&mut self) -> anyhow::Result<Vec<BrowserCommand>> {
-        let res = self.send_request(BrowserCommand::GetSessionHistory).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let history: Vec<BrowserCommand> =
-            serde_json::from_value(res.result.unwrap_or_default()["history"].clone())?;
-        Ok(history)
-    }
-
     #[instrument(skip(self))]
     pub async fn ping(&mut self) -> anyhow::Result<u64> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as u64;
 
-        self.handler
-            .send_message(&Message::Ping { timestamp: now })
-            .await?;
+        // A PING frame whose token is the send time in milliseconds; the
+        // server's connection layer echoes it in a PONG.
+        self.request_counter += 1;
+        let id = self.request_counter;
+        let ping = Frame {
+            frame_type: FrameType::Ping,
+            request_id: id,
+            body: native::ping_body(now)?,
+        };
+        native::send_bounded(&mut self.conn, ping).await?;
 
         loop {
-            match self.handler.receive_message().await? {
-                Message::Pong { timestamp } => {
+            match self.conn.recv().await? {
+                Some(frame) if frame.frame_type == FrameType::Pong && frame.request_id == id => {
+                    let token = native::ping_token(&frame.body)?;
                     let end = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)?
                         .as_millis() as u64;
-                    return Ok(end - timestamp);
+                    return Ok(end.saturating_sub(token));
                 }
-                _ => continue,
+                Some(_) => {}
+                None => anyhow::bail!("connection closed before the pong"),
             }
         }
     }
 
-    pub async fn get_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
-        let res = self.send_request(BrowserCommand::GetCapabilities).await?;
+    pub async fn get_binary_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
+        let res = self
+            .send_request(BrowserCommand::GetBinaryCapabilities)
+            .await?;
         if let Some(err) = res.error {
             anyhow::bail!(err);
         }
         let capabilities: Vec<String> =
             serde_json::from_value(res.result.unwrap_or_default()["capabilities"].clone())?;
         Ok(capabilities)
-    }
-
-    pub async fn set_autonomous_mode(&mut self, enabled: bool) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SetAutonomousMode { enabled })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn swarm_search(&mut self, query: &str, depth: usize) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SwarmSearch {
-                query: query.to_string(),
-                depth,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn delegate_task(
-        &mut self,
-        task: &str,
-        target_agent_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::DelegateTask {
-                task: task.to_string(),
-                target_agent_id,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn propose_knowledge(
-        &mut self,
-        key: &str,
-        value: serde_json::Value,
-        tags: Vec<String>,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::ProposeKnowledge {
-                key: key.to_string(),
-                value,
-                tags,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn create_swarm_plan(&mut self, goal: &str) -> anyhow::Result<uuid::Uuid> {
-        let res = self
-            .send_request(BrowserCommand::CreateSwarmPlan {
-                goal: goal.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let plan_id = res
-            .result
-            .and_then(|v| {
-                v.get("plan_id")
-                    .and_then(|id| id.as_str())
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
-            })
-            .ok_or_else(|| anyhow::anyhow!("Missing plan_id in response"))?;
-        Ok(plan_id)
-    }
-
-    pub async fn execute_plan_task(
-        &mut self,
-        plan_id: uuid::Uuid,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::ExecutePlanTask { plan_id, task_id })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn transmit_neural(
-        &mut self,
-        data: &[u8],
-        domain: spine_agentic::ProtocolDomain,
-    ) -> anyhow::Result<spine_agentic::TransmissionResult> {
-        let domain_str = format!("{:?}", domain);
-        let res = self
-            .send_request(BrowserCommand::NeuralTransmit {
-                data: data.to_vec(),
-                domain: domain_str,
-            })
-            .await?;
-
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-
-        let stats = res
-            .result
-            .and_then(|v| serde_json::from_value::<spine_agentic::TransmissionResult>(v).ok())
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse transmission results"))?;
-        Ok(stats)
-    }
-
-    pub async fn get_agentic_state(&mut self) -> anyhow::Result<serde_json::Value> {
-        let res = self.send_request(BrowserCommand::GetAgenticState).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
-    }
-
-    pub async fn send_speech_act(
-        &mut self,
-        target_id: uuid::Uuid,
-        performative: &str,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SendSpeechAct {
-                target_id,
-                performative: performative.to_string(),
-                content: content.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
     }
 
     // ---- Namespace ----
@@ -859,14 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_client_speculation_stats_type() {
-        // Verify the SpeculationStats type is accessible
-        let stats = spine_protocol::SpeculationStats::default();
-        assert_eq!(stats.output_predictions, 0);
-        assert_eq!(stats.output_hits, 0);
-    }
-
-    #[test]
     fn test_browser_command_serialization() {
         // Test that BrowserCommand variants serialize correctly for the agent protocol
         let cmd = BrowserCommand::Navigate {
@@ -885,7 +657,7 @@ mod tests {
         // Test that Request/Response types work correctly
         let req = Request {
             id: "1".to_string(),
-            command: BrowserCommand::GetCapabilities,
+            command: BrowserCommand::GetBinaryCapabilities,
         };
         let json = serde_json::to_string(&req).unwrap();
         let deserialized: Request = serde_json::from_str(&json).unwrap();
@@ -905,7 +677,7 @@ mod tests {
         // Test that Message::Request and Message::Response serialize/deserialize
         let msg = Message::Request(Request {
             id: "42".to_string(),
-            command: BrowserCommand::Morph,
+            command: BrowserCommand::GetUR,
         });
         let json = serde_json::to_string(&msg).unwrap();
         let rt: Message = serde_json::from_str(&json).unwrap();
@@ -928,17 +700,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_latent_message() {
-        let msg = Message::LatentMessage(spine_protocol::LatentVector {
-            components: vec![0.1, 0.2, 0.3],
-            dim_hint: 3,
-            epoch: 0,
-        });
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("0.1"));
-    }
-
     #[tokio::test]
     async fn test_connect_invalid_address() {
         // Connecting to an invalid address should return an error, not panic
@@ -954,6 +715,188 @@ mod tests {
                 .await;
         assert!(result.is_err());
         assert!(result.is_err());
+    }
+
+    // ---- spine-wire v1 over an in-process stream ----
+
+    use std::time::Duration;
+    use tokio::io::{duplex, DuplexStream};
+
+    const LIMIT: Duration = Duration::from_secs(20);
+
+    /// A v1 server that answers every `REQUEST` with `reply(request)` until the
+    /// client hangs up.
+    fn spawn_server(
+        io: DuplexStream,
+        reply: fn(Message) -> Message,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut conn = Connection::server_handshake(
+                io,
+                &native::local_config(),
+                native::DEFAULT_HELLO_DEADLINE,
+            )
+            .await
+            .unwrap();
+            while let Ok(Some(frame)) = conn.recv().await {
+                if frame.frame_type != FrameType::Request {
+                    continue;
+                }
+                let request = native::decode_request(&frame.body).unwrap();
+                native::send_reply(&mut conn, frame.request_id, &reply(request))
+                    .await
+                    .unwrap();
+            }
+        })
+    }
+
+    fn answer(request: Message) -> Message {
+        match request {
+            Message::Request(r) => Message::Response(Response {
+                id: r.id,
+                result: Some(serde_json::json!({"html": "<p>hi</p>"})),
+                error: None,
+            }),
+            Message::ToolCall(call) => Message::ToolResult(spine_protocol::ToolResult {
+                id: call.id,
+                trace: None,
+                outcome: spine_protocol::ToolOutcome::Ok { content: call.args },
+            }),
+            Message::CapabilityQuery(query) => {
+                Message::CapabilityAd(spine_protocol::CapabilityAdvertisement {
+                    id: query.id,
+                    agent_id: "test".to_string(),
+                    capabilities: Vec::new(),
+                })
+            }
+            other => panic!("unexpected request {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn client_round_trips_requests_tools_capabilities_and_pings() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, answer);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let html = tokio::time::timeout(LIMIT, client.get_raw_html())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(html, "<p>hi</p>");
+
+        let result = tokio::time::timeout(
+            LIMIT,
+            client.call_tool("spine.content/hash", serde_json::json!({"text": "x"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(matches!(
+            result.outcome,
+            spine_protocol::ToolOutcome::Ok { .. }
+        ));
+
+        let ads = tokio::time::timeout(LIMIT, client.capabilities())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ads.agent_id, "test");
+
+        tokio::time::timeout(LIMIT, client.ping())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(client.conn.in_flight_len(), 0);
+
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_error_response_surfaces_as_an_error() {
+        fn refuse(request: Message) -> Message {
+            match request {
+                Message::Request(r) => Message::Response(Response {
+                    id: r.id,
+                    result: None,
+                    error: Some("Rate limit exceeded".to_string()),
+                }),
+                other => panic!("unexpected request {other:?}"),
+            }
+        }
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, refuse);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+        let error = tokio::time::timeout(LIMIT, client.get_raw_html())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("Rate limit exceeded"));
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_reports_the_servers_close_code() {
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let hello = spine_protocol::frame::read_frame(
+                &mut server_io,
+                spine_protocol::frame::PRE_HELLO_MAX_FRAME,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(hello.frame_type, FrameType::Hello);
+            let close = spine_protocol::hello::Close::new(
+                spine_protocol::frame::CloseCode::ShuttingDown,
+                "draining",
+            );
+            spine_protocol::frame::write_frame(
+                &mut server_io,
+                &close.to_frame().unwrap(),
+                spine_protocol::frame::PRE_HELLO_MAX_FRAME,
+                false,
+            )
+            .await
+            .unwrap();
+        });
+        let error = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .err()
+            .expect("the handshake must fail");
+        let text = error.to_string();
+        assert!(
+            text.contains("shutting_down") && text.contains("draining"),
+            "{text}"
+        );
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_to_a_peer_that_is_not_spine_fails() {
+        // A pre-v1 style peer: it answers a HELLO with something that is not
+        // a HELLO_ACK, so the handshake ends in an error and not a hang.
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            server_io.write_all(&[0xff; 32]).await.unwrap();
+            // Keep the stream open until the client has given up.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let result = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        server.abort();
     }
 
     #[test]

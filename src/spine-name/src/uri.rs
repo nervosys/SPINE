@@ -186,8 +186,11 @@ impl SpineUri {
             .strip_prefix(SCHEME)
             .or_else(|| {
                 // Accept a case-varied scheme without allocating in the common path.
-                let (head, tail) = trimmed.split_at(trimmed.len().min(SCHEME.len()));
-                head.eq_ignore_ascii_case(SCHEME).then_some(tail)
+                // `get` rather than `split_at`: the input is untrusted and byte
+                // offset `SCHEME.len()` may fall inside a multi-byte character.
+                let head = trimmed.get(..SCHEME.len())?;
+                head.eq_ignore_ascii_case(SCHEME)
+                    .then(|| &trimmed[SCHEME.len()..])
             })
             .ok_or_else(|| NameError::NotSpineScheme(trimmed.to_string()))?;
 
@@ -343,7 +346,9 @@ impl SpineUri {
         if reference.is_empty() {
             return Ok(self.clone());
         }
-        if reference.len() >= SCHEME.len() && reference[..SCHEME.len()].eq_ignore_ascii_case(SCHEME)
+        if reference
+            .get(..SCHEME.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(SCHEME))
         {
             return SpineUri::parse(reference);
         }
@@ -637,5 +642,24 @@ mod tests {
     #[test]
     fn serde_rejects_a_malformed_name_rather_than_accepting_it() {
         assert!(serde_json::from_str::<SpineUri>("\"https://evil.example\"").is_err());
+    }
+
+    #[test]
+    fn multibyte_input_at_the_scheme_boundary_is_rejected_without_panicking() {
+        // Byte offset 8 falls inside a multi-byte character in each case.
+        for input in [
+            "spine:/\u{e9}x",
+            "SPINE:/\u{e9}",
+            "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
+            "abcdefg\u{20ac}",
+        ] {
+            assert!(SpineUri::parse(input).is_err(), "{input:?}");
+            assert!(serde_json::from_str::<SpineUri>(&format!("\"{input}\"")).is_err());
+        }
+        // A reference with a multi-byte character at the boundary is not an
+        // absolute name. Whatever `join` decides, it must not panic.
+        let base = SpineUri::capability("web.search");
+        let _ = base.join("spine:/\u{e9}x");
+        let _ = base.join("abcdefg\u{20ac}");
     }
 }

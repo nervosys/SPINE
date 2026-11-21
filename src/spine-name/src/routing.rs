@@ -7,7 +7,7 @@
 //! hop at least halves the remaining distance to any target.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::key::NameKey;
 
@@ -48,6 +48,9 @@ pub struct RoutingTable {
     /// Sparse: only buckets that have ever held a node are allocated. With 256
     /// possible buckets and realistic network sizes, all but ~log2(n) stay empty.
     buckets: HashMap<usize, Vec<NodeInfo>>,
+    /// Nodes this node has itself found unreachable. Only these may be
+    /// displaced from a full bucket.
+    failed: HashSet<NameKey>,
 }
 
 impl RoutingTable {
@@ -62,6 +65,7 @@ impl RoutingTable {
             local,
             k: k.max(1),
             buckets: HashMap::new(),
+            failed: HashSet::new(),
         }
     }
 
@@ -79,45 +83,90 @@ impl RoutingTable {
         self.len() == 0
     }
 
-    /// Insert or refresh a node.
+    /// Learn of a node by hearsay: a peer referred it to us.
     ///
-    /// Returns `false` if the node was dropped: either it is the local node, or
-    /// its bucket was full of more-recently-seen peers. Kademlia's preference
-    /// for long-lived contacts is approximated here by evicting the *stalest*
-    /// entry only when the newcomer is fresher — an established peer is never
-    /// displaced by an older sighting.
+    /// Returns `false` if the node was not stored: it is the local node, or its
+    /// bucket is full of contacts this node has no reason to distrust.
+    ///
+    /// Nothing about a referral is trusted, `last_seen` least of all: the
+    /// referring peer chose it, so using it to rank contacts would let an
+    /// attacker flood a bucket with "fresher" sybils and evict honest peers.
+    /// Instead this follows Kademlia's preference for long-lived contacts:
+    ///
+    /// * a node already in the table is left exactly as it is (a referral can
+    ///   neither redirect its endpoints nor advance its `last_seen`; only
+    ///   [`RoutingTable::insert_observed`] does that);
+    /// * a new node takes a free slot if the bucket has one;
+    /// * in a full bucket it replaces an entry only if this node has itself
+    ///   marked that entry unreachable ([`RoutingTable::mark_unreachable`]);
+    ///   otherwise it is dropped.
     pub fn insert(&mut self, node: NodeInfo) -> bool {
         let Some(index) = self.local.bucket_index(&node.id) else {
             return false; // never bucket ourselves
         };
-        let bucket = self.buckets.entry(index).or_default();
-
-        if let Some(existing) = bucket.iter_mut().find(|n| n.id == node.id) {
-            // Refresh in place; keep the freshest view of its endpoints.
-            if node.last_seen >= existing.last_seen {
-                *existing = node;
-            }
+        if self
+            .buckets
+            .get(&index)
+            .is_some_and(|b| b.iter().any(|n| n.id == node.id))
+        {
             return true;
         }
+        self.insert_new(index, node)
+    }
 
+    /// Record a node this node has itself just heard from or connected to.
+    ///
+    /// Unlike [`RoutingTable::insert`], `now` is the *local* clock and replaces
+    /// whatever `last_seen` the `node` carries, so a peer cannot choose how
+    /// fresh it looks. A known node has its endpoints and `last_seen`
+    /// refreshed and any unreachable mark cleared; a new node is placed by the
+    /// same rules as a referral.
+    pub fn insert_observed(&mut self, mut node: NodeInfo, now: u64) -> bool {
+        let Some(index) = self.local.bucket_index(&node.id) else {
+            return false;
+        };
+        node.last_seen = now;
+        let id = node.id;
+        if let Some(existing) = self
+            .buckets
+            .get_mut(&index)
+            .and_then(|b| b.iter_mut().find(|n| n.id == id))
+        {
+            *existing = node;
+            self.failed.remove(&id);
+            return true;
+        }
+        self.insert_new(index, node)
+    }
+
+    /// Place a node not currently in its bucket.
+    fn insert_new(&mut self, index: usize, node: NodeInfo) -> bool {
+        let bucket = self.buckets.entry(index).or_default();
         if bucket.len() < self.k {
             bucket.push(node);
             return true;
         }
-
-        // Bucket full: replace the stalest contact, but only if the candidate is
-        // actually fresher than it.
-        let stalest = bucket
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, n)| n.last_seen)
-            .map(|(i, n)| (i, n.last_seen));
-        match stalest {
-            Some((i, seen)) if node.last_seen > seen => {
-                bucket[i] = node;
+        let failed = &self.failed;
+        match bucket.iter().position(|n| failed.contains(&n.id)) {
+            Some(i) => {
+                let old = std::mem::replace(&mut bucket[i], node);
+                self.failed.remove(&old.id);
                 true
             }
-            _ => false,
+            None => false,
+        }
+    }
+
+    /// Mark a known node as unreachable, e.g. after a lookup timeout. The entry
+    /// stays (and is still served) until a newcomer needs its slot in a full
+    /// bucket, or until [`RoutingTable::insert_observed`] hears from it again.
+    /// Returns `false` if the node is not in the table.
+    pub fn mark_unreachable(&mut self, id: &NameKey) -> bool {
+        if self.contains(id) {
+            self.failed.insert(*id);
+            true
+        } else {
+            false
         }
     }
 
@@ -131,7 +180,9 @@ impl RoutingTable {
         };
         let before = bucket.len();
         bucket.retain(|n| &n.id != id);
-        before != bucket.len()
+        let removed = before != bucket.len();
+        self.failed.remove(id);
+        removed
     }
 
     /// Whether a node is known.
@@ -164,6 +215,8 @@ impl RoutingTable {
             removed += before - bucket.len();
         }
         self.buckets.retain(|_, b| !b.is_empty());
+        let live: HashSet<NameKey> = self.buckets.values().flatten().map(|n| n.id).collect();
+        self.failed.retain(|id| live.contains(id));
         removed
     }
 
@@ -214,14 +267,13 @@ mod tests {
     fn reinserting_refreshes_rather_than_duplicates() {
         let mut t = table();
         t.insert(node(1, 100));
-        t.insert(NodeInfo::new(
-            NameKey::of(&[1]),
-            vec!["10.0.0.1:1".into()],
+        t.insert_observed(
+            NodeInfo::new(NameKey::of(&[1]), vec!["10.0.0.1:1".into()], 0),
             200,
-        ));
+        );
         assert_eq!(t.len(), 1);
         let found = t.closest(&NameKey::of(&[1]), 1).pop().unwrap();
-        assert_eq!(found.last_seen, 200);
+        assert_eq!(found.last_seen, 200, "stamped from the local clock");
         assert_eq!(found.endpoints, vec!["10.0.0.1:1".to_string()]);
     }
 
@@ -259,29 +311,82 @@ mod tests {
         assert_eq!(t.closest(&NameKey::of(b"x"), 50).len(), 5);
     }
 
-    #[test]
-    fn a_full_bucket_evicts_only_the_stalest_and_only_for_a_fresher_peer() {
-        // k=1 makes the eviction rule observable in one bucket.
-        let local = NameKey::from_bytes([0u8; 32]);
-        let mut t = RoutingTable::with_k(local, 1);
-
+    /// Three keys that share bucket 255 of an all-zero local key.
+    fn same_bucket_keys() -> (NameKey, NameKey, NameKey) {
         let mut a = [0u8; 32];
         a[0] = 0b1000_0000;
         let mut b = [0u8; 32];
         b[0] = 0b1100_0000;
-        // Both share bucket 255 (they differ from local in the top bit).
-        assert_eq!(local.bucket_index(&NameKey::from_bytes(a)), Some(255));
-        assert_eq!(local.bucket_index(&NameKey::from_bytes(b)), Some(255));
+        let mut c = [0u8; 32];
+        c[0] = 0b1010_0000;
+        (
+            NameKey::from_bytes(a),
+            NameKey::from_bytes(b),
+            NameKey::from_bytes(c),
+        )
+    }
 
-        assert!(t.insert(NodeInfo::new(NameKey::from_bytes(a), vec![], 500)));
-        // Older candidate is rejected — established contacts are preferred.
-        assert!(!t.insert(NodeInfo::new(NameKey::from_bytes(b), vec![], 100)));
-        assert!(t.contains(&NameKey::from_bytes(a)));
-        // Fresher candidate takes the slot.
-        assert!(t.insert(NodeInfo::new(NameKey::from_bytes(b), vec![], 900)));
-        assert!(t.contains(&NameKey::from_bytes(b)));
-        assert!(!t.contains(&NameKey::from_bytes(a)));
+    #[test]
+    fn a_full_bucket_keeps_its_entries_against_a_newcomer_claiming_a_later_last_seen() {
+        // k=1 makes the rule observable in one bucket.
+        let local = NameKey::from_bytes([0u8; 32]);
+        let mut t = RoutingTable::with_k(local, 1);
+        let (a, b, _) = same_bucket_keys();
+        assert_eq!(local.bucket_index(&a), Some(255));
+        assert_eq!(local.bucket_index(&b), Some(255));
+
+        assert!(t.insert(NodeInfo::new(a, vec![], 500)));
+        assert!(!t.insert(NodeInfo::new(b, vec![], 100)));
+        assert!(!t.insert(NodeInfo::new(b, vec![], u64::MAX)));
+        assert!(!t.insert_observed(NodeInfo::new(b, vec![], u64::MAX), 900));
+        assert!(t.contains(&a));
+        assert!(!t.contains(&b));
         assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn a_referral_cannot_redirect_or_refresh_a_known_node() {
+        let mut t = table();
+        t.insert(node(1, 100));
+        assert!(t.insert(NodeInfo::new(
+            NameKey::of(&[1]),
+            vec!["evil".into()],
+            u64::MAX
+        )));
+        let found = t.closest(&NameKey::of(&[1]), 1).pop().unwrap();
+        assert_eq!(found.last_seen, 100);
+        assert_ne!(found.endpoints, vec!["evil".to_string()]);
+    }
+
+    #[test]
+    fn an_entry_marked_unreachable_is_replaced_by_a_newcomer() {
+        let local = NameKey::from_bytes([0u8; 32]);
+        let mut t = RoutingTable::with_k(local, 1);
+        let (a, b, c) = same_bucket_keys();
+
+        assert!(t.insert(NodeInfo::new(a, vec![], 500)));
+        assert!(!t.mark_unreachable(&b), "unknown nodes cannot be marked");
+        assert!(t.mark_unreachable(&a));
+        assert!(t.insert(NodeInfo::new(b, vec![], 1)));
+        assert!(t.contains(&b));
+        assert!(!t.contains(&a));
+        assert_eq!(t.len(), 1);
+
+        // The replacement was never marked, so it is now protected.
+        assert!(!t.insert(NodeInfo::new(c, vec![], u64::MAX)));
+        assert!(t.contains(&b));
+    }
+
+    #[test]
+    fn hearing_from_a_node_again_clears_its_unreachable_mark() {
+        let local = NameKey::from_bytes([0u8; 32]);
+        let mut t = RoutingTable::with_k(local, 1);
+        let (a, b, _) = same_bucket_keys();
+        t.insert(NodeInfo::new(a, vec![], 10));
+        t.mark_unreachable(&a);
+        assert!(t.insert_observed(NodeInfo::new(a, vec![], 0), 50));
+        assert!(!t.insert(NodeInfo::new(b, vec![], 99)));
+        assert!(t.contains(&a));
     }
 
     #[test]

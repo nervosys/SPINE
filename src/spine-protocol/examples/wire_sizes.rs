@@ -1,33 +1,41 @@
 //! Measure SPINE's binary wire format against UTF-8 JSON, frame by frame.
 //!
-//! Prints, for each representative agent message, the JSON body size, the SPINE
-//! wire frame size (CBOR or CBOR+zstd, 8-byte header included), the chosen
-//! codec, and the size ratio. This is the data behind SPINE's
-//! encoding-efficiency claim — run it and read the numbers off the wire.
+//! Prints, for each representative agent message, the JSON body size, the
+//! spine-wire v1 body size (deterministic CBOR, and CBOR through the frame
+//! layer's zstd path), and the size ratios. This is the data behind SPINE's
+//! encoding-efficiency claim: run it and read the numbers off the wire.
 //!
 //! Run: `cargo run -p spine-protocol --example wire_sizes`
 
 use serde_json::json;
-use spine_protocol::wire;
+use spine_protocol::cbor;
+use spine_protocol::frame::{encode_frame, Frame, FrameType, HEADER_LEN, MAX_FRAME};
 use spine_protocol::{
-    Capability, CapabilityAdvertisement, DType, EncodedFrame, EncodedMetadata, Message, Modality,
-    StreamData, StreamToken, ToolCall,
+    Capability, CapabilityAdvertisement, Message, StreamData, StreamToken, ToolCall,
 };
 
 fn row(label: &str, msg: &Message) {
     let json = serde_json::to_vec(msg).unwrap();
-    // Default hot-path codec: plain CBOR, no compression.
-    let cbor = wire::encode(msg).unwrap();
-    // Opt-in: CBOR + zstd (bandwidth-bound paths only — high per-call CPU).
-    let zstd = wire::encode_compressed(msg).unwrap();
+    // Default hot-path codec: deterministic CBOR, no compression.
+    let cbor = cbor::to_vec(msg).unwrap();
+    // Opt-in: the frame layer compresses a body of at least 1 KiB when
+    // compression is on and keeps the result only if it is smaller. The
+    // figure is the body as it travels (frame header excluded).
+    let frame = Frame {
+        frame_type: FrameType::Request,
+        request_id: 1,
+        body: cbor.clone(),
+    };
+    let framed = encode_frame(&frame, MAX_FRAME, true).unwrap();
+    let zstd_len = framed.len() - HEADER_LEN;
     let cbor_saved = 100.0 * (1.0 - cbor.len() as f64 / json.len() as f64);
-    let zstd_saved = 100.0 * (1.0 - zstd.len() as f64 / json.len() as f64);
+    let zstd_saved = 100.0 * (1.0 - zstd_len as f64 / json.len() as f64);
     println!(
         "{label:<18} {:>7} {:>7} {:>7.0}% {:>10} {:>7.0}%",
         json.len(),
         cbor.len(),
         cbor_saved,
-        zstd.len(),
+        zstd_len,
         zstd_saved,
     );
 }
@@ -72,19 +80,12 @@ fn main() {
         .map(|i| (i.wrapping_mul(31) % 251) as u8)
         .collect();
     row(
-        "EncodedFrame/emb",
-        &Message::Encoded(EncodedFrame {
-            codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
-            variant: Some("layer=11".into()),
-            data: embedding,
-            metadata: EncodedMetadata {
-                modality: Modality::Embedding,
-                shape: vec![256],
-                dtype: DType::F32,
-                original_len: Some(4096),
-                source_hash: Some([0xAB; 32]),
-            },
-            trace: None,
+        "StreamToken/emb",
+        &Message::StreamToken(StreamToken {
+            id: "stream-7f3a".into(),
+            seq: 1,
+            data: StreamData::Bytes(embedding),
+            usage: None,
         }),
     );
 
@@ -128,12 +129,12 @@ fn main() {
         },
     );
 
-    println!(
-        "\nNote: sizes include the 8-byte SpineWireHeader. 'cbor' is the hot-path\n\
-         default (wire::encode) — fast, and already dense: CBOR drops JSON's\n\
-         quotes, key punctuation, and decimal-string number blowup, and ships\n\
-         tensor bytes as a CBOR byte string. 'cbor+zstd' (wire::encode_compressed)\n\
-         trades a high fixed per-call CPU cost for more bytes — for bandwidth-\n\
-         bound paths only, not the latency-sensitive hot path."
-    );
+    println!();
+    println!("Note: sizes are frame bodies; the v1 frame header adds 15 bytes.");
+    println!("'cbor' is the hot-path default (cbor::to_vec): fast, and already dense.");
+    println!("CBOR drops JSON's quotes, key punctuation and decimal-string number");
+    println!("blowup, and ships tensor bytes as a CBOR byte string. 'cbor+zstd' is what");
+    println!("the frame layer sends with compression on: bodies under 1 KiB are never");
+    println!("compressed, so small frames show no gain. It trades a high fixed per-call");
+    println!("CPU cost for bytes, for bandwidth-bound paths only.");
 }

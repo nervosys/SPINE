@@ -367,21 +367,39 @@ pub mod sqlite {
 
             match prefix {
                 Some(pfx) => {
-                    // Use BETWEEN for prefix scan (prefix..prefix+1)
+                    // Range scan over [prefix, successor(prefix)). The successor
+                    // is the prefix with trailing 0xFF bytes dropped and the last
+                    // remaining byte incremented. Wrapping the last byte instead
+                    // would put the bound *below* a prefix ending in 0xFF and
+                    // return nothing. An empty or all-0xFF prefix has no
+                    // successor, so it is bounded below only.
                     let mut upper = pfx.to_vec();
-                    // Increment last byte for upper bound
-                    if let Some(last) = upper.last_mut() {
-                        *last = last.wrapping_add(1);
+                    while upper.last() == Some(&0xFF) {
+                        upper.pop();
                     }
-                    let mut stmt = conn.prepare(&format!(
-                        "SELECT key, value FROM {} WHERE key >= ?1 AND key < ?2",
-                        table
-                    ))?;
-                    let rows = stmt.query_map(params![pfx, upper], |row| {
-                        Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
-                    })?;
-                    for row in rows {
-                        result.push(row?);
+                    if let Some(last) = upper.last_mut() {
+                        *last += 1;
+                        let mut stmt = conn.prepare(&format!(
+                            "SELECT key, value FROM {} WHERE key >= ?1 AND key < ?2",
+                            table
+                        ))?;
+                        let rows = stmt.query_map(params![pfx, upper], |row| {
+                            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                        })?;
+                        for row in rows {
+                            result.push(row?);
+                        }
+                    } else {
+                        let mut stmt = conn.prepare(&format!(
+                            "SELECT key, value FROM {} WHERE key >= ?1",
+                            table
+                        ))?;
+                        let rows = stmt.query_map(params![pfx], |row| {
+                            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+                        })?;
+                        for row in rows {
+                            result.push(row?);
+                        }
                     }
                 }
                 None => {
@@ -741,6 +759,47 @@ mod tests {
     fn test_sqlite_backend() {
         let backend = sqlite::SqliteBackend::in_memory().unwrap();
         run_backend_tests(&backend);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_prefix_scan_handles_prefixes_ending_in_0xff() {
+        let backend = sqlite::SqliteBackend::in_memory().unwrap();
+        for key in [
+            &[0x01u8, 0xFE, 0x00][..],
+            &[0x01, 0xFF],
+            &[0x01, 0xFF, 0x00],
+            &[0x01, 0xFF, 0xFF],
+            &[0x02, 0x00],
+            &[0xFF, 0xFF],
+            &[0xFF, 0xFF, 0x07],
+        ] {
+            backend.put("scan", key, b"v").unwrap();
+        }
+        let keys = |prefix: &[u8]| {
+            let mut found: Vec<Vec<u8>> = backend
+                .scan("scan", Some(prefix))
+                .unwrap()
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect();
+            found.sort();
+            found
+        };
+        assert_eq!(
+            keys(&[0x01, 0xFF]),
+            vec![
+                vec![0x01, 0xFF],
+                vec![0x01, 0xFF, 0x00],
+                vec![0x01, 0xFF, 0xFF]
+            ]
+        );
+        assert_eq!(
+            keys(&[0xFF, 0xFF]),
+            vec![vec![0xFF, 0xFF], vec![0xFF, 0xFF, 0x07]]
+        );
+        assert_eq!(keys(&[]).len(), 7);
+        assert_eq!(keys(&[0x01, 0xFE]), vec![vec![0x01, 0xFE, 0x00]]);
     }
 
     #[cfg(feature = "sqlite")]

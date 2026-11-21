@@ -19,6 +19,7 @@
 //! max_sessions = 1000
 //! max_connections_per_ip = 50
 //! idle_timeout_secs = 300
+//! hello_timeout_secs = 10
 //! session_watchdog_secs = 600
 //!
 //! [tls]
@@ -54,6 +55,7 @@ pub struct SpineConfig {
     pub cluster: ClusterConfig,
     pub logging: LoggingConfig,
     pub namespace: NamespaceConfig,
+    pub outbound: crate::outbound::FetchConfig,
 }
 
 /// How this node enters the `spine://` namespace.
@@ -72,6 +74,18 @@ pub struct NamespaceConfig {
     /// silently rejecting the namespace's own spelling for its own bootstrap
     /// addresses would be a poor joke.
     pub seeds: Vec<String>,
+    /// Optional DNS host:port bootstrap sources, resolved with bounded fan-out.
+    pub dns_seeds: Vec<String>,
+    /// Enable durable read-only task and knowledge RPC for explicitly allowed keys.
+    pub tasks_enabled: bool,
+    pub task_peers: Vec<String>,
+    /// Separate inbound and outbound TCP mesh connection budgets (1..=1024).
+    pub connection_limit: usize,
+    pub handshake_timeout_secs: u64,
+    /// Complete frame deadline, including idle time before its header.
+    pub frame_timeout_secs: u64,
+    pub queue_timeout_secs: u64,
+    pub write_timeout_secs: u64,
     /// Addresses this node advertises to peers it meets.
     ///
     /// Empty means "do not advertise": the node resolves names but is never
@@ -91,6 +105,12 @@ pub struct NamespaceConfig {
     /// and orphans every record published under the old name. It is persisted
     /// for that reason, not for convenience.
     pub key_path: String,
+    /// Durable local publications. Empty disables namespace persistence.
+    pub records_path: String,
+    /// Re-sign only records owned by this node's key. Off unless opted in.
+    pub renew_owned_records: bool,
+    /// Maximum time between owner renewal checks.
+    pub renewal_secs: u64,
     /// How often, in seconds, to re-offer held records to the nodes now closest
     /// to them and drop the expired.
     ///
@@ -124,16 +144,32 @@ pub struct ServerConfig {
     pub metrics_port: u16,
     /// Maximum concurrent sessions
     pub max_sessions: usize,
+    /// Global native TCP/WebSocket/QUIC connections, including handshakes.
+    pub max_connections: usize,
     /// Maximum connections from a single IP
     pub max_connections_per_ip: usize,
     /// Idle connection timeout (seconds)
     pub idle_timeout_secs: u64,
+    /// Seconds a native connection has to send `HELLO` (spine-wire v1, C.6)
+    /// before the daemon closes it with `CLOSE(timeout)`. A client that
+    /// connects and says nothing holds one admission slot for this long.
+    pub hello_timeout_secs: u64,
     /// Session watchdog interval (seconds) — kills sessions with no activity
     pub session_watchdog_secs: u64,
+    /// Retain detached sessions for this many seconds; connected sessions are protected.
+    pub session_retention_secs: u64,
     /// Session persistence interval (seconds)
     pub persistence_interval_secs: u64,
     /// Graceful shutdown timeout (seconds)
     pub shutdown_timeout_secs: u64,
+    /// Accept native clients from beyond loopback without mutual TLS.
+    ///
+    /// The native server has no per-client authorization: every connected
+    /// client can publish names and resources, call tools, and make this node
+    /// sign mesh calls with its own key. Until delegated authority exists, a
+    /// non-loopback `host` is refused at startup unless `tls.mutual_tls` is on
+    /// or this is set. Setting it states that the network itself is trusted.
+    pub allow_unauthenticated_remote: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,13 +229,27 @@ impl Default for ServerConfig {
             quic_port_offset: 2,
             metrics_port: 9090,
             max_sessions: 1000,
+            max_connections: 256,
             max_connections_per_ip: 50,
             idle_timeout_secs: 300,
+            hello_timeout_secs: 10,
             session_watchdog_secs: 600,
+            session_retention_secs: 3600,
             persistence_interval_secs: 60,
             shutdown_timeout_secs: 30,
+            allow_unauthenticated_remote: false,
         }
     }
+}
+
+/// Whether a configured listener host is reachable only from this machine.
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl Default for TlsConfig {
@@ -246,10 +296,21 @@ impl Default for NamespaceConfig {
     fn default() -> Self {
         Self {
             seeds: Vec::new(),
+            dns_seeds: Vec::new(),
             advertise: Vec::new(),
             enabled: false,
             port: 9440,
             key_path: "spine-node.key".into(),
+            records_path: "spine-names.sqlite".into(),
+            tasks_enabled: false,
+            task_peers: Vec::new(),
+            connection_limit: 64,
+            handshake_timeout_secs: 10,
+            frame_timeout_secs: 60,
+            queue_timeout_secs: 5,
+            write_timeout_secs: 10,
+            renew_owned_records: false,
+            renewal_secs: 60,
             // Kademlia's hourly replication interval, and for the same reason:
             // it is short relative to how fast a neighbourhood turns over and
             // long relative to how long a walk takes.
@@ -261,6 +322,17 @@ impl Default for NamespaceConfig {
 }
 
 impl NamespaceConfig {
+    pub fn connection_limits(&self) -> spine_mesh::mesh_tcp::ConnectionLimits {
+        use std::time::Duration;
+        spine_mesh::mesh_tcp::ConnectionLimits {
+            max_connections: self.connection_limit,
+            handshake_timeout: Duration::from_secs(self.handshake_timeout_secs),
+            frame_timeout: Duration::from_secs(self.frame_timeout_secs),
+            queue_timeout: Duration::from_secs(self.queue_timeout_secs),
+            write_timeout: Duration::from_secs(self.write_timeout_secs),
+        }
+    }
+
     /// The seed list as dialable `host:port` strings.
     ///
     /// Entries spelled as `spine://host:…` names are unwrapped to the address
@@ -298,21 +370,85 @@ fn host_address(raw: &str) -> Option<String> {
 
 impl SpineConfig {
     /// Load configuration: spine.toml → env overrides → defaults.
+    #[allow(dead_code)] // Compatibility entry point; executables use fallible try_load.
     pub fn load() -> Self {
-        let mut config = if Path::new("spine.toml").exists() {
-            match std::fs::read_to_string("spine.toml") {
-                Ok(contents) => match toml::from_str::<SpineConfig>(&contents) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("Warning: failed to parse spine.toml: {e}. Using defaults.");
-                        Self::default()
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Warning: failed to read spine.toml: {e}. Using defaults.");
-                    Self::default()
-                }
-            }
+        Self::try_load().expect("SPINE configuration is invalid")
+    }
+
+    /// Parse an explicitly selected file without environment changes or copying
+    /// over the working directory's configuration. Error messages omit content.
+    pub fn from_file(path: &Path) -> anyhow::Result<Self> {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|_| anyhow::anyhow!("could not read configuration {}", path.display()))?;
+        let config: Self = toml::from_str(&contents)
+            .map_err(|_| anyhow::anyhow!("invalid TOML configuration {}", path.display()))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        self.outbound.validate()?;
+        self.namespace
+            .connection_limits()
+            .validate()
+            .map_err(|_| anyhow::anyhow!("invalid namespace connection limits"))?;
+        anyhow::ensure!(
+            (1..=65536).contains(&self.server.max_sessions)
+                && self.server.max_connections_per_ip > 0
+                && self.server.max_connections > 0
+                && self.server.max_connections <= 65536,
+            "connection and session limits must be positive and within configured bounds"
+        );
+        anyhow::ensure!(
+            self.server.session_watchdog_secs > 0
+                && (1..=2_592_000).contains(&self.server.session_retention_secs)
+                && self.server.persistence_interval_secs > 0
+                && self.server.idle_timeout_secs > 0
+                && self.server.hello_timeout_secs > 0,
+            "maintenance intervals must be positive; session retention must be 1..=2592000 seconds"
+        );
+        anyhow::ensure!(
+            !self.tls.mutual_tls || (self.tls.enabled && !self.tls.ca_path.is_empty()),
+            "mutual TLS requires enabled TLS and an explicit CA path"
+        );
+        anyhow::ensure!(
+            self.tls.crl_path.is_empty() || self.tls.mutual_tls,
+            "a client revocation list requires mutual TLS"
+        );
+        anyhow::ensure!(
+            is_loopback_host(&self.server.host)
+                || self.tls.mutual_tls
+                || self.server.allow_unauthenticated_remote,
+            "server.host is not loopback: every native client has full control of this node, \
+             so enable tls.mutual_tls or set server.allow_unauthenticated_remote = true"
+        );
+        for offset in [
+            self.server.ws_port_offset,
+            self.server.quic_port_offset,
+            self.cluster.port_offset,
+        ] {
+            anyhow::ensure!(
+                self.server.port.checked_add(offset).is_some(),
+                "listener port plus offset exceeds 65535"
+            );
+        }
+        anyhow::ensure!(
+            self.server.metrics_port < u16::MAX,
+            "metrics port leaves no room for the HTTP gateway"
+        );
+        anyhow::ensure!(
+            !self.namespace.tasks_enabled
+                || (self.namespace.enabled && !self.namespace.task_peers.is_empty()),
+            "task worker requires an enabled namespace and explicit peer keys"
+        );
+        Ok(())
+    }
+
+    pub fn try_load() -> anyhow::Result<Self> {
+        let mut config = if let Some(path) = std::env::var_os("SPINE_CONFIG_PATH") {
+            Self::from_file(Path::new(&path))?
+        } else if Path::new("spine.toml").exists() {
+            Self::from_file(Path::new("spine.toml"))?
         } else {
             Self::default()
         };
@@ -366,6 +502,11 @@ impl SpineConfig {
         if let Ok(v) = std::env::var("SPINE_REGION") {
             config.cluster.region = v;
         }
+        if let Ok(v) = std::env::var("SPINE_HELLO_TIMEOUT") {
+            if let Ok(s) = v.parse() {
+                config.server.hello_timeout_secs = s;
+            }
+        }
         if let Ok(v) = std::env::var("SPINE_IDLE_TIMEOUT") {
             if let Ok(s) = v.parse() {
                 config.server.idle_timeout_secs = s;
@@ -386,7 +527,8 @@ impl SpineConfig {
             config.namespace.advertise = split_list(&v);
         }
 
-        config
+        config.validate()?;
+        Ok(config)
     }
 }
 
@@ -395,12 +537,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn invalid_explicit_configuration_is_refused_without_disclosing_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selected.toml");
+        std::fs::write(&path, "private-marker = [ invalid").unwrap();
+        let error = SpineConfig::from_file(&path).unwrap_err().to_string();
+        assert!(!error.contains("private-marker"));
+        assert!(SpineConfig::from_file(&dir.path().join("missing.toml")).is_err());
+        let mut config = SpineConfig::default();
+        config.server.port = u16::MAX;
+        assert!(config.validate().is_err());
+        config.server.port = 8080;
+        config.server.persistence_interval_secs = 0;
+        assert!(config.validate().is_err());
+        config.server.persistence_interval_secs = 60;
+        config.server.session_retention_secs = 0;
+        assert!(config.validate().is_err());
+        config.server.session_retention_secs = 2_592_001;
+        assert!(config.validate().is_err());
+        config.server.session_retention_secs = 3600;
+        config.server.max_sessions = usize::MAX;
+        assert!(config.validate().is_err());
+        config.server.max_sessions = 1000;
+        config.namespace.connection_limit = 0;
+        assert!(config.validate().is_err());
+        config.namespace.connection_limit = 64;
+        config.tls.mutual_tls = true;
+        assert!(config.validate().is_err());
+        config.tls.enabled = true;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn operator_examples_parse_with_validated_bounds() {
+        for example in [
+            "single-node.toml",
+            "mesh-worker.toml",
+            "gateway.toml",
+            "irongate.toml",
+            "mutual-tls.toml",
+            "internal-navigation.toml",
+        ] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/config")
+                .join(example);
+            let cfg = SpineConfig::from_file(&path).unwrap();
+            assert!(cfg.validate().is_ok());
+        }
+    }
+
+    #[test]
     fn test_default_config() {
         let config = SpineConfig::default();
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.max_sessions, 1000);
         assert!(!config.tls.enabled);
         assert_eq!(config.logging.format, "pretty");
+        assert_eq!(config.server.hello_timeout_secs, 10);
+    }
+
+    #[test]
+    fn the_hello_deadline_is_configurable_and_must_be_positive() {
+        let config: SpineConfig = toml::from_str(
+            r#"
+[server]
+hello_timeout_secs = 3
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.server.hello_timeout_secs, 3);
+        assert!(config.validate().is_ok());
+
+        let config = SpineConfig {
+            server: ServerConfig {
+                hello_timeout_secs: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     /// A seed list should accept the namespace's own spelling for an address as
@@ -439,6 +654,25 @@ seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
 
     /// A `cap:` or `did:` name carries no address, so it must not be mistaken
     /// for one.
+    #[test]
+    fn a_remote_listener_needs_client_authentication_or_an_explicit_override() {
+        let mut config = SpineConfig::default();
+        assert!(config.validate().is_ok(), "loopback default is accepted");
+
+        for host in ["localhost", "127.0.0.1", "::1", "[::1]"] {
+            config.server.host = host.into();
+            assert!(config.validate().is_ok(), "{host}");
+        }
+
+        for host in ["0.0.0.0", "::", "192.0.2.10", "node.example.org"] {
+            config.server.host = host.into();
+            assert!(config.validate().is_err(), "{host}");
+        }
+
+        config.server.allow_unauthenticated_remote = true;
+        assert!(config.validate().is_ok(), "explicit override is accepted");
+    }
+
     #[test]
     fn a_non_host_name_is_not_treated_as_an_address() {
         assert_eq!(host_address("spine://cap:web.search/"), None);

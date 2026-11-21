@@ -82,7 +82,6 @@ Write-Host "    spine init <path>                  — Scaffold a new project"
 Write-Host "    spine connect <addr>               — Interactive REPL session"
 Write-Host "    spine connect <addr> --ws           — Connect via WebSocket"
 Write-Host "    spine query navigate <addr> <url>  — Navigate to URL"
-Write-Host "    spine query search <addr> <query>  — Search"
 Write-Host "    spine benchmark <addr> -n 100      — Performance benchmark"
 Write-Host "    spine status <addr>                — Health check"
 Write-Host "    spine cert generate                — Generate dev certificates"
@@ -92,7 +91,7 @@ Write-Host "    spine deploy -c spine.toml         — Deploy from config"
 Write-Section "Step 6: Research Swarm Demo"
 Write-Host "  Running collaborative research swarm..." -ForegroundColor Yellow
 try {
-    cargo run --example research_swarm -p spine-agent 2>&1
+    cargo run --example research_swarm -p spine-agent --features research 2>&1
 }
 catch {
     Write-Host "  Example requires running server" -ForegroundColor Yellow

@@ -1,0 +1,746 @@
+//! spine-wire v1 first frames: `HELLO`, `HELLO_ACK` and `CLOSE`
+//! (`docs/spec/00-wire.md`, sections C.5 to C.7 and C.10).
+//!
+//! This module holds the three body types, the validation of every bound the
+//! specification states, the server-side [`negotiate`] function and the
+//! conversions to and from [`Frame`]. It owns no connection state: the caller
+//! decides when a frame may be sent and what to do with a returned [`Close`].
+//!
+//! Errors are reported as a [`Close`], the body the caller should send in a
+//! `CLOSE` frame before closing. The code is chosen as follows:
+//!
+//! - a body that is not well-formed, deterministic CBOR (C.5 rules 1 to 6)
+//!   is `malformed_frame`;
+//! - a body that is deterministic CBOR but does not fit its type, or breaks a
+//!   stated bound, is `protocol_violation`;
+//! - a frame of the wrong type is `protocol_violation`;
+//! - no common version is `unsupported_version`, carrying `supported`.
+//!
+//! `HELLO` and `HELLO_ACK` are open: unknown keys are ignored (C.5 rule 9).
+//! `CLOSE` is closed: an unknown key is a schema error (C.5 rule 8).
+
+use std::collections::HashSet;
+
+use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::cbor::{self, CborError};
+use crate::frame::{CloseCode, Frame, FrameType, MAX_FRAME};
+
+/// Smallest `max_frame` a `HELLO` or `HELLO_ACK` may carry (C.6).
+pub const MIN_MAX_FRAME: u32 = 1024;
+
+/// Largest `agent` text in a `HELLO`, in bytes (C.6).
+pub const MAX_AGENT_LEN: usize = 128;
+
+/// Largest extension id, in bytes (C.10).
+pub const MAX_EXTENSION_ID_LEN: usize = 128;
+
+/// Deserialises an optional field so that a present `null` is rejected
+/// (C.5 rule 7). A missing key is handled by `#[serde(default)]`.
+fn reject_null<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// The `CLOSE` body for a body that failed to encode or decode.
+fn body_error(error: &CborError) -> Close {
+    match error {
+        CborError::Decode(_) | CborError::Encode(_) => Close::new(
+            CloseCode::ProtocolViolation,
+            format!("body does not match its type: {error}"),
+        ),
+        other => Close::new(
+            CloseCode::MalformedFrame,
+            format!("body is not deterministic CBOR: {other}"),
+        ),
+    }
+}
+
+/// The body of a `CLOSE` frame (C.7). A closed type: unknown keys are
+/// rejected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Close {
+    /// The close code text, see [`CloseCode::as_str`].
+    pub code: String,
+    /// Human-readable detail.
+    pub message: String,
+    /// For `unsupported_version`, the versions the sender supports.
+    #[serde(
+        default,
+        deserialize_with = "reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub supported: Option<Vec<u64>>,
+}
+
+impl Close {
+    /// A `CLOSE` body with the given code and message and no `supported`.
+    pub fn new(code: CloseCode, message: impl Into<String>) -> Close {
+        Close {
+            code: code.as_str().to_string(),
+            message: message.into(),
+            supported: None,
+        }
+    }
+
+    /// An `unsupported_version` `CLOSE` body listing the sender's versions.
+    pub fn unsupported_version(message: impl Into<String>, supported: Vec<u64>) -> Close {
+        Close {
+            code: CloseCode::UnsupportedVersion.as_str().to_string(),
+            message: message.into(),
+            supported: Some(supported),
+        }
+    }
+
+    /// The code as an enum, or `None` when the text is not a code of v1.
+    pub fn close_code(&self) -> Option<CloseCode> {
+        const ALL: [CloseCode; 7] = [
+            CloseCode::UnsupportedVersion,
+            CloseCode::UnknownFrameType,
+            CloseCode::MalformedFrame,
+            CloseCode::FrameTooLarge,
+            CloseCode::ProtocolViolation,
+            CloseCode::Timeout,
+            CloseCode::ShuttingDown,
+        ];
+        ALL.iter().copied().find(|c| c.as_str() == self.code)
+    }
+
+    /// Encodes this body as a `CLOSE` frame with request id 0.
+    pub fn to_frame(&self) -> Result<Frame, CborError> {
+        Ok(Frame {
+            frame_type: FrameType::Close,
+            request_id: 0,
+            body: cbor::to_vec(self)?,
+        })
+    }
+
+    /// Decodes a `CLOSE` frame. The error is the `CLOSE` to send in answer.
+    pub fn from_frame(frame: &Frame) -> Result<Close, Close> {
+        decode_body(frame, FrameType::Close)
+    }
+}
+
+/// Checks the frame type and decodes the body.
+fn decode_body<T: serde::de::DeserializeOwned>(
+    frame: &Frame,
+    expected: FrameType,
+) -> Result<T, Close> {
+    if frame.frame_type != expected {
+        return Err(Close::new(
+            CloseCode::ProtocolViolation,
+            format!(
+                "expected frame type 0x{:02x}, got 0x{:02x}",
+                expected.as_u8(),
+                frame.frame_type.as_u8()
+            ),
+        ));
+    }
+    cbor::from_slice(&frame.body).map_err(|e| body_error(&e))
+}
+
+/// The body of a `HELLO` frame (C.6). An open type: unknown keys are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hello {
+    /// Frame versions the client can speak, strictly ascending, not empty.
+    pub versions: Vec<u64>,
+    /// The largest frame the client will accept, 1024 to 16,777,216.
+    pub max_frame: u32,
+    /// Extension ids the client offers (C.10), no duplicates, possibly empty.
+    pub extensions: Vec<String>,
+    /// Software name and version, at most 128 bytes, informational.
+    #[serde(
+        default,
+        deserialize_with = "reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent: Option<String>,
+}
+
+/// A `Close` for a `max_frame` outside 1024 to 16,777,216.
+fn check_max_frame(max_frame: u32) -> Result<(), Close> {
+    if (MIN_MAX_FRAME..=MAX_FRAME).contains(&max_frame) {
+        Ok(())
+    } else {
+        Err(Close::new(
+            CloseCode::ProtocolViolation,
+            format!("max_frame {max_frame} is outside {MIN_MAX_FRAME} to {MAX_FRAME}"),
+        ))
+    }
+}
+
+/// A `Close` when `extensions` holds a duplicate.
+fn check_no_duplicates(extensions: &[String]) -> Result<(), Close> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for id in extensions {
+        if !seen.insert(id.as_str()) {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                format!("duplicate extension id {id:?}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+impl Hello {
+    /// Checks every bound of C.6 and C.10: versions non-empty and strictly
+    /// ascending, `max_frame` in range, extension ids ASCII, at most 128
+    /// bytes and without duplicates, `agent` at most 128 bytes.
+    pub fn validate(&self) -> Result<(), Close> {
+        if self.versions.is_empty() {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                "versions is empty",
+            ));
+        }
+        if self.versions.windows(2).any(|w| w[0] >= w[1]) {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                "versions are not strictly ascending",
+            ));
+        }
+        check_max_frame(self.max_frame)?;
+        for id in &self.extensions {
+            if !id.is_ascii() || id.len() > MAX_EXTENSION_ID_LEN {
+                return Err(Close::new(
+                    CloseCode::ProtocolViolation,
+                    "extension id is not ASCII or is longer than 128 bytes",
+                ));
+            }
+        }
+        check_no_duplicates(&self.extensions)?;
+        if let Some(agent) = &self.agent {
+            if agent.len() > MAX_AGENT_LEN {
+                return Err(Close::new(
+                    CloseCode::ProtocolViolation,
+                    "agent is longer than 128 bytes",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Encodes this body as a `HELLO` frame with request id 0.
+    pub fn to_frame(&self) -> Result<Frame, CborError> {
+        Ok(Frame {
+            frame_type: FrameType::Hello,
+            request_id: 0,
+            body: cbor::to_vec(self)?,
+        })
+    }
+
+    /// Decodes and validates a `HELLO` frame. The error is the `CLOSE` to
+    /// send in answer.
+    pub fn from_frame(frame: &Frame) -> Result<Hello, Close> {
+        let hello: Hello = decode_body(frame, FrameType::Hello)?;
+        hello.validate()?;
+        Ok(hello)
+    }
+}
+
+/// The body of a `HELLO_ACK` frame (C.6). An open type: unknown keys are
+/// ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HelloAck {
+    /// The selected version, one the client offered.
+    pub version: u64,
+    /// `min(client max_frame, server maximum)`; applies in both directions.
+    pub max_frame: u32,
+    /// Requests the server processes concurrently per connection, at least 1.
+    pub max_inflight: u32,
+    /// The accepted extensions, in the order that fixes the extension index.
+    pub extensions: Vec<String>,
+    /// Informational software name and version.
+    #[serde(
+        default,
+        deserialize_with = "reject_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub agent: Option<String>,
+}
+
+impl HelloAck {
+    /// Checks the bounds that hold without knowing the `HELLO`: `max_frame`
+    /// in range, `max_inflight` at least 1, no duplicate extension.
+    pub fn validate(&self) -> Result<(), Close> {
+        check_max_frame(self.max_frame)?;
+        if self.max_inflight < 1 {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                "max_inflight is 0",
+            ));
+        }
+        check_no_duplicates(&self.extensions)
+    }
+
+    /// Client-side check of this acknowledgement against the `HELLO` that
+    /// was sent: [`HelloAck::validate`], the version was offered, `max_frame`
+    /// is not above the client's, and the extensions are a duplicate-free
+    /// subset of those offered.
+    pub fn validate_against(&self, hello: &Hello) -> Result<(), Close> {
+        self.validate()?;
+        if !hello.versions.contains(&self.version) {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                format!("selected version {} was not offered", self.version),
+            ));
+        }
+        if self.max_frame > hello.max_frame {
+            return Err(Close::new(
+                CloseCode::ProtocolViolation,
+                format!(
+                    "max_frame {} is above the offered {}",
+                    self.max_frame, hello.max_frame
+                ),
+            ));
+        }
+        for id in &self.extensions {
+            if !hello.extensions.contains(id) {
+                return Err(Close::new(
+                    CloseCode::ProtocolViolation,
+                    format!("extension {id:?} was not offered"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Encodes this body as a `HELLO_ACK` frame with request id 0.
+    pub fn to_frame(&self) -> Result<Frame, CborError> {
+        Ok(Frame {
+            frame_type: FrameType::HelloAck,
+            request_id: 0,
+            body: cbor::to_vec(self)?,
+        })
+    }
+
+    /// Decodes a `HELLO_ACK` frame and runs [`HelloAck::validate`]. The error
+    /// is the `CLOSE` to send; C.7 makes a schema failure here a
+    /// `protocol_violation`.
+    pub fn from_frame(frame: &Frame) -> Result<HelloAck, Close> {
+        let ack: HelloAck = decode_body(frame, FrameType::HelloAck)?;
+        ack.validate()?;
+        Ok(ack)
+    }
+}
+
+/// What the local (server) side supports, input to [`negotiate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalConfig {
+    /// Versions the server supports, in any order.
+    pub versions: Vec<u64>,
+    /// The largest frame the server accepts; clamped to 1024 to 16,777,216.
+    pub max_frame: u32,
+    /// Requests processed concurrently per connection; at least 1 is used.
+    pub max_inflight: u32,
+    /// Extension ids the server supports.
+    pub extensions: Vec<String>,
+    /// Informational software name and version for the `HELLO_ACK`.
+    pub agent: Option<String>,
+}
+
+impl Default for LocalConfig {
+    /// Version 1, the 16 MiB maximum frame, one request in flight, no
+    /// extensions, no agent string.
+    fn default() -> LocalConfig {
+        LocalConfig {
+            versions: vec![1],
+            max_frame: MAX_FRAME,
+            max_inflight: 1,
+            extensions: Vec::new(),
+            agent: None,
+        }
+    }
+}
+
+/// Server side of C.6: validates `hello` and builds the `HELLO_ACK`.
+///
+/// The version is the highest one offered that the server supports; if there
+/// is none the result is an `unsupported_version` [`Close`] carrying the
+/// server's versions in `supported`. `max_frame` is the smaller of the two
+/// limits. The accepted extensions are those offered that the server supports,
+/// in the order the client offered them: C.10 says the position in
+/// `HELLO_ACK.extensions` is the index but does not say whose order builds
+/// it, so v1 here follows the client's.
+pub fn negotiate(hello: &Hello, local: &LocalConfig) -> Result<HelloAck, Close> {
+    hello.validate()?;
+    let version = match hello
+        .versions
+        .iter()
+        .rev()
+        .copied()
+        .find(|v| local.versions.contains(v))
+    {
+        Some(v) => v,
+        None => {
+            let mut supported = local.versions.clone();
+            supported.sort_unstable();
+            supported.dedup();
+            return Err(Close::unsupported_version(
+                "no offered version is supported",
+                supported,
+            ));
+        }
+    };
+    let local_max = local.max_frame.clamp(MIN_MAX_FRAME, MAX_FRAME);
+    let extensions: Vec<String> = hello
+        .extensions
+        .iter()
+        .filter(|id| local.extensions.contains(id))
+        .cloned()
+        .collect();
+    Ok(HelloAck {
+        version,
+        max_frame: hello.max_frame.min(local_max),
+        max_inflight: local.max_inflight.max(1),
+        extensions,
+        agent: local.agent.clone(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::{decode_frame, encode_frame, PRE_HELLO_MAX_FRAME};
+
+    const HELLO_HEX: &str = "00 00 00 32 01 01 00 00 00 00 00 00 00 00 00 a3 68 76 65 72 73 69 6f 6e 73 81 01 69 6d 61 78 5f 66 72 61 6d 65 1a 01 00 00 00 6a 65 78 74 65 6e 73 69 6f 6e 73 80";
+
+    fn hex(s: &str) -> Vec<u8> {
+        s.split_whitespace()
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
+    }
+
+    /// CBOR text string with a short (under 24 bytes) length.
+    fn text(s: &str) -> Vec<u8> {
+        assert!(s.len() < 24);
+        let mut out = vec![0x60 + s.len() as u8];
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    /// A map of at most 23 entries, with the entries in the order given.
+    fn map_in_order(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut out = vec![0xa0 + entries.len() as u8];
+        for (key, value) in entries {
+            out.extend(text(key));
+            out.extend_from_slice(value);
+        }
+        out
+    }
+
+    /// A map with its entries sorted by the encoded key bytes.
+    fn map_sorted(entries: &[(&str, Vec<u8>)]) -> Vec<u8> {
+        let mut sorted: Vec<(&str, Vec<u8>)> = entries.to_vec();
+        sorted.sort_by_key(|a| text(a.0));
+        map_in_order(&sorted)
+    }
+
+    fn frame_of(frame_type: FrameType, body: Vec<u8>) -> Frame {
+        Frame {
+            frame_type,
+            request_id: 0,
+            body,
+        }
+    }
+
+    fn hello(versions: &[u64], max_frame: u32, extensions: &[&str]) -> Hello {
+        Hello {
+            versions: versions.to_vec(),
+            max_frame,
+            extensions: extensions.iter().map(|s| s.to_string()).collect(),
+            agent: None,
+        }
+    }
+
+    fn local(versions: &[u64], max_frame: u32, extensions: &[&str]) -> LocalConfig {
+        LocalConfig {
+            versions: versions.to_vec(),
+            max_frame,
+            max_inflight: 4,
+            extensions: extensions.iter().map(|s| s.to_string()).collect(),
+            agent: Some("test/1".to_string()),
+        }
+    }
+
+    #[test]
+    fn worked_example_decodes_and_reencodes_byte_for_byte() {
+        let bytes = hex(HELLO_HEX);
+        let (frame, used) = decode_frame(&bytes, PRE_HELLO_MAX_FRAME).unwrap();
+        assert_eq!(used, bytes.len());
+        let got = Hello::from_frame(&frame).unwrap();
+        assert_eq!(got, hello(&[1], 16_777_216, &[]));
+        let again = got.to_frame().unwrap();
+        assert_eq!(again, frame);
+        assert_eq!(
+            encode_frame(&again, PRE_HELLO_MAX_FRAME, false).unwrap(),
+            bytes
+        );
+    }
+
+    #[test]
+    fn hello_ack_and_close_round_trip() {
+        let ack = HelloAck {
+            version: 1,
+            max_frame: 4096,
+            max_inflight: 8,
+            extensions: vec!["a/b/1".to_string()],
+            agent: Some("srv".to_string()),
+        };
+        let frame = ack.to_frame().unwrap();
+        assert_eq!(frame.frame_type, FrameType::HelloAck);
+        assert_eq!(frame.request_id, 0);
+        assert_eq!(HelloAck::from_frame(&frame).unwrap(), ack);
+
+        let close = Close::unsupported_version("no", vec![1, 2]);
+        let frame = close.to_frame().unwrap();
+        assert_eq!(frame.frame_type, FrameType::Close);
+        let back = Close::from_frame(&frame).unwrap();
+        assert_eq!(back, close);
+        assert_eq!(back.close_code(), Some(CloseCode::UnsupportedVersion));
+        assert_eq!(Close::new(CloseCode::Timeout, "t").supported, None);
+    }
+
+    #[test]
+    fn absent_optional_fields_are_omitted() {
+        let body = cbor::to_vec(&Close::new(CloseCode::Timeout, "x")).unwrap();
+        let expected = map_sorted(&[("code", text("timeout")), ("message", text("x"))]);
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn no_shared_version_closes_with_supported() {
+        let err = negotiate(&hello(&[1, 2], 4096, &[]), &local(&[5, 3], 4096, &[])).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::UnsupportedVersion));
+        assert_eq!(err.supported, Some(vec![3, 5]));
+    }
+
+    #[test]
+    fn highest_common_version_is_chosen() {
+        let ack = negotiate(&hello(&[1, 2, 3], 4096, &[]), &local(&[3, 1, 9], 4096, &[])).unwrap();
+        assert_eq!(ack.version, 3);
+        let ack = negotiate(&hello(&[1, 2, 3], 4096, &[]), &local(&[2, 9], 4096, &[])).unwrap();
+        assert_eq!(ack.version, 2);
+    }
+
+    #[test]
+    fn accepted_extensions_are_the_supported_offers_in_client_order() {
+        let h = hello(&[1], 4096, &["z/z/1", "a/a/1", "m/m/1", "q/q/1"]);
+        let l = local(&[1], 4096, &["m/m/1", "z/z/1", "x/x/1"]);
+        let ack = negotiate(&h, &l).unwrap();
+        assert_eq!(
+            ack.extensions,
+            vec!["z/z/1".to_string(), "m/m/1".to_string()]
+        );
+        assert_eq!(ack.validate_against(&h), Ok(()));
+    }
+
+    #[test]
+    fn max_frame_is_the_minimum_of_both_sides() {
+        let ack = negotiate(&hello(&[1], 1_000_000, &[]), &local(&[1], 65_536, &[])).unwrap();
+        assert_eq!(ack.max_frame, 65_536);
+        let ack = negotiate(&hello(&[1], 8192, &[]), &local(&[1], 65_536, &[])).unwrap();
+        assert_eq!(ack.max_frame, 8192);
+        assert_eq!(ack.max_inflight, 4);
+        assert_eq!(ack.agent.as_deref(), Some("test/1"));
+    }
+
+    #[test]
+    fn local_limits_are_clamped_into_range() {
+        let ack = negotiate(&hello(&[1], 4096, &[]), &local(&[1], 10, &[])).unwrap();
+        assert_eq!(ack.max_frame, MIN_MAX_FRAME);
+        let mut l = local(&[1], MAX_FRAME, &[]);
+        l.max_inflight = 0;
+        let ack = negotiate(&hello(&[1], 4096, &[]), &l).unwrap();
+        assert_eq!(ack.max_inflight, 1);
+    }
+
+    #[test]
+    fn max_frame_out_of_range_is_rejected() {
+        for bad in [0, 1023, 16_777_217, u32::MAX] {
+            let err = negotiate(&hello(&[1], bad, &[]), &LocalConfig::default()).unwrap_err();
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        }
+        for good in [1024, 16_777_216] {
+            assert!(negotiate(&hello(&[1], good, &[]), &LocalConfig::default()).is_ok());
+        }
+    }
+
+    #[test]
+    fn versions_must_be_non_empty_and_strictly_ascending() {
+        for bad in [&[][..], &[2, 1][..], &[1, 1][..], &[1, 3, 2][..]] {
+            let err = hello(bad, 4096, &[]).validate().unwrap_err();
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        }
+        assert!(hello(&[1, 2, 7], 4096, &[]).validate().is_ok());
+    }
+
+    #[test]
+    fn duplicate_extensions_are_rejected() {
+        let err = hello(&[1], 4096, &["a/b/1", "c/d/1", "a/b/1"])
+            .validate()
+            .unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[test]
+    fn extension_and_agent_bounds() {
+        let long = "a".repeat(129);
+        assert!(hello(&[1], 4096, &[long.as_str()]).validate().is_err());
+        let ok = "a".repeat(128);
+        assert!(hello(&[1], 4096, &[ok.as_str()]).validate().is_ok());
+        assert!(hello(&[1], 4096, &["caf\u{e9}/x/1"]).validate().is_err());
+        let mut h = hello(&[1], 4096, &[]);
+        h.agent = Some(ok);
+        assert!(h.validate().is_ok());
+        h.agent = Some(long);
+        assert!(h.validate().is_err());
+    }
+
+    #[test]
+    fn unknown_hello_key_is_ignored() {
+        let body = map_sorted(&[
+            ("versions", vec![0x81, 0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("extensions", vec![0x80]),
+            ("future", vec![0x01]),
+        ]);
+        let got = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap();
+        assert_eq!(got, hello(&[1], 4096, &[]));
+    }
+
+    #[test]
+    fn unknown_hello_ack_key_is_ignored() {
+        let body = map_sorted(&[
+            ("version", vec![0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("max_inflight", vec![0x01]),
+            ("extensions", vec![0x80]),
+            ("future", vec![0x01]),
+        ]);
+        let got = HelloAck::from_frame(&frame_of(FrameType::HelloAck, body)).unwrap();
+        assert_eq!(got.version, 1);
+        assert_eq!(got.max_frame, 4096);
+    }
+
+    #[test]
+    fn unknown_close_key_is_rejected() {
+        let body = map_sorted(&[
+            ("code", text("timeout")),
+            ("message", text("x")),
+            ("extra", vec![0x01]),
+        ]);
+        let err = Close::from_frame(&frame_of(FrameType::Close, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[test]
+    fn null_for_an_optional_field_is_rejected() {
+        let body = map_sorted(&[
+            ("versions", vec![0x81, 0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("extensions", vec![0x80]),
+            ("agent", vec![0xf6]),
+        ]);
+        let err = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[test]
+    fn missing_required_hello_key_is_rejected() {
+        let body = map_sorted(&[("versions", vec![0x81, 0x01]), ("extensions", vec![0x80])]);
+        let err = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[test]
+    fn hello_from_frame_validates_bounds() {
+        let body = map_sorted(&[
+            ("versions", vec![0x82, 0x02, 0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("extensions", vec![0x80]),
+        ]);
+        let err = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[test]
+    fn wrong_frame_type_is_a_protocol_violation() {
+        let body = cbor::to_vec(&hello(&[1], 4096, &[])).unwrap();
+        let err = Hello::from_frame(&frame_of(FrameType::HelloAck, body.clone())).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        let err = HelloAck::from_frame(&frame_of(FrameType::Hello, body.clone())).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        let err = Close::from_frame(&frame_of(FrameType::Ping, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[test]
+    fn non_deterministic_body_is_malformed_frame() {
+        // max_frame sorts after versions; putting it first is unsorted.
+        let body = map_in_order(&[
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("versions", vec![0x81, 0x01]),
+            ("extensions", vec![0x80]),
+        ]);
+        let err = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::MalformedFrame));
+
+        // Trailing bytes after a valid body.
+        let mut body = cbor::to_vec(&hello(&[1], 4096, &[])).unwrap();
+        body.push(0x00);
+        let err = Hello::from_frame(&frame_of(FrameType::Hello, body)).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::MalformedFrame));
+
+        let err = Close::from_frame(&frame_of(FrameType::Close, vec![0xff])).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::MalformedFrame));
+    }
+
+    fn ack(version: u64, max_frame: u32, extensions: &[&str]) -> HelloAck {
+        HelloAck {
+            version,
+            max_frame,
+            max_inflight: 1,
+            extensions: extensions.iter().map(|s| s.to_string()).collect(),
+            agent: None,
+        }
+    }
+
+    #[test]
+    fn validate_against_accepts_a_good_ack() {
+        let h = hello(&[1, 2], 8192, &["a/a/1", "b/b/1"]);
+        assert_eq!(
+            ack(2, 8192, &["b/b/1", "a/a/1"]).validate_against(&h),
+            Ok(())
+        );
+        assert_eq!(ack(1, 4096, &[]).validate_against(&h), Ok(()));
+    }
+
+    #[test]
+    fn validate_against_rejects_violations() {
+        let h = hello(&[1, 2], 8192, &["a/a/1"]);
+        // Version not offered.
+        assert!(ack(3, 4096, &[]).validate_against(&h).is_err());
+        // max_frame above the client's.
+        assert!(ack(1, 8193, &[]).validate_against(&h).is_err());
+        // Extension not offered.
+        assert!(ack(1, 4096, &["z/z/1"]).validate_against(&h).is_err());
+        // Duplicate extension.
+        assert!(ack(1, 4096, &["a/a/1", "a/a/1"])
+            .validate_against(&h)
+            .is_err());
+        // max_inflight of 0.
+        let mut zero = ack(1, 4096, &[]);
+        zero.max_inflight = 0;
+        assert!(zero.validate_against(&h).is_err());
+        // max_frame below the minimum.
+        assert!(ack(1, 100, &[]).validate_against(&h).is_err());
+        let err = ack(3, 4096, &[]).validate_against(&h).unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+}

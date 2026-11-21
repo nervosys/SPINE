@@ -55,7 +55,6 @@ cargo clippy --workspace --all-targets -- -D warnings
 cd fuzz
 cargo fuzz run fuzz_parse_html -- -max_total_time=60
 cargo fuzz run fuzz_frame_decode -- -max_total_time=60
-cargo fuzz run fuzz_latent_vector -- -max_total_time=60
 cargo fuzz run fuzz_message_deser -- -max_total_time=60
 cargo fuzz run fuzz_frame_header -- -max_total_time=60
 ```

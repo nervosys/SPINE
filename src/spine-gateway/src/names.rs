@@ -74,6 +74,99 @@ pub struct PublishReq {
     pub record: serde_json::Value,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct ResourceUpload {
+    pub record: serde_json::Value,
+    pub content_type: String,
+    pub data: Vec<u8>,
+}
+
+/// Upload verified content to the configured origin. The route body limit is
+/// larger than the data limit to accommodate JSON byte-array representation.
+#[utoipa::path(post, path = "/v1/resources", tag = "names", request_body = ResourceUpload,
+    responses((status = 201, description = "Stored signed resource"), (status = 400, body = ErrorResponse), (status = 502, body = ErrorResponse)))]
+pub async fn upload_resource(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ResourceUpload>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
+    let record: spine_name::NameRecord = serde_json::from_value(req.record)
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid signed resource record"))?;
+    record
+        .verify()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid resource signature"))?;
+    if req.data.len() > spine_protocol::resource::MAX_RESOURCE_BYTES {
+        return Err(err(StatusCode::BAD_REQUEST, "resource is too large"));
+    }
+    let Some(id) = record.content_hash else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "record carries no signed resource id",
+        ));
+    };
+    // The id commits to the content type as well as the bytes.
+    spine_name::verify_resource(&id, &req.content_type, &req.data)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let value = with_origin(&state, move |client| {
+        let (record, content_type, data) =
+            (record.clone(), req.content_type.clone(), req.data.clone());
+        Box::pin(async move { client.publish_resource(&record, &content_type, data).await })
+    })
+    .await
+    .map_err(upstream)?;
+    Ok((StatusCode::CREATED, Json(value)))
+}
+
+/// Resolve and read from the configured origin only. Untrusted endpoint
+/// addresses never cause this HTTP gateway to dial arbitrary destinations.
+#[utoipa::path(get, path = "/v1/resources", tag = "names", params(ResolveParams),
+    responses((status = 200, description = "Verified resource bytes"), (status = 400, body = ErrorResponse), (status = 404, body = ErrorResponse), (status = 502, body = ErrorResponse)))]
+pub async fn download_resource(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ResolveParams>,
+) -> Response {
+    let validator = match parse_hash(&params.if_none_match) {
+        Ok(hash) => hash,
+        Err(error) => return error.into_response(),
+    };
+    let result = with_origin(&state, move |client| {
+        let name = params.name.clone();
+        Box::pin(async move {
+            let resolution = client.resolve_name(&name, None).await?;
+            let NameResolution::Resolved { record, .. } = resolution else {
+                return Ok(into_response(resolution));
+            };
+            let record: spine_name::NameRecord = serde_json::from_value(record)?;
+            record.verify()?;
+            if validator.is_some() && record.content_hash == validator {
+                return Ok(StatusCode::NOT_MODIFIED.into_response());
+            }
+            // `read_resource` verifies the id over type and bytes, so the
+            // header below is the signed content type, not a peer's claim.
+            let resource = client.read_resource(record).await?;
+            let mut response = resource.data.into_response();
+            let headers = response.headers_mut();
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_str(&resource.content_type)?,
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-cache"),
+            );
+            headers.insert(
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            );
+            Ok(response)
+        })
+    })
+    .await;
+    match result {
+        Ok(response) => response,
+        Err(error) => upstream(error).into_response(),
+    }
+}
+
 #[derive(Deserialize, IntoParams)]
 pub struct CrawlParams {
     /// The name to start from.
@@ -278,6 +371,9 @@ fn into_response(resolution: NameResolution) -> Response {
         // that could never exist.
         NameResolution::Invalid { name, reason } => {
             err(StatusCode::BAD_REQUEST, format!("{name}: {reason}")).into_response()
+        }
+        NameResolution::Unavailable { name, reason } => {
+            err(StatusCode::SERVICE_UNAVAILABLE, format!("{name}: {reason}")).into_response()
         }
     }
 }

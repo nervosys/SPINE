@@ -10,7 +10,7 @@
 //! Records are signed by the `did:` key that names them, so verification needs
 //! no certificate authority — the name *is* the key.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +20,10 @@ use crate::NameError;
 
 /// Default record lifetime: 1 hour.
 pub const DEFAULT_TTL_SECS: u32 = 3600;
+
+/// Domain-separation prefix of the signed bytes. Bump it whenever the layout
+/// in [`NameRecord::signing_bytes`] changes.
+const SIGNING_DOMAIN: &[u8] = b"spine-name-record-v2\0";
 
 /// A transport address a named resource can be reached at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,6 +154,22 @@ impl NameRecord {
         self
     }
 
+    /// Renew with the resource owner's key, preserving endpoints and content.
+    /// No replica can extend the lifetime without that key. An exhausted
+    /// sequence is an error rather than a wraparound to an older record.
+    pub fn renewed(&self, key: &SigningKey, now: u64, ttl_secs: u32) -> Result<Self, NameError> {
+        self.verify()?;
+        let mut record = self.clone();
+        record.seq = record
+            .seq
+            .checked_add(1)
+            .ok_or(NameError::SequenceExhausted)?;
+        record.published_at = now;
+        record.ttl_secs = ttl_secs;
+        record.sign(key)?;
+        Ok(record)
+    }
+
     pub fn with_endpoint(mut self, endpoint: Endpoint) -> Self {
         self.endpoints.push(endpoint);
         self
@@ -175,34 +195,60 @@ impl NameRecord {
         self
     }
 
-    /// The canonical bytes covered by the signature.
+    /// The canonical bytes covered by the signature (layout `v2`).
     ///
-    /// Built field-by-field with explicit separators rather than by serializing
-    /// the struct: a serializer's field order or number formatting could change
-    /// under a dependency bump and silently invalidate every record in
-    /// existence. `BTreeMap` keeps metadata ordered for the same reason.
+    /// Built field-by-field rather than by serializing the struct: a
+    /// serializer's field order or number formatting could change under a
+    /// dependency bump and silently invalidate every record in existence.
+    /// `BTreeMap` keeps metadata ordered for the same reason.
+    ///
+    /// Every field of the record except `signature` is covered. The encoding
+    /// is injective: nothing is terminated by a sentinel, so no choice of
+    /// string contents can move a field boundary.
+    ///
+    /// ```text
+    /// "spine-name-record-v2\0"                      domain separation
+    /// str(name)                                      canonical URI string
+    /// u64 seq | u32 ttl_secs | u64 published_at      big-endian
+    /// u32 n_endpoints, then per endpoint:
+    ///     str(transport) str(address) u8 priority
+    /// u32 n_capabilities, then per capability: str(term)
+    /// u8 has_content_hash (0|1), then 32 hash bytes iff 1
+    /// u32 n_links, then per link:
+    ///     str(rel) str(target)
+    ///     u8 has_title (0|1), then str(title) iff 1
+    ///     u32 n_link_capabilities, then per term: str(term)
+    /// u32 n_meta, then per entry in key order: str(key) str(value)
+    /// ```
+    ///
+    /// where `str(x)` is a big-endian `u32` byte length followed by the UTF-8
+    /// bytes, and every `u32 n_*` is a big-endian element count.
     pub fn signing_bytes(&self) -> Vec<u8> {
+        fn put_str(out: &mut Vec<u8>, s: &str) {
+            out.extend_from_slice(&(s.len() as u32).to_be_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+        fn put_count(out: &mut Vec<u8>, n: usize) {
+            out.extend_from_slice(&(n as u32).to_be_bytes());
+        }
+
         let mut out = Vec::with_capacity(256);
-        out.extend_from_slice(b"spine-name-record-v1\0");
-        out.extend_from_slice(self.name.to_string().as_bytes());
-        out.push(0);
+        out.extend_from_slice(SIGNING_DOMAIN);
+        put_str(&mut out, &self.name.to_string());
         out.extend_from_slice(&self.seq.to_be_bytes());
         out.extend_from_slice(&self.ttl_secs.to_be_bytes());
         out.extend_from_slice(&self.published_at.to_be_bytes());
 
-        out.extend_from_slice(&(self.endpoints.len() as u32).to_be_bytes());
+        put_count(&mut out, self.endpoints.len());
         for e in &self.endpoints {
-            out.extend_from_slice(e.transport.as_bytes());
-            out.push(0);
-            out.extend_from_slice(e.address.as_bytes());
-            out.push(0);
+            put_str(&mut out, &e.transport);
+            put_str(&mut out, &e.address);
             out.push(e.priority);
         }
 
-        out.extend_from_slice(&(self.capabilities.len() as u32).to_be_bytes());
+        put_count(&mut out, self.capabilities.len());
         for c in &self.capabilities {
-            out.extend_from_slice(c.as_bytes());
-            out.push(0);
+            put_str(&mut out, c);
         }
 
         match &self.content_hash {
@@ -213,20 +259,27 @@ impl NameRecord {
             None => out.push(0),
         }
 
-        out.extend_from_slice(&(self.links.len() as u32).to_be_bytes());
+        put_count(&mut out, self.links.len());
         for l in &self.links {
-            out.extend_from_slice(l.rel.as_str().as_bytes());
-            out.push(0);
-            out.extend_from_slice(l.target.to_string().as_bytes());
-            out.push(0);
+            put_str(&mut out, l.rel.as_str());
+            put_str(&mut out, &l.target.to_string());
+            match &l.title {
+                Some(t) => {
+                    out.push(1);
+                    put_str(&mut out, t);
+                }
+                None => out.push(0),
+            }
+            put_count(&mut out, l.capabilities.len());
+            for c in &l.capabilities {
+                put_str(&mut out, c);
+            }
         }
 
-        out.extend_from_slice(&(self.meta.len() as u32).to_be_bytes());
+        put_count(&mut out, self.meta.len());
         for (k, v) in &self.meta {
-            out.extend_from_slice(k.as_bytes());
-            out.push(0);
-            out.extend_from_slice(v.as_bytes());
-            out.push(0);
+            put_str(&mut out, k);
+            put_str(&mut out, v);
         }
         out
     }
@@ -261,7 +314,7 @@ impl NameRecord {
         let vk = VerifyingKey::from_bytes(pk_bytes).map_err(|_| NameError::BadSignature)?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
-        vk.verify(&self.signing_bytes(), &Signature::from_bytes(&sig))
+        vk.verify_strict(&self.signing_bytes(), &Signature::from_bytes(&sig))
             .map_err(|_| NameError::BadSignature)
     }
 
@@ -282,11 +335,14 @@ impl NameRecord {
 
     /// Whether this record should replace `other`.
     ///
-    /// Higher `seq` wins; equal `seq` breaks toward the later publication. Both
-    /// are total and require no coordination, so independent replicas converge
-    /// on the same winner regardless of arrival order.
+    /// Higher `seq` wins; equal `seq` breaks toward the later publication; an
+    /// exact tie on both breaks toward the greater signature. The last step
+    /// makes the order total over *distinct* records: without it, two different
+    /// records with the same `seq` and `published_at` each lose to whichever a
+    /// replica saw first, and replicas never converge.
     pub fn supersedes(&self, other: &NameRecord) -> bool {
-        (self.seq, self.published_at) > (other.seq, other.published_at)
+        (self.seq, self.published_at, &self.signature)
+            > (other.seq, other.published_at, &other.signature)
     }
 
     /// Endpoints ordered by preference.
@@ -318,6 +374,82 @@ mod sig_bytes {
     }
 }
 
+/// Most endpoints a record accepted from the network may carry.
+pub const MAX_ENDPOINTS: usize = 16;
+/// Most links a record accepted from the network may carry.
+pub const MAX_LINKS: usize = 64;
+/// Most capability terms a record accepted from the network may carry, counting
+/// those attached to its links.
+pub const MAX_CAPABILITIES: usize = 64;
+/// Most metadata entries a record accepted from the network may carry.
+pub const MAX_META_ENTRIES: usize = 64;
+/// Longest any single string in a record may be, in bytes.
+pub const MAX_FIELD_BYTES: usize = 1024;
+
+impl NameRecord {
+    /// Sanity-check the size of a record that came from a peer.
+    ///
+    /// A valid signature proves only who published a record, not that it is
+    /// reasonable to hold: anyone can mint a key and sign an enormous record.
+    /// This bounds every collection and string in it (see [`MAX_ENDPOINTS`],
+    /// [`MAX_LINKS`], [`MAX_CAPABILITIES`], [`MAX_META_ENTRIES`] and
+    /// [`MAX_FIELD_BYTES`]) so that accepting, storing and re-serving it costs a
+    /// bounded amount. Call it before [`NameRecord::verify`] on anything
+    /// received over the network. It does not check the signature.
+    pub fn validate_size(&self) -> Result<(), NameError> {
+        fn too_large(what: &str) -> NameError {
+            NameError::RecordTooLarge(what.to_string())
+        }
+        fn check_str(s: &str, what: &str) -> Result<(), NameError> {
+            if s.len() > MAX_FIELD_BYTES {
+                Err(too_large(what))
+            } else {
+                Ok(())
+            }
+        }
+
+        if self.endpoints.len() > MAX_ENDPOINTS {
+            return Err(too_large("endpoints"));
+        }
+        if self.links.len() > MAX_LINKS {
+            return Err(too_large("links"));
+        }
+        if self.capabilities.len() > MAX_CAPABILITIES {
+            return Err(too_large("capabilities"));
+        }
+        if self.meta.len() > MAX_META_ENTRIES {
+            return Err(too_large("metadata"));
+        }
+        check_str(&self.name.to_string(), "name")?;
+        for endpoint in &self.endpoints {
+            check_str(&endpoint.transport, "endpoint transport")?;
+            check_str(&endpoint.address, "endpoint address")?;
+        }
+        for term in &self.capabilities {
+            check_str(term, "capability")?;
+        }
+        let mut link_capabilities = self.capabilities.len();
+        for link in &self.links {
+            check_str(&link.target.to_string(), "link target")?;
+            if let Some(title) = &link.title {
+                check_str(title, "link title")?;
+            }
+            link_capabilities = link_capabilities.saturating_add(link.capabilities.len());
+            if link_capabilities > MAX_CAPABILITIES {
+                return Err(too_large("capabilities"));
+            }
+            for term in &link.capabilities {
+                check_str(term, "link capability")?;
+            }
+        }
+        for (key, value) in &self.meta {
+            check_str(key, "metadata key")?;
+            check_str(value, "metadata value")?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +466,63 @@ mod tests {
         let mut rec = NameRecord::new(name, seq, now).unwrap();
         rec.sign(&key).unwrap();
         (key, rec)
+    }
+
+    #[test]
+    fn an_ordinary_record_passes_the_size_check() {
+        let (_, rec) = signed(1, 1, 1_000);
+        let rec = rec
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:1"))
+            .with_capability("search")
+            .with_meta("title", "x");
+        assert_eq!(rec.validate_size(), Ok(()));
+    }
+
+    #[test]
+    fn an_oversized_record_is_rejected() {
+        let (_, base) = signed(2, 1, 1_000);
+
+        let mut r = base.clone();
+        for i in 0..=MAX_ENDPOINTS {
+            r = r.with_endpoint(Endpoint::new("tcp", format!("h:{i}")));
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let mut r = base.clone();
+        for i in 0..=MAX_CAPABILITIES {
+            r = r.with_capability(format!("cap{i}"));
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let mut r = base.clone();
+        for i in 0..=MAX_META_ENTRIES {
+            r = r.with_meta(format!("k{i}"), "v");
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let mut r = base.clone();
+        for _ in 0..=MAX_LINKS {
+            r = r.with_link(Link::new(Rel::Peer, base.name.clone()));
+        }
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
+
+        let r = base.with_meta("title", "x".repeat(MAX_FIELD_BYTES + 1));
+        assert!(matches!(
+            r.validate_size(),
+            Err(NameError::RecordTooLarge(_))
+        ));
     }
 
     #[test]
@@ -395,6 +584,103 @@ mod tests {
     }
 
     #[test]
+    fn tampering_with_nested_link_and_endpoint_fields_invalidates_the_record() {
+        let key = keypair(1);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut base = NameRecord::new(name, 1, 1_000)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "a:1").with_priority(3))
+            .with_link(
+                Link::new(Rel::Provides, SpineUri::did([3u8; 32]))
+                    .with_title("Search")
+                    .with_capability("web.search"),
+            );
+        base.sign(&key).unwrap();
+        assert!(base.verify().is_ok());
+
+        let mut title = base.clone();
+        title.links[0].title = Some("Other".into());
+        assert!(matches!(title.verify(), Err(NameError::BadSignature)));
+
+        let mut no_title = base.clone();
+        no_title.links[0].title = None;
+        assert!(matches!(no_title.verify(), Err(NameError::BadSignature)));
+
+        let mut link_cap = base.clone();
+        link_cap.links[0].capabilities.push("admin".into());
+        assert!(matches!(link_cap.verify(), Err(NameError::BadSignature)));
+
+        let mut link_cap_swap = base.clone();
+        link_cap_swap.links[0].capabilities[0] = "web.crawl".into();
+        assert!(matches!(
+            link_cap_swap.verify(),
+            Err(NameError::BadSignature)
+        ));
+
+        let mut rel = base.clone();
+        rel.links[0].rel = Rel::Child;
+        assert!(matches!(rel.verify(), Err(NameError::BadSignature)));
+
+        let mut target = base.clone();
+        target.links[0].target = SpineUri::did([4u8; 32]);
+        assert!(matches!(target.verify(), Err(NameError::BadSignature)));
+
+        let mut priority = base.clone();
+        priority.endpoints[0].priority = 4;
+        assert!(matches!(priority.verify(), Err(NameError::BadSignature)));
+
+        let mut published = base.clone();
+        published.published_at += 1;
+        assert!(matches!(published.verify(), Err(NameError::BadSignature)));
+    }
+
+    #[test]
+    fn field_boundaries_cannot_be_shifted_to_forge_equal_signing_bytes() {
+        let (_, rec) = signed(1, 1, 0);
+
+        // The old NUL-terminated layout encoded these identically.
+        let a = rec
+            .clone()
+            .with_endpoint(Endpoint::new("tc\0p", "x"))
+            .signing_bytes();
+        let b = rec
+            .clone()
+            .with_endpoint(Endpoint::new("tc", "p\0x"))
+            .signing_bytes();
+        assert_ne!(a, b);
+
+        let a = rec.clone().with_meta("k\0v", "w").signing_bytes();
+        let b = rec.clone().with_meta("k", "v\0w").signing_bytes();
+        assert_ne!(a, b);
+
+        let a = rec
+            .clone()
+            .with_capability("a")
+            .with_capability("b")
+            .signing_bytes();
+        let b = rec.clone().with_capability("a\0b").signing_bytes();
+        assert_ne!(a, b);
+
+        // A title moved into a link capability must not collide.
+        let target = SpineUri::did([3u8; 32]);
+        let a = rec
+            .clone()
+            .with_link(Link::new(Rel::Child, target.clone()).with_title("x"))
+            .signing_bytes();
+        let b = rec
+            .clone()
+            .with_link(Link::new(Rel::Child, target).with_capability("x"))
+            .signing_bytes();
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn signing_bytes_carry_the_v2_domain_prefix() {
+        let (_, rec) = signed(1, 1, 0);
+        assert!(rec.signing_bytes().starts_with(b"spine-name-record-v2\0"));
+    }
+
+    #[test]
     fn a_record_cannot_be_replayed_under_a_different_name() {
         let (_, rec) = signed(1, 1, 1_000);
         let mut moved = rec.clone();
@@ -437,6 +723,24 @@ mod tests {
             "equal seq breaks toward later publication"
         );
         assert!(!b.supersedes(&b), "a record does not supersede itself");
+    }
+
+    #[test]
+    fn distinct_records_with_equal_seq_and_time_have_exactly_one_winner() {
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut a = NameRecord::new(name.clone(), 2, 1_000)
+            .unwrap()
+            .with_ttl(60);
+        a.sign(&key).unwrap();
+        let mut b = NameRecord::new(name, 2, 1_000).unwrap().with_ttl(120);
+        b.sign(&key).unwrap();
+        assert_ne!(a.signature, b.signature);
+        assert_ne!(
+            a.supersedes(&b),
+            b.supersedes(&a),
+            "exactly one of two distinct records must win, whatever the arrival order"
+        );
     }
 
     #[test]

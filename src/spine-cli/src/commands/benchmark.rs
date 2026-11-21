@@ -60,39 +60,6 @@ async fn single_bench(addr: &str, iterations: usize) -> Result<()> {
         elapsed.as_secs_f64(),
         iterations as f64 / elapsed.as_secs_f64()
     );
-
-    // ── Latent Vector ──
-    eprintln!();
-    eprintln!("{}", "═══ Latent Vector ═══".bold());
-    let start = Instant::now();
-    for _ in 0..iterations.min(50) {
-        let _ = client.get_latent_ur(256).await?;
-    }
-    let elapsed = start.elapsed();
-    let n_latent = iterations.min(50);
-    eprintln!(
-        "  {} encodes in {:.3}s → {:.1} encodes/sec",
-        n_latent,
-        elapsed.as_secs_f64(),
-        n_latent as f64 / elapsed.as_secs_f64()
-    );
-
-    // ── Speculation Stats ──
-    eprintln!();
-    eprintln!("{}", "═══ Speculation ═══".bold());
-    let stats = client.get_speculation_stats();
-    eprintln!("  Output predictions: {}", stats.output_predictions);
-    eprintln!(
-        "  Output accuracy:   {:.1}%",
-        stats.output_accuracy() * 100.0
-    );
-    eprintln!("  Input predictions:  {}", stats.input_predictions);
-    eprintln!(
-        "  Input accuracy:    {:.1}%",
-        stats.input_accuracy() * 100.0
-    );
-    eprintln!("  Bytes saved:        {}", stats.bytes_saved);
-
     eprintln!();
     eprintln!("{} Benchmark complete", "✓".green().bold());
     Ok(())

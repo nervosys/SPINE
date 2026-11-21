@@ -2,8 +2,7 @@
 //!
 //! Criterion benchmarks for SPINE protocol critical paths:
 //! - Message serialization/deserialization
-//! - Protocol handler duplex roundtrip
-//! - Encrypted protocol roundtrip
+//! - spine-wire v1 connection duplex roundtrip
 //! - Parser HTML extraction (via dev-dep)
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
@@ -57,8 +56,29 @@ fn bench_protocol_message_serde(c: &mut Criterion) {
 
 // ======================== Protocol Roundtrip ========================
 
+/// A handshaken client and server over an in-process stream.
+async fn connection_pair() -> (
+    spine_protocol::connection::Connection<tokio::io::DuplexStream>,
+    spine_protocol::connection::Connection<tokio::io::DuplexStream>,
+) {
+    use spine_protocol::connection::Connection;
+    use spine_protocol::native;
+
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let config = native::local_config();
+    let (client, server) = tokio::join!(
+        Connection::client_handshake(
+            client_io,
+            native::client_hello(),
+            native::DEFAULT_HELLO_DEADLINE
+        ),
+        Connection::server_handshake(server_io, &config, native::DEFAULT_HELLO_DEADLINE)
+    );
+    (client.unwrap(), server.unwrap())
+}
+
 fn bench_protocol_roundtrip(c: &mut Criterion) {
-    use spine_protocol::{Message, ProtocolHandler};
+    use spine_protocol::{native, BrowserCommand, Message, Request};
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -68,73 +88,41 @@ fn bench_protocol_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("protocol_roundtrip");
     group.sample_size(50);
 
-    group.bench_function("ping_pong_duplex", |b| {
+    let request = |i: u64| {
+        Message::Request(Request {
+            id: i.to_string(),
+            command: BrowserCommand::GetUR,
+        })
+    };
+
+    group.bench_function("handshake_and_request_duplex", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-                let mut client = ProtocolHandler::new(client_io);
-                let mut server = ProtocolHandler::new(server_io);
+                let (mut client, mut server) = connection_pair().await;
 
-                client
-                    .send_message_raw(&Message::Ping { timestamp: 42 })
+                native::send_request(&mut client, &request(42))
                     .await
                     .unwrap();
-                let msg = server.receive_message().await.unwrap();
-                black_box(msg);
+                let frame = server.recv().await.unwrap().unwrap();
+                black_box(frame);
             });
         });
     });
 
-    group.bench_function("encrypted_ping_pong_duplex", |b| {
-        let key: [u8; 32] = [0x42; 32];
+    group.bench_function("10_request_burst_on_one_connection", |b| {
         b.iter(|| {
             rt.block_on(async {
-                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-                let mut client = ProtocolHandler::new(client_io);
-                let mut server = ProtocolHandler::new(server_io);
-                client.enable_encryption(key);
-                server.enable_encryption(key);
-
-                client
-                    .send_message_raw(&Message::Ping { timestamp: 42 })
-                    .await
-                    .unwrap();
-                let msg = server.receive_message().await.unwrap();
-                black_box(msg);
-            });
-        });
-    });
-
-    group.bench_function("chameleon_aead_send", |b| {
-        let secret: [u8; 32] = [0xCA; 32];
-        b.iter(|| {
-            rt.block_on(async {
-                let (client_io, _server_io) = tokio::io::duplex(64 * 1024);
-                let mut client = ProtocolHandler::new(client_io);
-                client.enable_chameleon_aead(secret);
-
-                client
-                    .send_message_raw(&Message::Ping { timestamp: 42 })
-                    .await
-                    .unwrap();
-            });
-        });
-    });
-
-    group.bench_function("10_msg_burst_plaintext", |b| {
-        b.iter(|| {
-            rt.block_on(async {
-                let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-                let mut client = ProtocolHandler::new(client_io);
-                let mut server = ProtocolHandler::new(server_io);
+                let (mut client, mut server) = connection_pair().await;
 
                 for i in 0..10u64 {
-                    client
-                        .send_message_raw(&Message::Ping { timestamp: i })
+                    let id = native::send_request(&mut client, &request(i))
                         .await
                         .unwrap();
-                    let msg = server.receive_message().await.unwrap();
-                    black_box(msg);
+                    let frame = server.recv().await.unwrap().unwrap();
+                    native::send_reply(&mut server, frame.request_id, &native::error_reply("ok"))
+                        .await
+                        .unwrap();
+                    black_box(native::await_reply(&mut client, id).await.unwrap());
                 }
             });
         });
@@ -143,61 +131,25 @@ fn bench_protocol_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
-// ======================== Latent Vector ========================
-
-fn bench_latent_vector(c: &mut Criterion) {
-    use spine_protocol::{LatentVector, Message};
-
-    let mut group = c.benchmark_group("latent_vector");
-
-    for dim in [8, 64, 256, 1024] {
-        let vec = LatentVector {
-            components: (0..dim).map(|i| i as f32 * 0.001).collect(),
-            dim_hint: dim as u16,
-            epoch: 1,
-        };
-        let msg = Message::LatentMessage(vec);
-
-        group.throughput(Throughput::Bytes((dim * 4) as u64));
-        group.bench_with_input(BenchmarkId::new("serialize", dim), &msg, |b, msg| {
-            b.iter(|| serde_json::to_vec(black_box(msg)).unwrap());
-        });
-
-        let bytes = serde_json::to_vec(&msg).unwrap();
-        group.bench_with_input(BenchmarkId::new("deserialize", dim), &bytes, |b, bytes| {
-            b.iter(|| serde_json::from_slice::<Message>(black_box(bytes)).unwrap());
-        });
-    }
-
-    group.finish();
-}
-
 // ======================== Wire codec: CBOR vs JSON ========================
 
-/// Head-to-head throughput for the v1.4.0+ binary wire codec (`wire::encode` /
-/// `wire::decode`, CBOR / CBOR+zstd) against the old `serde_json` body, on the
+/// Head-to-head throughput for the spine-wire v1 body codec (`cbor::to_vec` /
+/// `cbor::from_slice`, deterministic CBOR) against a `serde_json` body, on the
 /// frames where it matters most: a 1 KiB embedding (the binary path that wins
 /// big) and a structured tool call. Pairs the *size* numbers from
 /// `examples/wire_sizes.rs` with *speed* numbers.
 fn bench_wire_codec(c: &mut Criterion) {
-    use spine_protocol::wire;
-    use spine_protocol::{DType, EncodedFrame, EncodedMetadata, Message, Modality, ToolCall};
+    use spine_protocol::cbor;
+    use spine_protocol::{Message, StreamData, StreamToken, ToolCall};
 
     let embedding: Vec<u8> = (0..1024u32)
         .map(|i| (i.wrapping_mul(31) % 251) as u8)
         .collect();
-    let frame = Message::Encoded(EncodedFrame {
-        codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
-        variant: Some("layer=11".into()),
-        data: embedding,
-        metadata: EncodedMetadata {
-            modality: Modality::Embedding,
-            shape: vec![256],
-            dtype: DType::F32,
-            original_len: Some(4096),
-            source_hash: Some([0xAB; 32]),
-        },
-        trace: None,
+    let frame = Message::StreamToken(StreamToken {
+        id: "stream-7f3a".into(),
+        seq: 1,
+        data: StreamData::Bytes(embedding),
+        usage: None,
     });
     let tool_call = Message::ToolCall(ToolCall {
         id: "b3c1f2a4-0d8e-4c9a-9f1b-2e7d6c5a4b30".into(),
@@ -214,14 +166,14 @@ fn bench_wire_codec(c: &mut Criterion) {
     let mut group = c.benchmark_group("wire_codec");
     for (name, msg) in [("embedding_1kib", &frame), ("tool_call", &tool_call)] {
         let json_bytes = serde_json::to_vec(msg).unwrap();
-        let wire_bytes = wire::encode(msg).unwrap();
+        let wire_bytes = cbor::to_vec(msg).unwrap();
         group.throughput(Throughput::Bytes(json_bytes.len() as u64));
 
         group.bench_with_input(BenchmarkId::new("encode_json", name), msg, |b, msg| {
             b.iter(|| serde_json::to_vec(black_box(msg)).unwrap());
         });
         group.bench_with_input(BenchmarkId::new("encode_wire", name), msg, |b, msg| {
-            b.iter(|| wire::encode(black_box(msg)).unwrap());
+            b.iter(|| cbor::to_vec(black_box(msg)).unwrap());
         });
         group.bench_with_input(
             BenchmarkId::new("decode_json", name),
@@ -234,7 +186,7 @@ fn bench_wire_codec(c: &mut Criterion) {
             BenchmarkId::new("decode_wire", name),
             &wire_bytes,
             |b, bytes| {
-                b.iter(|| wire::decode(black_box(bytes)).unwrap());
+                b.iter(|| cbor::from_slice::<Message>(black_box(bytes)).unwrap());
             },
         );
     }
@@ -245,7 +197,6 @@ criterion_group!(
     protocol,
     bench_protocol_message_serde,
     bench_protocol_roundtrip,
-    bench_latent_vector,
     bench_wire_codec,
 );
 

@@ -13,10 +13,27 @@ what changed in this release.
 
 API documentation: <https://docs.rs/spine-protocol>
 
+## Features
+
+- `quic` (default): the QUIC transport (`QuicEndpointBuilder`, `QuicTransport`).
+There is no `research` feature. The crate has no dependency on any crate under
+`research/`. The native wire is spine-wire v1: `connection::Connection` speaks
+length-prefixed frames with a version, type, flags and request id after a
+`HELLO`/`HELLO_ACK` handshake, and `native` maps the `Message` set onto those
+frames (bodies are deterministic CBOR). There is no sealing: confidentiality
+comes from TLS or the session layer. The Chameleon latent-space key, `SpineConnection`, `connect_auto`,
+the protocol evolution framework, `TitansLatentCodec` and the pre-shared-key AES
+layer are not part of this crate: the first four are in the experimental,
+unreviewed `research/spine-protocol-research` crate and the AES layer was
+removed. `LatentVector` and the neural-codec types (`EncodedFrame`,
+`NeuralCodec`, `CodecRegistry`, `EmbeddingRequest`, ...) moved to the same research
+crate with the `Message` variants that carried them.
+
 ## Workspace dependencies
 
-- `spine-crypto`
-- `spine-neural`
+None. The `research/` crates `spine-nostd` and `spine-embedded` were dev
+dependencies of the integration tests; those tests moved to
+`research/spine-protocol-research`.
 
 ## License
 

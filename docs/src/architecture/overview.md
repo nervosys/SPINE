@@ -18,7 +18,7 @@ SPINE is a headless semantic browser with adaptive encryption. It is organized a
 │   spine-cli · spine-gateway · spine-browser                  │
 ├─────────────────────────────────────────────────────────────┤
 │                      Agent SDK                               │
-│   spine-agent (connect, navigate, search, execute, swarm)    │
+│   spine-agent (connect, navigate, execute, knowledge)        │
 ├─────────────────────────────────────────────────────────────┤
 │                   Agentic Intelligence                       │
 │   spine-agentic (neural protocols, swarm, social cognition)  │
@@ -39,7 +39,7 @@ SPINE is a headless semantic browser with adaptive encryption. It is organized a
 1. **Agent connects** via TCP, TLS, or WebSocket to spine-core server
 2. **Requests** are serialized as `Message` enum through `ProtocolHandler`
 3. **Server** fetches web content, parses to `UnifiedRepresentation`
-4. **Response** flows back through optional compression, encryption, speculation
+4. **Response** flows back through optional compression and encryption
 5. **Agent** receives structured data for processing
 
 ## Security Layers
@@ -47,7 +47,7 @@ SPINE is a headless semantic browser with adaptive encryption. It is organized a
 | Layer        | Component       | Purpose                     |
 | ------------ | --------------- | --------------------------- |
 | Transport    | TLS 1.3         | Channel encryption          |
-| Protocol     | Chameleon keys  | Moving-target defense       |
+| Protocol     | Fixed frame     | No sealing; TLS or session  |
 | Latent       | Neural encoding | Latent-space cryptography   |
 | Post-quantum | RLWE lattice    | Future-proof key exchange   |
 | Identity     | X3DH            | Initial trust establishment |

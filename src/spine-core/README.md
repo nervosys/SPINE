@@ -13,15 +13,25 @@ what changed in this release.
 
 API documentation: <https://docs.rs/spine-core>
 
+## Features
+
+- `research` (off by default): the cluster node and its event listener
+  (session data, search, knowledge sync) and the human transpile on
+  `Navigate`. Without it the daemon has no cluster and `Navigate` gives the
+  session an empty binary; `spine-cluster` and `spine-human` are not built.
+  The research-only commands (latent encoding, session transfer, neural
+  transmit, agentic state, autonomous mode) are not part of the core command
+  set; they are recorded in `research/spine-protocol-research/README.md`.
+  Build with `cargo build -p spine-core --features research`.
+- `quic`: QUIC listener support.
+
 ## Workspace dependencies
 
 - `spine-agent`
-- `spine-agentic`
-- `spine-cluster`
+- `spine-cluster` (with `research`)
 - `spine-compiler`
-- `spine-human`
+- `spine-human` (with `research`)
 - `spine-name`
-- `spine-neural`
 - `spine-parser`
 - `spine-protocol`
 - `spine-transport`

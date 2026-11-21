@@ -27,12 +27,12 @@ case "${1:-}" in
         cargo bench --bench hot_path_bench
         echo ""
         echo "Running kernel benchmarks..."
-        cargo bench -p spine-kernel --bench kernel_bench
+        (cd research && cargo bench -p spine-kernel --bench kernel_bench)
         echo ""
         echo "Running scalability benchmarks..."
-        cargo bench -p spine-agentic --bench scalability_bench
+        (cd research && cargo bench -p spine-agentic --bench scalability_bench)
         echo ""
-        echo "═══ Reports written to target/criterion/ ═══"
+        echo "═══ Reports written to target/criterion/ (research benches: research/target/criterion/) ═══"
         echo "Open target/criterion/report/index.html in a browser"
         ;;
 esac

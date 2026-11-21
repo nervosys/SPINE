@@ -103,6 +103,8 @@ pub struct LocalResolver {
     /// Injected clock (seconds since epoch), so freshness is testable and this
     /// crate stays free of a time dependency.
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
+    #[cfg(feature = "storage")]
+    persistence: Option<std::sync::Arc<dyn spine_storage::StorageBackend>>,
 }
 
 impl std::fmt::Debug for LocalResolver {
@@ -121,12 +123,74 @@ impl LocalResolver {
             store: Mutex::new(RecordStore::new()),
             cache: Mutex::new(ResolverCache::new(4096)),
             clock: Box::new(clock),
+            #[cfg(feature = "storage")]
+            persistence: None,
         }
     }
 
     /// A resolver with a fixed clock — for tests and deterministic replay.
     pub fn at_time(now: u64) -> Self {
         Self::new(move || now)
+    }
+
+    /// Restore publisher records from a durable backend. Signatures and keys
+    /// are checked before accepting the snapshot. Expired records retain their
+    /// sequence in storage for owner-driven renewal, but never resolve fresh.
+    /// Learned cache entries, replicas and negative results are not persisted.
+    #[cfg(feature = "storage")]
+    pub fn persistent(
+        clock: impl Fn() -> u64 + Send + Sync + 'static,
+        backend: std::sync::Arc<dyn spine_storage::StorageBackend>,
+    ) -> Result<Self, NameError> {
+        let mut resolver = Self::new(clock);
+        let records = backend
+            .scan("spine-name-publishers-v1", None)
+            .map_err(|e| NameError::Storage(e.to_string()))?;
+        if records.len() > crate::DEFAULT_CAPACITY {
+            return Err(NameError::Capacity);
+        }
+        for (key, data) in records {
+            let record: NameRecord =
+                serde_json::from_slice(&data).map_err(|e| NameError::Storage(e.to_string()))?;
+            if key != record.name.to_string().as_bytes() {
+                return Err(NameError::Storage(
+                    "stored key does not match record name".into(),
+                ));
+            }
+            // A record that no longer verifies (for example one signed under
+            // an older signing-bytes layout) must not stop the node starting.
+            // It is skipped here, never served, and replaced by the owner's
+            // next publication.
+            if record.verify().is_err() {
+                continue;
+            }
+            if !record.is_expired(resolver.now()) {
+                resolver.publish(record)?;
+            }
+        }
+        resolver.persistence = Some(backend);
+        Ok(resolver)
+    }
+
+    /// All records owned by this publisher, including expired sequence markers.
+    #[cfg(feature = "storage")]
+    pub fn published_records(&self) -> Result<Vec<NameRecord>, NameError> {
+        let Some(backend) = &self.persistence else {
+            return Ok(Vec::new());
+        };
+        backend
+            .scan("spine-name-publishers-v1", None)
+            .map_err(|e| NameError::Storage(e.to_string()))?
+            .into_iter()
+            .map(|(_, bytes)| {
+                serde_json::from_slice::<NameRecord>(&bytes)
+                    .map_err(|e| NameError::Storage(e.to_string()))
+            })
+            .filter(|parsed| match parsed {
+                Ok(record) => record.verify().is_ok(),
+                Err(_) => true,
+            })
+            .collect()
     }
 
     /// Current time according to the injected clock.
@@ -137,8 +201,59 @@ impl LocalResolver {
     /// Publish a record into the local store. Verification happens in the store,
     /// so an invalid record cannot be published.
     pub fn publish(&self, record: NameRecord) -> Result<(), NameError> {
+        record.verify()?;
         let mut store = self.store.lock().unwrap();
-        store.put(record)?;
+        if let Some(previous) = store.get(&record.name) {
+            if record != *previous && !record.supersedes(previous) {
+                return Err(NameError::StalePublication);
+            }
+        }
+        #[cfg(feature = "storage")]
+        if let Some(backend) = &self.persistence {
+            record.verify()?;
+            let name = record.name.to_string();
+            if let Some(bytes) = backend
+                .get("spine-name-publishers-v1", name.as_bytes())
+                .map_err(|e| NameError::Storage(e.to_string()))?
+            {
+                let previous: NameRecord = serde_json::from_slice(&bytes)
+                    .map_err(|e| NameError::Storage(e.to_string()))?;
+                // A stored predecessor that no longer verifies cannot hold the
+                // sequence number against a valid record.
+                if previous.verify().is_ok() && !record.supersedes(&previous) {
+                    return if record == previous {
+                        Ok(())
+                    } else {
+                        Err(NameError::StalePublication)
+                    };
+                }
+            } else if backend
+                .count("spine-name-publishers-v1")
+                .map_err(|e| NameError::Storage(e.to_string()))?
+                >= crate::DEFAULT_CAPACITY
+            {
+                return Err(NameError::Capacity);
+            }
+            let mut candidate = store.clone();
+            if candidate.put(record.clone())? == crate::PutOutcome::Rejected {
+                return Err(NameError::Capacity);
+            }
+            let bytes =
+                serde_json::to_vec(&record).map_err(|e| NameError::Storage(e.to_string()))?;
+            backend
+                .put("spine-name-publishers-v1", name.as_bytes(), &bytes)
+                .map_err(|e| NameError::Storage(e.to_string()))?;
+            *store = candidate;
+            drop(store);
+            self.cache.lock().unwrap().remove(&record.name);
+            return Ok(());
+        }
+        let name = record.name.clone();
+        if store.put(record)? == crate::PutOutcome::Rejected {
+            return Err(NameError::Capacity);
+        }
+        drop(store);
+        self.cache.lock().unwrap().remove(&name);
         Ok(())
     }
 
@@ -153,6 +268,15 @@ impl LocalResolver {
     pub fn cache_negative(&self, uri: &SpineUri) {
         let now = self.now();
         self.cache.lock().unwrap().put_negative(uri, now);
+    }
+
+    /// Whether a still-valid negative entry covers `uri`.
+    ///
+    /// Lets a caller tell a remembered absence from a plain miss, both of which
+    /// `resolve` reports as `NotFound`. Only the former may skip a mesh walk.
+    pub fn is_negative_cached(&self, uri: &SpineUri) -> bool {
+        let now = self.now();
+        self.cache.lock().unwrap().is_negative(uri, now)
     }
 
     /// Cache statistics.
@@ -380,6 +504,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_miss_is_distinguishable_from_a_remembered_absence() {
+        let r = LocalResolver::at_time(1_000);
+        let first = signed(1, 1_000, 100, &[], 1);
+        assert!(matches!(
+            r.resolve(&first.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        assert!(!r.is_negative_cached(&first.name), "a plain miss");
+
+        r.cache_negative(&first.name);
+        assert!(r.is_negative_cached(&first.name));
+
+        // Publishing invalidates the entry, so the walk-skipping path ends.
+        r.publish(first.clone()).unwrap();
+        assert!(!r.is_negative_cached(&first.name));
+    }
+
+    #[tokio::test]
     async fn a_capability_name_is_not_resolvable_as_a_single_record() {
         let r = LocalResolver::at_time(1_000);
         let err = r
@@ -454,5 +596,98 @@ mod tests {
     async fn resolver_is_usable_as_a_trait_object() {
         let r: Box<dyn Resolver> = Box::new(LocalResolver::at_time(1_000));
         assert!(r.find_providers("web.search").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publishing_invalidates_negative_and_older_positive_cache_entries() {
+        let r = LocalResolver::at_time(1_000);
+        let first = signed(1, 1_000, 100, &[], 1);
+        r.cache_negative(&first.name);
+        r.publish(first.clone()).unwrap();
+        assert_eq!(r.resolve(&first.name).await.unwrap().record.seq, first.seq);
+        r.cache_record(first.clone()).unwrap();
+        let next = first
+            .renewed(&SigningKey::from_bytes(&[1; 32]), 1_001, 200)
+            .unwrap();
+        r.publish(next.clone()).unwrap();
+        assert_eq!(r.resolve(&first.name).await.unwrap().record.seq, next.seq);
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn publications_survive_restart_and_expiry_preserves_renewal_sequence() {
+        use spine_storage::sqlite::SqliteBackend;
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("names.sqlite");
+        let open = |now| {
+            LocalResolver::persistent(
+                move || now,
+                Arc::new(SqliteBackend::open(path.to_str().unwrap()).unwrap()),
+            )
+            .unwrap()
+        };
+        let first = signed(1, 1_000, 100, &["web.search"], 1);
+        {
+            let r = open(1_000);
+            r.publish(first.clone()).unwrap();
+        }
+        {
+            let r = open(1_010);
+            assert_eq!(r.resolve(&first.name).await.unwrap().record, first);
+        }
+        let r = open(1_200);
+        assert!(matches!(
+            r.resolve(&first.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        let owned = r.published_records().unwrap();
+        assert_eq!(owned, vec![first.clone()]);
+        let renewed = owned[0]
+            .renewed(&SigningKey::from_bytes(&[1; 32]), 1_200, 100)
+            .unwrap();
+        r.publish(renewed.clone()).unwrap();
+        assert_eq!(r.publish(first.clone()), Err(NameError::StalePublication));
+        r.publish(renewed.clone()).unwrap();
+        assert_eq!(r.resolve(&first.name).await.unwrap().record, renewed);
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn corrupt_publisher_state_is_rejected_on_restore() {
+        use spine_storage::{InMemoryBackend, StorageBackend};
+        use std::sync::Arc;
+        let backend = Arc::new(InMemoryBackend::new());
+        backend
+            .put("spine-name-publishers-v1", b"bad", b"{}")
+            .unwrap();
+        assert!(LocalResolver::persistent(|| 1_000, backend).is_err());
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn a_stored_record_with_an_invalid_signature_is_skipped_not_fatal() {
+        use spine_storage::{InMemoryBackend, StorageBackend};
+        use std::sync::Arc;
+        let good = signed(1, 1_000, 100, &["web.search"], 1);
+        let mut bad = signed(2, 1_000, 100, &["web.search"], 1);
+        bad.seq += 1; // signature no longer matches the signed bytes
+        let backend = Arc::new(InMemoryBackend::new());
+        for rec in [&good, &bad] {
+            backend
+                .put(
+                    "spine-name-publishers-v1",
+                    rec.name.to_string().as_bytes(),
+                    &serde_json::to_vec(rec).unwrap(),
+                )
+                .unwrap();
+        }
+        let r = LocalResolver::persistent(|| 1_010, backend).unwrap();
+        assert_eq!(r.resolve(&good.name).await.unwrap().record, good);
+        assert!(matches!(
+            r.resolve(&bad.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        assert_eq!(r.published_records().unwrap(), vec![good]);
     }
 }

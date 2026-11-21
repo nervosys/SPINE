@@ -6,10 +6,13 @@ use axum::{routing::get, Router};
 use dashmap::DashMap;
 use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
-use spine_neural::NeuralLatentEncoder;
-use spine_parser::parse_html;
-use spine_protocol::{BrowserCommand, Message, PreComputedResponse, ProtocolHandler, Response};
+use spine_core::outbound;
+use spine_protocol::connection::{Connection, ConnectionError};
+use spine_protocol::frame::FrameType;
+use spine_protocol::native;
+use spine_protocol::{BrowserCommand, Message, Response};
 use spine_transport::WebSocketStream;
 use spine_wasm::WasmRuntime;
 use std::sync::Arc;
@@ -41,16 +44,15 @@ struct Session {
     /// Cached parsed UnifiedRepresentation (invalidated on navigation)
     #[serde(skip)]
     cached_ur: Option<spine_parser::UnifiedRepresentation>,
-    last_command: Option<BrowserCommand>,
-    needs_morph: bool,
     /// Reactive state variables
     state: std::collections::HashMap<String, serde_json::Value>,
     /// Current HLB binary for reactivity
     current_binary: Option<spine_protocol::SpineBinary>,
-    /// Command history for this session
-    history: Vec<BrowserCommand>,
-    /// Whether the agent is in autonomous mode
-    autonomous_mode: bool,
+    /// Last detach/import time. Zero is a legacy record granted one retention interval.
+    #[serde(default)]
+    retained_at: u64,
+    #[serde(skip)]
+    detached_since: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -60,14 +62,46 @@ impl Session {
             current_html: None,
             current_vdom: None,
             cached_ur: None,
-            last_command: None,
-            needs_morph: false,
             state: std::collections::HashMap::new(),
             current_binary: None,
-            history: Vec::new(),
-            autonomous_mode: false,
+            retained_at: unix_now(),
+            detached_since: Some(std::time::Instant::now()),
         }
     }
+}
+
+/// Connections own this lease across awaited commands; aborts also detach the session.
+struct RateLease {
+    state: Arc<BrowserState>,
+    id: String,
+}
+impl Drop for RateLease {
+    fn drop(&mut self) {
+        self.state.rate_limits.remove(&self.id);
+    }
+}
+
+struct SessionLease {
+    state: Arc<BrowserState>,
+    id: String,
+}
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        let mut active = self.state.session_gate.lock().unwrap();
+        if let Some(mut session) = self.state.sessions.get_mut(&self.id) {
+            session.retained_at = unix_now();
+            session.detached_since = Some(std::time::Instant::now());
+        }
+        active.remove(&self.id);
+        self.state.rate_limits.remove(&self.id);
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionSnapshot {
+    version: u32,
+    sessions: std::collections::BTreeMap<String, Session>,
+    knowledge: std::collections::BTreeMap<String, Vec<KnowledgeEntry>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -78,6 +112,7 @@ struct KnowledgeEntry {
     timestamp_ns: u64,
 }
 
+#[cfg(feature = "research")]
 #[derive(Clone)]
 struct KnowledgeProposal {
     key: String,
@@ -87,6 +122,7 @@ struct KnowledgeProposal {
     origin_node: spine_cluster::NodeId,
 }
 
+#[cfg(feature = "research")]
 #[derive(Clone)]
 struct KnowledgeVote {
     voter_id: spine_cluster::NodeId,
@@ -95,25 +131,25 @@ struct KnowledgeVote {
 }
 
 struct BrowserState {
+    resources: spine_core::resources::ResourceStore,
     sessions: DashMap<String, Session>,
+    /// Serializes admission/import/reaping and protects connected sessions.
+    session_gate: std::sync::Mutex<std::collections::HashSet<String>>,
+    snapshot_gate: Mutex<()>,
     knowledge_base: DashMap<String, Vec<KnowledgeEntry>>,
+    #[cfg(feature = "research")]
     proposals: DashMap<Uuid, KnowledgeProposal>,
+    #[cfg(feature = "research")]
     plans: DashMap<Uuid, spine_protocol::SwarmPlan>,
-    client: reqwest::Client,
-    /// RwLock allows concurrent encoder reads (multiple sessions encoding in parallel)
-    encoder: tokio::sync::RwLock<NeuralLatentEncoder>,
+    fetcher: outbound::Fetcher,
+    #[cfg(feature = "research")]
     cluster: Mutex<ClusterNode>,
-    agentic_runtime: Arc<spine_agentic::AgenticWebRuntime>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
     /// Cached WasmRuntime (expensive to create, safe to reuse)
     wasm_runtime: spine_wasm::WasmRuntime,
-    /// Cached NeuralProtocol per domain (avoids re-allocating neural weights per request)
-    neural_protocols: DashMap<String, spine_agentic::NeuralProtocol>,
-    /// Active connection count per IP address
-    connections_per_ip: DashMap<std::net::IpAddr, std::sync::atomic::AtomicUsize>,
-    /// Total active connection count
-    active_connections: std::sync::atomic::AtomicUsize,
+    /// Shared native connection admission, including unfinished handshakes.
+    connections: Arc<spine_core::connections::ConnectionBudget>,
     /// Server start time for uptime calculation
     start_time: std::time::Instant,
     /// Shutdown signal: when true, stop accepting new connections
@@ -123,71 +159,194 @@ struct BrowserState {
     /// The namespace this node serves: names it publishes, plus records it has
     /// learned. This is what makes the node an *origin* in the agent web rather
     /// than only a proxy onto the human one.
-    names: spine_name::LocalResolver,
+    names: Arc<spine_name::LocalResolver>,
     /// The mesh this node resolves *through*, when it has joined one.
     ///
     /// `None` means the node is an origin but not a participant: it serves what
     /// it holds and cannot look anything up. That is a supported configuration,
     /// not a failure — a node with no seeds has nothing to route through.
-    mesh_names: Option<Arc<spine_agentic::naming_mesh::MeshNameResolver>>,
+    mesh_names: Option<Arc<spine_mesh::naming_mesh::MeshNameResolver>>,
 }
 
 impl BrowserState {
-    async fn save_sessions(&self) -> anyhow::Result<()> {
-        let dir = std::path::Path::new("sessions");
-        tokio::fs::create_dir_all(dir).await.ok();
-
-        for entry in self.sessions.iter() {
-            let id = entry.key();
-            let session = entry.value();
-            let path = dir.join(format!("{}.json", id));
-            let json = serde_json::to_string(session)?;
-            tokio::fs::write(path, json).await?;
+    fn create_session(self: &Arc<Self>) -> Option<SessionLease> {
+        let mut active = self.session_gate.lock().unwrap();
+        if self.sessions.len() >= self.config.server.max_sessions {
+            return None;
         }
+        let id = Uuid::new_v4().to_string();
+        self.sessions.insert(id.clone(), Session::new());
+        active.insert(id.clone());
+        Some(SessionLease {
+            state: self.clone(),
+            id,
+        })
+    }
 
-        // Save knowledge base
-        let kb_dir = std::path::Path::new("knowledge");
-        tokio::fs::create_dir_all(kb_dir).await.ok();
-        for entry in self.knowledge_base.iter() {
-            let id = entry.key();
-            let entries = entry.value();
-            let path = kb_dir.join(format!("{}.json", id));
-            let json = serde_json::to_string(entries)?;
-            tokio::fs::write(path, json).await?;
+    #[cfg(feature = "research")]
+    fn import_session(&self, id: String, mut session: Session) -> bool {
+        let _gate = self.session_gate.lock().unwrap();
+        if !spine_core::session_store::valid_id(&id)
+            || self.sessions.len() >= self.config.server.max_sessions
+            || self.sessions.contains_key(&id)
+        {
+            return false;
         }
+        session.retained_at = unix_now();
+        session.detached_since = Some(std::time::Instant::now());
+        self.sessions.insert(id, session);
+        true
+    }
 
-        Ok(())
+    fn reap_sessions(&self) -> Vec<String> {
+        let active = self.session_gate.lock().unwrap();
+        let ttl = std::time::Duration::from_secs(self.config.server.session_retention_secs);
+        let ids: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|e| {
+                !active.contains(e.key()) && e.detached_since.is_some_and(|t| t.elapsed() >= ttl)
+            })
+            .map(|e| e.key().clone())
+            .collect();
+        for id in &ids {
+            self.sessions.remove(id);
+            self.knowledge_base.remove(id);
+            self.rate_limits.remove(id);
+        }
+        ids
+    }
+
+    async fn save_sessions(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _serial = self.snapshot_gate.lock().await;
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let snapshot = {
+                let active = state.session_gate.lock().unwrap();
+                let now = unix_now();
+                SessionSnapshot {
+                    version: 1,
+                    sessions: state
+                        .sessions
+                        .iter()
+                        .map(|e| {
+                            let mut session = e.value().clone();
+                            if active.contains(e.key()) {
+                                session.retained_at = now;
+                            }
+                            (e.key().clone(), session)
+                        })
+                        .collect(),
+                    knowledge: state
+                        .knowledge_base
+                        .iter()
+                        .map(|e| (e.key().clone(), e.value().clone()))
+                        .collect(),
+                }
+            };
+            spine_core::session_store::write(
+                std::path::Path::new("spine-sessions-v1.json"),
+                &snapshot,
+            )
+        })
+        .await?
     }
 
     fn load_sessions(&self) -> anyhow::Result<()> {
-        let dir = std::path::Path::new("sessions");
-        if dir.exists() {
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) {
-                        let json = std::fs::read_to_string(&path)?;
-                        let session: Session = serde_json::from_str(&json)?;
-                        self.sessions.insert(id, session);
+        use spine_core::session_store::{read, valid_id, MAX_LEGACY_BYTES, MAX_SNAPSHOT_BYTES};
+        let manifest = std::path::Path::new("spine-sessions-v1.json");
+        let mut snapshot = if manifest.exists() {
+            let snapshot: SessionSnapshot = read(manifest, MAX_SNAPSHOT_BYTES)?;
+            anyhow::ensure!(
+                snapshot.version == 1,
+                "unsupported session snapshot version"
+            );
+            snapshot
+        } else {
+            // One-time migration. An authoritative manifest prevents old files resurrecting records.
+            let mut snapshot = SessionSnapshot {
+                version: 1,
+                sessions: Default::default(),
+                knowledge: Default::default(),
+            };
+            let mut total = 0u64;
+            for directory in ["sessions", "knowledge"] {
+                let dir = std::path::Path::new(directory);
+                if !dir.exists() {
+                    continue;
+                }
+                let mut count = 0usize;
+                for entry in std::fs::read_dir(dir)? {
+                    let path = entry?.path();
+                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Some(id) = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .filter(|id| valid_id(id))
+                    else {
+                        continue;
+                    };
+                    count += 1;
+                    anyhow::ensure!(
+                        count <= self.config.server.max_sessions + 1,
+                        "legacy session record count exceeds configured limit"
+                    );
+                    total = total.saturating_add(std::fs::metadata(&path)?.len());
+                    anyhow::ensure!(
+                        total <= MAX_SNAPSHOT_BYTES,
+                        "legacy session data exceeds byte limit"
+                    );
+                    if directory == "sessions" {
+                        snapshot
+                            .sessions
+                            .insert(id.into(), read(&path, MAX_LEGACY_BYTES)?);
+                    } else {
+                        snapshot
+                            .knowledge
+                            .insert(id.into(), read(&path, MAX_LEGACY_BYTES)?);
                     }
                 }
             }
+            snapshot
+        };
+        anyhow::ensure!(
+            snapshot.sessions.len() <= self.config.server.max_sessions,
+            "persisted session count exceeds configured limit"
+        );
+        anyhow::ensure!(
+            snapshot.knowledge.len() <= self.config.server.max_sessions + 1,
+            "persisted knowledge count exceeds configured limit"
+        );
+        let now = unix_now();
+        let ttl = self.config.server.session_retention_secs;
+        snapshot.sessions.retain(|id, session| {
+            if !valid_id(id) {
+                return false;
+            }
+            let Some(age) = spine_core::session_store::restored_age(session.retained_at, now, ttl)
+            else {
+                return false;
+            };
+            session.retained_at = now.saturating_sub(age);
+            session.detached_since = Some(
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(age))
+                    .unwrap_or_else(std::time::Instant::now),
+            );
+            true
+        });
+        snapshot
+            .knowledge
+            .retain(|id, _| id == "cluster_shared" || snapshot.sessions.contains_key(id));
+        // Commit migration/expiry before exposing state or starting listeners. Fail closed on corruption.
+        spine_core::session_store::write(manifest, &snapshot)?;
+        for (id, session) in snapshot.sessions {
+            self.sessions.insert(id, session);
         }
-
-        let kb_dir = std::path::Path::new("knowledge");
-        if kb_dir.exists() {
-            for entry in std::fs::read_dir(kb_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) {
-                        let json = std::fs::read_to_string(&path)?;
-                        let entries: Vec<KnowledgeEntry> = serde_json::from_str(&json)?;
-                        self.knowledge_base.insert(id, entries);
-                    }
-                }
-            }
+        for (id, knowledge) in snapshot.knowledge {
+            self.knowledge_base.insert(id, knowledge);
         }
         Ok(())
     }
@@ -222,6 +381,36 @@ fn unix_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Directed writes are transport delivery attempts, not storage acknowledgements.
+/// Report local persistence independently and preserve partial mesh failures.
+async fn publication_report(
+    state: &BrowserState,
+    record: spine_name::NameRecord,
+) -> serde_json::Value {
+    let mut sent = 0;
+    let mut failed = 0;
+    let mut broadcast = false;
+    let mut replication_error = None;
+    if let Some(mesh) = &state.mesh_names {
+        match mesh.publish(record.clone()).await {
+            Ok(report) => {
+                sent = report.sent;
+                failed = report.failed;
+                broadcast = report.broadcast;
+            }
+            Err(error) => replication_error = Some(error.to_string()),
+        }
+    }
+    serde_json::json!({
+        "status": "published", "name": record.name.to_string(), "stored": true,
+        "local_persistent": !state.config.namespace.records_path.is_empty(),
+        "replicas": sent, "replication_sent": sent, "replication_failed": failed,
+        "replication_broadcast": broadcast, "replication_error": replication_error,
+        "replication_acknowledged": 0, "durable": false,
+        "retry": "mesh maintenance reoffers live records; remote persistence is not acknowledged"
+    })
 }
 
 /// Map a resolver provenance onto its protocol-level counterpart.
@@ -276,11 +465,21 @@ async fn resolve_one(
                 },
             }
         }
+        // A still-valid negative entry is an answer, not a miss: it is the whole
+        // point of caching the absence. Both surface as `NotFound` from the
+        // resolver, so ask the cache which this was before walking the mesh.
+        // Publishing or renewing a name clears the entry, so this cannot mask a
+        // newly published record.
+        Err(spine_name::NameError::NotFound(_)) if state.names.is_negative_cached(&uri) => {
+            spine_protocol::NameResolution::NotFound {
+                name: raw.to_string(),
+            }
+        }
         // Not held locally: this is where the node stops being a directory and
         // starts being a participant. Cache what the walk returns, so the next
         // ask for the same name is answered without another round trip.
         Err(spine_name::NameError::NotFound(_)) => match resolve_over_mesh(state, &uri).await {
-            Some(record) => {
+            Ok(Some(record)) => {
                 let _ = state.names.cache_record(record.clone());
                 match serde_json::to_value(&record) {
                     Ok(value) => spine_protocol::NameResolution::Resolved {
@@ -293,7 +492,7 @@ async fn resolve_one(
                     },
                 }
             }
-            None => {
+            Ok(None) => {
                 // Remember the miss: an agent retrying a name nobody has should
                 // not re-walk the keyspace every time.
                 state.names.cache_negative(&uri);
@@ -301,6 +500,10 @@ async fn resolve_one(
                     name: raw.to_string(),
                 }
             }
+            Err(reason) => spine_protocol::NameResolution::Unavailable {
+                name: raw.to_string(),
+                reason,
+            },
         },
         Err(e) => spine_protocol::NameResolution::Invalid {
             name: raw.to_string(),
@@ -313,35 +516,140 @@ async fn resolve_one(
 async fn resolve_over_mesh(
     state: &Arc<BrowserState>,
     uri: &spine_name::SpineUri,
-) -> Option<spine_name::NameRecord> {
-    let mesh = state.mesh_names.as_ref()?;
+) -> Result<Option<spine_name::NameRecord>, String> {
+    let Some(mesh) = state.mesh_names.as_ref() else {
+        return Ok(None);
+    };
+    if mesh.peer_count().await == 0 {
+        return Err("namespace has no reachable peers; only local names are available".into());
+    }
     match mesh.resolve(uri).await {
-        Ok(record) => Some(record),
-        Err(e) => {
-            debug!("mesh resolution of {uri} failed: {e}");
-            None
-        }
+        Ok(record) => Ok(Some(record)),
+        Err(spine_mesh::naming_mesh::NameMeshError::NotFound(_)) => Ok(None),
+        Err(e) => Err(e.to_string()),
     }
 }
 
-#[instrument(skip(state, session_id, request_id))]
+#[instrument(skip_all)]
 async fn handle_command(
     state: &Arc<BrowserState>,
     session_id: &str,
     command: BrowserCommand,
     request_id: String,
-) -> (Response, Vec<Vec<f32>>) {
+) -> Response {
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
 
-    // Record command in history
-    if let Some(mut session) = state.sessions.get_mut(session_id) {
-        session.history.push(command.clone());
-        session.last_command = Some(command.clone());
-    }
-
-    let mut latent_to_stream = Vec::new();
     let response = match command {
+        BrowserCommand::NamespaceStatus => {
+            let result = match &state.mesh_names {
+                Some(mesh) => {
+                    let key: String = mesh
+                        .local_key()
+                        .as_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    let peers=mesh.peers().await.into_iter().map(|p| {
+                        let key:String=p.info.id.as_bytes().iter().map(|b|format!("{b:02x}")).collect();
+                        serde_json::json!({"agent_id":p.agent_id,"public_key":key,"endpoints":p.info.endpoints})
+                    }).collect::<Vec<_>>();
+                    serde_json::json!({"enabled":true,"agent_id":mesh.agent_id(),"public_key":key,"peers":peers,
+                        "connectivity":if peers.is_empty(){"local_only"}else{"connected"},"tasks_enabled":state.config.namespace.tasks_enabled})
+                }
+                None => serde_json::json!({"enabled":false,"connectivity":"local_only","peers":[]}),
+            };
+            Response {
+                id: request_id,
+                result: Some(result),
+                error: None,
+            }
+        }
+        BrowserCommand::MeshCall {
+            peer_id,
+            peer_key,
+            payload,
+        } => {
+            let result = match (&state.mesh_names, uuid::Uuid::parse_str(&peer_id)) {
+                (Some(mesh), Ok(id)) => mesh
+                    .application_call(spine_mesh::AgentId(id), peer_key, payload)
+                    .await
+                    .map_err(|e| e.to_string()),
+                (None, _) => Err("namespace is unavailable".into()),
+                (_, Err(_)) => Err("peer id must be a UUID".into()),
+            };
+            match result {
+                Ok(value) => Response {
+                    id: request_id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(error) => Response {
+                    id: request_id,
+                    result: None,
+                    error: Some(error),
+                },
+            }
+        }
+        BrowserCommand::ReadResource {
+            hash,
+            offset,
+            max_bytes,
+        } => {
+            match state
+                .resources
+                .read(hash, offset, max_bytes)
+                .and_then(|chunk| Ok(serde_json::to_value(chunk)?))
+            {
+                Ok(result) => Response {
+                    id: request_id,
+                    result: Some(result),
+                    error: None,
+                },
+                Err(e) => Response {
+                    id: request_id,
+                    result: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
+        BrowserCommand::PublishResource {
+            record,
+            content_type,
+            data,
+        } => {
+            let result = (|| -> Result<spine_name::NameRecord> {
+                let record: spine_name::NameRecord = serde_json::from_value(record)?;
+                if record.is_expired(unix_now()) {
+                    anyhow::bail!("record is expired");
+                }
+                let (hash, created) = state.resources.put_tracked(&record, &content_type, &data)?;
+                if let Err(e) = state.names.publish(record.clone()) {
+                    // Drop the blob only if this request added it; an earlier
+                    // publication of the same content still refers to it.
+                    if created {
+                        let _ = state.resources.remove(hash);
+                    }
+                    return Err(e.into());
+                }
+                Ok(record)
+            })();
+            match result {
+                Ok(record) => {
+                    let publication = publication_report(state, record.clone()).await;
+                    Response {
+                        id: request_id,
+                        result: Some(publication),
+                        error: None,
+                    }
+                }
+                Err(e) => Response {
+                    id: request_id,
+                    result: None,
+                    error: Some(e.to_string()),
+                },
+            }
+        }
         BrowserCommand::ResolveName {
             name,
             if_none_match,
@@ -357,9 +665,36 @@ async fn handle_command(
         BrowserCommand::ResolveNames { names } => {
             // One round trip for the whole batch. Each name resolves
             // independently, so a single bad name never fails the others.
+            if names.len() > 256 {
+                return Response {
+                    id: request_id,
+                    result: None,
+                    error: Some("resolution batch exceeds 256 names".into()),
+                };
+            }
             let mut results = Vec::with_capacity(names.len());
-            for name in &names {
-                results.push(resolve_one(state, name, None).await);
+            for batch in names.chunks(16) {
+                let mut tasks = Vec::new();
+                for name in batch {
+                    let state = state.clone();
+                    let name = name.clone();
+                    tasks.push(tokio::spawn(async move {
+                        resolve_one(&state, &name, None).await
+                    }));
+                }
+                // Await handles in input order; all sixteen tasks run concurrently.
+                for task in tasks {
+                    match task.await {
+                        Ok(result) => results.push(result),
+                        Err(_) => {
+                            return Response {
+                                id: request_id,
+                                result: None,
+                                error: Some("resolution task failed".into()),
+                            }
+                        }
+                    }
+                }
             }
             Response {
                 id: request_id,
@@ -376,14 +711,44 @@ async fn handle_command(
                 Ok(mut providers) => {
                     // An empty local index is not an answer — "who can do X" is
                     // exactly the question the mesh exists to route.
-                    if providers.is_empty() {
-                        if let Some(mesh) = state.mesh_names.as_ref() {
-                            providers = mesh.find_providers(&capability).await.unwrap_or_default();
-                            for record in &providers {
-                                let _ = state.names.cache_record(record.clone());
+                    if let Some(mesh) = state.mesh_names.as_ref() {
+                        if mesh.peer_count().await > 0 {
+                            match mesh.find_providers(&capability).await {
+                                Ok(remote) => {
+                                    for record in remote {
+                                        if !record.is_expired(unix_now())
+                                            && state.names.cache_record(record.clone()).is_ok()
+                                        {
+                                            match providers
+                                                .iter()
+                                                .position(|p| p.name == record.name)
+                                            {
+                                                Some(i) if record.supersedes(&providers[i]) => {
+                                                    providers[i] = record
+                                                }
+                                                Some(_) => {}
+                                                None => providers.push(record),
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    return Response {
+                                        id: request_id,
+                                        result: None,
+                                        error: Some(format!("capability lookup unavailable: {e}")),
+                                    }
+                                }
                             }
                         }
                     }
+                    providers.sort_by(|a, b| {
+                        b.endpoints
+                            .len()
+                            .cmp(&a.endpoints.len())
+                            .then(b.published_at.cmp(&a.published_at))
+                            .then(a.name.to_string().cmp(&b.name.to_string()))
+                    });
                     if let Some(n) = limit {
                         providers.truncate(n);
                     }
@@ -410,35 +775,19 @@ async fn handle_command(
                 // publish() verifies the signature, so an unsigned or forged
                 // record is rejected here rather than becoming servable state.
                 Ok(record) => {
-                    let name = record.name.to_string();
+                    if record.is_expired(unix_now()) {
+                        return Response {
+                            id: request_id,
+                            result: None,
+                            error: Some("record is expired".into()),
+                        };
+                    }
                     match state.names.publish(record.clone()) {
                         Ok(()) => {
-                            // Publishing locally makes a name resolvable *here*.
-                            // It does not make it findable: a record that never
-                            // leaves this node is one node's private opinion
-                            // about a name, and it dies with the process. Push
-                            // it to the nodes closest to its key as well, and
-                            // report how many copies actually landed.
-                            let replicas = match state.mesh_names.as_ref() {
-                                Some(mesh) => mesh
-                                    .publish(record)
-                                    .await
-                                    .map(|r| r.replicas())
-                                    .unwrap_or(0),
-                                None => 0,
-                            };
+                            let publication = publication_report(state, record).await;
                             Response {
                                 id: request_id,
-                                result: Some(serde_json::json!({
-                                    "status": "published",
-                                    "name": name,
-                                    "replicas": replicas,
-                                    // False means the name lives here and
-                                    // nowhere else — usually not what a
-                                    // publisher intends, and never visible
-                                    // before this was reported.
-                                    "durable": replicas > 0,
-                                })),
+                                result: Some(publication),
                                 error: None,
                             }
                         }
@@ -545,14 +894,13 @@ async fn handle_command(
         },
 
         BrowserCommand::Navigate { url } => {
-            match state.client.get(&url).send().await {
-                Ok(resp) => {
-                    let html = resp.text().await.unwrap_or_default();
-
+            match state.fetcher.fetch_text(&url).await {
+                Ok(html) => {
                     // Transpile HTML to HLB for agentic interaction
+                    #[cfg(feature = "research")]
                     let hlb = spine_human::HumanTranspiler::transpile(&html, "", "")
                         .unwrap_or_else(|e| {
-                            warn!("Transpilation failed for {}: {}", url, e);
+                            warn!(error_kind = %std::any::type_name_of_val(&e), "Page transpilation failed");
                             spine_protocol::SpineBinary {
                                 instructions: vec![],
                                 data: vec![],
@@ -561,6 +909,16 @@ async fn handle_command(
                                 capabilities: vec![],
                             }
                         });
+                    // Without the research feature there is no transpiler: the
+                    // session gets the same empty binary a failed transpile yields.
+                    #[cfg(not(feature = "research"))]
+                    let hlb = spine_protocol::SpineBinary {
+                        instructions: vec![],
+                        data: vec![],
+                        render_start: 0,
+                        exported_functions: std::collections::HashMap::new(),
+                        capabilities: vec![],
+                    };
 
                     if let Some(mut session) = state.sessions.get_mut(session_id) {
                         session.current_url = Some(url);
@@ -569,20 +927,11 @@ async fn handle_command(
                         session.current_vdom = None;
                         session.cached_ur = None; // Invalidate cached UR on navigation
                     } else {
-                        // Create new session if it doesn't exist
-                        let session = Session {
-                            current_url: Some(url),
-                            current_html: Some(html),
-                            current_vdom: None,
-                            cached_ur: None,
-                            last_command: None,
-                            needs_morph: false,
-                            state: std::collections::HashMap::new(),
-                            current_binary: Some(hlb),
-                            history: Vec::new(),
-                            autonomous_mode: false,
+                        return Response {
+                            id: request_id,
+                            result: None,
+                            error: Some("Session expired".into()),
                         };
-                        state.sessions.insert(session_id.to_string(), session);
                     }
                     Response {
                         id: request_id,
@@ -659,9 +1008,9 @@ async fn handle_command(
         }
         BrowserCommand::ExecuteBinary(bin) => {
             info!(
-                "Executing HLB with {} instructions and capabilities: {:?}",
+                "Executing HLB with {} instructions and {} capabilities",
                 bin.instructions.len(),
-                bin.capabilities
+                bin.capabilities.len()
             );
 
             // Capability check
@@ -671,14 +1020,11 @@ async fn handle_command(
                         // Allowed by default for now
                     }
                     _ => {
-                        return (
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some(format!("Unauthorized or unknown capability: {}", cap)),
-                            },
-                            Vec::new(),
-                        );
+                        return Response {
+                            id: request_id,
+                            result: None,
+                            error: Some(format!("Unauthorized or unknown capability: {}", cap)),
+                        };
                     }
                 }
             }
@@ -688,12 +1034,18 @@ async fn handle_command(
                 session.current_binary = Some(bin.clone());
             }
 
-            let result = state
-                .wasm_runtime
-                .execute(&bin)
-                .expect("Failed to execute HLB in WASM");
-
-            latent_to_stream = result.latent_streams.clone();
+            // A program that fails to compile, instantiate or run is the
+            // client's error, not the daemon's: answer it and keep serving.
+            let result = match state.wasm_runtime.execute(&bin) {
+                Ok(result) => result,
+                Err(e) => {
+                    return Response {
+                        id: request_id,
+                        result: None,
+                        error: Some(format!("execution failed: {e}")),
+                    };
+                }
+            };
 
             // Update session VDOM and compute patches
             let new_vdom = VirtualDom::from_wasm(&result);
@@ -725,30 +1077,32 @@ async fn handle_command(
             for action in &result.actions {
                 match action {
                     spine_wasm::WasmAction::Navigate(url) => {
-                        info!("WASM requested navigation to {}", url);
+                        info!("WASM requested navigation");
                         let state_clone = state.clone();
                         let url_clone = url.clone();
                         let sid_clone = session_id.to_string();
                         tokio::spawn(async move {
-                            if let Ok(resp) = state_clone.client.get(&url_clone).send().await {
-                                if let Ok(html) = resp.text().await {
-                                    if let Some(mut session) =
-                                        state_clone.sessions.get_mut(&sid_clone)
-                                    {
-                                        session.current_url = Some(url_clone);
-                                        session.current_html = Some(html);
-                                    }
+                            if let Ok(html) = state_clone.fetcher.fetch_text(&url_clone).await {
+                                if let Some(mut session) = state_clone.sessions.get_mut(&sid_clone)
+                                {
+                                    session.current_url = Some(url_clone);
+                                    session.current_html = Some(html);
                                 }
                             }
                         });
                     }
                     spine_wasm::WasmAction::Search(query) => {
-                        info!("WASM requested search for {}", query);
-                        let cluster = state.cluster.lock().await;
-                        let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                        info!("WASM requested search");
+                        #[cfg(feature = "research")]
+                        {
+                            let cluster = state.cluster.lock().await;
+                            let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                        }
+                        #[cfg(not(feature = "research"))]
+                        let _ = query;
                     }
                     spine_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
-                        info!("WASM requested knowledge storage: {}", key);
+                        info!("WASM requested knowledge storage");
                         if let Some(_session) = state.sessions.get_mut(session_id) {
                             // Store in local KB
                             let entry = KnowledgeEntry {
@@ -767,36 +1121,27 @@ async fn handle_command(
                                 .or_default()
                                 .push(entry);
 
-                            let cluster = state.cluster.lock().await;
-                            let _ = cluster.broadcast_knowledge(
-                                key.clone(),
-                                value.clone(),
-                                tags.clone(),
-                            );
+                            #[cfg(feature = "research")]
+                            {
+                                let cluster = state.cluster.lock().await;
+                                let _ = cluster.broadcast_knowledge(
+                                    key.clone(),
+                                    value.clone(),
+                                    tags.clone(),
+                                );
+                            }
                         }
                     }
                     spine_wasm::WasmAction::QueryKnowledge {
-                        query,
+                        query: _,
                         tags: _,
                         limit: _,
                     } => {
-                        info!("WASM requested knowledge query: {}", query);
+                        info!("WASM requested knowledge query");
                     }
                     spine_wasm::WasmAction::Reason(query) => {
-                        info!("WASM requested reasoning: {}", query);
-                        if let Some(mut session) = state.sessions.get_mut(session_id) {
-                            if let Some(html) = &session.current_html {
-                                if let Ok(ur) = spine_parser::parse_html(html) {
-                                    let engine = spine_human::ReasoningEngine::new();
-                                    let plan = engine.create_plan(query, &ur);
-                                    info!("Reasoning plan: {:?}", plan);
-                                    // Store the plan in session history or state for the agent to see
-                                    session.history.push(BrowserCommand::Navigate {
-                                        url: format!("reasoning://{}", query),
-                                    });
-                                }
-                            }
-                        }
+                        info!("WASM requested reasoning");
+                        let _ = query;
                     }
                 }
             }
@@ -821,217 +1166,6 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::HandleEvent {
-            element_id: _element_id,
-            event_name,
-            payload: _payload,
-        } => {
-            if let Some(mut session) = state.sessions.get_mut(session_id) {
-                let bin = session.current_binary.clone();
-                if let Some(bin) = bin {
-                    if let Some(&pc) = bin.exported_functions.get(&event_name) {
-                        let mut runtime = vdom::HlbRuntime::new();
-                        // Load session state into runtime
-                        for (k, v) in &session.state {
-                            runtime.state.insert(k.clone(), v.clone());
-                        }
-
-                        // Execute handler
-                        let _handler_result = runtime.execute(&bin, pc);
-
-                        // Update session state from runtime
-                        for (k, v) in &runtime.state {
-                            session.state.insert(k.clone(), v.clone());
-                        }
-
-                        // Re-render from render_start
-                        let render_result = runtime.execute(&bin, bin.render_start);
-
-                        // Compute patches
-                        let new_vdom = render_result.vdom;
-                        let mut patches = Vec::new();
-                        if let Some(old_vdom) = &session.current_vdom {
-                            patches = new_vdom.diff(old_vdom);
-                        }
-                        session.current_vdom = Some(new_vdom);
-
-                        Response {
-                            id: request_id,
-                            result: Some(serde_json::json!({
-                                "status": "event_handled",
-                                "patches": patches,
-                                "events": render_result.events,
-                            })),
-                            error: None,
-                        }
-                    } else {
-                        Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("Handler not found for event: {}", event_name)),
-                        }
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No binary loaded in session".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::Click { element_id } => {
-            println!("Clicking element: {}", element_id);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "clicked" })),
-                error: None,
-            }
-        }
-        BrowserCommand::Type { element_id, text } => {
-            println!("Typing '{}' into element: {}", text, element_id);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "typed" })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetLatentUR { dimensions } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(html) = &session.current_html {
-                    match spine_parser::parse_html(html) {
-                        Ok(ur) => {
-                            let ur_json = serde_json::to_string(&ur).unwrap_or_default();
-                            let mut encoder = state.encoder.write().await;
-                            let latent_vector = encoder.encode(ur_json.as_bytes());
-                            Response {
-                                id: request_id,
-                                result: Some(serde_json::json!({
-                                    "ur": ur,
-                                    "latent_vector": latent_vector,
-                                    "dimensions": dimensions,
-                                    "status": "encoded"
-                                })),
-                                error: None,
-                            }
-                        }
-                        Err(e) => Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(e.to_string()),
-                        },
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::Morph => {
-            info!("Triggering protocol morphing for session {}", session_id);
-            let mut encoder = state.encoder.write().await;
-            let seed = rand::random::<u64>();
-            encoder.evolve(seed);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "status": "morphed",
-                    "new_seed": seed,
-                    "protocol": "chameleon-v2"
-                })),
-                error: None,
-            }
-        }
-        BrowserCommand::Search { query } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(_html) = &session.current_html {
-                    // Local search
-                    let local_results = serde_json::json!([
-                        { "text": "Found relevant content locally...", "relevance": 0.92 }
-                    ]);
-
-                    // Broadcast to cluster for distributed search
-                    let cluster = state.cluster.lock().await;
-                    let _ = cluster.broadcast_search(query.clone(), request_id.clone());
-
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "query": query,
-                            "local_results": local_results,
-                            "distributed": true,
-                            "status": "searching_cluster"
-                        })),
-                        error: None,
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::TransferSession { target_node_id } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                match serde_json::to_vec(&*session) {
-                    Ok(data) => {
-                        let cluster = state.cluster.lock().await;
-                        if let Err(e) = cluster
-                            .send_session_data(session_id.to_string(), data)
-                            .await
-                        {
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some(format!("Transfer failed: {}", e)),
-                            }
-                        } else {
-                            Response {
-                                id: request_id,
-                                result: Some(
-                                    serde_json::json!({ "status": "transferred", "target": target_node_id }),
-                                ),
-                                error: None,
-                            }
-                        }
-                    }
-                    Err(e) => Response {
-                        id: request_id,
-                        result: None,
-                        error: Some(format!("Serialization failed: {}", e)),
-                    },
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
         BrowserCommand::StoreKnowledge { key, value, tags } => {
             let entry = KnowledgeEntry {
                 key: key.clone(),
@@ -1049,8 +1183,13 @@ async fn handle_command(
                 .push(entry);
 
             // Broadcast to cluster
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.broadcast_knowledge(key, value, tags);
+            #[cfg(feature = "research")]
+            {
+                let cluster = state.cluster.lock().await;
+                let _ = cluster.broadcast_knowledge(key, value, tags);
+            }
+            #[cfg(not(feature = "research"))]
+            let _ = (key, value, tags);
 
             Response {
                 id: request_id,
@@ -1079,29 +1218,7 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::DeleteKnowledge { key } => {
-            if let Some(mut entries) = state.knowledge_base.get_mut(session_id) {
-                entries.retain(|e| e.key != key);
-            }
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_deleted" })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetSessionHistory => {
-            let history = state
-                .sessions
-                .get(session_id)
-                .map(|s| s.history.clone())
-                .unwrap_or_default();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "history": history })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetCapabilities => {
+        BrowserCommand::GetBinaryCapabilities => {
             let capabilities = state
                 .sessions
                 .get(session_id)
@@ -1113,216 +1230,15 @@ async fn handle_command(
                 error: None,
             }
         }
-        BrowserCommand::SetAutonomousMode { enabled } => {
-            if let Some(mut session) = state.sessions.get_mut(session_id) {
-                session.autonomous_mode = enabled;
-                Response {
-                    id: request_id,
-                    result: Some(
-                        serde_json::json!({ "status": "autonomous_mode_set", "enabled": enabled }),
-                    ),
-                    error: None,
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::SwarmSearch { query, depth } => {
-            info!(
-                "Initiating swarm search for '{}' with depth {}",
-                query, depth
-            );
-            let cluster = state.cluster.lock().await;
-            let _ = cluster
-                .broadcast_swarm_search(query.clone(), depth, request_id.clone())
-                .await;
-            Response {
-                id: request_id,
-                result: Some(
-                    serde_json::json!({ "status": "swarm_search_initiated", "query": query, "depth": depth }),
-                ),
-                error: None,
-            }
-        }
-        BrowserCommand::DelegateTask {
-            task,
-            target_agent_id,
-        } => {
-            info!("Delegating task: '{}' to {:?}", task, target_agent_id);
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.delegate_task(task.clone(), target_agent_id).await;
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "task_delegated", "task": task })),
-                error: None,
-            }
-        }
-        BrowserCommand::ProposeKnowledge { key, value, tags } => {
-            info!("Proposing knowledge: {} = {:?}", key, value);
-            let cluster = state.cluster.lock().await;
-            let _ = cluster
-                .propose_knowledge(key.clone(), value.clone(), tags.clone())
-                .await;
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_proposed", "key": key })),
-                error: None,
-            }
-        }
-        BrowserCommand::CreateSwarmPlan { goal } => {
-            info!("Creating swarm plan for goal: '{}'", goal);
-            let plan_id = Uuid::new_v4();
-
-            // Simulate plan generation (in a real app, this would use an LLM)
-            let tasks = vec![
-                spine_protocol::PlanTask {
-                    id: Uuid::new_v4(),
-                    description: format!("Research: {}", goal),
-                    required_skills: vec!["research".to_string(), "scraping".to_string()],
-                    assigned_to: None,
-                    dependencies: vec![],
-                    status: spine_protocol::TaskStatus::Pending,
-                    result: None,
-                },
-                spine_protocol::PlanTask {
-                    id: Uuid::new_v4(),
-                    description: format!("Synthesize findings for: {}", goal),
-                    required_skills: vec!["synthesis".to_string()],
-                    assigned_to: None,
-                    dependencies: vec![], // Would depend on the first task
-                    status: spine_protocol::TaskStatus::Pending,
-                    result: None,
-                },
-            ];
-
-            let plan = spine_protocol::SwarmPlan {
-                id: plan_id,
-                goal: goal.clone(),
-                tasks,
-                status: spine_protocol::PlanStatus::Active,
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
-
-            state.plans.insert(plan_id, plan.clone());
-
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.propose_swarm_plan(plan).await;
-
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "plan_created", "plan_id": plan_id })),
-                error: None,
-            }
-        }
-        BrowserCommand::ExecutePlanTask { plan_id, task_id } => {
-            info!("Executing plan task {} for plan {}", task_id, plan_id);
-
-            if let Some(mut plan) = state.plans.get_mut(&plan_id) {
-                if let Some(task) = plan.tasks.iter_mut().find(|t| t.id == task_id) {
-                    task.status = spine_protocol::TaskStatus::InProgress;
-
-                    // Broadcast update
-                    let cluster = state.cluster.lock().await;
-                    let _ = cluster
-                        .update_plan_task(plan_id, task_id, task.status.clone(), None)
-                        .await;
-
-                    Response {
-                        id: request_id,
-                        result: Some(
-                            serde_json::json!({ "status": "task_started", "task_id": task_id }),
-                        ),
-                        error: None,
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("Task not found".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Plan not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::NeuralTransmit { data, domain } => {
-            let domain_enum = match domain.as_str() {
-                "RealTime" => spine_agentic::ProtocolDomain::RealTime,
-                "BulkData" => spine_agentic::ProtocolDomain::BulkData,
-                "SecureControl" => spine_agentic::ProtocolDomain::SecureControl,
-                "IoT" => spine_agentic::ProtocolDomain::IoT,
-                _ => spine_agentic::ProtocolDomain::BulkData,
-            };
-
-            let mut protocol = state
-                .neural_protocols
-                .entry(domain.clone())
-                .or_insert_with(|| spine_agentic::NeuralProtocol::new(1000.0, 5.0));
-            match protocol.transmit(&data, domain_enum).await {
-                Ok(stats) => Response {
-                    id: request_id,
-                    result: Some(serde_json::to_value(stats).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e),
-                },
-            }
-        }
-        BrowserCommand::GetAgenticState => {
-            let runtime = state.agentic_runtime.clone();
-            let profile = runtime.profile();
-            let variant = profile.miras_variant.clone();
-            let surprise = 0.15;
-
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "miras_variant": variant,
-                    "surprise_level": surprise,
-                    "agent_id": profile.id,
-                    "trust_level": format!("{:?}", profile.trust_level),
-                })),
-                error: None,
-            }
-        }
-        BrowserCommand::SendSpeechAct {
-            target_id,
-            performative,
-            content,
-        } => {
-            info!(
-                "Sending speech act to {}: {} - {}",
-                target_id, performative, content
-            );
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "sent" })),
-                error: None,
-            }
-        }
     };
 
     timer.observe_duration();
-    (response, latent_to_stream)
+    response
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = SpineConfig::load();
+    let config = SpineConfig::try_load()?;
     init_telemetry("spine-core")?;
     info!("Starting SPINE Agentic Browser...");
     info!(
@@ -1331,39 +1247,44 @@ async fn main() -> Result<()> {
     );
 
     let port = config.server.port;
+    #[cfg(feature = "research")]
     let cluster_port = port + config.cluster.port_offset;
+    #[cfg(feature = "research")]
     let cluster_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, cluster_port)
         .parse()
         .context("invalid cluster address")?;
 
+    #[cfg(feature = "research")]
     let capabilities = NodeCapabilities {
         supports_wasm: true,
-        supports_chameleon: true,
-        supports_speculation: true,
+        supports_chameleon: false,
+        supports_speculation: false,
         max_sessions: config.server.max_sessions,
         region: Some(config.cluster.region.clone()),
         skills: config.cluster.skills.clone(),
     };
 
+    #[cfg(feature = "research")]
     let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
+    #[cfg(feature = "research")]
     cluster_node.start().await?;
-
-    let profile = spine_agentic::AgentProfile::new("SPINE Core Agent")
-        .with_capabilities(vec![
-            spine_agentic::AgentCapability::Navigation,
-            spine_agentic::AgentCapability::ContentExtraction,
-            spine_agentic::AgentCapability::AgentCommunication,
-            spine_agentic::AgentCapability::KnowledgeManagement,
-            spine_agentic::AgentCapability::SwarmParticipation,
-        ])
-        .with_trust(spine_agentic::TrustLevel::Core);
-    let agentic_runtime = Arc::new(spine_agentic::AgenticWebRuntime::new(profile));
 
     // Join the namespace before serving, so the first client request already has
     // a mesh to route through. A node that cannot reach a seed still starts: it
     // serves the names it holds and says plainly that it is not routing.
+    let name_backend: Arc<dyn spine_storage::StorageBackend> =
+        if config.namespace.records_path.is_empty() {
+            Arc::new(spine_storage::InMemoryBackend::new())
+        } else {
+            Arc::new(spine_storage::sqlite::SqliteBackend::open(
+                &config.namespace.records_path,
+            )?)
+        };
+    let application = namespace::task_application(&config.namespace, name_backend.clone())?;
     let mesh_names = if config.namespace.enabled {
-        match namespace::join(&config.namespace, &config.server.host).await {
+        match namespace::join_with_application(&config.namespace, &config.server.host, application)
+            .await
+        {
             Ok(resolver) => Some(resolver),
             Err(e) => {
                 error!("failed to join the spine:// namespace: {e:#}");
@@ -1374,33 +1295,46 @@ async fn main() -> Result<()> {
         None
     };
 
+    let names = Arc::new(spine_name::LocalResolver::persistent(
+        unix_now,
+        name_backend.clone(),
+    )?);
+    if let Some(mesh) = &mesh_names {
+        for record in names.published_records()? {
+            if !record.is_expired(unix_now()) {
+                mesh.publish_local(record).await?;
+            }
+        }
+    }
+    namespace::spawn_owner_renewal(names.clone(), mesh_names.clone(), &config.namespace)?;
     let state = Arc::new(BrowserState {
+        resources: spine_core::resources::ResourceStore::new(name_backend),
         sessions: DashMap::new(),
+        session_gate: Default::default(),
+        snapshot_gate: Mutex::new(()),
         knowledge_base: DashMap::new(),
+        #[cfg(feature = "research")]
         proposals: DashMap::new(),
+        #[cfg(feature = "research")]
         plans: DashMap::new(),
-        client: reqwest::Client::new(),
-        encoder: tokio::sync::RwLock::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)),
+        fetcher: outbound::Fetcher::new(config.outbound.clone())?,
+        #[cfg(feature = "research")]
         cluster: Mutex::new(cluster_node),
-        agentic_runtime,
         rate_limits: DashMap::new(),
         wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
-        neural_protocols: DashMap::new(),
-        connections_per_ip: DashMap::new(),
-        active_connections: std::sync::atomic::AtomicUsize::new(0),
+        connections: spine_core::connections::ConnectionBudget::new(
+            config.server.max_connections,
+            config.server.max_connections_per_ip,
+        ),
         start_time: std::time::Instant::now(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
         config: config.clone(),
-        names: spine_name::LocalResolver::new(unix_now),
+        names,
         mesh_names,
     });
 
-    // Load persisted sessions
-    if let Err(e) = state.load_sessions() {
-        warn!("Failed to load persisted sessions: {}", e);
-    } else {
-        info!("Loaded {} persisted sessions", state.sessions.len());
-    }
+    state.load_sessions().context("load retained sessions")?;
+    info!("Loaded {} persisted sessions", state.sessions.len());
 
     // Start session persistence task
     let persistence_state = state.clone();
@@ -1419,21 +1353,44 @@ async fn main() -> Result<()> {
 
     // Start metrics & health server
     let metrics_state = state.clone();
+    let namespace_metrics_state = state.clone();
     let health_state = state.clone();
     let ready_state = state.clone();
     let metrics_app = Router::new()
-        .route("/metrics", get(|| async {
+        .route("/metrics", get(move || {
+            let state = namespace_metrics_state.clone();
+            async move {
+            SESSIONS_ACTIVE.set(state.sessions.len() as i64);
             let encoder = TextEncoder::new();
             let metric_families = prometheus::gather();
             let mut buffer = vec![];
             let _ = encoder.encode(&metric_families, &mut buffer);
-            String::from_utf8(buffer).unwrap_or_default()
+            let mut body = String::from_utf8(buffer).unwrap_or_default();
+            spine_core::operations::append_metrics(&mut body, state.connections.snapshot(), state.fetcher.snapshot());
+            if let Some(mesh) = &state.mesh_names {
+                let metrics = mesh.metrics().await;
+                for (name, value) in [
+                    ("lookups_started", metrics.lookups_started),
+                    ("lookups_resolved", metrics.lookups_resolved),
+                    ("lookups_timed_out", metrics.lookups_timed_out),
+                    ("announcements_rejected", metrics.announcements_rejected),
+                    ("replicas_sent", metrics.replicas_sent),
+                    ("replicas_failed", metrics.replicas_failed),
+                    ("records_expired", metrics.records_expired),
+                ] {
+                    body.push_str(&format!("# TYPE spine_namespace_{name}_total counter\nspine_namespace_{name}_total {value}\n"));
+                }
+                body.push_str(&format!("# TYPE spine_mesh_pending_calls gauge\nspine_mesh_pending_calls {}\n", mesh.pending_application_calls()));
+            }
+            body
+            }
         }))
         .route("/health", get(move || {
             let state = health_state.clone();
             async move {
                 let uptime = state.start_time.elapsed().as_secs();
-                let active = state.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                let connections = state.connections.snapshot();
+                let active = connections.active;
                 let sessions = state.sessions.len();
                 let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -1445,6 +1402,8 @@ async fn main() -> Result<()> {
                     "uptime_secs": uptime,
                     "active_connections": active,
                     "sessions": sessions,
+                    "connections": connections,
+                    "outbound": state.fetcher.snapshot(),
                     "version": env!("CARGO_PKG_VERSION"),
                 });
 
@@ -1460,13 +1419,17 @@ async fn main() -> Result<()> {
                 let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
                 let sessions = state.sessions.len();
                 let max = state.config.server.max_sessions;
-                let ready = !shutting_down && sessions < max;
-
-                let body = serde_json::json!({
-                    "ready": ready,
-                    "sessions": sessions,
-                    "max_sessions": max,
+                let readiness = spine_core::operations::readiness(shutting_down, sessions, max, state.connections.snapshot());
+                let ready = readiness.ready;
+                let mut body = serde_json::json!(readiness);
+                body["namespace"] = serde_json::json!(match &state.mesh_names {
+                    Some(mesh) if !mesh.peers().await.is_empty() => "peers_known",
+                    Some(_) => "local_only",
+                    None => "disabled",
                 });
+                body["tasks_enabled"] = serde_json::json!(state.config.namespace.tasks_enabled);
+                body["pending_mesh_calls"] = serde_json::json!(state.mesh_names.as_ref().map_or(0, |mesh| mesh.pending_application_calls()));
+                body["outbound"] = serde_json::json!(state.fetcher.snapshot());
 
                 let code = if ready { 200u16 } else { 503 };
                 (
@@ -1482,13 +1445,11 @@ async fn main() -> Result<()> {
                 html.push_str("<style>body{font-family:sans-serif;padding:20px;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} th{background-color:#f2f2f2;}</style>");
                 html.push_str("</head><body><h1>SPINE Session Monitor</h1>");
                 html.push_str(&format!("<p>Active Sessions: {}</p>", state.sessions.len()));
-                html.push_str("<table><tr><th>Session ID</th><th>URL</th><th>Last Command</th></tr>");
+                html.push_str("<table><tr><th>Session ID</th></tr>");
                 for entry in state.sessions.iter() {
-                    let (id, session) = entry.pair();
-                    html.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{:?}</td></tr>",
-                        id,
-                        session.current_url.as_deref().unwrap_or("None"),
-                        session.last_command));
+                    let id = entry.key();
+                    let safe_id=id.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;");
+                    html.push_str(&format!("<tr><td>{}</td></tr>",safe_id));
                 }
                 html.push_str("</table></body></html>");
                 axum::response::Html(html)
@@ -1496,8 +1457,10 @@ async fn main() -> Result<()> {
         }));
 
     let metrics_port = config.server.metrics_port;
+    let metrics_host = config.server.host.clone();
     tokio::spawn(async move {
-        let addr: std::net::SocketAddr = match format!("0.0.0.0:{}", metrics_port).parse() {
+        let addr: std::net::SocketAddr = match format!("{}:{}", metrics_host, metrics_port).parse()
+        {
             Ok(a) => a,
             Err(e) => {
                 error!("Invalid metrics address: {}", e);
@@ -1521,12 +1484,15 @@ async fn main() -> Result<()> {
     });
 
     // Start cluster event listener
+    #[cfg(feature = "research")]
     let cluster_state = state.clone();
+    #[cfg(feature = "research")]
     let event_rx = {
         let cluster = state.cluster.lock().await;
         cluster.get_event_receiver()
     };
 
+    #[cfg(feature = "research")]
     tokio::spawn(async move {
         let mut rx = event_rx.lock().await;
         while let Some(event) = rx.recv().await {
@@ -1544,7 +1510,9 @@ async fn main() -> Result<()> {
                 spine_cluster::ClusterEvent::SessionDataReceived { session_id, data } => {
                     info!("Received session data for {}", session_id);
                     if let Ok(session) = serde_json::from_slice::<Session>(&data) {
-                        cluster_state.sessions.insert(session_id, session);
+                        if !cluster_state.import_session(session_id, session) {
+                            warn!("Session import refused: invalid ID, duplicate or capacity");
+                        }
                     }
                 }
                 spine_cluster::ClusterEvent::SearchRequested {
@@ -1553,8 +1521,8 @@ async fn main() -> Result<()> {
                     origin_node,
                 } => {
                     info!(
-                        "Distributed search requested: '{}' from node {}",
-                        query, origin_node
+                        "Distributed search {} requested from node {}",
+                        request_id, origin_node
                     );
 
                     let mut results = Vec::new();
@@ -1592,10 +1560,7 @@ async fn main() -> Result<()> {
                     tags,
                     origin_node,
                 } => {
-                    info!(
-                        "Knowledge synced from node {}: {} = {}",
-                        origin_node, key, value
-                    );
+                    info!("Knowledge synced from node {}", origin_node);
                     // Store in a global/shared knowledge base or specific session if applicable
                     // For now, we'll store it in a "cluster_shared" session
                     let entry = KnowledgeEntry {
@@ -1620,29 +1585,20 @@ async fn main() -> Result<()> {
                     origin_node,
                 } => {
                     info!(
-                        "Swarm search requested: '{}' (depth {}) from node {}",
-                        query, depth, origin_node
+                        "Legacy swarm search at depth {} requested from node {}",
+                        depth, origin_node
                     );
-                    // Spawn a "Scout" session to perform the search
-                    let scout_id = format!("scout-{}-{}", origin_node, Uuid::new_v4());
-                    let mut scout_session = Session::new();
-                    scout_session.current_url =
-                        Some(format!("https://www.google.com/search?q={}", query));
-                    scout_session.autonomous_mode = true;
-                    cluster_state
-                        .sessions
-                        .insert(scout_id.clone(), scout_session);
-
-                    // In a real implementation, we'd wait for the scout to finish and send results back
+                    let _ = query;
+                    warn!("Legacy swarm search unsupported; no scout session created");
                 }
                 spine_cluster::ClusterEvent::TaskDelegated {
-                    task,
+                    task: _,
                     target_agent_id,
                     origin_node,
                 } => {
                     info!(
-                        "Task delegated from node {}: '{}' (target: {:?})",
-                        origin_node, task, target_agent_id
+                        "Legacy task event from node {} (target: {:?}); execution unsupported",
+                        origin_node, target_agent_id
                     );
                     // Handle task delegation (e.g., assign to an idle autonomous session)
                 }
@@ -1654,8 +1610,8 @@ async fn main() -> Result<()> {
                     origin_node,
                 } => {
                     info!(
-                        "Knowledge proposal received from node {}: {} = {:?}",
-                        origin_node, key, value
+                        "Legacy knowledge proposal {} received from node {}",
+                        proposal_id, origin_node
                     );
 
                     // Store proposal
@@ -1670,9 +1626,7 @@ async fn main() -> Result<()> {
                         },
                     );
 
-                    // Auto-vote based on confidence (simulated)
-                    let cluster = cluster_state.cluster.lock().await;
-                    let _ = cluster.vote_on_knowledge(proposal_id, true, 0.9).await;
+                    // No automatic confidence vote: this path has no evaluator.
                 }
                 spine_cluster::ClusterEvent::KnowledgeVoteReceived {
                     proposal_id,
@@ -1750,10 +1704,7 @@ async fn main() -> Result<()> {
                     value,
                     tags,
                 } => {
-                    info!(
-                        "Knowledge proposal {} committed: {} = {:?}",
-                        proposal_id, key, value
-                    );
+                    info!("Knowledge proposal {} committed", proposal_id);
 
                     let entry = KnowledgeEntry {
                         key,
@@ -1773,9 +1724,9 @@ async fn main() -> Result<()> {
                 }
                 spine_cluster::ClusterEvent::SwarmPlanProposed { plan, origin_node } => {
                     info!(
-                        "Swarm plan proposed by node {}: '{}' ({} tasks)",
+                        "Legacy swarm plan {} proposed by node {} ({} tasks)",
+                        plan.id,
                         origin_node,
-                        plan.goal,
                         plan.tasks.len()
                     );
                     cluster_state.plans.insert(plan.id, plan);
@@ -1803,209 +1754,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start autonomous agent loop
-    let agent_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-
-            // 1. Swarm Task Scheduling
-            for mut plan_entry in agent_state.plans.iter_mut() {
-                let plan_id = *plan_entry.key();
-                let plan = plan_entry.value_mut();
-
-                if plan.status == spine_protocol::PlanStatus::Active {
-                    let completed_tasks: Vec<_> = plan
-                        .tasks
-                        .iter()
-                        .filter(|t| t.status == spine_protocol::TaskStatus::Completed)
-                        .map(|t| t.id)
-                        .collect();
-
-                    for task in plan.tasks.iter_mut() {
-                        if task.status == spine_protocol::TaskStatus::Pending
-                            && task.assigned_to.is_none()
-                        {
-                            // Check dependencies
-                            let deps_met = task
-                                .dependencies
-                                .iter()
-                                .all(|dep_id| completed_tasks.contains(dep_id));
-
-                            if !deps_met {
-                                continue;
-                            }
-
-                            // Skill-based Routing
-                            let cluster = agent_state.cluster.lock().await;
-                            let mut best_node = None;
-
-                            // Check self first
-                            let my_id = cluster.id;
-                            let my_caps = cluster.get_capabilities();
-                            let my_score = task
-                                .required_skills
-                                .iter()
-                                .filter(|s| my_caps.skills.contains(s))
-                                .count();
-
-                            if my_score > 0 {
-                                best_node = Some((my_id, my_score));
-                            }
-
-                            // Check other nodes
-                            for node in cluster.get_healthy_nodes() {
-                                if node.id == my_id {
-                                    continue;
-                                }
-                                let score = task
-                                    .required_skills
-                                    .iter()
-                                    .filter(|s| node.capabilities.skills.contains(s))
-                                    .count();
-
-                                if score > best_node.map(|(_, s)| s).unwrap_or(0) {
-                                    best_node = Some((node.id, score));
-                                }
-                            }
-
-                            if let Some((node_id, _)) = best_node {
-                                info!("Swarm Scheduler: Assigning task '{}' to node {} (skills matched)", task.description, node_id);
-                                task.assigned_to = Some(node_id);
-
-                                if node_id == my_id {
-                                    task.status = spine_protocol::TaskStatus::InProgress;
-                                    // Broadcast assignment
-                                    let _ = cluster
-                                        .update_plan_task(
-                                            plan_id,
-                                            task.id,
-                                            task.status.clone(),
-                                            None,
-                                        )
-                                        .await;
-
-                                    // Trigger task execution (simulated)
-                                    let task_desc = task.description.clone();
-                                    let task_id = task.id;
-                                    let task_state = agent_state.clone();
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(std::time::Duration::from_secs(10))
-                                            .await;
-                                        info!("Task completed: {}", task_desc);
-                                        if let Some(mut p) = task_state.plans.get_mut(&plan_id) {
-                                            if let Some(t) =
-                                                p.tasks.iter_mut().find(|t| t.id == task_id)
-                                            {
-                                                t.status = spine_protocol::TaskStatus::Completed;
-                                                t.result = Some(
-                                                    serde_json::json!({ "status": "success", "data": "Simulated result" }),
-                                                );
-
-                                                let cluster = task_state.cluster.lock().await;
-                                                let _ = cluster
-                                                    .update_plan_task(
-                                                        plan_id,
-                                                        task_id,
-                                                        t.status.clone(),
-                                                        t.result.clone(),
-                                                    )
-                                                    .await;
-                                            }
-                                        }
-                                    });
-                                } else {
-                                    // Task assigned to another node, they will pick it up in their loop
-                                    let _ = cluster
-                                        .update_plan_task(
-                                            plan_id,
-                                            task.id,
-                                            task.status.clone(),
-                                            None,
-                                        )
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2. Autonomous Session Loop
-            for mut entry in agent_state.sessions.iter_mut() {
-                let session_id = entry.key().clone();
-                let session = entry.value_mut();
-
-                if session.autonomous_mode {
-                    if let Some(html) = &session.current_html {
-                        match spine_parser::parse_html(html) {
-                            Ok(ur) => {
-                                let engine = spine_human::ReasoningEngine::new();
-                                let plan = engine.create_plan("Explore and find search", &ur);
-
-                                if let Some(best_action) = plan.steps.first() {
-                                    if plan.estimated_success > 0.7 {
-                                        info!("Autonomous agent in session {} executing plan step: {}", session_id, best_action.action_type);
-
-                                        // Execute the action
-                                        match best_action.action_type.as_str() {
-                                            "Search" | "Authenticate" => {
-                                                if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(
-                                                        spine_protocol::BrowserCommand::Click {
-                                                            element_id: target_id.clone(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            "InputSearch" => {
-                                                if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(
-                                                        spine_protocol::BrowserCommand::Type {
-                                                            element_id: target_id.clone(),
-                                                            text: "SPINE Browser".to_string(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => warn!(
-                                "Failed to parse HTML for autonomous session {}: {}",
-                                session_id, e
-                            ),
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    // Start autonomous security monitor
-    let monitor_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            info!("Autonomous security monitor: checking session health...");
-            for mut session in monitor_state.sessions.iter_mut() {
-                // If a session has been active but hasn't morphed recently, trigger a morph
-                // This is a simple "agentic" self-healing behavior
-                if session.last_command.is_some() && !session.needs_morph {
-                    info!(
-                        "Self-healing: triggering proactive protocol morph for session {}",
-                        session.key()
-                    );
-                    session.needs_morph = true;
-                }
-            }
-        }
-    });
-
     let addr = format!("{}:{}", config.server.host, port);
     let listener = TcpListener::bind(&addr).await?;
     info!("TCP listening on {}", addr);
@@ -2015,6 +1763,12 @@ async fn main() -> Result<()> {
     let ws_addr = format!("{}:{}", config.server.host, ws_port);
     let ws_listener = TcpListener::bind(&ws_addr).await?;
     info!("WebSocket listening on ws://{}", ws_addr);
+
+    #[cfg(feature = "quic")]
+    anyhow::ensure!(
+        !config.tls.enabled,
+        "optional native QUIC cannot enforce the configured TLS policy"
+    );
 
     // QUIC listener on port + offset
     #[cfg(feature = "quic")]
@@ -2031,100 +1785,75 @@ async fn main() -> Result<()> {
         let quic_state = Arc::clone(&state);
         tokio::spawn(async move {
             while let Some(incoming) = quic_endpoint.accept().await {
+                if quic_state
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    incoming.refuse();
+                    continue;
+                }
+                let Some(admission) = quic_state
+                    .connections
+                    .try_acquire(incoming.remote_address().ip())
+                else {
+                    incoming.refuse();
+                    continue;
+                };
                 let quic_state = Arc::clone(&quic_state);
                 tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(connection) => {
+                    let _admission = admission;
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), incoming).await {
+                        Ok(Ok(connection)) => {
                             info!("New QUIC connection from {}", connection.remote_address());
-                            match connection.accept_bi().await {
-                                Ok((send, recv)) => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                connection.accept_bi(),
+                            )
+                            .await
+                            {
+                                Ok(Ok((send, recv))) => {
                                     let stream = spine_transport::QuicStream::new(send, recv);
-                                    let mut handler = ProtocolHandler::new(stream);
-                                    handle_session(&mut handler, quic_state).await;
+                                    serve_native(stream, quic_state).await;
                                 }
-                                Err(e) => error!("QUIC stream accept failed: {}", e),
+                                Ok(Err(e)) => debug!("QUIC stream accept failed: {e}"),
+                                Err(_) => debug!("QUIC stream accept deadline exceeded"),
                             }
                         }
-                        Err(e) => error!("QUIC connection failed: {}", e),
+                        Ok(Err(e)) => debug!("QUIC connection failed: {e}"),
+                        Err(_) => debug!("QUIC connection deadline exceeded"),
                     }
                 });
             }
         });
     }
 
-    // TLS setup (uses config with env-var override)
-    let tls_acceptor = if config.tls.enabled {
-        let cert_path = std::path::Path::new(&config.tls.cert_path);
-        let key_path = std::path::Path::new(&config.tls.key_path);
-        let ca_path = std::path::Path::new(&config.tls.ca_path);
-        let ca_opt = if ca_path.exists() {
-            Some(ca_path)
-        } else {
-            None
-        };
-
-        if cert_path.exists() && key_path.exists() {
-            Some(create_tls_acceptor(cert_path, key_path, ca_opt)?)
-        } else {
-            info!(
-                "TLS enabled but certs not found at {}. Falling back to plain TCP.",
-                config.tls.cert_path
-            );
-            None
-        }
-    } else {
-        None
-    };
-
+    // Explicit TLS policy also applies to the WebSocket listener.
+    let tls_acceptor = configured_acceptor(&config.tls)?;
     // Watchdog: periodically reap idle sessions
     let watchdog_state = Arc::clone(&state);
     let watchdog_secs = config.server.session_watchdog_secs;
-    let idle_timeout = std::time::Duration::from_secs(config.server.idle_timeout_secs);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(watchdog_secs));
         loop {
             interval.tick().await;
-            let now = std::time::Instant::now();
-            let mut reaped = 0u32;
-            let ids_to_remove: Vec<String> = watchdog_state
-                .sessions
-                .iter()
-                .filter_map(|entry| {
-                    let session = entry.value();
-                    // Sessions with no recent command and past idle timeout
-                    if session.last_command.is_some() {
-                        // We don't have per-session timestamps yet, use a heuristic:
-                        // sessions in autonomous mode are kept alive
-                        if session.autonomous_mode {
-                            return None;
-                        }
+            let reaped = watchdog_state.reap_sessions();
+            if !reaped.is_empty() {
+                #[cfg(feature = "research")]
+                {
+                    let cluster = watchdog_state.cluster.lock().await;
+                    for id in &reaped {
+                        cluster.remove_session(id);
                     }
-                    // For now, reap sessions that have no URL and no commands (abandoned)
-                    if session.current_url.is_none()
-                        && session.last_command.is_none()
-                        && session.history.is_empty()
-                    {
-                        Some(entry.key().clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for id in ids_to_remove {
-                watchdog_state.sessions.remove(&id);
-                SESSIONS_ACTIVE.dec();
-                reaped += 1;
-            }
-            if reaped > 0 {
+                }
                 info!(
-                    "Watchdog: reaped {} idle sessions, {} remaining",
-                    reaped,
-                    watchdog_state.sessions.len()
+                    reaped = reaped.len(),
+                    remaining = watchdog_state.sessions.len(),
+                    "Expired detached sessions"
                 );
+                if let Err(error) = watchdog_state.save_sessions().await {
+                    error!(%error, "Failed to persist session expiry");
+                }
             }
-            let _ = now; // suppress unused warning for future per-session timestamps
-            let _ = idle_timeout;
         }
     });
 
@@ -2134,10 +1863,20 @@ async fn main() -> Result<()> {
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let shutdown_notify_signal = Arc::clone(&shutdown_notify);
     tokio::spawn(async move {
-        // Wait for Ctrl+C
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("Failed to listen for ctrl_c: {}", e);
-            return;
+        let signal = async {
+            if let Err(error) = tokio::signal::ctrl_c().await {
+                warn!(%error,"console shutdown signal is unavailable");
+                std::future::pending::<()>().await;
+            }
+        };
+        if std::env::var("SPINE_MANAGED_CHILD").as_deref() == Ok("1") {
+            use tokio::io::AsyncReadExt;
+            let mut control = tokio::io::stdin();
+            // One byte or EOF from the private parent pipe requests draining.
+            // Parent termination closes the pipe; no network admin endpoint is exposed.
+            tokio::select! {_=signal=>{},_=control.read_u8()=>{}}
+        } else {
+            signal.await;
         }
         info!("Shutdown signal received — draining connections...");
         shutdown_state
@@ -2154,9 +1893,7 @@ async fn main() -> Result<()> {
         // Wait for active connections to drain (up to timeout)
         let deadline = tokio::time::Instant::now() + shutdown_timeout;
         loop {
-            let active = shutdown_state
-                .active_connections
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let active = shutdown_state.connections.active();
             if active == 0 {
                 info!("All connections drained");
                 break;
@@ -2175,8 +1912,6 @@ async fn main() -> Result<()> {
         shutdown_notify_signal.notify_one();
     });
 
-    let max_per_ip = config.server.max_connections_per_ip;
-
     loop {
         tokio::select! {
             // Shutdown gate
@@ -2189,17 +1924,10 @@ async fn main() -> Result<()> {
             result = listener.accept() => {
                 let (socket, addr) = result?;
 
-                // Enforce per-IP connection limit
-                let ip = addr.ip();
-                let current = {
-                    let entry = state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
-                    entry.value().load(std::sync::atomic::Ordering::Relaxed)
-                };
-                if current >= max_per_ip {
-                    warn!("Per-IP limit reached for {} ({}/{}), rejecting", ip, current, max_per_ip);
+                let Some(admission) = state.connections.try_acquire(addr.ip()) else {
                     drop(socket);
                     continue;
-                }
+                };
 
                 // Check shutdown flag
                 if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2212,30 +1940,22 @@ async fn main() -> Result<()> {
                 let _enter = span.enter();
                 info!("New TCP connection from {}", addr);
 
-                // Track connection
-                state.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0))
-                    .value().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
                 let conn_state = Arc::clone(&state);
                 let tls_acceptor = tls_acceptor.clone();
 
                 tokio::spawn(async move {
+                    let _admission = admission;
                     if let Some(acceptor) = tls_acceptor {
-                        match acceptor.accept(socket).await {
-                            Ok(tls_stream) => {
-                                let mut handler = ProtocolHandler::new(tls_stream);
-                                handle_session(&mut handler, conn_state.clone()).await;
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
+                            Ok(Ok(tls_stream)) => {
+                                serve_native(tls_stream, conn_state.clone()).await;
                             }
-                            Err(e) => error!("TLS handshake failed: {}", e),
+                            Ok(Err(e)) => debug!("TLS handshake failed: {}", e),
+                            Err(_) => debug!("TLS handshake deadline exceeded"),
                         }
                     } else {
-                        let mut handler = ProtocolHandler::new(socket);
-                        handle_session(&mut handler, conn_state.clone()).await;
+                        serve_native(socket, conn_state.clone()).await;
                     }
-                    // Decrement counters on disconnect
-                    conn_state.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    conn_state.connections_per_ip.entry(ip).and_modify(|v| { v.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); });
                 });
             }
 
@@ -2243,16 +1963,10 @@ async fn main() -> Result<()> {
             result = ws_listener.accept() => {
                 let (socket, addr) = result?;
 
-                let ip = addr.ip();
-                let current = {
-                    let entry = state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
-                    entry.value().load(std::sync::atomic::Ordering::Relaxed)
-                };
-                if current >= max_per_ip {
-                    warn!("Per-IP limit reached for {} (WS), rejecting", ip);
+                let Some(admission) = state.connections.try_acquire(addr.ip()) else {
                     drop(socket);
                     continue;
-                }
+                };
                 if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
                     drop(socket);
                     continue;
@@ -2260,22 +1974,19 @@ async fn main() -> Result<()> {
 
                 info!("New WebSocket connection from {}", addr);
 
-                state.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0))
-                    .value().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
                 let conn_state = Arc::clone(&state);
+                let acceptor = tls_acceptor.clone();
                 tokio::spawn(async move {
-                    match spine_transport::WebSocketServerBridge::accept(socket).await {
-                        Ok(bridge) => {
-                            let stream = WebSocketStream::new(bridge);
-                            let mut handler = ProtocolHandler::new(stream);
-                            handle_session(&mut handler, conn_state.clone()).await;
+                    let _admission = admission;
+                    if let Some(acceptor) = acceptor {
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
+                            Ok(Ok(stream)) => handle_websocket(stream, conn_state).await,
+                            Ok(Err(e)) => debug!("WebSocket TLS handshake failed: {e}"),
+                            Err(_) => debug!("WebSocket TLS handshake deadline exceeded"),
                         }
-                        Err(e) => error!("WebSocket upgrade failed: {}", e),
+                    } else {
+                        handle_websocket(socket, conn_state).await;
                     }
-                    conn_state.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    conn_state.connections_per_ip.entry(ip).and_modify(|v| { v.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); });
                 });
             }
         }
@@ -2289,168 +2000,217 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>)
+async fn handle_websocket<S>(stream: S, state: Arc<BrowserState>)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    let mut session_id: Option<String> = None;
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        spine_transport::WebSocketServerBridge::accept(stream),
+    )
+    .await
+    {
+        Ok(Ok(bridge)) => {
+            serve_native(WebSocketStream::new(bridge), state).await;
+        }
+        Ok(Err(e)) => debug!("WebSocket upgrade failed: {e}"),
+        Err(_) => debug!("WebSocket upgrade deadline exceeded"),
+    }
+}
+
+/// Runs the spine-wire v1 handshake on `stream` and, if it succeeds, the
+/// session loop. The handshake deadline is `server.hello_timeout_secs`; a
+/// client that does not complete it is sent `CLOSE(timeout)` and dropped, which
+/// releases its admission when the caller's task ends.
+async fn serve_native<S>(stream: S, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
+    match Connection::server_handshake(stream, &native::local_config(), deadline).await {
+        Ok(mut conn) => handle_session(&mut conn, state).await,
+        Err(e) => debug!("native handshake failed: {e}"),
+    }
+}
+
+/// Sends `message` as the `RESPONSE` to `request_id`. Returns false when the
+/// connection is gone. A reply that cannot be sent but leaves the connection
+/// usable (for example one over the frame limit) is replaced by an error
+/// reply, so the request id is released and the client is not left waiting.
+async fn reply<S>(conn: &mut Connection<S>, request_id: u64, message: Message) -> bool
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    match native::send_reply(conn, request_id, &message).await {
+        Ok(()) => true,
+        Err(e) => {
+            if conn.is_finished() {
+                debug!("Failed to send response: {e}");
+                return false;
+            }
+            warn!("Response could not be sent: {e}");
+            native::send_reply(
+                conn,
+                request_id,
+                &native::error_reply(format!("response could not be sent: {e}")),
+            )
+            .await
+            .is_ok()
+        }
+    }
+}
+
+async fn handle_session<S>(conn: &mut Connection<S>, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut session_lease: Option<SessionLease> = None;
+    let tool_rate = RateLease {
+        state: state.clone(),
+        id: Uuid::new_v4().to_string(),
+    };
+    let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
 
     loop {
-        match handler.receive_message().await {
-            Ok(Message::Ping { timestamp }) => {
-                let _ = handler.send_message(&Message::Pong { timestamp }).await;
+        // `recv_timeout` restarts its deadline for every frame, including the
+        // PINGs it answers itself, so a keep-alive counts as activity. When the
+        // deadline fires the connection has already been closed with
+        // CLOSE(timeout); it is never read again.
+        let frame = match conn.recv_timeout(idle).await {
+            Ok(Some(frame)) => frame,
+            Ok(None) => break,
+            Err(ConnectionError::Timeout) => break,
+            Err(ConnectionError::Closed(close)) => {
+                debug!("Client closed the connection: {}", close.code);
+                break;
             }
-            Ok(Message::Request(req)) => {
-                let req_span =
-                    span!(Level::INFO, "request", request_id = %req.id, command = ?req.command);
-                let _enter = req_span.enter();
-                info!("Received request: {:?}", req);
-
-                // 1. Check session limit for new sessions
-                if session_id.is_none() && state.sessions.len() >= state.config.server.max_sessions
-                {
-                    let _ = handler
-                        .send_message(&Message::Response(Response {
-                            id: req.id,
-                            result: None,
-                            error: Some("Server busy: maximum sessions reached".to_string()),
-                        }))
-                        .await;
-                    return;
-                }
-
-                // 2. Ensure session exists
-                let id = if let Some(id) = session_id.as_ref() {
-                    id.clone()
-                } else {
-                    let new_id = Uuid::new_v4().to_string();
-                    SESSIONS_ACTIVE.inc();
-                    state.sessions.insert(new_id.clone(), Session::new());
-
-                    // Register session with cluster
-                    let cluster = state.cluster.lock().await;
-                    cluster.register_local_session(new_id.clone());
-
-                    session_id = Some(new_id.clone());
-                    new_id
-                };
-
-                // 3. Enforce rate limit
-                if !state.check_rate_limit(&id) {
-                    let _ = handler
-                        .send_message(&Message::Response(Response {
-                            id: req.id,
-                            result: None,
-                            error: Some("Rate limit exceeded".to_string()),
-                        }))
-                        .await;
-                    continue;
-                }
-
-                // Check if session needs a proactive morph
-                if let Some(mut session) = state.sessions.get_mut(&id) {
-                    if session.needs_morph {
-                        let seed = rand::random::<u64>();
-                        info!("Sending proactive MorphRequest for session {}", id);
-                        if handler
-                            .send_message(&Message::MorphRequest { seed })
-                            .await
-                            .is_ok()
-                        {
-                            handler.morph_now(seed);
-                            session.needs_morph = false;
-                        }
-                    }
-                }
-
-                // Handle the command
-                let (res, latent_to_stream) = if let BrowserCommand::Morph = req.command {
-                    let seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64;
-                    handler.morph_now(seed);
-                    PROTOCOL_MORPHS.inc();
-                    (
-                        Response {
-                            id: req.id,
-                            result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
-                            error: None,
-                        },
-                        Vec::new(),
-                    )
-                } else {
-                    let (res, latent) =
-                        handle_command(&state, &id, req.command.clone(), req.id).await;
-                    if let Some(mut session) = state.sessions.get_mut(&id) {
-                        session.last_command = Some(req.command);
-                    }
-                    (res, latent)
-                };
-
-                if let Err(e) = handler.send_message(&Message::Response(res)).await {
-                    error!("Failed to send response: {}", e);
-                }
-
-                // Stream any latent vectors produced
-                for vector in latent_to_stream {
-                    let latent_msg = spine_protocol::LatentVector {
-                        components: vector,
-                        dim_hint: 0,
-                        epoch: 0,
-                    };
-                    if let Err(e) = handler
-                        .send_message(&Message::LatentMessage(latent_msg))
-                        .await
-                    {
-                        error!("Failed to stream latent vector: {}", e);
-                    }
-                }
-
-                // Speculative pre-computation for likely next requests
-                let state_clone = state.clone();
-                let id_clone = id.clone();
-                handler.speculate_responses(|predicted_hash| {
-                    let session = state_clone.sessions.get(&id_clone)?;
-                    let last_cmd = session.last_command.as_ref()?;
-
-                    match last_cmd {
-                        BrowserCommand::Navigate { .. } => {
-                            // If we just navigated, the agent will likely ask for UR
-                            if let Some(html) = &session.current_html {
-                                if let Ok(ur) = parse_html(html) {
-                                    return Some(Message::PreComputed(PreComputedResponse {
-                                        request_hash: predicted_hash,
-                                        result: serde_json::to_value(ur).unwrap_or_default(),
-                                        confidence: 0.85,
-                                        alternatives: Vec::new(),
-                                    }));
-                                }
-                            }
-                        }
-                        BrowserCommand::GetUR => {
-                            // If we just got UR, the agent might want raw HTML for transpilation
-                            if let Some(html) = &session.current_html {
-                                return Some(Message::PreComputed(PreComputedResponse {
-                                    request_hash: predicted_hash,
-                                    result: serde_json::json!({ "html": html }),
-                                    confidence: 0.7,
-                                    alternatives: Vec::new(),
-                                }));
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    None
-                });
-            }
-            Ok(_) => {}
             Err(e) => {
                 error!("Connection error: {}", e);
                 // Cleanup session if needed, or keep it for reconnection
                 break;
             }
+        };
+        // Only REQUEST frames start work. Nothing here streams, so a
+        // STREAM_CANCEL is moot; a PONG answers a ping this loop never sends.
+        if frame.frame_type != FrameType::Request {
+            continue;
+        }
+        let request_id = frame.request_id;
+        let message = match native::decode_request(&frame.body) {
+            Ok(message) => message,
+            Err(e) => {
+                // C.7: a well-formed frame whose request cannot be served is an
+                // error response, not the end of the connection. Codes arrive
+                // with the body redesign; for now the text says what failed.
+                let text = format!("invalid request: {e}");
+                if !reply(conn, request_id, native::error_reply(text)).await {
+                    break;
+                }
+                continue;
+            }
+        };
+        match message {
+            Message::CapabilityQuery(query) => {
+                let capabilities = spine_core::tools::capabilities()
+                    .into_iter()
+                    .filter(|capability| match &query.selector {
+                        spine_protocol::CapabilitySelector::All => true,
+                        spine_protocol::CapabilitySelector::Exact(uri) => &capability.uri == uri,
+                        spine_protocol::CapabilitySelector::Prefix(prefix) => {
+                            capability.uri.starts_with(prefix)
+                        }
+                        spine_protocol::CapabilitySelector::Semantic { .. } => false,
+                    })
+                    .collect();
+                let agent_id = match &state.mesh_names {
+                    Some(mesh) => {
+                        spine_name::SpineUri::did(*mesh.local_key().as_bytes()).to_string()
+                    }
+                    None => "spine-core:local-unattested".into(),
+                };
+                let advertisement = spine_protocol::CapabilityAdvertisement {
+                    id: query.id,
+                    agent_id,
+                    capabilities,
+                };
+                if !reply(conn, request_id, Message::CapabilityAd(advertisement)).await {
+                    break;
+                }
+            }
+            Message::ToolCall(call) => {
+                let result = if state.check_rate_limit(&tool_rate.id) {
+                    spine_core::tools::invoke(call)
+                } else {
+                    spine_protocol::ToolResult {
+                        id: call.id,
+                        trace: call.trace,
+                        outcome: spine_protocol::ToolOutcome::Err {
+                            code: "rate_limit".into(),
+                            message: "tool request rate exceeded".into(),
+                            details: None,
+                        },
+                    }
+                };
+                if !reply(conn, request_id, Message::ToolResult(result)).await {
+                    break;
+                }
+            }
+            Message::Request(req) => {
+                let req_span = span!(Level::INFO, "request", request_id = %req.id);
+                let _enter = req_span.enter();
+                debug!("Received request");
+
+                if session_lease.is_none() {
+                    session_lease = state.create_session();
+                    if let Some(lease) = &session_lease {
+                        #[cfg(feature = "research")]
+                        state
+                            .cluster
+                            .lock()
+                            .await
+                            .register_local_session(lease.id.clone());
+                        #[cfg(not(feature = "research"))]
+                        let _ = lease;
+                    } else {
+                        let _ = reply(
+                            conn,
+                            request_id,
+                            Message::Response(Response {
+                                id: req.id,
+                                result: None,
+                                error: Some("Server busy: maximum sessions reached".into()),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+                let id = session_lease.as_ref().unwrap().id.clone();
+
+                // 3. Enforce rate limit
+                if !state.check_rate_limit(&id) {
+                    let _ = reply(
+                        conn,
+                        request_id,
+                        Message::Response(Response {
+                            id: req.id,
+                            result: None,
+                            error: Some("Rate limit exceeded".to_string()),
+                        }),
+                    )
+                    .await;
+                    continue;
+                }
+
+                let res = handle_command(&state, &id, req.command, req.id).await;
+
+                if !reply(conn, request_id, Message::Response(res)).await {
+                    error!("Failed to send response");
+                    break;
+                }
+            }
+            // `decode_request` admits only the three kinds above.
+            _ => {}
         }
     }
 }

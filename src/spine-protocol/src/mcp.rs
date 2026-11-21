@@ -31,6 +31,8 @@ pub const JSONRPC_VERSION: &str = "2.0";
 
 /// MCP protocol revision this bridge targets.
 pub const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Maximum UTF-8 JSON-RPC line, including its newline delimiter.
+pub const MAX_STDIO_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // MCP wire types (camelCase per the MCP schema)
@@ -341,6 +343,7 @@ where
         let id = req.id.clone()?;
         let resp = match req.method.as_str() {
             "initialize" => JsonRpcResponse::ok(id, self.initialize_result()),
+            "ping" => JsonRpcResponse::ok(id, json!({})),
             "tools/list" => {
                 let result = advertisement_to_list_tools(&self.advertisement);
                 match serde_json::to_value(result) {
@@ -350,6 +353,14 @@ where
             }
             "tools/call" => match serde_json::from_value::<CallToolParams>(req.params.clone()) {
                 Ok(params) => {
+                    if !self
+                        .advertisement
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability.uri == params.name)
+                    {
+                        return Some(JsonRpcResponse::err(id, INVALID_PARAMS, "Unknown tool"));
+                    }
                     let call = call_params_to_tool_call(&params, gen_call_id(&params));
                     let result = (self.executor)(call);
                     let mcp = tool_result_to_call_result(&result);
@@ -376,6 +387,20 @@ where
                 return serde_json::to_vec(&resp).ok();
             }
         };
+        if req.jsonrpc != JSONRPC_VERSION
+            || req.method.is_empty()
+            || req
+                .id
+                .as_ref()
+                .is_some_and(|id| !id.is_string() && !id.is_i64() && !id.is_u64())
+        {
+            return serde_json::to_vec(&JsonRpcResponse::err(
+                Value::Null,
+                -32600,
+                "Invalid request",
+            ))
+            .ok();
+        }
         let resp = self.handle(&req)?;
         serde_json::to_vec(&resp).ok()
     }
@@ -401,12 +426,42 @@ where
     R: BufRead,
     W: Write,
 {
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    serve_stdio_with_limit(server, reader, writer, MAX_STDIO_MESSAGE_BYTES)
+}
+
+fn serve_stdio_with_limit<F, R, W>(
+    server: &mut McpServer<F>,
+    mut reader: R,
+    writer: &mut W,
+    limit: usize,
+) -> std::io::Result<()>
+where
+    F: FnMut(ToolCall) -> ToolResult,
+    R: BufRead,
+    W: Write,
+{
+    use std::io::Read;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .by_ref()
+            .take(limit as u64 + 1)
+            .read_until(b'\n', &mut line)?
+            == 0
+        {
+            break;
+        }
+        if line.len() > limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "MCP message exceeds stdio limit",
+            ));
+        }
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        if let Some(resp) = server.handle_json(line.as_bytes()) {
+        if let Some(resp) = server.handle_json(&line) {
             writer.write_all(&resp)?;
             writer.write_all(b"\n")?;
             writer.flush()?;
@@ -442,6 +497,41 @@ mod tests {
                 embedding: None,
             }],
         }
+    }
+
+    #[test]
+    fn stdio_limits_and_protocol_errors_do_not_invoke_a_tool() {
+        let mut server = McpServer::new(sample_ad(), |_| {
+            panic!("invalid input must not invoke tools")
+        });
+        let mut output = Vec::new();
+        assert!(serve_stdio_with_limit(
+            &mut server,
+            &b"a small local line beyond the test limit\n"[..],
+            &mut output,
+            16
+        )
+        .is_err());
+        for request in [
+            json!({"jsonrpc":"1.0","id":1,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":true,"method":"tools/list"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unknown","arguments":{}}}),
+        ] {
+            let reply = server
+                .handle_json(&serde_json::to_vec(&request).unwrap())
+                .unwrap();
+            assert!(serde_json::from_slice::<JsonRpcResponse>(&reply)
+                .unwrap()
+                .error
+                .is_some());
+        }
+        let reply = server
+            .handle_json(br#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#)
+            .unwrap();
+        assert!(serde_json::from_slice::<JsonRpcResponse>(&reply)
+            .unwrap()
+            .result
+            .is_some());
     }
 
     #[test]

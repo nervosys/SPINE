@@ -317,8 +317,24 @@ impl CoalescedBatch {
         }
 
         // Decompress
-        let decompressed = zstd::decode_all(frame.payload.as_ref())
-            .map_err(|e| TransportError::Compression(e.to_string()))?;
+        // Bounded: a small batch frame must not expand without limit.
+        let decompressed = {
+            use std::io::Read;
+            let limit = crate::MAX_DECOMPRESSED_FRAME_SIZE;
+            let decoder = zstd::stream::read::Decoder::new(&frame.payload[..])
+                .map_err(|e| TransportError::Compression(e.to_string()))?;
+            let mut out = Vec::new();
+            decoder
+                .take(limit as u64 + 1)
+                .read_to_end(&mut out)
+                .map_err(|e| TransportError::Compression(e.to_string()))?;
+            if out.len() > limit {
+                return Err(TransportError::Compression(format!(
+                    "decompressed batch exceeds limit of {limit} bytes"
+                )));
+            }
+            out
+        };
 
         // Parse frames
         let mut frames = Vec::new();

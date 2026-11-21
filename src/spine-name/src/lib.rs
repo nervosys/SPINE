@@ -95,9 +95,88 @@ pub fn content_hash(bytes: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Domain-separation prefix of a resource id. It is hashed first, so a resource
+/// id can never equal the plain [`content_hash`] of any byte string that does
+/// not itself begin with this prefix and the same framing.
+pub const RESOURCE_ID_DOMAIN: &[u8] = b"spine/resource-id/v1\0";
+
+/// Longest accepted content type, in bytes.
+pub const MAX_CONTENT_TYPE_LEN: usize = 256;
+
+/// Check a content type. The rule is exact-match, not normalisation: a type is
+/// accepted only if it is already in canonical form, so two spellings can never
+/// name the same type. It must be 1 to [`MAX_CONTENT_TYPE_LEN`] bytes of
+/// printable ASCII (0x20 through 0x7e), contain no uppercase letters, and have
+/// no leading or trailing space.
+pub fn validate_content_type(content_type: &str) -> Result<(), NameError> {
+    let bytes = content_type.as_bytes();
+    let valid = !bytes.is_empty()
+        && bytes.len() <= MAX_CONTENT_TYPE_LEN
+        && bytes
+            .iter()
+            .all(|b| (0x20..=0x7e).contains(b) && !b.is_ascii_uppercase())
+        && bytes[0] != b' '
+        && bytes[bytes.len() - 1] != b' ';
+    if valid {
+        Ok(())
+    } else {
+        Err(NameError::InvalidContentType)
+    }
+}
+
+/// The identity of a resource: SHA-256 over
+/// `RESOURCE_ID_DOMAIN || u32_be(len(content_type)) || content_type ||
+/// u64_be(len(bytes)) || bytes`. Because the content type is part of what is
+/// hashed, a signed record that carries this id also authenticates the type.
+/// This is the only function that computes a resource id; every publisher and
+/// verifier calls it.
+pub fn resource_id(content_type: &str, bytes: &[u8]) -> Result<[u8; 32], NameError> {
+    validate_content_type(content_type)?;
+    let mut hasher = Sha256::new();
+    hasher.update(RESOURCE_ID_DOMAIN);
+    hasher.update((content_type.len() as u32).to_be_bytes());
+    hasher.update(content_type.as_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    Ok(hasher.finalize().into())
+}
+
+/// Check that `content_type` and `bytes` are exactly what `id` commits to.
+/// An invalid type is [`NameError::InvalidContentType`]; a valid type with the
+/// wrong bytes or the wrong type is [`NameError::ResourceIdMismatch`].
+pub fn verify_resource(id: &[u8; 32], content_type: &str, bytes: &[u8]) -> Result<(), NameError> {
+    if resource_id(content_type, bytes)? == *id {
+        Ok(())
+    } else {
+        Err(NameError::ResourceIdMismatch)
+    }
+}
+
 /// Everything that can go wrong naming or resolving.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum NameError {
+    #[error(
+        "invalid content type: expected 1-256 printable ASCII bytes, lowercase, no edge spaces"
+    )]
+    InvalidContentType,
+
+    #[error(
+        "resource id mismatch: the bytes or the content type differ from what the id commits to"
+    )]
+    ResourceIdMismatch,
+
+    #[error("name storage failed: {0}")]
+    Storage(String),
+
+    #[error("name record store is full")]
+    Capacity,
+
+    #[error("record sequence is exhausted")]
+    SequenceExhausted,
+
+    #[error("publication does not supersede the stored record")]
+    StalePublication,
+
     #[error("not a spine:// name: {0}")]
     NotSpineScheme(String),
 
@@ -124,6 +203,9 @@ pub enum NameError {
 
     #[error("resolution failed: {0}")]
     Transport(String),
+
+    #[error("name record too large: {0}")]
+    RecordTooLarge(String),
 }
 
 #[cfg(test)]
@@ -135,6 +217,68 @@ mod tests {
     fn content_hash_is_stable_and_distinguishing() {
         assert_eq!(content_hash(b"a"), content_hash(b"a"));
         assert_ne!(content_hash(b"a"), content_hash(b"b"));
+    }
+
+    #[test]
+    fn resource_id_changes_when_only_the_content_type_changes() {
+        let a = resource_id("text/plain", b"same bytes").unwrap();
+        let b = resource_id("text/html", b"same bytes").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(a, resource_id("text/plain", b"same bytes").unwrap());
+        assert_ne!(a, content_hash(b"same bytes"));
+    }
+
+    #[test]
+    fn resource_id_length_prefixing_prevents_boundary_shift() {
+        assert_ne!(
+            resource_id("a", b"bcdef").unwrap(),
+            resource_id("ab", b"cdef").unwrap()
+        );
+    }
+
+    #[test]
+    fn verify_resource_distinguishes_its_failures() {
+        let id = resource_id("text/plain", b"payload").unwrap();
+        assert_eq!(verify_resource(&id, "text/plain", b"payload"), Ok(()));
+        assert_eq!(
+            verify_resource(&id, "text/html", b"payload"),
+            Err(NameError::ResourceIdMismatch)
+        );
+        assert_eq!(
+            verify_resource(&id, "text/plain", b"other"),
+            Err(NameError::ResourceIdMismatch)
+        );
+        assert_eq!(
+            verify_resource(&id, "Text/Plain", b"payload"),
+            Err(NameError::InvalidContentType)
+        );
+    }
+
+    #[test]
+    fn content_types_are_exact_match_canonical() {
+        for good in ["text/plain", "text/html; charset=utf-8", "a"] {
+            assert_eq!(validate_content_type(good), Ok(()), "{good}");
+        }
+        let long = "a".repeat(MAX_CONTENT_TYPE_LEN + 1);
+        for bad in [
+            "",
+            "Text/Plain",
+            " text/plain",
+            "text/plain ",
+            "text/pl\u{e9}in",
+            "text/plain\n",
+            long.as_str(),
+        ] {
+            assert_eq!(
+                validate_content_type(bad),
+                Err(NameError::InvalidContentType),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(
+            validate_content_type(&"a".repeat(MAX_CONTENT_TYPE_LEN)),
+            Ok(())
+        );
     }
 
     /// The end-to-end path the crate exists to provide: mint a self-certifying

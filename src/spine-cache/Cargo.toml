@@ -1,7 +1,6 @@
 [package]
 name = "spine-cache"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -13,6 +12,5 @@ description = "Tiered caching system for SPINE (L1 in-memory, L2 mmap'd, L3 remo
 
 [dependencies]
 anyhow.workspace = true
-log.workspace = true
 serde.workspace = true
 serde_json.workspace = true

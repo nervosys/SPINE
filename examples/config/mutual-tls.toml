@@ -1,0 +1,20 @@
+# Native TCP and WSS use the same configured client-certificate policy.
+# Install CA-signed certs with owner-only key ACLs before starting.
+# For local development only: spine cert generate --help describes test certs.
+# This does not authenticate the legacy cluster or metrics listeners.
+[server]
+host = "127.0.0.1"
+port = 8080
+metrics_port = 9090
+max_connections = 64
+max_connections_per_ip = 16
+idle_timeout_secs = 300
+
+[tls]
+enabled = true
+mutual_tls = true
+cert_path = "certs/cert.pem"
+key_path = "certs/key.pem"
+ca_path = "certs/ca.pem"
+# Optional PEM or DER client-certificate revocation list:
+crl_path = ""

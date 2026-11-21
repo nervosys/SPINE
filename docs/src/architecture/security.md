@@ -19,12 +19,9 @@ Initial trust establishment uses the Extended Triple Diffie-Hellman protocol:
 
 No pre-shared secrets required.
 
-## Chameleon Protocol
+## Chameleon Protocol (research)
 
-Moving-target defense using latent-space cryptography:
-- Keys evolve per-message based on VAE-encoded traffic patterns
-- Active attackers cannot distinguish protocol from background noise
-- Forward secrecy via key evolution
+An experimental, unreviewed latent-space encoding with per-message key evolution. It lives in `research/spine-protocol-research`, not in `spine-protocol`, and is not on the native wire. It is not encryption and gives no forward secrecy; use TLS or the session layer for confidentiality.
 
 ## Sybil Resistance
 

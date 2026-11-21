@@ -3,23 +3,26 @@
 //! These tests are the evidence behind SPINE's encoding-efficiency claim: every
 //! representative agent frame must (a) survive a CBOR round-trip byte-for-byte
 //! at the value level and (b) be materially smaller on the wire than the
-//! equivalent UTF-8 JSON body. The default `wire::encode` is plain CBOR (the
-//! fast hot path); `wire::encode_compressed` is the bandwidth-bound opt-in.
-//! Tensor-heavy frames shrink dramatically on plain CBOR alone; text/structured
-//! frames shrink modestly without compression and a lot with it.
+//! equivalent UTF-8 JSON body. Bodies are deterministic CBOR (`cbor::to_vec`);
+//! the frame layer compresses a body of at least 1 KiB when the sender turns
+//! compression on. Tensor-heavy frames shrink dramatically on plain CBOR alone;
+//! text/structured frames shrink modestly without compression and a lot with
+//! it.
 
 use serde_json::json;
-use spine_protocol::wire;
+use spine_protocol::cbor;
+use spine_protocol::frame::{
+    decode_frame, encode_frame, Frame, FrameType, FLAG_COMPRESSED, HEADER_LEN, MAX_FRAME,
+};
 use spine_protocol::{
-    Capability, CapabilityAdvertisement, DType, EncodedFrame, EncodedMetadata, Message, Modality,
-    StreamCancel, StreamData, StreamToken, StreamUsage, ToolCall,
+    Capability, CapabilityAdvertisement, Message, StreamCancel, StreamData, StreamToken,
+    StreamUsage, ToolCall,
 };
 
 /// Decode-encode must preserve the message at the value level.
 fn assert_roundtrips(msg: &Message) {
-    let framed = wire::encode(msg).expect("encode");
-    assert_eq!(&framed[0..2], b"SP", "frame must carry the SP magic");
-    let back = wire::decode(&framed).expect("decode");
+    let body = cbor::to_vec(msg).expect("encode");
+    let back: Message = cbor::from_slice(&body).expect("decode");
     assert_eq!(
         serde_json::to_value(msg).unwrap(),
         serde_json::to_value(&back).unwrap(),
@@ -27,10 +30,10 @@ fn assert_roundtrips(msg: &Message) {
     );
 }
 
-/// Wire frame (CBOR, header included) vs the JSON body, as a ratio.
+/// CBOR body vs the JSON body, as a ratio.
 fn size_ratio(msg: &Message) -> (usize, usize, f64) {
     let json = serde_json::to_vec(msg).unwrap();
-    let wire = wire::encode(msg).unwrap();
+    let wire = cbor::to_vec(msg).unwrap();
     let ratio = wire.len() as f64 / json.len() as f64;
     (wire.len(), json.len(), ratio)
 }
@@ -62,24 +65,17 @@ fn sample_stream_token() -> Message {
     })
 }
 
-fn sample_encoded_frame() -> Message {
-    // 256-dim f32 embedding => 1024 raw bytes. JSON renders each byte as a
-    // decimal-with-comma; CBOR keeps them as integer-array elements.
+fn sample_tensor_token() -> Message {
+    // 1 KiB of tensor bytes (a 256-dim f32 embedding). JSON renders each byte as
+    // a decimal-with-comma; CBOR ships them as a byte string.
     let data: Vec<u8> = (0..1024u32)
         .map(|i| (i.wrapping_mul(31) % 251) as u8)
         .collect();
-    Message::Encoded(EncodedFrame {
-        codec: "spine:codec/titans/v1@dim=256,dtype=f32".into(),
-        variant: Some("layer=11".into()),
-        data,
-        metadata: EncodedMetadata {
-            modality: Modality::Embedding,
-            shape: vec![256],
-            dtype: DType::F32,
-            original_len: Some(4096),
-            source_hash: Some([0xABu8; 32]),
-        },
-        trace: None,
+    Message::StreamToken(StreamToken {
+        id: "stream-7f3a".into(),
+        seq: 1,
+        data: StreamData::Bytes(data),
+        usage: None,
     })
 }
 
@@ -119,7 +115,7 @@ fn sample_capability_ad() -> Message {
 fn representative_frames_roundtrip() {
     assert_roundtrips(&sample_tool_call());
     assert_roundtrips(&sample_stream_token());
-    assert_roundtrips(&sample_encoded_frame());
+    assert_roundtrips(&sample_tensor_token());
     assert_roundtrips(&sample_capability_ad());
     assert_roundtrips(&Message::Ping {
         timestamp: 1_700_000_000,
@@ -150,7 +146,7 @@ fn every_frame_beats_json() {
     for (label, msg) in [
         ("ToolCall", sample_tool_call()),
         ("StreamToken", sample_stream_token()),
-        ("EncodedFrame", sample_encoded_frame()),
+        ("TensorToken", sample_tensor_token()),
         ("CapabilityAd", sample_capability_ad()),
         (
             "Ping",
@@ -172,36 +168,50 @@ fn tensor_frames_shrink_dramatically_on_plain_cbor() {
     // The fast default (plain CBOR, no compression) already crushes a 1 KiB
     // embedding to roughly a third of its JSON body — native byte/number widths
     // plus a byte-string tensor payload, at serialization speed.
-    let (wire, json, ratio) = size_ratio(&sample_encoded_frame());
+    let (wire, json, ratio) = size_ratio(&sample_tensor_token());
     assert!(
         ratio < 0.35,
-        "EncodedFrame (plain CBOR): wire {wire}B vs json {json}B = {ratio:.2} (want < 0.35)"
+        "TensorToken (plain CBOR): wire {wire}B vs json {json}B = {ratio:.2} (want < 0.35)"
     );
 }
 
 #[test]
 fn compression_is_available_for_bandwidth_paths() {
-    // encode_compressed trades CPU for bytes; it must push the tensor frame far
-    // below plain CBOR and shrink the structured capability ad too — and decode
-    // must read the compressed form back to an equal value.
-    let frame = sample_encoded_frame();
+    // With compression on, the frame layer compresses a body of at least 1 KiB
+    // and keeps the result when it is smaller. It must push the tensor frame
+    // far below plain CBOR, and the receiver must read the compressed form
+    // back to the same body. The structured capability ad is under 1 KiB, so
+    // the frame layer leaves it alone; zstd on its CBOR shows what a sender
+    // that wants to compress such bodies would gain.
+    let frame = sample_tensor_token();
     let json = serde_json::to_vec(&frame).unwrap();
-    let zstd = wire::encode_compressed(&frame).unwrap();
-    let ratio = zstd.len() as f64 / json.len() as f64;
+    let body = cbor::to_vec(&frame).unwrap();
+    let wire_frame = Frame {
+        frame_type: FrameType::Request,
+        request_id: 1,
+        body: body.clone(),
+    };
+    let bytes = encode_frame(&wire_frame, MAX_FRAME, true).unwrap();
+    assert_eq!(
+        bytes[6] & FLAG_COMPRESSED,
+        FLAG_COMPRESSED,
+        "a 1 KiB tensor body must be compressed"
+    );
+    let ratio = (bytes.len() - HEADER_LEN) as f64 / json.len() as f64;
     assert!(
         ratio < 0.15,
-        "EncodedFrame (cbor+zstd): {} vs {} = {ratio:.2} (want < 0.15)",
-        zstd.len(),
+        "TensorToken (cbor+zstd): {} vs {} = {ratio:.2} (want < 0.15)",
+        bytes.len() - HEADER_LEN,
         json.len()
     );
-    assert_eq!(
-        serde_json::to_value(&frame).unwrap(),
-        serde_json::to_value(wire::decode(&zstd).unwrap()).unwrap(),
-    );
+    let (decoded, used) = decode_frame(&bytes, MAX_FRAME).unwrap();
+    assert_eq!(used, bytes.len());
+    assert_eq!(decoded.body, body);
 
     let ad = sample_capability_ad();
     let ad_json = serde_json::to_vec(&ad).unwrap();
-    let ad_zstd = wire::encode_compressed(&ad).unwrap();
+    let ad_cbor = cbor::to_vec(&ad).unwrap();
+    let ad_zstd = zstd::stream::encode_all(&ad_cbor[..], 3).unwrap();
     let ad_ratio = ad_zstd.len() as f64 / ad_json.len() as f64;
     assert!(
         ad_ratio < 0.60,

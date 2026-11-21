@@ -8,48 +8,58 @@ All communication uses the `Message` enum, serialized with serde:
 pub enum Message {
     Request(Request),
     Response(Response),
-    Event(Event),
-    BinaryProgram(SpineBinary),
-    LatentMessage(LatentVector),
-    Sync(SyncPayload),
-    Speculative(SpeculativeFrame),
-    PreComputed(PreComputedResponse),
-    MorphRequest { seed: u64 },
     Ping { timestamp: u64 },
     Pong { timestamp: u64 },
+    ToolCall(ToolCall),
+    ToolResult(ToolResult),
+    StreamStart(StreamStart),
+    StreamToken(StreamToken),
+    StreamEnd(StreamEnd),
+    StreamCancel(StreamCancel),
+    CapabilityQuery(CapabilityQuery),
+    CapabilityAd(CapabilityAdvertisement),
 }
 ```
 
 ## Frame Format
 
-Messages are framed with a 16-byte header:
+The native wire is spine-wire v1 (specified in `docs/spec/00-wire.md`). Every
+frame has a fixed 15-byte header, all integers big-endian:
 
 ```
-┌──────────┬──────────┬───────────┬───────────┐
-│ Length(4) │ Type(1)  │ Flags(1)  │ Padding(10)│
-└──────────┴──────────┴───────────┴───────────┘
-│                 Payload                       │
-└───────────────────────────────────────────────┘
+┌────────────┬─────────┬──────────┬──────────┬────────────────┬──────┐
+│ Length (4) │ Ver (1) │ Type (1) │ Flags(1) │ Request id (8) │ Body │
+└────────────┴─────────┴──────────┴──────────┴────────────────┴──────┘
 ```
 
-- **Length**: 4 bytes, big-endian, payload size
-- **Type**: Message discriminant
-- **Flags**: `0x01` = zstd compressed, `0x00` = raw
+- **Length**: bytes after this field, `11 + len(body)`, at most the negotiated
+  maximum (16 MiB; 64 KiB before the handshake completes)
+- **Ver**: `1`
+- **Type**: `HELLO`, `HELLO_ACK`, `CLOSE`, `PING`, `PONG`, `REQUEST`,
+  `RESPONSE`, `STREAM_*` and `EXT`
+- **Flags**: bit 0 means the body is zstd compressed; other bits must be zero
+- **Request id**: correlates a `RESPONSE` with its `REQUEST`; a `PING` and its
+  `PONG` share one
+- **Body**: exactly one deterministic CBOR item
+
+A connection starts with `HELLO` from the client and `HELLO_ACK` from the
+server; nothing else may be sent first. The daemon closes a connection that has
+not sent `HELLO` within `server.hello_timeout_secs` (default 10 seconds) with
+`CLOSE(timeout)`. A violation ends the connection with a `CLOSE` code
+(`malformed_frame`, `frame_too_large`, `protocol_violation`, ...).
+
+The current daemon runs one request per connection at a time
+(`max_inflight = 1`). A `Request`, `ToolCall` or `CapabilityQuery` travels as a
+`REQUEST`; the daemon's `Response`, `ToolResult` or `CapabilityAd` travels as
+the `RESPONSE` with the same request id. `Ping` and `Pong` are the `PING` and
+`PONG` frames, whose body is an unsigned integer token.
 
 ## Compression
 
-Adaptive compression using a 1-byte flag protocol:
-- Payloads < 64 bytes are sent raw (compression overhead exceeds savings)
-- Larger payloads use zstd compression
-- Stack-allocated `[u8; 16]` headers avoid heap allocation
-
-## Speculation
-
-The protocol supports speculative message prediction:
-- Bidirectional prediction with Titans architecture
-- Pre-computed responses sent before request arrives
-- Surprise-gated learning adjusts predictions over time
-- Speculation hits eliminate round-trip latency entirely
+Compression is off unless the sender turns it on. A body of at least 1 KiB is
+then compressed with zstd when that makes it smaller, and the compressed flag
+is set in the header. Smaller bodies are never compressed. The receiver needs
+no setting.
 
 ## Transport Options
 

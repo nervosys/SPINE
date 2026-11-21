@@ -1,7 +1,6 @@
 [package]
 name = "spine-agent"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -11,14 +10,21 @@ license.workspace = true
 authors.workspace = true
 description = "Agent interface for SPINE"
 
+[features]
+default = []
+# Research code: pulls in spine-agentic for the examples that use its workflow,
+# runtime and knowledge-graph types. They say so via `required-features`. The
+# SDK itself has no research-gated code.
+# The Chameleon key is not here: it is in `research/spine-protocol-research`.
+research = ["dep:spine-agentic"]
+
 [dependencies]
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
+spine-name = { path = "../spine-name", version = "2.0.2" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-features = false }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 spine-wasm = { path = "../spine-wasm", version = "2.0.2" }
-spine-cluster = { path = "../spine-cluster", version = "2.0.2" }
-spine-human = { path = "../spine-human", version = "2.0.2" }
-spine-agentic = { path = "../spine-agentic", version = "2.0.2" }
+spine-agentic = { path = "../../research/spine-agentic", version = "2.0.2", optional = true }
 spine-transport = { path = "../spine-transport", version = "2.0.2" }
 serde.workspace = true
 serde_json.workspace = true
@@ -35,6 +41,40 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 
 [dev-dependencies]
-spine-nostd = { path = "../spine-nostd" }
-spine-embedded = { path = "../spine-embedded" }
-spine-kernel = { path = "../spine-kernel" }
+spine-nostd = { path = "../../research/spine-nostd" }
+spine-embedded = { path = "../../research/spine-embedded" }
+
+[[example]]
+name = "agent_autonomous"
+path = "examples/agent_autonomous.rs"
+required-features = ["research"]
+
+[[example]]
+name = "encrypted_agent"
+path = "examples/encrypted_agent.rs"
+required-features = ["research"]
+
+[[example]]
+name = "llm_workflow_demo"
+path = "examples/llm_workflow_demo.rs"
+required-features = ["research"]
+
+[[example]]
+name = "offline_demo"
+path = "examples/offline_demo.rs"
+required-features = ["research"]
+
+[[example]]
+name = "research_swarm"
+path = "examples/research_swarm.rs"
+required-features = ["research"]
+
+[[example]]
+name = "simple_agent"
+path = "examples/simple_agent.rs"
+required-features = ["research"]
+
+[[example]]
+name = "web_intelligence_demo"
+path = "examples/web_intelligence_demo.rs"
+required-features = ["research"]

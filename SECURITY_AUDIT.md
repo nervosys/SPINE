@@ -1,5 +1,15 @@
 # SPINE v1.2.1 Security Audit
 
+## Current checkout boundary — 2026-10-02
+
+The audit and closure statements below describe historical releases. They do not certify the current 30-crate checkout or its new development wire operations. Current dependency checks, implementation evidence, platform scope, and remaining gates are maintained in [the completion report](docs/COMPLETION_STATUS.md).
+
+The local continuation fixes missing-certificate fallback, payload/token logging, stale pooled mesh writers, and the new task service's transport identity binding. Signed task messages now require a handshake pinned to their recipient key; incoming application messages must match the authenticated connection's caller. Regressions cover wrong recipient pins, encrypted/plaintext connection closure, ownership, unauthorized peers, idempotence, cancellation, and restart recovery. Legacy timer-based task success and automatic confidence votes are removed.
+
+The continuation additionally bounds TCP mesh and native origin admission, idle/frame/queue/write waits, contact registries, and native decompression. Explicit mTLS and CRL policy applies to native TCP and WSS; auxiliary cluster and diagnostics listeners retain a trusted-network boundary. These are component bounds, and optional mesh transport admission and sustained resource measurements remain open.
+
+Independent handshake review, native multi-user session ownership, historical credential revocation, complete secret/history review, hardware verification, and cross-platform release acceptance remain open. No FIPS/CMMC certification, complete memory erasure, production availability, or general-purpose remote execution is established by these tests. The supported candidate uses trusted local single-user origins and explicitly authorized read-only task workers.
+
 | Field          | Value                                          |
 |----------------|------------------------------------------------|
 | Audit date     | 2026-06-04 (refreshed at v1.3.0)               |
@@ -319,7 +329,7 @@ Focused on the families where SPINE has a concrete posture.
 | SC.L2-3.13.8      | **MET** — TLS in transit via rustls (0.23). |
 | SC.L2-3.13.10     | **PARTIAL** — Ed25519 keys are signed correctly but not zeroized in memory. |
 | SC.L2-3.13.11     | **PARTIAL FIPS** — algorithms approved by spec, modules not validated. See § 2. |
-| SC.L2-3.13.16     | **MET** — `EncodedFrame.metadata.source_hash` lets the receiver verify content integrity end-to-end. |
+| SC.L2-3.13.16     | **MET** — `EncodedFrame.metadata.source_hash` (research crate, not on the native wire) lets the receiver verify content integrity end-to-end. |
 | SI.L2-3.14.6/7    | **MET** — anomaly signal via Titans surprise scores in `spine-neural`. |
 
 **L2 verdict**: Substantial coverage with two deployer-actionable

@@ -1,0 +1,13 @@
+# Start spine-gateway with SPINE_CONFIG_PATH selecting this file.
+# Set SPINE_GATEWAY_BEARER_TOKEN to authenticate incoming HTTP clients.
+# Set SPINE_MODEL_URL and SPINE_MODEL_NAME for the intended provider.
+# Set IRONGATE_URL and IRONGATE_TOKEN for routing; set SPINE_REQUIRE_GATEWAY=1.
+# Keep provider and gateway credentials separate; do not paste either here.
+[server]
+host = "127.0.0.1"
+port = 8080
+metrics_port = 9090
+
+[logging]
+format = "json"
+level = "info"

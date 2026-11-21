@@ -3,7 +3,7 @@
 //! Demonstrates SPINE features that work without a running server:
 //! - HTML parsing → Unified Representation
 //! - HLS compilation → SpineBinary
-//! - Chameleon protocol encoding/decoding
+//! - spine-wire v1 connection framing over an in-memory duplex
 //! - Latent vector operations
 //! - Embedded agent message routing
 //! - Fixed-point math
@@ -18,7 +18,8 @@ use spine_nostd::hash::{fnv1a_32, fnv1a_64};
 use spine_nostd::math::{cosine_similarity_fixed, dot_product_fixed};
 use spine_nostd::types::{AgentIdBytes, FrameHeader, LatentVectorFixed};
 use spine_parser::parse_html;
-use spine_protocol::{LatentVector, Message, ProtocolHandler};
+use spine_protocol::connection::Connection;
+use spine_protocol::{native, BrowserCommand, Message, Request};
 use std::time::Instant;
 
 fn demo_parser() {
@@ -34,8 +35,7 @@ fn demo_parser() {
             <p>SPINE provides a headless semantic browser for AI agents.</p>
             <h2>Key Features</h2>
             <ul>
-                <li>Chameleon Protocol — latent-space cryptography</li>
-                <li>Speculative Decoding — bidirectional prediction</li>
+                <li>Native wire — framed and zstd-compressed</li>
                 <li>Unified Representation — semantic HTML extraction</li>
             </ul>
             <a href="https://github.com/nervosys/SPINE">Source Code</a>
@@ -123,14 +123,11 @@ fn demo_protocol() {
             },
         ),
         (
-            "LatentVector",
-            Message::LatentMessage(LatentVector {
-                components: vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
-                dim_hint: 8,
-                epoch: 1,
-            }),
+            "Pong",
+            Message::Pong {
+                timestamp: 1234567891,
+            },
         ),
-        ("MorphRequest", Message::MorphRequest { seed: 0xDEADBEEF }),
     ];
 
     for (name, msg) in &messages {
@@ -147,9 +144,9 @@ fn demo_protocol() {
     println!();
 }
 
-fn demo_chameleon_duplex() {
+fn demo_handler_duplex() {
     println!("┌─────────────────────────────────────────────────────────────┐");
-    println!("│ 4. Chameleon Protocol over In-Memory Duplex                  │");
+    println!("│ 4. spine-wire v1 Connection over In-Memory Duplex           │");
     println!("└─────────────────────────────────────────────────────────────┘\n");
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -159,48 +156,40 @@ fn demo_chameleon_duplex() {
 
     rt.block_on(async {
         let (client_io, server_io) = tokio::io::duplex(64 * 1024);
-        let mut client = ProtocolHandler::new(client_io);
-        let mut server = ProtocolHandler::new(server_io);
+        let config = native::local_config();
+        let (client, server) = tokio::join!(
+            Connection::client_handshake(
+                client_io,
+                native::client_hello(),
+                native::DEFAULT_HELLO_DEADLINE
+            ),
+            Connection::server_handshake(server_io, &config, native::DEFAULT_HELLO_DEADLINE)
+        );
+        let mut client = client.unwrap();
+        let mut server = server.unwrap();
 
-        let secret: [u8; 32] = [0x53; 32]; // "SSSS..."
-        client.enable_chameleon_aead(secret);
-        server.enable_chameleon_aead(secret);
-
-        // Send 10 messages through Chameleon protocol
+        // Send 10 requests through the connection, answering each.
         let start = Instant::now();
         for i in 0..10u64 {
-            client
-                .send_message_raw(&Message::Ping { timestamp: i })
+            let request = Message::Request(Request {
+                id: i.to_string(),
+                command: BrowserCommand::GetUR,
+            });
+            let id = native::send_request(&mut client, &request).await.unwrap();
+            let frame = server.recv().await.unwrap().unwrap();
+            let msg = native::decode_request(&frame.body).unwrap();
+            assert!(matches!(msg, Message::Request(_)));
+            native::send_reply(&mut server, frame.request_id, &native::error_reply("ok"))
                 .await
                 .unwrap();
-            let msg = server.receive_message().await.unwrap();
-            assert!(matches!(msg, Message::Ping { .. }));
+            native::await_reply(&mut client, id).await.unwrap();
         }
         let elapsed = start.elapsed();
 
         println!(
-            "  10 messages through Chameleon AEAD: {:.1}µs total ({:.1}µs/msg)",
+            "  10 request/response pairs through the connection: {:.1}µs total ({:.1}µs/msg)",
             elapsed.as_nanos() as f64 / 1000.0,
             elapsed.as_nanos() as f64 / 10000.0
-        );
-
-        // Test morphing
-        client.morph_now(42);
-        server.morph_now(42);
-
-        client
-            .send_message_raw(&Message::Ping { timestamp: 999 })
-            .await
-            .unwrap();
-        let msg = server.receive_message().await.unwrap();
-        assert!(matches!(msg, Message::Ping { timestamp: 999 }));
-        println!("  Post-morph communication: OK");
-
-        let stats = client.get_speculation_stats();
-        println!(
-            "  Speculation: {} predictions, {:.1}% accuracy",
-            stats.output_predictions,
-            stats.output_accuracy() * 100.0
         );
     });
     println!();
@@ -330,7 +319,7 @@ fn main() {
     demo_parser();
     demo_compiler();
     demo_protocol();
-    demo_chameleon_duplex();
+    demo_handler_duplex();
     demo_fixed_point();
     demo_embedded_agent();
 

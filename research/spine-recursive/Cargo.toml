@@ -1,0 +1,50 @@
+[package]
+name = "spine-recursive"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+authors.workspace = true
+description = "Recursive Language Model (RLM) support for infinite context processing"
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.8"
+thiserror = "1.0"
+async-trait = "0.1"
+tracing = "0.1"
+dashmap.workspace = true
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+
+# HTTP client for real LLM API dispatchers
+reqwest = { version = "0.12", features = [
+    "json",
+    "rustls-tls",
+], default-features = false }
+
+# Internal dependencies
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
+tokio-test = "0.4"
+
+[[bench]]
+name = "rlm_bench"
+harness = false
+
+[[example]]
+name = "rlm_demo"
+
+[[example]]
+name = "infinite_context"
+
+
+

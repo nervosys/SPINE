@@ -1,0 +1,33 @@
+[package]
+name = "spine-knowledge"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+authors.workspace = true
+description = "Distributed knowledge base with bioinspired memory architecture for SPINE"
+license.workspace = true
+
+[dependencies]
+# Workspace dependencies
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json.workspace = true
+
+# Internal dependencies - unified memory architecture
+spine-neural = { path = "../spine-neural", version = "2.0.2" }
+spine-storage = { path = "../../src/spine-storage", version = "2.0.2" }
+anyhow.workspace = true
+
+# CRDTs for distributed consistency
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap.workspace = true
+sha2 = "0.10"
+
+# Semantic similarity and indexing
+
+[dev-dependencies]
+tokio-test = "0.4"

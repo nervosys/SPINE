@@ -4,8 +4,9 @@
 [advisories]
 # Ignore specific advisories by RUSTSEC ID.
 #
-# Every entry here is `informational = "unmaintained"` -- a crate with no
-# maintained successor to move to, which is not a fix anyone can apply. No
+# Every entry here is `informational = "unmaintained"`. Dependency paths,
+# temporary rationales, owner and review dates are recorded in
+# docs/DEPENDENCY_EXCEPTIONS.md. Migration requires compatibility review. No
 # actual vulnerability is suppressed, and none should be: if one reappears
 # through a dependency, this job must fail rather than stay quiet.
 #
@@ -22,22 +23,26 @@ ignore = [
     "RUSTSEC-2025-0141",
     # derivative unmaintained — transitive
     "RUSTSEC-2024-0388",
-    # fxhash unmaintained — transitive via criterion
+    # fxhash unmaintained — transitive parser/runtime hashing
     "RUSTSEC-2025-0057",
-    # instant unmaintained — transitive via criterion/parking_lot
+    # instant unmaintained — transitive timing dependency
     "RUSTSEC-2024-0384",
     # number_prefix unmaintained — transitive via indicatif
     "RUSTSEC-2025-0119",
     # paste unmaintained — transitive
     "RUSTSEC-2024-0436",
-    # proc-macro-error unmaintained — transitive
-    "RUSTSEC-2024-0370",
-    # rustls-pemfile unmaintained — transitive via rustls
+    # rustls-pemfile unmaintained — direct TLS loading and native-cert dependency
     "RUSTSEC-2025-0134",
     # backoff unmaintained — transitive via kube-runtime
     "RUSTSEC-2025-0012",
     # ttf-parser unmaintained — transitive via owned_ttf_parser → ab_glyph
     "RUSTSEC-2026-0192",
+    # chrono unmaintained — direct dependency of spine-agentic and others
+    "RUSTSEC-2026-0543",
+    # zbus_names / zvariant / zvariant_derive unmaintained — transitive via atspi -> AccessKit -> eframe (spine-browser GUI)
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0372",
 ]
 
 [licenses]
@@ -58,7 +63,7 @@ allow = [
     "OFL-1.1",
     "CDLA-Permissive-2.0",
 
-    # SPINE's own 30 crates. Their absence is why this job failed on every run:
+    # SPINE's own 32 crates. Their absence is why this job failed on every run:
     # the workspace relicensed to AGPL-3.0-or-later and the allow-list was not
     # moved with it, so cargo-deny rejected the workspace against itself. The
     # entry below still said Apache-2.0 long after LICENSE said otherwise.

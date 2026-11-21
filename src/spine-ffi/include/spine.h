@@ -55,13 +55,6 @@ extern "C"
     char *spine_get_raw_html(void *handle);
 
     /* --------------------------------------------------------------------------
-     * Search
-     * -------------------------------------------------------------------------- */
-
-    /* Search the web. Returns JSON results (free with spine_free_string). */
-    char *spine_search(void *handle, const char *query);
-
-    /* --------------------------------------------------------------------------
      * HLS execution
      * -------------------------------------------------------------------------- */
 
@@ -74,13 +67,6 @@ extern "C"
 
     /* Ping server. Returns round-trip time in ms, or -1 on error. */
     int64_t spine_ping(void *handle);
-
-    /* --------------------------------------------------------------------------
-     * Protocol morphing
-     * -------------------------------------------------------------------------- */
-
-    /* Trigger protocol morph. Returns 0 on success, -1 on error. */
-    int spine_morph(void *handle);
 
     /* --------------------------------------------------------------------------
      * Capabilities

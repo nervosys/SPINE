@@ -12,6 +12,12 @@
 # So this script is tracked, path-independent, and derives what it publishes
 # from `cargo metadata`. A crate added to the workspace cannot be forgotten.
 #
+# Scope: run at the repository root, so this publishes the root-workspace members only.
+# The research crates (research/, a separate workspace) are NOT published from this
+# repository state. Root crates that reference them do so through optional path
+# dependencies carrying a `version`, so a real publish of those crates needs the
+# research crates on crates.io first or the optional dependencies removed.
+#
 # Requires a clean working tree: cargo refuses to publish uncommitted changes,
 # so that you cannot ship code that is not in the repository. Commit first.
 #

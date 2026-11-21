@@ -1,0 +1,95 @@
+# Research workspace: speculative / non-production crates, split out of the
+# root workspace (see COMPLETION_PLAN.md Stage 4).
+#
+# KEEP IN SYNC: [workspace.package], [workspace.dependencies] and [profile.*]
+# below are copies of the tables in the root Cargo.toml (the research crates
+# inherit from here, and profiles only apply from the workspace being built).
+# Change one, change both.
+#
+# Build: cd research && cargo build
+[workspace]
+members = [
+    "spine-agentic",
+    "spine-browser",
+    "spine-cluster",
+    "spine-crypto",
+    "spine-embedded",
+    "spine-gpu",
+    "spine-human",
+    "spine-k8s",
+    "spine-kernel",
+    "spine-knowledge",
+    "spine-mechgen",
+    "spine-neural",
+    "spine-nostd",
+    "spine-protocol-research",
+    "spine-recursive",
+]
+resolver = "2"
+
+[workspace.package]
+version = "2.0.2"
+edition = "2021"
+authors = ["Nervosys LLC <opensource@nervosys.ai>"]
+description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, W3C tracing, and neural encoder-decoder protocols for LLM swarms"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/nervosys/SPINE"
+readme = "README.md"
+keywords = ["agentic", "llm", "agents", "protocol", "web"]
+categories = ["network-programming", "web-programming", "asynchronous"]
+
+# =============================================================================
+# MAXIMUM OPTIMIZATION PROFILE
+# =============================================================================
+
+[profile.release]
+opt-level = 3     # Maximum optimization
+lto = "fat"       # Full link-time optimization across all crates
+codegen-units = 1 # Single codegen unit for maximum optimization
+panic = "abort"   # Smaller binaries, no unwinding overhead
+strip = true      # Strip symbols for smaller binaries
+debug = false     # No debug info in release
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true         # Debug info for profiling
+strip = false
+
+[profile.bench]
+inherits = "release"
+debug = true         # Debug info for flamegraphs
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.11"
+reqwest = { version = "0.12", features = ["json"] }
+wasmtime = "36"
+wat = "1"
+rand = "0.8"
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+tracing = "0.1"
+# Consolidated here on 2026-08-25. Eight crates had been declaring this
+# independently as "5", "5.5" and "6", so the lock carried 5.5.3 and 6.2.1
+# at once and every binary linked two concurrent hash maps. That is the same
+# shape as the axum 0.6/0.7 split that kept hyper 0.14 -- and h2 0.3 with it --
+# alive until the same day. One declaration cannot drift apart.
+dashmap = { version = "6", features = ["serde"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-opentelemetry = "0.32"
+opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
+opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+prometheus = "0.14"
+lazy_static = "1.4"
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+] }
+tokio-rustls = "0.26"
+rustls-pemfile = "2"

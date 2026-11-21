@@ -128,19 +128,6 @@ func (c *Client) GetRawHTML() (string, error) {
 	return C.GoString(ptr), nil
 }
 
-// Search performs a web search and returns the results as raw JSON.
-func (c *Client) Search(query string) (json.RawMessage, error) {
-	cQuery := C.CString(query)
-	defer C.free(unsafe.Pointer(cQuery))
-
-	ptr := C.spine_search(c.handle, cQuery)
-	if ptr == nil {
-		return nil, lastError()
-	}
-	defer C.spine_free_string(ptr)
-	return json.RawMessage(C.GoString(ptr)), nil
-}
-
 // ExecuteHLS compiles and executes an HLS script on the server.
 func (c *Client) ExecuteHLS(script string) (*ExecutionResult, error) {
 	cScript := C.CString(script)
@@ -167,15 +154,6 @@ func (c *Client) Ping() (int64, error) {
 		return 0, lastError()
 	}
 	return int64(rtt), nil
-}
-
-// Morph triggers protocol morphing (Chameleon protocol).
-func (c *Client) Morph() error {
-	rc := C.spine_morph(c.handle)
-	if rc != 0 {
-		return lastError()
-	}
-	return nil
 }
 
 // GetCapabilities returns the server's advertised capabilities.

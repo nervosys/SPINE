@@ -1,0 +1,1006 @@
+//! Durable read-only task worker with signing-key ownership and explicit admission.
+use anyhow::{bail, ensure, Context, Result};
+use spine_protocol::{
+    tasks::{TaskOperation, TaskRecord, TaskSpec, TaskState},
+    ToolCall, ToolOutcome,
+};
+use spine_storage::StorageBackend;
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, BTreeSet, HashSet},
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+use uuid::Uuid;
+
+const TASKS: &str = "spine-tasks-v1";
+const KNOWLEDGE: &str = "spine-task-knowledge-v1";
+/// Maximum task records (any state) held by one worker across all owners.
+const MAX_TASKS: usize = 256;
+/// Entries (any state) an owner may hold before it counts as over its fair
+/// share of a full store: a quarter of `MAX_TASKS`. See
+/// `TaskService::evict_for_admission`.
+const FAIR_SHARE_TASKS: usize = MAX_TASKS / 4;
+/// Maximum pending or running tasks one owner may hold: a quarter of
+/// `MAX_TASKS`, so no single coordinator can fill the store for the others.
+/// Terminal tasks do not count against this share.
+const MAX_ACTIVE_TASKS_PER_OWNER: usize = 64;
+/// Maximum immutable knowledge entries held by one worker across all owners.
+/// Knowledge is never evicted; at this limit every new key is refused.
+///
+/// Residual exposure (Stage 6, authority and admission cost): the per-owner
+/// share below is per signing key, and keys are free to mint, so
+/// `MAX_KNOWLEDGE / MAX_KNOWLEDGE_PER_OWNER` (four) allowed identities can
+/// exhaust the worker total and refuse every other owner. The worker's
+/// allow-list bounds who may hold an identity here; pricing identities is
+/// deliberately not attempted in this module.
+const MAX_KNOWLEDGE: usize = 256;
+/// Maximum knowledge entries one owner may hold: a quarter of
+/// `MAX_KNOWLEDGE`. Knowledge is immutable and never evicted automatically.
+const MAX_KNOWLEDGE_PER_OWNER: usize = 64;
+const MAX_ARGS: usize = 64 * 1024;
+/// Largest serialized tool result a task may record (256 KiB).
+const MAX_RESULT: usize = 256 * 1024;
+
+fn is_terminal(state: TaskState) -> bool {
+    matches!(
+        state,
+        TaskState::Completed | TaskState::Failed | TaskState::Cancelled
+    )
+}
+
+pub struct TaskService {
+    backend: Arc<dyn StorageBackend>,
+    allowed: HashSet<[u8; 32]>,
+    writes: Mutex<()>,
+    pending: Mutex<BTreeSet<Vec<u8>>>,
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+fn task_key(owner: &[u8; 32], id: Uuid) -> Vec<u8> {
+    [owner.as_slice(), id.as_bytes().as_slice()].concat()
+}
+fn knowledge_key(owner: &[u8; 32], key: &str) -> Result<Vec<u8>> {
+    ensure!(
+        !key.is_empty() && key.len() <= 256,
+        "knowledge key must contain 1 through 256 bytes"
+    );
+    Ok([owner.as_slice(), key.as_bytes()].concat())
+}
+
+impl TaskService {
+    pub fn new(backend: Arc<dyn StorageBackend>, allowed: Vec<[u8; 32]>) -> Result<Self> {
+        ensure!(
+            !allowed.is_empty(),
+            "task worker requires at least one allowed peer signing key"
+        );
+        let service = Self {
+            backend,
+            allowed: allowed.into_iter().collect(),
+            writes: Mutex::new(()),
+            pending: Mutex::new(BTreeSet::new()),
+        };
+        let records = service.backend.scan(TASKS, None)?;
+        ensure!(
+            records.len() <= MAX_TASKS,
+            "task store exceeds configured capacity"
+        );
+        for (key, bytes) in records {
+            let mut record: TaskRecord =
+                serde_json::from_slice(&bytes).context("invalid task snapshot")?;
+            ensure!(
+                key == task_key(&record.owner, record.spec.id),
+                "task snapshot key mismatch"
+            );
+            service.validate(&record.spec)?;
+            if record.state == TaskState::Running {
+                // INVARIANT: re-running an interrupted task from scratch on
+                // restart is only safe for tools without side effects. Every
+                // admitted tool (see `validate`) is read-only and
+                // deterministic. A tool with effects must not be added to the
+                // allow-list in `validate` until this recovery path is
+                // changed (for example to fail the task instead of replaying).
+                record.state = TaskState::Pending;
+                service.save(&mut record)?;
+            }
+            if record.state == TaskState::Pending && service.allowed.contains(&record.owner) {
+                service.pending.lock().unwrap().insert(key);
+            }
+        }
+        Ok(service)
+    }
+
+    fn validate(&self, spec: &TaskSpec) -> Result<()> {
+        // Register new tools here only if they are read-only and free of side
+        // effects: interrupted tasks are re-run on restart (see `new`).
+        ensure!(
+            matches!(
+                spec.tool.as_str(),
+                "spine.html/parse" | "spine.content/hash"
+            ),
+            "unsupported task tool"
+        );
+        ensure!(
+            (1..=300).contains(&spec.timeout_secs),
+            "task deadline must be 1 through 300 seconds"
+        );
+        ensure!(
+            spec.dependencies.len() <= 16,
+            "task supports at most 16 dependencies"
+        );
+        ensure!(
+            !spec.dependencies.contains(&spec.id),
+            "task cannot depend on itself"
+        );
+        ensure!(
+            spec.args.is_object() && serde_json::to_vec(&spec.args)?.len() <= MAX_ARGS,
+            "task args must be an object within 64 KiB"
+        );
+        if let Some(input) = &spec.input_from {
+            ensure!(
+                spec.dependencies.contains(&input.task_id),
+                "input source must be a declared dependency"
+            );
+            ensure!(
+                input.pointer.len() <= 256,
+                "input pointer exceeds 256 bytes"
+            );
+        }
+        Ok(())
+    }
+    fn get(&self, owner: &[u8; 32], id: Uuid) -> Result<TaskRecord> {
+        let bytes = self
+            .backend
+            .get(TASKS, &task_key(owner, id))?
+            .context("task not found for this owner")?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+    fn snapshot(&self) -> Result<Vec<TaskRecord>> {
+        self.backend
+            .scan(TASKS, None)?
+            .into_iter()
+            .map(|(_, bytes)| Ok(serde_json::from_slice(&bytes)?))
+            .collect()
+    }
+    /// Make room for one admission when the store is full, by deleting one
+    /// terminal task (the delete is written to storage before returning, like
+    /// `save`). The rule, exactly:
+    ///
+    /// 1. A task is a candidate only if it is terminal, no pending or running
+    ///    task lists it as a dependency in the same owner scope, and the task
+    ///    being admitted does not list it either.
+    /// 2. Owners are ranked by entries held in the store (any state), most
+    ///    first, ties broken by the smaller owner key.
+    /// 3. If the requesting owner already holds `FAIR_SHARE_TASKS` or more
+    ///    entries, only that owner's own candidates are considered: it never
+    ///    displaces another owner's finished results, and is refused when it
+    ///    has none. Otherwise every owner is considered in rank order.
+    /// 4. The victim belongs to the highest-ranked owner that has a candidate,
+    ///    and is that owner's candidate with the earliest completion time
+    ///    (`completed_at`, or `created_at` for records without one), ties
+    ///    broken by earlier `created_at`, then smaller task id.
+    ///
+    /// If there is no victim the submission is refused.
+    fn evict_for_admission(
+        &self,
+        records: &[TaskRecord],
+        caller: &[u8; 32],
+        new_dependencies: &[Uuid],
+    ) -> Result<()> {
+        let mut protected: HashSet<([u8; 32], Uuid)> =
+            new_dependencies.iter().map(|id| (*caller, *id)).collect();
+        for record in records.iter().filter(|r| !is_terminal(r.state)) {
+            for id in &record.spec.dependencies {
+                protected.insert((record.owner, *id));
+            }
+        }
+        let mut held: BTreeMap<[u8; 32], usize> = BTreeMap::new();
+        for record in records {
+            *held.entry(record.owner).or_default() += 1;
+        }
+        let caller_over_share = held.get(caller).copied().unwrap_or(0) >= FAIR_SHARE_TASKS;
+        let mut ranked: Vec<([u8; 32], usize)> = held
+            .into_iter()
+            .filter(|(owner, _)| !caller_over_share || owner == caller)
+            .collect();
+        ranked.sort_by_key(|(owner, count)| (Reverse(*count), *owner));
+        for (owner, _) in ranked {
+            let victim = records
+                .iter()
+                .filter(|r| {
+                    r.owner == owner
+                        && is_terminal(r.state)
+                        && !protected.contains(&(r.owner, r.spec.id))
+                })
+                .min_by_key(|r| {
+                    (
+                        r.completed_at.unwrap_or(r.created_at),
+                        r.created_at,
+                        r.spec.id,
+                    )
+                });
+            if let Some(victim) = victim {
+                let key = task_key(&victim.owner, victim.spec.id);
+                self.backend.delete(TASKS, &key)?;
+                self.pending.lock().unwrap().remove(&key);
+                return Ok(());
+            }
+        }
+        if caller_over_share {
+            bail!(
+                "task store capacity reached: owner holds {FAIR_SHARE_TASKS} or more tasks and none of its finished tasks can be evicted"
+            );
+        }
+        bail!("task store capacity reached: every task is pending, running or needed by one")
+    }
+    /// Persist `record`, stamping `completed_at` the first time it is seen in
+    /// a terminal state so every terminal transition records its time.
+    fn save(&self, record: &mut TaskRecord) -> Result<()> {
+        if is_terminal(record.state) && record.completed_at.is_none() {
+            record.completed_at = Some(now());
+        }
+        self.backend.put(
+            TASKS,
+            &task_key(&record.owner, record.spec.id),
+            &serde_json::to_vec(record)?,
+        )?;
+        let key = task_key(&record.owner, record.spec.id);
+        if record.state == TaskState::Pending && self.allowed.contains(&record.owner) {
+            self.pending.lock().unwrap().insert(key);
+        } else {
+            self.pending.lock().unwrap().remove(&key);
+        }
+        Ok(())
+    }
+
+    pub fn request(&self, caller: [u8; 32], operation: TaskOperation) -> Result<serde_json::Value> {
+        ensure!(
+            self.allowed.contains(&caller),
+            "peer signing key is not authorized for tasks"
+        );
+        let _lock = self.writes.lock().unwrap();
+        match operation {
+            TaskOperation::Capabilities => {
+                Ok(serde_json::json!({"protocol":"spine.tasks","version":1,
+                "tools":crate::tools::capabilities(),"ownership":"caller signing key",
+                "permissions":["task.submit","task.read","task.cancel","knowledge.read","knowledge.publish"],
+                "limits":{"tasks":MAX_TASKS,"active_tasks_per_owner":MAX_ACTIVE_TASKS_PER_OWNER,"knowledge":MAX_KNOWLEDGE,"knowledge_per_owner":MAX_KNOWLEDGE_PER_OWNER,"args_bytes":MAX_ARGS,"result_bytes":MAX_RESULT,"deadline_secs":300}}))
+            }
+            TaskOperation::Submit { spec } => {
+                self.validate(&spec)?;
+                if self.backend.exists(TASKS, &task_key(&caller, spec.id))? {
+                    let existing = self.get(&caller, spec.id)?;
+                    ensure!(
+                        existing.spec == spec,
+                        "task id conflicts with an existing specification"
+                    );
+                    return Ok(serde_json::to_value(existing)?);
+                }
+                // Dependencies must already exist in the owner's scope. Together
+                // with self-reference refusal, this makes admission acyclic.
+                for id in &spec.dependencies {
+                    self.get(&caller, *id)?;
+                }
+                let records = self.snapshot()?;
+                let active = records
+                    .iter()
+                    .filter(|r| r.owner == caller && !is_terminal(r.state))
+                    .count();
+                ensure!(
+                    active < MAX_ACTIVE_TASKS_PER_OWNER,
+                    "owner task quota reached: at most {MAX_ACTIVE_TASKS_PER_OWNER} pending or running tasks per owner"
+                );
+                // At capacity, evict one terminal task by the fair-share
+                // policy (persisted delete); if none is evictable, refuse.
+                if records.len() >= MAX_TASKS {
+                    self.evict_for_admission(&records, &caller, &spec.dependencies)?;
+                }
+                let mut record = TaskRecord {
+                    owner: caller,
+                    spec,
+                    state: TaskState::Pending,
+                    created_at: now(),
+                    completed_at: None,
+                    result: None,
+                    error: None,
+                };
+                self.save(&mut record)?;
+                Ok(serde_json::to_value(record)?)
+            }
+            TaskOperation::Status { id } => Ok(serde_json::to_value(self.get(&caller, id)?)?),
+            TaskOperation::Cancel { id } => {
+                let mut record = self.get(&caller, id)?;
+                if matches!(record.state, TaskState::Pending | TaskState::Running) {
+                    record.state = TaskState::Cancelled;
+                    record.error = Some("cancelled by owner".into());
+                    self.save(&mut record)?;
+                }
+                Ok(serde_json::to_value(record)?)
+            }
+            TaskOperation::KnowledgePut { key, value } => {
+                let key = knowledge_key(&caller, &key)?;
+                let bytes = serde_json::to_vec(&value)?;
+                ensure!(bytes.len() <= MAX_ARGS, "knowledge value exceeds 64 KiB");
+                if let Some(existing) = self.backend.get(KNOWLEDGE, &key)? {
+                    ensure!(
+                        existing == bytes,
+                        "knowledge key already holds different content; use a new versioned key"
+                    );
+                    return Ok(serde_json::json!({"stored":true}));
+                }
+                // Knowledge is immutable and never evicted; refuse with a
+                // distinct error for the owner share and for the worker total.
+                // Residual exposure, Stage 6 (authority and admission cost):
+                // owner keys are free to mint, so four identities can fill the
+                // worker total; see `MAX_KNOWLEDGE`.
+                ensure!(
+                    // Not a prefix scan: the storage prefix upper bound wraps for
+                    // owner keys ending in 0xFF.
+                    self.backend
+                        .keys(KNOWLEDGE)?
+                        .iter()
+                        .filter(|k| k.starts_with(caller.as_slice()))
+                        .count()
+                        < MAX_KNOWLEDGE_PER_OWNER,
+                    "knowledge owner quota reached: at most {MAX_KNOWLEDGE_PER_OWNER} entries per owner"
+                );
+                ensure!(
+                    self.backend.count(KNOWLEDGE)? < MAX_KNOWLEDGE,
+                    "knowledge worker capacity reached: at most {MAX_KNOWLEDGE} entries per worker"
+                );
+                self.backend.put(KNOWLEDGE, &key, &bytes)?;
+                Ok(serde_json::json!({"stored":true}))
+            }
+            TaskOperation::KnowledgeGet { key } => {
+                let bytes = self
+                    .backend
+                    .get(KNOWLEDGE, &knowledge_key(&caller, &key)?)?
+                    .context("knowledge not found for this owner")?;
+                Ok(serde_json::from_slice(&bytes)?)
+            }
+        }
+    }
+
+    fn next_ready(&self) -> Result<Option<TaskRecord>> {
+        let _lock = self.writes.lock().unwrap();
+        let keys: Vec<_> = self.pending.lock().unwrap().iter().cloned().collect();
+        for key in keys {
+            let bytes = self
+                .backend
+                .get(TASKS, &key)?
+                .context("pending task disappeared")?;
+            let mut record: TaskRecord = serde_json::from_slice(&bytes)?;
+            if record.state != TaskState::Pending || !self.allowed.contains(&record.owner) {
+                continue;
+            }
+            // The deadline is wall-clock time from `created_at` (submission),
+            // covering dependency waiting AND any time the worker was down:
+            // a task interrupted by a long outage fails on the next pass.
+            if now().saturating_sub(record.created_at) >= u64::from(record.spec.timeout_secs) {
+                record.state = TaskState::Failed;
+                record.error = Some("task deadline exceeded".into());
+                self.save(&mut record)?;
+                continue;
+            }
+            let dependencies: Vec<_> = record
+                .spec
+                .dependencies
+                .iter()
+                .map(|id| self.get(&record.owner, *id))
+                .collect::<Result<_>>()?;
+            if dependencies
+                .iter()
+                .any(|r| matches!(r.state, TaskState::Failed | TaskState::Cancelled))
+            {
+                record.state = TaskState::Failed;
+                record.error = Some("dependency failed or was cancelled".into());
+                self.save(&mut record)?;
+                continue;
+            }
+            if dependencies.iter().any(|r| r.state != TaskState::Completed) {
+                continue;
+            }
+            if let Some(input) = &record.spec.input_from {
+                let dependency = self.get(&record.owner, input.task_id)?;
+                let content = match dependency.result.as_ref().map(|r| &r.outcome) {
+                    Some(ToolOutcome::Ok { content }) => content.pointer(&input.pointer).cloned(),
+                    _ => None,
+                };
+                let Some(content) = content else {
+                    record.state = TaskState::Failed;
+                    record.error = Some("dependency input pointer did not resolve".into());
+                    self.save(&mut record)?;
+                    continue;
+                };
+                // Keep the immutable submitted specification unchanged for
+                // duplicate detection; only the returned execution copy changes.
+                record.state = TaskState::Running;
+                self.save(&mut record)?;
+                record.spec.args["text"] = content;
+            } else {
+                record.state = TaskState::Running;
+                self.save(&mut record)?;
+            }
+            return Ok(Some(record));
+        }
+        Ok(None)
+    }
+
+    pub async fn tick(&self) -> Result<()> {
+        for _ in 0..16 {
+            let Some(record) = self.next_ready()? else {
+                break;
+            };
+            let call = ToolCall {
+                id: record.spec.id.to_string(),
+                name: record.spec.tool.clone(),
+                args: record.spec.args,
+                trace: None,
+            };
+            let remaining = u64::from(record.spec.timeout_secs)
+                .saturating_sub(now().saturating_sub(record.created_at))
+                .max(1);
+            let result = tokio::time::timeout(
+                Duration::from_secs(remaining),
+                tokio::task::spawn_blocking(move || crate::tools::invoke(call)),
+            )
+            .await;
+            let _lock = self.writes.lock().unwrap();
+            let mut current = self.get(&record.owner, record.spec.id)?;
+            // Owner cancellation wins even if a blocking read-only parser has
+            // just finished; its output never replaces the cancelled state.
+            if current.state != TaskState::Running {
+                continue;
+            }
+            if now().saturating_sub(current.created_at) >= u64::from(current.spec.timeout_secs) {
+                current.state = TaskState::Failed;
+                current.error = Some("task deadline exceeded".into());
+                self.save(&mut current)?;
+                continue;
+            }
+            match result {
+                Ok(Ok(result)) => {
+                    let size = serde_json::to_vec(&result)?.len();
+                    if size > MAX_RESULT {
+                        current.state = TaskState::Failed;
+                        current.error = Some(format!(
+                            "task result is {size} bytes, over the {MAX_RESULT}-byte ({} KiB) result limit",
+                            MAX_RESULT / 1024
+                        ));
+                    } else {
+                        current.state = if matches!(result.outcome, ToolOutcome::Ok { .. }) {
+                            TaskState::Completed
+                        } else {
+                            TaskState::Failed
+                        };
+                        current.result = Some(result);
+                    }
+                }
+                _ => {
+                    current.state = TaskState::Failed;
+                    current.error = Some("tool deadline or execution failure".into());
+                }
+            }
+            self.save(&mut current)?;
+        }
+        Ok(())
+    }
+
+    pub fn start(self: &Arc<Self>) {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if let Err(error) = service.tick().await {
+                    tracing::warn!(%error,"task worker pass failed");
+                }
+            }
+        });
+    }
+}
+
+#[async_trait::async_trait]
+impl spine_mesh::naming_mesh::MeshApplication for TaskService {
+    async fn handle(&self, caller: [u8; 32], request: serde_json::Value) -> serde_json::Value {
+        if !self.allowed.contains(&caller) {
+            return serde_json::json!({"error":{"code":"not_authorized","message":"peer signing key is not authorized for tasks"}});
+        }
+        let result = serde_json::from_value(request)
+            .map_err(anyhow::Error::from)
+            .and_then(|op| self.request(caller, op));
+        match result {
+            Ok(value) => serde_json::json!({"result":value}),
+            Err(error) => {
+                serde_json::json!({"error":{"code":"task_rejected","message":error.to_string()}})
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spine_protocol::tasks::TaskInput;
+    fn spec() -> TaskSpec {
+        TaskSpec {
+            id: Uuid::new_v4(),
+            tool: "spine.content/hash".into(),
+            args: serde_json::json!({"text":"abc"}),
+            dependencies: vec![],
+            input_from: None,
+            timeout_secs: 300,
+        }
+    }
+    fn open_store(dir: &tempfile::TempDir, owners: u8) -> TaskService {
+        let path = dir.path().join("cap.sqlite");
+        TaskService::new(
+            Arc::new(spine_storage::sqlite::SqliteBackend::open(path.to_str().unwrap()).unwrap()),
+            (1..=owners).map(|n| [n; 32]).collect(),
+        )
+        .unwrap()
+    }
+    fn submit(service: &TaskService, owner: u8, spec: TaskSpec) -> Result<serde_json::Value> {
+        service.request([owner; 32], TaskOperation::Submit { spec })
+    }
+    /// Force a task into `state` with explicit creation and completion times
+    /// (`completed_at` is `None` unless the state is terminal).
+    fn finish_at(
+        service: &TaskService,
+        owner: u8,
+        id: Uuid,
+        state: TaskState,
+        created_at: u64,
+        completed_at: u64,
+    ) {
+        let mut record = service.get(&[owner; 32], id).unwrap();
+        record.state = state;
+        record.created_at = created_at;
+        record.completed_at = is_terminal(state).then_some(completed_at);
+        service.save(&mut record).unwrap();
+    }
+    /// `finish_at` with creation and completion at the same time `t`.
+    fn finish(service: &TaskService, owner: u8, id: Uuid, state: TaskState, t: u64) {
+        finish_at(service, owner, id, state, t, t);
+    }
+    /// Fill a store of 256 with uneven holdings: owners 1..=5 hold 64, 60, 60,
+    /// 60 and 12 pending tasks. Returns the ids per owner (index owner - 1).
+    fn fill_uneven(service: &TaskService) -> Vec<Vec<Uuid>> {
+        [64usize, 60, 60, 60, 12]
+            .iter()
+            .enumerate()
+            .map(|(index, count)| {
+                (0..*count)
+                    .map(|_| {
+                        let s = spec();
+                        let id = s.id;
+                        submit(service, index as u8 + 1, s).unwrap();
+                        id
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+    /// Fill the store with 256 pending tasks spread over owners 1..=4.
+    fn fill(service: &TaskService) -> Vec<(u8, Uuid)> {
+        let mut ids = vec![];
+        for owner in 1..=4u8 {
+            for _ in 0..MAX_ACTIVE_TASKS_PER_OWNER {
+                let s = spec();
+                ids.push((owner, s.id));
+                submit(service, owner, s).unwrap();
+            }
+        }
+        ids
+    }
+
+    #[test]
+    fn full_store_evicts_oldest_terminal_and_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let ids = fill(&service);
+        let err = submit(&service, 5, spec()).unwrap_err().to_string();
+        assert!(err.contains("capacity"), "{err}");
+        // Three terminal tasks of different owners. All four owners hold 64
+        // entries, so the tie goes to the smallest owner key (owner 1),
+        // whatever the completion times.
+        finish(&service, 2, ids[70].1, TaskState::Completed, 50);
+        finish(&service, 1, ids[3].1, TaskState::Failed, 10);
+        finish(&service, 3, ids[140].1, TaskState::Cancelled, 30);
+        let fresh = spec();
+        submit(&service, 5, fresh.clone()).unwrap();
+        assert!(service.get(&[1; 32], ids[3].1).is_err());
+        assert!(service.get(&[2; 32], ids[70].1).is_ok());
+        assert!(service.get(&[3; 32], ids[140].1).is_ok());
+        assert!(service
+            .request([1; 32], TaskOperation::Status { id: ids[3].1 })
+            .is_err());
+        drop(service);
+        let service = open_store(&dir, 5);
+        assert!(service.get(&[1; 32], ids[3].1).is_err());
+        assert!(service.get(&[5; 32], fresh.id).is_ok());
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+    }
+
+    #[test]
+    fn terminal_task_with_live_dependent_is_not_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let base = spec();
+        submit(&service, 1, base.clone()).unwrap();
+        let mut dependent = spec();
+        dependent.dependencies = vec![base.id];
+        submit(&service, 1, dependent.clone()).unwrap();
+        let mut ids = vec![];
+        for owner in 2..=4u8 {
+            for _ in 0..MAX_ACTIVE_TASKS_PER_OWNER {
+                let s = spec();
+                ids.push((owner, s.id));
+                submit(&service, owner, s).unwrap();
+            }
+        }
+        for _ in 0..(MAX_ACTIVE_TASKS_PER_OWNER - 2) {
+            submit(&service, 1, spec()).unwrap();
+        }
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        // Owner 1 ranks first (tie at 64, smallest key) but its only terminal
+        // task is needed by a pending dependent, so the next owner supplies
+        // the victim.
+        finish(&service, 1, base.id, TaskState::Completed, 1);
+        finish(&service, 2, ids[0].1, TaskState::Completed, 99);
+        submit(&service, 5, spec()).unwrap();
+        assert!(service.get(&[1; 32], base.id).is_ok());
+        assert!(service.get(&[2; 32], ids[0].1).is_err());
+    }
+
+    #[test]
+    fn owner_at_fair_share_cannot_evict_another_owners_finished_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        // Owner 1 holds 64 entries: a terminal base kept alive by a pending
+        // dependent, and 62 other pending tasks.
+        let base = spec();
+        submit(&service, 1, base.clone()).unwrap();
+        let mut dependent = spec();
+        dependent.dependencies = vec![base.id];
+        submit(&service, 1, dependent).unwrap();
+        for _ in 0..(FAIR_SHARE_TASKS - 2) {
+            submit(&service, 1, spec()).unwrap();
+        }
+        let mut others = vec![];
+        for owner in 2..=4u8 {
+            for _ in 0..FAIR_SHARE_TASKS {
+                let s = spec();
+                others.push((owner, s.id));
+                submit(&service, owner, s).unwrap();
+            }
+        }
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        finish(&service, 1, base.id, TaskState::Completed, 1);
+        finish(&service, 2, others[0].1, TaskState::Completed, 2);
+        // Owner 1 is at its share and has nothing evictable of its own: it is
+        // refused, and owner 2's finished result is untouched.
+        let err = submit(&service, 1, spec()).unwrap_err().to_string();
+        assert!(err.contains("capacity"), "{err}");
+        assert!(service.get(&[2; 32], others[0].1).is_ok());
+        assert!(service.get(&[1; 32], base.id).is_ok());
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        // An owner below its share is admitted by evicting owner 2's task,
+        // since owner 1 (ranked first) has no evictable candidate.
+        submit(&service, 5, spec()).unwrap();
+        assert!(service.get(&[2; 32], others[0].1).is_err());
+        assert!(service.get(&[1; 32], base.id).is_ok());
+    }
+
+    #[test]
+    fn owner_at_fair_share_evicts_only_its_own_finished_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let ids = fill(&service);
+        // Owner 2 has a very old finished task; owner 1 has a newer one.
+        finish(&service, 2, ids[64].1, TaskState::Completed, 1);
+        finish(&service, 1, ids[0].1, TaskState::Completed, 500);
+        // Owner 1 holds 64 entries (63 active) and is at its share.
+        submit(&service, 1, spec()).unwrap();
+        assert!(service.get(&[1; 32], ids[0].1).is_err());
+        assert!(service.get(&[2; 32], ids[64].1).is_ok());
+    }
+
+    #[test]
+    fn largest_holder_loses_its_oldest_completed_task_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 6);
+        let ids = fill_uneven(&service);
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        // Owner 2 (60 entries) finished the oldest task of all; owner 1 (64
+        // entries, the largest holder) finished two later ones.
+        finish(&service, 2, ids[1][0], TaskState::Completed, 1);
+        finish(&service, 1, ids[0][0], TaskState::Failed, 20);
+        finish(&service, 1, ids[0][1], TaskState::Cancelled, 10);
+        submit(&service, 6, spec()).unwrap();
+        assert!(service.get(&[1; 32], ids[0][1]).is_err());
+        assert!(service.get(&[1; 32], ids[0][0]).is_ok());
+        assert!(service.get(&[2; 32], ids[1][0]).is_ok());
+    }
+
+    #[test]
+    fn recently_finished_task_survives_one_finished_earlier_but_created_later() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 6);
+        let ids = fill_uneven(&service);
+        // `long` was created first but finished last; `quick` was created
+        // later and finished long before it.
+        let long = ids[0][0];
+        let quick = ids[0][1];
+        finish_at(&service, 1, long, TaskState::Completed, 1, 1000);
+        finish_at(&service, 1, quick, TaskState::Completed, 50, 60);
+        submit(&service, 6, spec()).unwrap();
+        assert!(service.get(&[1; 32], quick).is_err());
+        assert!(service.get(&[1; 32], long).is_ok());
+    }
+
+    #[test]
+    fn terminal_transitions_stamp_completion_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 1);
+        let s = spec();
+        submit(&service, 1, s.clone()).unwrap();
+        assert_eq!(service.get(&[1; 32], s.id).unwrap().completed_at, None);
+        service
+            .request([1; 32], TaskOperation::Cancel { id: s.id })
+            .unwrap();
+        let record = service.get(&[1; 32], s.id).unwrap();
+        assert_eq!(record.state, TaskState::Cancelled);
+        assert!(record.completed_at.unwrap() >= record.created_at);
+    }
+
+    #[test]
+    fn eviction_ties_break_by_owner_then_completion_then_task_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let ids = fill(&service);
+        // Owners 1..=4 all hold 64 entries. Owner 3 finishes much earlier than
+        // owner 1, but owner 1 ranks first on the owner key. Within owner 1
+        // two tasks share creation and completion times, so the smaller id
+        // goes.
+        finish(&service, 3, ids[128].1, TaskState::Completed, 1);
+        finish(&service, 1, ids[0].1, TaskState::Completed, 100);
+        finish(&service, 1, ids[1].1, TaskState::Completed, 100);
+        let expected = ids[0].1.min(ids[1].1);
+        let survivor = ids[0].1.max(ids[1].1);
+        submit(&service, 5, spec()).unwrap();
+        assert!(service.get(&[1; 32], expected).is_err());
+        assert!(service.get(&[1; 32], survivor).is_ok());
+        assert!(service.get(&[3; 32], ids[128].1).is_ok());
+    }
+
+    #[test]
+    fn full_of_non_terminal_tasks_refuses_and_keeps_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let ids = fill(&service);
+        // Pending and running tasks are never evicted.
+        finish(&service, ids[0].0, ids[0].1, TaskState::Running, 1);
+        assert!(submit(&service, 5, spec()).is_err());
+        assert_eq!(service.backend.count(TASKS).unwrap(), MAX_TASKS);
+        assert!(service.get(&[ids[0].0; 32], ids[0].1).is_ok());
+    }
+
+    #[test]
+    fn owner_active_task_cap_is_per_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 2);
+        let mut first = vec![];
+        for _ in 0..MAX_ACTIVE_TASKS_PER_OWNER {
+            let s = spec();
+            first.push(s.id);
+            submit(&service, 1, s).unwrap();
+        }
+        let err = submit(&service, 1, spec()).unwrap_err().to_string();
+        assert!(err.contains("owner task quota"), "{err}");
+        submit(&service, 2, spec()).unwrap();
+        // A terminal task frees the owner's share.
+        finish(&service, 1, first[0], TaskState::Completed, 1);
+        submit(&service, 1, spec()).unwrap();
+    }
+
+    #[test]
+    fn knowledge_owner_and_worker_caps_have_distinct_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = open_store(&dir, 5);
+        let put = |owner: u8, n: usize| {
+            service.request(
+                [owner; 32],
+                TaskOperation::KnowledgePut {
+                    key: format!("k{n}"),
+                    value: serde_json::json!({"n":n}),
+                },
+            )
+        };
+        for n in 0..MAX_KNOWLEDGE_PER_OWNER {
+            put(1, n).unwrap();
+        }
+        let err = put(1, 1000).unwrap_err().to_string();
+        assert!(err.contains("owner quota"), "{err}");
+        // Repeating an existing identical entry stays idempotent at the cap.
+        put(1, 0).unwrap();
+        for owner in 2..=4u8 {
+            for n in 0..MAX_KNOWLEDGE_PER_OWNER {
+                put(owner, n).unwrap();
+            }
+        }
+        let err = put(5, 0).unwrap_err().to_string();
+        assert!(err.contains("worker capacity"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn durable_dependencies_duplicates_cancellation_and_owner_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tasks.sqlite");
+        let open = || {
+            TaskService::new(
+                Arc::new(
+                    spine_storage::sqlite::SqliteBackend::open(path.to_str().unwrap()).unwrap(),
+                ),
+                vec![[1; 32], [2; 32]],
+            )
+            .unwrap()
+        };
+        let service = open();
+        let first = spec();
+        let mut second = spec();
+        second.dependencies = vec![first.id];
+        second.input_from = Some(TaskInput {
+            task_id: first.id,
+            pointer: "/sha256".into(),
+        });
+        service
+            .request(
+                [1; 32],
+                TaskOperation::Submit {
+                    spec: first.clone(),
+                },
+            )
+            .unwrap();
+        service
+            .request(
+                [1; 32],
+                TaskOperation::Submit {
+                    spec: second.clone(),
+                },
+            )
+            .unwrap();
+        assert!(service
+            .request([2; 32], TaskOperation::Status { id: first.id })
+            .is_err());
+        assert!(service
+            .request([3; 32], TaskOperation::Status { id: first.id })
+            .is_err());
+        let mut conflicting = first.clone();
+        conflicting.args = serde_json::json!({"text":"different"});
+        assert!(service
+            .request([1; 32], TaskOperation::Submit { spec: conflicting })
+            .is_err());
+        service.tick().await.unwrap();
+        assert_eq!(
+            service.get(&[1; 32], second.id).unwrap().state,
+            TaskState::Completed
+        );
+        service
+            .request(
+                [1; 32],
+                TaskOperation::Submit {
+                    spec: second.clone(),
+                },
+            )
+            .unwrap();
+        let cancelled = spec();
+        let mut dependent = spec();
+        dependent.dependencies = vec![cancelled.id];
+        service
+            .request(
+                [1; 32],
+                TaskOperation::Submit {
+                    spec: cancelled.clone(),
+                },
+            )
+            .unwrap();
+        service
+            .request(
+                [1; 32],
+                TaskOperation::Submit {
+                    spec: dependent.clone(),
+                },
+            )
+            .unwrap();
+        service
+            .request([1; 32], TaskOperation::Cancel { id: cancelled.id })
+            .unwrap();
+        service.tick().await.unwrap();
+        assert_eq!(
+            service.get(&[1; 32], dependent.id).unwrap().state,
+            TaskState::Failed
+        );
+        let recovered = spec();
+        service
+            .request(
+                [1; 32],
+                TaskOperation::Submit {
+                    spec: recovered.clone(),
+                },
+            )
+            .unwrap();
+        {
+            let mut record = service.get(&[1; 32], recovered.id).unwrap();
+            record.state = TaskState::Running;
+            service.save(&mut record).unwrap();
+        }
+        drop(service);
+        let service = open();
+        assert_eq!(
+            service.get(&[1; 32], recovered.id).unwrap().state,
+            TaskState::Pending
+        );
+        service.tick().await.unwrap();
+        assert_eq!(
+            service.get(&[1; 32], recovered.id).unwrap().state,
+            TaskState::Completed
+        );
+        service
+            .request(
+                [1; 32],
+                TaskOperation::KnowledgePut {
+                    key: "artifact".into(),
+                    value: serde_json::json!({"hash":"test"}),
+                },
+            )
+            .unwrap();
+        assert!(service
+            .request(
+                [2; 32],
+                TaskOperation::KnowledgeGet {
+                    key: "artifact".into()
+                }
+            )
+            .is_err());
+        assert!(
+            service
+                .request(
+                    [1; 32],
+                    TaskOperation::KnowledgePut {
+                        key: "artifact".into(),
+                        value: serde_json::json!({"hash":"replacement"})
+                    }
+                )
+                .is_err(),
+            "replayed publication must never replace immutable knowledge"
+        );
+        service
+            .request(
+                [1; 32],
+                TaskOperation::KnowledgePut {
+                    key: "artifact".into(),
+                    value: serde_json::json!({"hash":"test"}),
+                },
+            )
+            .unwrap();
+        drop(service);
+        assert_eq!(
+            open()
+                .request(
+                    [1; 32],
+                    TaskOperation::KnowledgeGet {
+                        key: "artifact".into()
+                    }
+                )
+                .unwrap()["hash"],
+            "test"
+        );
+    }
+}

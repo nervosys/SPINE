@@ -1,0 +1,359 @@
+# SPINE Project Completion Plan
+
+Revised 2026-11-20. Stages 0 to 2 are the 2026-11-19 recovery plan and are nearly done. From Stage 3 onward the plan is reorganised around the seven-layer design in [SPINE from first principles](docs/FIRST_PRINCIPLES.md): the goal is an entirely new web stack for AI agents, built from the ground up, without regard to the existing install base. The 2026-11-19 stage list it replaces is in Git history at `7f7d1fc`.
+
+"Complete" means: the seven layers (session, names, authority, objects, interaction, discovery, execution) are specified independently of the code, implemented, and reviewed; every action carries a verifiable delegation chain; content reaches a model with its provenance; validation is reproducible on every supported platform; and a release installs from published packages and archives.
+
+## Where the project stands
+
+**History recovered.** Claude Code built SPINE through Phase 48 under the earlier project name Hyperlight; those transcripts are no longer on disk, and their record is `HANDOFF.md`. A Codex session on 2026-10-01/02 wrote the first version of this plan and then implemented against it in five stages. It stopped after the session-retention stage with the reply "Independent security review, native tenancy, and cross-platform validation remain open."
+
+**What that session left working** (Windows x64 only, verified 2026-10-02 on Rust 1.98.1): 1,478 tests across 70 suites, Clippy, formatting, Rust 1.88 compilation, and a clean-install archive passing 19 acceptance checks. The supported subset is seed discovery, persistent signed names with owner renewal, verified resource transfer, two read-only native tools (HTML parsing, SHA-256), OpenAI-compatible model forwarding with IronGate routing, signed durable read-only mesh tasks, TCP/WSS mTLS, a native MCP stdio adapter, bounded outbound navigation, readiness diagnostics, and bounded session retention. Detail and limits are in [the status report](docs/COMPLETION_STATUS.md).
+
+**What is true today and was not then:**
+
+| Finding (checked 2026-11-19) | Consequence |
+| --- | --- |
+| All of the October work was uncommitted: 46 modified and 27 untracked files on `master` at `38e6ad5` | Resolved the same day: committed to `completion/agent-web` and pushed as draft pull request #49. |
+| `cargo audit` reports 34 vulnerabilities across 14 locked crate versions; it reported zero on 2026-10-02. `cargo deny check advisories` fails. | The security gate that was green is red. Stage 2. |
+| The dependency exception register was due for review on 2026-11-02 | Overdue; unmaintained warnings grew from 11 to 17, plus 20 unsound and 2 yanked. |
+| Toolchain is now Rust 1.100.0; all evidence is from 1.98.1. Cargo 1.100 emits about 50 new manifest warnings (unused and redundant dependencies). | The baseline must be re-established before new work. Stage 1. |
+| `v2.0.2` is already tagged and released on GitHub with binaries, from commit `d8b105a` | The working tree also says 2.0.2 and the local candidate is named `spine-2.0.2-dev`. This work cannot ship as 2.0.2. |
+| No CI run has ever seen this work. Remote CI is green for `38e6ad5` only. | Linux and macOS behaviour of the new code is unknown. |
+| Drive E: has 0 bytes free. Cargo now builds into a shared target directory on C: (218 GB free); the status report still says `E:/cargo-target`. | Evidence paths are stale; disk has stopped builds on this machine before. |
+| 15 Dependabot pull requests are open; #10, #12 and #15 are already superseded on `master` | Triage belongs with Stage 2. |
+| The crates.io publish token pasted into a transcript on 2026-08-24 has no recorded revocation | Three months live. Account holder action, listed first under external items. |
+
+**Verified today on Rust 1.100.0:** all 1,478 tests pass and formatting is clean, but Clippy fails on a lint the new toolchain added, so `scripts/verify.sh` exits 1. Details are in the *Verification log* at the end.
+
+## Order of work
+
+Stages 0 to 2 restore a trustworthy starting point. Stage 3 fixes defects that exist today whatever the design becomes. Stage 4 shrinks the workspace to the stack so that later stages review less code. Stage 5 writes the waist down. Stages 6 to 10 build the layers, authority first because everything multi-party depends on it. Stages 11 to 13 are operability, evidence and release.
+
+Check an item only when its stated result has been demonstrated on the commit in question. Record the command and log beside it in the status report.
+
+**Working assumptions, 2026-11-20.** These follow the recommendations in the first-principles document and stand until changed:
+
+- SPINE owns everything from the session layer up and runs over QUIC packet machinery with its own key-based authentication. It does not write a new reliable transport over UDP.
+- Research code moves to a separate workspace.
+- Constrained devices are out of scope for the first specification.
+- The licence for the specification is undecided and blocks only its publication.
+
+**Local verification is constrained.** Since 2026-11-19 full workspace builds on the development machine have been stopped for low memory. Until that changes, CI on pull request #49 is the verification of record and local runs are limited to single crates.
+
+## External items (start now, owner: account holder)
+
+These cannot be closed from inside the repository.
+
+- [ ] Revoke the crates.io publish token identified in `HANDOFF.md` and record the confirmation without copying its value.
+- [ ] Commission the independent handshake review using `HANDSHAKE-REVIEW.md` and [the review packet](docs/CRYPTO_REVIEW_PACKET.md). Until findings are resolved, the custom handshake is described as unreviewed.
+- [ ] Decide the release scope: which of Python, JavaScript/WASM, Go, C, GUI, browser extension, embedded, GPU, Kubernetes, RDMA and io_uring are supported, experimental, or deferred for this release. Stage 4 only does the work this decision calls for.
+- [ ] Decide the release version (see Stage 13) and whether the result is published to crates.io.
+- [ ] Supply real GPU/RDMA hardware evidence, or confirm those backends stay experimental.
+- [ ] Decide whether benchmark history may be served from a public `gh-pages` branch.
+
+## Stage 0. Secure the work
+
+- [ ] Confirm no other session is writing to this working tree or moving refs. Seven unrelated Cargo builds were running on this machine during today's check.
+- [x] Create a branch for the October work and commit it in reviewable groups. Done 2026-11-19 as five commits on `completion/agent-web`, grouped by layer (protocol and names; mesh and SDK; core, gateway and CLI; scripts and examples; documentation) because the features share files and could not be separated cleanly.
+- [x] Before committing, re-run `python scripts/scan_secrets.py` and confirm `artifacts/`, `build_completion*` logs, generated identities and `*.pem`/`*.key` files stay ignored.
+- [x] Push the branch and open a pull request so CI runs on Linux, macOS and Windows. Done 2026-11-19: draft pull request #49.
+- [ ] Free space on E: or remove it from any build path; keep at least 30 GB free on the drive holding the Cargo target directory before a full workspace build.
+- [x] Correct the stale environment facts in `docs/COMPLETION_STATUS.md` (target directory, free space, toolchain). Added as a dated update; the 2026-10-02 record is kept as it was.
+
+**Done when:** the work exists in commits on a pushed branch, and a CI run has reported on all three platforms.
+
+## Stage 1. Re-establish the baseline on the current toolchain
+
+- [x] Fix the Clippy failure Rust 1.100 introduces at `research/spine-crypto/src/lib.rs:939` (`needless_range_loop`), then any further lints it was hiding in dependent crates. Done 2026-11-19; the CI toolchain also rejected the deprecated `fetch_update`, replaced with compare-exchange loops so 1.88 still compiles. CI lint, docs, coverage and tests on all three platforms passed on `2801d13`.
+- [ ] `scripts/verify.sh 1478` passes on Rust 1.100.0, run unpiped on a quiet machine: 1,478 tests, 70 suites, 5 ignored, Clippy silent, formatting clean. Tests and formatting already pass as of 2026-11-19; Clippy does not. Clippy passes locally since `2801d13`. The full run has not been repeated after the Stage 2 lockfile change: the 2026-11-19 attempt was stopped by the system for low memory before any test ran.
+- [ ] Resolve the new Cargo manifest warnings (about 20 unused dependencies and 30 redundant declarations) by removing what is unused; do not silence the lint. Partly done 2026-11-19: 32 unused dependencies and the redundant `homepage` fields removed. 13 unused-dependency warnings remain where the crate name still appears in cfg-gated code, examples or benches, plus the unused `readme` workspace field; each needs a per-target check.
+- [ ] `cargo +1.89 check --workspace --exclude spine-browser --locked` passes.
+- [ ] `python scripts/release_gate.py` passes end to end, including the 19 clean-install checks, after Stage 2 changes the lockfile.
+- [ ] Fix every CI failure from the Stage 0 pull request. Expect platform differences in process tests, file permissions (Unix 0600 key creation is untested on a real Unix host), and path handling. On `2801d13` only `audit` and `deny` still fail; both are Stage 2.
+- [ ] Update `EXPECTED_SUITES_MIN`, the expected total, and the README test badge only to match a complete run.
+
+**Done when:** local gates and CI are green on the same commit.
+
+## Stage 2. Close the dependency regression
+
+All figures are from `cargo audit` on 2026-11-19 against the current lockfile. Re-run it first; the minimum fixed versions below are the lowest the advisories name and later advisories may raise them.
+
+- [x] `wasmtime` 36.0.16 → at least 36.0.19 (7 advisories, two rated critical-impact miscompilation in Cranelift). Keep the matching Cranelift and internal packages aligned. Done: 36.0.23.
+- [x] `rustls` 0.23.45 → at least 0.23.46 (4 advisories); `rustls-webpki` → at least 0.103.16; `webpki-roots` and `webpki-root-certs` → at least 1.0.10 (distrusted intermediates). Done: 0.23.46, 0.103.17, 1.0.12.
+- [x] `quinn-proto` 0.11.17 → at least 0.11.18 (5 advisories, remote panics); `quinn-udp` → at least 0.5.16. Done: 0.11.19 and 0.5.16.
+- [x] `zstd`: move the three crates still on `zstd = "0.12"` (`spine-protocol`, `spine-transport`, `spine-compiler`) and `spine-stream` to a fixed 0.13.x; this brings `zstd-safe` to at least 7.4 and `zstd-sys` to at least 2.1.2. Re-run the bounded-decompression and wire-compatibility tests, since this touches the native codec. Done: `zstd` 0.13.5, `zstd-safe` 7.4.1, `zstd-sys` 2.1.3; protocol, transport, stream and compiler tests passed.
+- [x] `libsqlite3-sys` 0.28 → at least 0.39 by upgrading `rusqlite` from 0.31 in `spine-storage`. This is a major upgrade under the namespace, resource, task and knowledge stores: re-run restart and backup/restore acceptance. Done 2026-11-20: `rusqlite` 0.43 with `libsqlite3-sys` 0.40; the MSRV is raised to 1.89 to allow it. Restart and backup/restore acceptance has not been re-run locally.
+- [x] `zip` 1.1.4 (6 advisories) arrives only as a build dependency of `utoipa-swagger-ui` 7.1.0 in `spine-gateway`. Upgrade `utoipa-swagger-ui` to a release on a fixed `zip`, or drop the bundled Swagger UI. Done: `utoipa` 6, `utoipa-swagger-ui` 10.0.2 and `axum` 0.8 in the gateway bring `zip` 9.7.3 (9.8.0 needs rustc 1.89). No source change was needed; the generated OpenAPI document has not been compared with the previous one.
+- [x] `libz-sys` 1.1.29 → at least 1.1.33. Done: 1.1.33.
+- [ ] Review the 20 unsound and 2 yanked warnings individually; replace yanked versions. Yanked versions replaced (0 remain). Two unsound warnings remain unreviewed: `tokio` RUSTSEC-2026-0386 and `rustix` RUSTSEC-2026-0486.
+- [x] Review the exception register, due 2026-11-02: six new unmaintained packages (including `chrono`, `humantime`, `zbus_names`, `zvariant`, `zvariant_derive`) need a rationale and owner or a migration. Give `rustls-pemfile` priority; it parses certificates and keys. Reviewed 2026-11-19, next review 2026-12-19: `chrono`, `zbus_names`, `zvariant` and `zvariant_derive` added with rationale; `proc-macro-error` and `humantime` are gone from the lockfile. `rustls-pemfile` migration is still outstanding.
+- [ ] Triage the 15 open Dependabot pull requests: close #10, #12 and #15 as superseded; fold #48 into this stage; decide #33 to #38 individually (several are major upgrades). #10, #12 and #15 closed 2026-11-19. #48 and #27 to #38 remain open.
+- [ ] `cargo audit` reports zero vulnerabilities and `cargo deny check advisories licenses sources` passes locally and in CI. As of 2026-11-19: 1 vulnerability (down from 34), the SQLite advisory above; licenses and sources pass.
+
+**Done when:** both tools are green on the Stage 1 commit and the register has a new review date.
+
+## Stage 3. Fix what the as-built review found
+
+The as-built specifications in `docs/spec/` were written on 2026-11-20 by reading the source without running it. Each item below was reported there with file and line. Items marked done were confirmed in the source by the agent that fixed them and have regression tests that pass in CI on Linux, macOS and Windows.
+
+### Names
+
+- [x] `SpineUri::parse` and `join` panic on multi-byte input at byte 8 (`src/spine-name/src/uri.rs`). Confirmed and fixed in `41c2b6e` with a regression test.
+- [x] A name lookup stops at the first valid record. It must prefer the highest sequence and refuse expired records; the resolver cache must not overwrite a newer record with an older one. Partly done: the resolver cache no longer replaces a newer record with an older one (`3d58059`). Still open: the lookup stops at the first valid answer and does not check expiry there; the fix is a quorum of the closest nodes. Done in `e9aea82`: a lookup waits for 3 distinct asked peers (fewer when no more are reachable), returns the superseding record, and drops expired ones.
+- [x] Two different records with equal sequence and publication time never converge. Add a deterministic tie-break. Done in `3d58059`: an exact tie breaks on the signature.
+- [x] `NotFound` is returned and cached when every known peer was unreachable; that case is `Unavailable`. A negative-cache hit must not trigger another mesh walk. Done in `25f1586`.
+- [x] `cap:` lookups target the hash of the capability term, but replication stores records only near the record's own name key, so remote capability discovery finds little. Place provider records under the capability key. Done in `4c5ed00`: records are also replicated near each advertised capability key, capped at 8 per record, and accepted there. Nodes holding a record only for its capability key do not re-offer it; the publisher's republish keeps it alive.
+- [x] Routing buckets replace their stalest entry when a newcomer claims a later `last_seen`, which the newcomer supplies. Verify liveness before eviction. Done in `be9eee6`: a full bucket keeps its entries; a newcomer replaces only an entry this node marked unreachable; a referral cannot change a known node's endpoints or identity. `NameService::mark_unreachable` still removes outright and does not yet use the soft mark.
+- [x] Bound `NameService.peers` and the size of a record accepted from the mesh. Mostly done in `be9eee6`: registry capped at 1,024 and records from peers size-checked in the name service. Still open: the same check where `naming_mesh.rs` stores records directly, and a bound on referred endpoint lists. Finished in `e9aea82`: referred nodes capped at 8 endpoints of 256 bytes and 20 nodes per response; `publish` size-checks.
+
+### Signatures and envelopes
+
+- [x] `Link.title`, `Link.capabilities` and a resource's `content_type` are not covered by the record signature. Link fields done in `c6dd827` (v2 signing layout covering every record field). `content_type` done in this change: the resource id (`spine_name::resource_id`, SHA-256 over a domain-separated, length-prefixed encoding of content type and bytes) is the signed `content_hash`, so every fetch path verifies the type; see `docs/spec/04-objects.md` section 2.6.
+- [ ] Signed bytes use NUL-terminated strings and, for mesh envelopes, `serde_json` output. Move to a length-prefixed canonical encoding (decided in Stage 5). Name records done in `c6dd827` and mesh envelopes length-prefixed in `d89d5f9`; envelope payloads still pass through `serde_json` before signing.
+- [x] The mesh envelope signature omits the destination and timestamp, although the comment says the destination is covered (comment confirmed at `research/spine-agentic/src/mesh.rs`). If payload serialisation fails the payload is silently dropped from the signed bytes; fail closed. Done in `d89d5f9`. Hop count and time-to-live stay unsigned because forwarders change them.
+- [x] Use strict Ed25519 verification throughout. Done in `3476769` for name records, agent identities and the handshake. `swe.rs` switched in `a94fb6a`'s parent commit; an audit found no other non-strict call and no other signature library.
+- [x] The signed RPC path has no application-level replay or duplicate check; `MessageDedup` is never called on it. Safe today only because every operation is read-only or idempotent. Done in `d5cbf37` and `c1f2c89`: requests outside a 120-second window or already seen from the same sender are refused; the table holds 4,096 entries and refuses new requests when full of live ones. Unit-tested; no end-to-end replay test.
+
+### Session and transport
+
+- [ ] The identity-pin map has no production writer, so every DHT dial in `spine-core` is unpinned. `HANDSHAKE-REVIEW.md` says unpinned dialing happens once.
+- [ ] Mesh over QUIC runs the handshake on the first stream, discards the session keys, accepts any certificate, and serves later streams without consulting the authenticated identity. Refuse to start mesh QUIC until Stage 8 replaces it.
+- [ ] Unbounded or overflowing paths: native QUIC receive allocation, `Frame::decompress` output, `send_window` addition, and `seal` panicking when the counter is exhausted. Done in `3476769`, `30d3d94`, `6e6cddd` and `66fcc56`: QUIC receive bound, frame and batch decompression capped at 64 MiB, saturating window arithmetic, and an exhausted AEAD counter is an error (it previously wrapped in release builds, reusing nonces).
+- [ ] The native wire is plaintext unless TLS is enabled, and TLS is off by default. Make the default refuse to listen beyond loopback without it. Partly done in `bbaf7e9`: a non-loopback bind is refused without mutual TLS or an explicit `allow_unauthenticated_remote`.
+- [x] Correct `HANDSHAKE-REVIEW.md` (the associated data is not empty) and `THREAT_MODEL.md` (it describes X3DH and ChaCha20, which are not deployed) before the reviewer reads them. Done on branch `docs/review-accuracy` (`65d35b8`), not merged pending the decision on publishing review material. Merged in `e612b1b` with paths updated for `spine-session` and `spine-mesh`.
+
+### Native server
+
+- [ ] Any connected client can call tools, publish names and resources, execute binaries, and make the node sign mesh calls with its own key (`MeshCall` confirmed in `src/spine-core/src/main.rs`). This is the absence of layer 3; until Stage 6 lands, restrict these commands to loopback or mTLS-authenticated clients. Interim guard in `bbaf7e9` as above; per-client authorization is Stage 6.
+- [x] `fetch_resource` dials publisher-chosen addresses over plaintext TCP with no outbound policy. Done in `1d06dfc`: loopback, private, link-local and similar destinations are refused after DNS resolution unless the caller opts in. Still plaintext TCP.
+- [ ] Resources are never deleted and any client can fill the 256 MiB store; a failed name publication leaves its blob behind. Partly done in `8058df1`: a failed publication removes the blob it added; blobs are stored as base64 and hashed once per load. Still open: no deletion or per-client quota. Tasks done in `9f5d3a2`: oldest finished task evicted at capacity, 64 active tasks and 64 knowledge entries per owner. Eviction orders by creation time and crosses owners; knowledge deletion needs a new protocol message.
+- [ ] Tasks (256) and knowledge entries (256) are shared across all owners and never evicted. Partly done in `9f5d3a2` (bounds and eviction) and `319647f` (CI green on Linux and macOS): eviction is fair-share and completion-ordered, the largest holder is evicted first, an owner at 64 or more entries evicts only itself, live dependencies are protected. Knowledge stays non-evictable; exhaustion of its 256 slots by free identities is a Stage 6 item.
+
+## Stage 4. Reduce the workspace to the stack
+
+Facts are from `docs/spec/workspace-inventory.md` (2026-11-20, read from source and `cargo metadata`; the "still compiles" claims in it are untested). 26 manifest edges run from stack or edge crates to research or undecided code.
+
+- [x] Delete the manifest entries nothing uses (`3476769`): `spine-transport` and `spine-stream` on `spine-protocol`, `spine-core` on `spine-compiler`, `spine-agent`'s dev-dependency on `spine-kernel`. After this, layer 1 no longer reaches neural or research crypto.
+- [x] Copy the 222-line `gateway_route.rs` into `spine-gateway` and drop its dependency on `spine-recursive` (`93dae14`).
+- [x] Take research out of `spine-protocol` (`src/lib.rs`, 5,350 lines): `ChameleonKey`, the speculative predictor, and a 2,045-line evolution region nothing else uses. `ProtocolHandler::new` builds two Titans transformers on every connection. The `Message` and `BrowserCommand` enums carry research variants, so this changes the wire type and belongs with the Stage 5 version decision. Partly done in `d5fd129` and `638d333` (CI green, feature-off builds compiled in lint): research code moved to gated modules behind a default-on `research` feature; `spine-neural` and `spine-crypto` are optional. No wire type is gated, so the encoding is the same in both builds. Still open: `ProtocolHandler` is on the production path and holds the chameleon key and two predictors, so it is gated whole; the daemon and SDK therefore still need the feature on. Update `60d71d4` (CI green): `ProtocolHandler` now lives in an ungated module; only the chameleon key and the predictor are gated, and a stand-in predictor keeps the frame wrapper identical. `mesh_quic` and `signed_frame` moved to `spine-mesh` (`3c72906`). Not verified: a research-off peer talking to a research-on peer (each build is only tested against itself). Closed by `e716cc1` (CI green): `research` is no longer a default feature; the wire types are unchanged and the research variants of `Message` remain for the Stage 5 decision.
+- [x] Split `spine-agentic`: the stack needs eight modules (identity, mesh, naming, naming_mesh, mesh_tcp, mesh_ws, mesh_quic, signed_frame; about 9,300 lines and 158 of its 401 tests) plus `AgentId`, which is defined in the 8,424-line `lib.rs`. `mesh_ws`, `mesh_quic` and `signed_frame` have no caller outside their own tests. Stack half done in `c5ccb56` and `6e47224` (every CI job green; Linux 1,538 passed, 0 failed, 5 ignored; `spine-mesh` 168 tests, `spine-agentic` 258): `identity`, `mesh`, `naming`, `naming_mesh`, `mesh_tcp`, `mesh_ws` and `AgentId` moved to a new `spine-mesh` crate depending only on `spine-name`, `spine-session` and `spine-transport`; `spine-agentic` re-exports them. `mesh_quic` and `signed_frame` stay behind because they import `spine-protocol`, which depends on `spine-neural` and `spine-crypto`. `spine-core` still needs `spine-agentic` for `AgenticWebRuntime` and related types. Closed: `mesh_quic` and `signed_frame` moved in `3c72906`, and the research half now lives in `research/spine-agentic` (`a580b33`).
+- [x] Split `spine-crypto`: `handshake.rs` (903 lines) is the only stack part and uses only external crates. The Titans predictor, RLWE ring and quantum key evolution are research. Stack signing does not use this crate at all. Done for the stack half in `820400e` (CI green): the handshake moved to a new `spine-session` crate with no workspace dependencies; `spine-crypto` re-exports it. `spine-agentic` still depends on `spine-crypto` for research types in its `lib.rs`.
+- [x] Remove cluster, neural and human use from the `spine-core` daemon (`main.rs`). `SwarmPlan` and `TaskStatus` live in `spine-protocol`, so they move first. Partly done in `932d323`, `85bc93b`, `22c8e0a` (CI green): stack imports come from `spine-mesh`; cluster, neural, agentic, the autonomous loop and the Navigate transpile are behind a default-on `research` feature and answer `unsupported_without_research` when off. Feature-off the daemon drops `spine-cluster`, `spine-human` and `spine-agentic` but still reaches `spine-neural` and `spine-crypto` through `ProtocolHandler`. Update `60d71d4` (CI green): built with `--no-default-features` the daemon has no `spine-neural`, `spine-crypto`, `spine-agentic`, `spine-human` or `spine-cluster` in its tree (`cargo tree`). The feature is still on by default because the SDK, CLI (`benchmark`, `init`), Python bindings and browser call the gated commands; turning it off by default is an owner decision. Default flipped in `a109e45` (CI green): `spine-core` now builds research-free by default and the workspace tests run against that daemon; `--features research` restores the old one, and `spine-cli` forwards a `research` feature (effective only when both are built together, since the CLI launches the sibling binary). The CLI benchmark skips the latent measurement when unsupported. Closed by `a109e45` (daemon default is research-free), `62138e3` (SDK) and `bc25f4f` (gateway), all CI green.
+- [ ] Decide `spine-human`: its transpiler runs on every `Navigate`, so it is a feature on the gateway path, not an experiment. Either it becomes part of the edge or `Navigate` stops depending on it.
+- [ ] Keep `sybil.rs` when `spine-cluster` leaves: Argon2id proof of work and stake-weighted voting are the only admission-cost code in the repository, and Stage 10 needs one.
+- [x] `spine-knowledge` and `spine-mechgen` follow the research half of `spine-agentic`. `spine-nostd` and `spine-embedded` have no runtime dependents and can move at any time. All four moved to `research/` in `a580b33`; `spine-nostd` and `spine-embedded` remain dev-dependencies of `spine-protocol` and `spine-agent`.
+- [x] Move the research crates to a separate workspace. Done in `a580b33`: the 14 research crates are under `research/` (own `Cargo.toml` and `Cargo.lock`), `scripts/verify.sh` expects 45 suites and 3 ignored tests (measured on the Linux run for `a580b33`), and `scripts/release_gate.py`, `scripts/publish.sh`, CI and the README were updated. The status report was not touched. In the same change lower `EXPECTED_SUITES_MIN` and the ignored count in `scripts/verify.sh`, and update `scripts/release_gate.py`, `scripts/publish.sh`, CI, the README and the status report.
+- [x] Make the default root build research-free. Done in this change: `spine-protocol` defaults to `["quic"]` and `spine-web` no longer enables `agentic` by default, so `cargo tree --offline --workspace -e normal -i <research crate>` finds none of the 14; research stays opt-in through `research` features (`spine-web` gains one). Not compiled locally; CI is the check.
+- [ ] Decide what happens to the 29 crates already on crates.io at 2.0.1; moving sources does not unpublish them (account holder).
+- [ ] Remove the remaining unused-dependency warnings as their crates are touched.
+
+## Stage 5. Specify the waist
+
+- [ ] Choose one canonical encoding for everything that is signed or hashed, and one version scheme for the formats.
+- [ ] Turn `docs/spec/02-names.md` and `docs/spec/04-objects.md` from as-built descriptions into normative specifications with the Stage 3 fixes applied.
+- [ ] Generate test vectors: keys, names, signing bytes, signatures, record hashes, chunk hashes. The existing tests contain none beyond RFC 4648 strings.
+- [ ] Resolve everything marked Undetermined in the five specification files.
+- [ ] Decide the licence for the specification and vectors (account holder).
+- [ ] Native client to daemon wire: `docs/spec/00-wire.md` records the wire as built (part A), requirements (B), a proposed "spine-wire v1" frame (C), the v1 message set (D), the fate of morphology, chameleon and speculation (E), the migration steps below (F) and open questions for the owner (G). Nothing in it is implemented. Steps, each to leave CI green:
+  - [x] `cbor-core`: deterministic CBOR encoder and validator in `spine-protocol`, additive. Done in `68109a0`.
+  - [x] `frame-codec`: the 15-byte frame header, limits and bounded decompression, additive. Done in `f556e26`.
+  - [x] `hello-close`: `HELLO`, `HELLO_ACK`, `CLOSE`; delete the unused `negotiation.rs`. Done in `ce795e6` and `eb46c69`~1 (clippy fix).
+  - [x] `drop-speculation`: remove `SpeculativeFrame`, the predictors and `Message::{Speculative, PreComputed, Sync}`. Done in `eb46c69`.
+  - [x] `drop-morphology`: remove morphology, padding, `MorphRequest`, `BrowserCommand::Morph` and the daemon's 30 s morph monitor. Done in `838d363`.
+  - [x] `relocate-research`: move or delete `research.rs`, the chameleon hooks and the PSK AES layer; drop the `research` feature of `spine-protocol`. Done in `254e642`: research code is in `research/spine-protocol-research`; PSK AES and chameleon hooks are gone from the handler.
+  - [x] `trim-commands`: delete 13 `BrowserCommand` variants and move 5 to an extension. Done in `8bf13c8`~1: 17 commands remain.
+  - [x] `trim-messages`: delete 6 `Message` variants and move 6 to an extension. Done in `8bf13c8` and `b841fae`: 12 message types remain.
+  - [x] `connection`: a `Connection` type over the frame codec with handshake and request ids, additive. Done in `53a982c`.
+  - [x] `cutover`: daemon and SDK switch to the new wire; delete `ProtocolHandler` and the `SP` header. Done in `96ae4b5` with fixes through `8ee8a67`.
+  - [ ] `bodies-v1`: header ids replace body ids, `{ok}`/`{err}` responses with codes, closed structs, deterministic bodies.
+  - [x] `signed-frame`: delete or re-point `spine-mesh/src/signed_frame.rs`. Done in `96ae4b5`: deleted, no callers.
+  - [ ] `bindings-scripts-docs`: Go, FFI, Python, the browser extension, `scripts/smoke_candidate.py` and the documents that describe the old wire.
+  - [ ] `conformance-vectors`: hex vectors for every frame and error row, checked by an independent decoder.
+
+## Stage 6. Layer 3: authority
+
+- [ ] Review the draft in `docs/spec/03-authority.md` and resolve its seven open questions, offline revocation first.
+- [ ] Implement grants, chains, attenuation and the eleven-step verification in a new crate with no dependencies above layer 2.
+- [ ] Single-user mode: the node issues itself a root grant at first start. Remove operator-level access by connection.
+- [ ] Replace the coordinator allowlist with issued grants; tie task and knowledge ownership to the root issuer of the creating chain.
+- [ ] Stateful limits charged against every grant in the chain.
+- [ ] Revocation records published through layer 2, with per-effect-class staleness bounds.
+- [ ] Signed receipts for every invocation that had an effect.
+- [ ] Negative tests for every verification step, and a property test that no chain can broaden authority.
+
+## Stage 7. Layer 2: names with a life cycle
+
+- [ ] Identity that survives key change: a name commits to an inception key and a signed succession log. Define what rotation means for records signed by an old key.
+- [ ] Revocation of a name and of individual records; a maximum record lifetime.
+- [ ] Derive `AgentId` from the public key so a receiver can check it. Today it is a hash of the secret seed.
+- [ ] Human-meaningful labels as signed attestations layered on names, outside the trust path.
+- [ ] Acknowledged replica storage and retry accounting, or state that remote durability is not promised (`is_durable()` is false today).
+- [ ] Multi-node acceptance: publish, resolve from a node with no local copy, restart the publisher, rotate its key, renew, and stay available through a replica failure.
+
+## Stage 8. Layer 1: session
+
+- [ ] Replace the bespoke handshake with a published Noise pattern carrying a hybrid ML-KEM exchange. The as-built review maps the current design and lists the differences: no key confirmation, identities sent in clear, no rekeying, a replayed hello commits responder state.
+- [ ] Connect to a key: dial targets are identity names, and the channel is authenticated against the name with no certificate authority.
+- [ ] Run sessions over QUIC with authentication bound to the SPINE identity. Retire the parallel TCP and WebSocket mesh paths or reduce them to fallbacks with identical security.
+- [ ] One native codec. Two exist in `spine-protocol` today.
+- [ ] Connect `spine-stream` to the wire: enforced flow control, priority, cancel with a reason code, resumption after disconnect, migration across networks. None of it is wired today.
+- [ ] Carry the layer-3 grant chain as a distinct message class that content cannot occupy.
+- [ ] Write the Tamarin model for the handshake actually deployed and record its execution. The models in `formal/` cover other constructions and no execution record exists.
+- [ ] Commission the independent review against the new handshake (account holder); resolve findings with a regression each.
+- [ ] Replace the headline measurements: time to first token, cancel latency, resumption time, bytes per tensor.
+
+## Stage 9. Layers 4 and 5: objects and interaction
+
+### Objects
+
+- [ ] Schema-identified typed objects linked into a content-addressed graph; `blob:` names resolvable to bytes.
+- [ ] A signed provenance label on every object, delivered to the SDK caller with the content. Nothing carries provenance past the transfer boundary today.
+- [ ] The parser emits spans tagged with their source object; gateway-ingested web content is labelled unsigned third-party.
+- [ ] Declared size in bytes and approximate tokens, with a neutral definition of the token estimate; fetch at a budget.
+- [ ] Streaming and backpressure beyond the 8 MiB representation limit. Store blobs as bytes: they are JSON integer arrays today and every chunk read re-hashes the whole blob.
+- [ ] Evaluate budgeted representations and provenance tags with real models before freezing the object model.
+
+### Interaction
+
+- [ ] Every operation declares an effect class (read, reversible, irreversible), a cost and its idempotency. Enforce the advertised permissions, which are currently ignored.
+- [ ] Idempotency keys, dry-run, and resume after disconnect.
+- [ ] Decide whether arbitrary task execution is in scope. If so it runs in layer 7 under a grant. Task deadlines currently include downtime, and restart re-runs interrupted tasks, which is safe only for read-only tools.
+- [ ] Consolidate the HTTP model backend with the gRPC model abstraction; verify cancellation, bounded buffering and backpressure on native frames as well as SSE.
+- [ ] Decide whether model-issued tool calls execute automatically; under this design that requires a grant naming the effect class.
+
+## Stage 10. Layers 6 and 7: discovery and execution
+
+- [ ] Design study: Kademlia against a federated signed registry, judged on Sybil exposure, unprovable absence and operating cost.
+- [ ] An admission cost for publishing a capability (vouch, stake or proof of work). Today it costs one key generation.
+- [ ] Provider records carry attestations; ranking is computed by the caller's trust policy. Providers are ranked by self-declared endpoint count today.
+- [ ] Peer exchange in bounded bootstrap discovery, verifying identities learned through it.
+- [ ] Exercise replica placement, eviction, expiry and conflicting sequences under restart and churn.
+- [ ] Connect `spine-wasm` to tasks: a module receives only the capabilities passed to it, is metered in fuel and memory, and can be replayed deterministically for audit. Establish whether `ExecuteBinary` is metered or confined at all today.
+
+## Stage 11. Operability
+
+- [ ] Verify storage durability, migrations, backup and restore for names, sessions and knowledge against each component's persistence contract, including encrypted backups and power-loss behaviour.
+- [ ] Expose namespace connectivity, lookup failures, replication outcomes, renewal failures, stream pressure, model failures and resource consumption through metrics and readiness.
+- [ ] Make health and readiness reflect bridge, model and storage dependency state without requiring every optional dependency or seed.
+- [ ] Preserve trace correlation across tools, mesh messages and model calls; keep payloads out of telemetry by default.
+- [ ] Run sustained load and recovery tests. Measure the baseline first, then set limits for latency, resource growth, queue sizes and recovery time.
+- [ ] Write the operator runbook and availability requirements for a public seed service. Operating one is outside repository completion.
+
+**Done when:** an operator can install, configure, start, monitor, back up, restart and recover a small mesh from the documented commands on each supported platform.
+
+## Stage 12. Evidence, bridges and documentation
+
+- [ ] Extend the acceptance harness (`src/spine-core/tests/agent_web.rs`, seven process scenarios) to cover node loss, delayed replies, interrupted transfer, stale records, authorization failures, malformed input and consumer cancellation, and run it in CI on all three platforms.
+- [ ] Run the supported platform and feature matrix, including MSRV with the GUI, optional features and release builds; record results and exceptions.
+- [ ] Review unsafe kernel and FFI paths with Miri or sanitizers where applicable. Distinguish formal models that were written (`formal/tamarin`, `formal/tla`) from models executed and properties proved.
+- [ ] Re-run representative codec and real-network benchmarks with comparable payloads, security modes, compression and concurrency; record hardware, toolchain, method and raw results. Report token transport separately from model generation speed, and distributions separately from peaks.
+- [ ] Add performance regression checks with thresholds from measured variance; move unverifiable historical figures to `LEGACY.md`.
+- [ ] Reconcile source behaviour with `README.md`, `ARCHITECTURE.md`, `ROADMAP.md`, the security documents, the SDK cookbook, the mdBook under `docs/`, and `paper/paper.typ`. Known stale items: the README "Test Summary (1,418 tests)" section and 2.0.1 version badge; ROADMAP phases marked complete whose features now return unsupported; the audit title.
+- [ ] Replace stale version examples, crate counts, completion badges and security conclusions with verified current values.
+- [ ] Rewrite `HANDOFF.md` for the current state. It still describes Phase 38 and predates all of the October work.
+
+**Done when:** another developer reproduces the acceptance harness and benchmarks from the documented setup, and every public claim traces to recorded evidence.
+- [ ] Bridges are edge adapters and shape no layer: keep the OpenAI-compatible gateway, gRPC and MCP adapters working against real local servers, including errors and cancellation.
+- [ ] Review the stub and simulation markers that remain in stack crates and confirm each is real, test-only, or returns an explicit unsupported error.
+- [ ] Promote the five ignored documentation examples to executable examples or delete them.
+- [ ] Refresh `THREAT_MODEL.md` and `SECURITY_AUDIT.md` to the seven-layer design and verified behaviour.
+
+## Stage 13. Release
+
+- [ ] Choose the version. The October work changes wire behaviour (unsupported-version rejection, frame limits), configuration (strict validation, internal origins must be listed, redirects refused) and persistence (session manifest, SQLite task and name stores). That argues for 2.1.0 at minimum and 3.0.0 if any change breaks existing peers; it cannot be 2.0.2. Keep `spine-embedded` on its own 0.2.x line.
+- [ ] Rename the candidate archive and update `package_candidate.py` to the chosen version.
+- [ ] Reconcile workspace versions, internal dependency pins, changelog (move *Unreleased* under the version), compatibility notes and package metadata.
+- [ ] Test package resolution without path dependencies in the order derived by `scripts/publish.sh`.
+- [ ] Bring the release workflow in `.github/workflows/ci.yml` up to the local gate: checksums, configuration examples, license, lockfile, dependency inventory and provenance in every archive, built with `--locked`.
+- [ ] Build Linux, macOS and Windows archives and run `scripts/smoke_candidate.py` against each on its own platform.
+- [ ] Exercise upgrade from 2.0.1/2.0.2: persistence migration, incompatible-peer rejection, the documented recovery path, and where rollback is unsafe.
+- [ ] Confirm all verification evidence applies to the exact commit being tagged.
+- [ ] After explicit authorization: check auth with `cargo owner --list spine-protocol`, publish, verify installation from the registry and the release page, and update the handoff with actual outcomes.
+
+**Done when:** published packages and archives reproduce the supported workflow and the evidence names the shipped commit.
+
+## Final completion checklist
+
+- [ ] Layers 2 to 4 are specified with test vectors, and the implementation passes them.
+- [ ] No operation succeeds without a valid grant chain; no chain can broaden authority; every effect produces a signed receipt.
+- [ ] Names survive key rotation, and revoked names and grants are refused within the stated bound.
+- [ ] The session handshake is a published construction, formally modelled with the model executed, and independently reviewed with findings closed.
+- [ ] Content reaches the SDK caller with its provenance, and nothing in a content object can be interpreted as an instruction.
+- [ ] Operations declare effect and cost; irreversible effects require a grant that says so.
+- [ ] Capability discovery has an admission cost and caller-side ranking.
+- [ ] The workspace contains the stack and its edge adapters only; research lives elsewhere.
+- [ ] All supported platforms pass acceptance on the release commit; security, dependency and licence evidence is current.
+- [ ] Documentation and release metadata agree with verified behaviour; release candidates install and run.
+
+## Already demonstrated on 2026-10-02
+
+These were checked in the previous plan with evidence in the status report. They hold for Windows x64 on Rust 1.98.1 and must be re-confirmed in Stage 1; the dependency item among them has since regressed and is reopened in Stage 2.
+
+- **Baseline:** environment recorded; workspace built and tested; `verify.sh` detects failures by exit code; ignored tests explained; component inventory; supported platforms and MSRV recorded.
+- **Namespace:** publisher records and sequence state persist and restore; persistence policy for replicas, caches and contacts; owner-only renewal; publication outcome reporting; bounded batch resolution; CLI for publish, resolve, renew, identity, peers and health; DNS seed bootstrap.
+- **Resources and tools:** origin interface for named and content-addressed data; SDK resolve-connect-fetch-verify; safe fallback without replaying side effects; versions, schemas and permissions carried from discovery to invocation.
+- **Models and coordination:** configurable model source with echo as explicit demo; OpenAI-compatible subset specified; simulated neural transmit returns unsupported; two processes complete dependent tasks over authenticated connections; cancellation, duplicates, ownership and recovery defined for read-only tasks.
+- **Operations:** validated configuration examples; graceful shutdown, draining and idle cleanup; bounded session retention with atomic snapshots; admission readiness and outbound diagnostics; native start, stop, upgrade and recovery instructions.
+- **Security:** shared native/WASM outbound navigation policy; explicit TCP/WSS mTLS and CRL policy; bounded codecs and mesh admission.
+- **Other:** GUI and extension scope labelled; experimental work documented with acceptance criteria; clean-install quickstart with demo and configured model; local evidence report and release notes drafted.
+
+## Verification log
+
+**2026-11-19, Rust 1.100.0, Windows x64, uncommitted tree.** `scripts/verify.sh 1478` exited 1.
+
+| Stage | Result |
+| --- | --- |
+| `cargo test --workspace --no-fail-fast` | Passed: 1,478 tests, 70 suites, 0 failed, 5 ignored |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **Failed.** `clippy::needless_range_loop` at `research/spine-crypto/src/lib.rs:939`, a lint Rust 1.100 applies and 1.98.1 did not. Clippy stopped at `spine-crypto`, so crates that depend on it were not linted; more findings may follow once this one is fixed. |
+| `cargo fmt --all -- --check` | Passed |
+
+The run shared the machine with several unrelated builds, so the passing test count is not weakened by that, but timings are not meaningful. An earlier attempt the same day was interrupted mid-build and is disregarded. The MSRV check, release build, packaging and clean-install checks were not run.
+
+**2026-11-19 to 2026-11-20, pull request #49.** On `2801d13` every CI job passed except `audit` and `deny`: lint, docs, coverage, MSRV, builds, and tests on Linux, macOS and Windows. After the dependency upgrades and the MSRV change (`4ab39fc`), `audit` passed with zero vulnerabilities and `deny` failed on one unsound advisory in `tokio`, addressed in `7ea7eb8`. The full results for `7ea7eb8` were not available when this was written. Two local attempts to run the gate after the lockfile change were stopped for low memory before any test ran, so there is no local full run on the new lockfile.
+
+**2026-11-20, pull request #49, `e1cdc94`.** Every CI job passed after the Stage 3 fixes: lint, docs, coverage, bench, audit, deny, MSRV 1.89, and tests on Linux, macOS and Windows. The Linux test job reported 1,516 passed, 0 failed, 5 ignored across 69 suites; CI excludes `spine-browser`, so this is not directly comparable with the 1,478 across 70 suites that `scripts/verify.sh` expects from a full local run. The expected total passed to `verify.sh` and the README badge are stale until a full local run is possible. None of the Stage 3 changes was built locally.
+
+**2026-11-20, pull request #49, `a94fb6a`.** Lint, docs, coverage, deny, MSRV and tests on Linux, macOS and Windows passed. Linux: 1,538 passed, 0 failed, 5 ignored across 69 suites. The audit job reported zero vulnerabilities and then failed posting its result to the GitHub API ("Not Found"); that is an infrastructure error, not a finding. Added since `e1cdc94`: RPC replay guard (120-second window, 4,096 entries), lookup quorum and expiry, referral bounds, task eviction and per-owner caps, SQLite prefix-scan fix, strict verification in `swe.rs`.
+
+**2026-11-20, pull request #49, `0a2b5de`.** Audit passed on this commit after `rustix` 1.1.6 (RUSTSEC-2026-0486, unsound). Correction: the bump was not the cause. The same "Not Found" failure recurred on `8722dc8` with only the 14 unmaintained warnings, then passed on `b8a0a4e`; the job fails intermittently when the action posts its check, and has reported zero vulnerabilities every time. Cause not identified. 14 "unmaintained" warnings remain and do not fail the job. Lint, docs, coverage, bench, deny, MSRV and tests on Linux and macOS passed; Windows was still running when this was written. The `spine-session` split (`820400e`) passed tests on all three platforms.
+
+**2026-11-20, pull request #49, `638d333`.** Every job passed: lint (including three new steps that compile `spine-protocol` and `spine-core` without the `research` feature), docs, coverage, bench, audit, deny, MSRV, tests on Linux and Windows. The macOS test job failed once in `discover_fetch_restart_and_renew_over_independent_nodes` ("core did not become ready" during daemon start) and passed on re-run with no code change; treat that test as flaky on macOS until the cause is found. Staged but uncommitted in a subagent worktree (commit denied by the permission classifier, awaiting the owner): moving `mesh_quic` and `signed_frame` into `spine-mesh`.
+
+**2026-11-20, pull request #49, `60d71d4`.** Every job passed on the first run: lint (default features, `spine-protocol` without research with and without `quic`, `spine-core` without research, `spine-mesh` alone), docs, coverage, audit, deny, MSRV, tests on Linux, macOS and Windows. Acceptance-test deadlines were widened in this commit after two one-off timeouts (`3c72906` Linux, `638d333` macOS) that passed on re-run; the cause of the slow suite (about three minutes) is not established.
+
+Findings recorded, not fixed: (1) by reading, `BrowserCommand::Morph` changes the server's framing before the response is sent while the SDK's `morph()` never calls `morph_now`, which would desynchronise the stream; not run. (2) On a default native connection two 4-layer transformers are built per connection and run on every message only to fill a prediction-hash field; `enable_speculation` flags are never read and the precompute cache is never consulted. (3) Each message is CBOR wrapped in a JSON structure carrying the body as an array of numbers, then zstd. Items 2 and 3 are inputs to the Stage 5 wire-format decision.
+
+**2026-11-20, pull request #49, `a109e45`.** Every job passed with the research-free daemon as the default. Linux: 1,540 passed, 0 failed, 5 ignored across 73 suites. The acceptance suite took 107 s on Linux, against 178 to 248 s while the daemon built its neural and cluster components at startup; that is consistent with startup cost having been the cause of the earlier one-off timeouts, though only one run supports it. `8722dc8` (CI pending) fixes the Morph desync: the daemon now answers under the old framing and morphs after the send, the SDK applies the seed from the response, and an acceptance test morphs and then pings.
+
+**2026-11-20, pull request #49, `b8a0a4e`.** Every job passed, including the acceptance check that calls `morph()` and then pings on the same connection, on Linux, macOS and Windows. Remaining hard dependencies from stack crates onto research crates, from `cargo metadata`: `spine-agent` on `spine-agentic` and `spine-human` (being gated). All others are optional (`spine-core`, `spine-protocol`, the `spine-web` facade) or dev-only (`spine-nostd`, `spine-embedded`).
+
+**2026-11-20, pull request #49, `62138e3`.** Every job passed with the SDK research-free by default (`spine-agent`: human mode and `transmit_neural` behind `research`; eight examples need the feature; `spine-cli` and `spine-compiler` take `spine-protocol` without research). `bc25f4f` (CI pending) does the same for `spine-gateway`: the Titans codec is behind `research`; without it `POST /v1/embeddings` answers 503 "no codecs registered" and the codec list is empty. After these, `cargo tree` shows no research crate reachable from `spine-core`, `spine-agent`, `spine-cli`, `spine-gateway` or `spine-mesh` in their default builds. `spine-web` and the research-side crates `spine-cluster`, `spine-grpc`, `spine-human` still enable `spine-protocol/research`, which keeps the research code compiled and tested in the workspace run until it moves out.
+
+**2026-11-20, pull request #49, `a580b33`.** The fourteen research crates moved to a separate workspace under `research/`. Root workspace: lint, docs, MSRV, audit, deny, coverage and the Linux and macOS tests passed (Linux: 45 suites, 993 passed, 0 failed, 3 ignored). The new `research` CI job failed on one compile error: the `spine-recursive` bench needs criterion's `async_tokio`, previously enabled only through feature unification with `spine-stream` and `spine-transport`. Fixed in `46698c5` (CI pending).
+
+**2026-11-20, pull request #49, `6b9a506` and `e716cc1`.** `6b9a506`: every job passed, including the new `research` job. `e716cc1` makes the default root build research-free (`spine-protocol` default is `quic` only; the `spine-web` facade's defaults no longer include `agentic`; both have an opt-in `research` feature). `cargo tree --workspace -e normal` at the root finds none of the fourteen research crates (`spine-nostd` and `spine-embedded` remain dev-dependencies of `spine-protocol` and `spine-agent`). Lint, docs, MSRV, audit, deny, coverage, `research` and the tests on all three platforms passed. Linux: 51 suites, 1,112 passed, 0 failed, 3 ignored, which includes the added `spine-protocol --features research` test step; the two steps were not totalled separately. Not verified: a research-off peer interoperating with a research-on peer.
+
+**2026-11-20, pull request #49, `fd1b31a`.** Resource ids now commit to the content type (`spine_name::resource_id`, domain `spine/resource-id/v1`); every publish and fetch path checks type and bytes with `verify_resource`. Lint, docs, MSRV, deny, coverage, `research` and the tests on Linux, macOS and Windows passed. The `audit` job failed again with "No vulnerabilities were found" followed by "Not Found" when updating its check run: the same intermittent failure as before, cause still unidentified. The gateway upload/download handlers and the SDK chunk loop have no unit test of their own; they are covered only by the acceptance tests.
+
+**2026-11-21, pull request #49, `319647f`.** Fair-share task eviction: lint, docs, MSRV, audit, deny, coverage, `research` and the Linux and macOS tests passed (Windows not read before the next push). `docs/spec/00-wire.md` added: as-built native wire, proposed `spine-wire v1`, and a 14-step migration. Findings from that review, verified against the source where noted: `ExecuteBinary` aborted the release daemon when a client program failed to run (`.expect` with `panic = "abort"`; verified and fixed in the following commit); the daemon morphs every session every 30 s in all builds, with an all-zero evolution key and the seed in clear when no chameleon is set (not verified by me); research-flavoured `Message` variants are dropped silently so a client times out (not verified by me); `Search`, `Click` and `Type` are stubs; `signed_frame.rs` and `negotiation.rs` have no caller on any wire; the QUIC listener has no conforming client.
+
+**2026-11-21, pull request #49, `eb46c69`.** Wire migration steps 1 to 4 (`docs/spec/00-wire.md`, section F). Lint in every feature configuration, docs, MSRV, coverage, `research` and the tests on Linux, macOS and Windows passed. `cbor.rs` (deterministic CBOR scanner, encoder, decoder) and `frame.rs` (15-byte header, limits, bounded zstd) compiled and passed on first push; `hello.rs` needed one clippy fix in a test helper. The speculative layer is removed (about 1,000 lines); `send_message` now emits what `send_message_raw` did. None of the new modules has a caller in the daemon or SDK yet. `e3e5a2d` (failed `ExecuteBinary` no longer aborts the daemon) passed all jobs. A literal NUL byte had entered `CHANGELOG.md` with `fd1b31a` and made git treat it as binary; replaced in `300e595`.
+
+**2026-11-21, pull request #49, `53a982c`, `838d363`, `254e642`.** Wire migration steps 9, 5 and 6. `53a982c` (connection layer, additive) and `838d363` (morphology, padding and `Morph` removed; fixed 5-byte frame header) passed every job; the Linux test job for `838d363` first failed with an HTTP 403 downloading `protoc` and passed on re-run. `254e642`: `spine-protocol` has no `research` feature and no dependency on any research crate; lint, docs, MSRV, coverage, `research` and the Linux and macOS tests passed (Windows not read before this entry). The production handler is now `SP` body, flag byte with zstd at 64 bytes or more, 5-byte frame, no sealing. Not built by any job: the Go binding, `spine.h`, `spine-browser`, the fuzz crate. `supports_chameleon: true` in `spine-core/src/main.rs` is now a stale capability flag.
+
+**2026-11-21, pull request #49, `b841fae`.** Wire migration steps 7 and 8. Every job read passed: lint, docs, MSRV, coverage, `research`, tests on Linux, macOS and Windows. The first push (`8bf13c8`) failed lint and `research` on one missing manifest entry (`serde_bytes` in `research/spine-protocol-research`). Commands marked for a research extension (`GetLatentUR`, `TransferSession`, `SetAutonomousMode`, `NeuralTransmit`, `GetAgenticState`) and the codec and latent message types are removed from the core and recorded in that crate's README; nothing carries them until extension frames exist. `spine-core` no longer depends on `spine-neural` or `spine-agentic` in any build; `spine-agent` no longer depends on `spine-human`. A research-free gateway now answers `/v1/embeddings` and `/v1/agentic/codecs` with 503 and a rebuild hint (the codec list was previously an empty 200). Measured sizes in the README predate the move.
+
+**2026-11-21, pull request #49, `8ee8a67`.** Wire migration steps 10 and 12: the daemon and SDK speak spine-wire v1. Every job read passed: lint, docs, MSRV, coverage, `research`, tests on Linux, macOS and Windows (Linux: 45 suites, 1,027 passed, 0 failed, 3 ignored), including the acceptance suite that runs a real daemon against SDK clients over TCP, TLS, mutual TLS and WebSocket. `ProtocolHandler`, `wire.rs` and the `SP` header are deleted, as is `signed_frame.rs`. Four pushes were needed: borrowed temporaries under `tokio::join!` in rewritten tests, a bench and an example; two new `recv_timeout` tests that bound the helper's (client, server) pair the wrong way round; one unformatted push of mine. Behaviour changes: compression is off by default (it was applied at 64 bytes and above); a silent client holds an admission slot for `server.hello_timeout_secs` (default 10 s), not the idle timeout; a PING restarts the idle deadline; a response over 16 MiB or nested deeper than 32 levels becomes an error reply; `Ping`/`Pong` are frames, not messages. Open sessions still receive no CLOSE on daemon shutdown, as before. Bodies are still the old serde types with their own ids, which are not cross-checked against the frame id until step 11. The QUIC listener was converted by reading and is not built by default; no job exercises it.
+
+## References
+
+- [SPINE from first principles](docs/FIRST_PRINCIPLES.md) and the layer specifications in `docs/spec/`
+- [Status and evidence, 2026-10-02](docs/COMPLETION_STATUS.md)
+- [Agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md) and [native operations](docs/NATIVE_OPERATIONS.md)
+- [Handoff through Phase 48 and the 2.0.1/2.0.2 releases](HANDOFF.md)
+- [Independent review brief](HANDSHAKE-REVIEW.md) and [review packet](docs/CRYPTO_REVIEW_PACKET.md)
+- [Dependency exception register](docs/DEPENDENCY_EXCEPTIONS.md)
+- [Security policy](SECURITY.md), [audit](SECURITY_AUDIT.md), [threat model](THREAT_MODEL.md)
+- [Verification script](scripts/verify.sh) and [local release gate](scripts/release_gate.py)
+- [Acceptance harness](src/spine-core/tests/agent_web.rs)

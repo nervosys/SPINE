@@ -53,16 +53,57 @@ set -uo pipefail
 #
 # Update it when the workspace gains or loses a test target. A mismatch here is
 # the signal, not a nuisance.
-EXPECTED_SUITES_MIN=68
-EXPECTED_IGNORED=5
+#
+# 70 -> 71: the session handshake moved out of spine-crypto into its own
+# spine-session crate, so its unit tests (previously inside spine-crypto's lib
+# suite) now report a "test result:" line of their own. The new crate's doctest
+# target may add one more line; re-measure and tighten this on the next full run.
+#
+# 71 -> 72: the mesh stack (identity, mesh, naming, naming_mesh, mesh_tcp,
+# mesh_ws) moved out of spine-agentic into its own spine-mesh crate, so its unit
+# tests now report a "test result:" line of their own. Re-measure and tighten
+# this on the next full run.
+#
+# 72 -> 45: the research crates moved to the separate `research/` workspace, so
+# this script (which runs at the repository root) no longer sees their suites.
+# Measured: the Linux CI run on a580b33 reported 45 suites, 993 passed,
+# 0 failed, 3 ignored for the root workspace.
+#
+# `research/` is not covered by this script; run it there with
+# `cd research && cargo test --workspace --exclude spine-browser --lib --tests`.
+# Unchanged when spine-protocol lost its `research` feature: no test target went
+# away (chaos, e2e_protocol, integration, proptest_protocol, wire_encoding and the
+# lib and doctest targets all still build). The passed count falls: the PSK AES
+# and chameleon tests were deleted and the chameleon property tests and the
+# spine-nostd interop tests moved to research/spine-protocol-research, which the
+# `research` CI job runs.
+EXPECTED_SUITES_MIN=45
+# 5 -> 3: all five ignored tests are `ignore`-fenced doctests. Two (research)
+# left with the move: research/spine-cluster/src/marketplace.rs:27 and
+# research/spine-recursive/src/lib.rs:49. Three remain at the root:
+# src/spine-protocol/src/replay.rs:21 and src/spine-transport/src/websocket.rs
+# lines 25 and 31. Confirmed by the same run.
+EXPECTED_IGNORED=3
 EXPECTED_TOTAL="${1:-}"
 
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 
+# Optional retained stage logs for release evidence. Never mix stages in one
+# saved file, or a later green command could conceal an earlier failure.
+if [ -n "${SPINE_VERIFY_LOG_DIR:-}" ]; then
+    mkdir -p "$SPINE_VERIFY_LOG_DIR" || exit 1
+fi
+retain_log() {
+    if [ -n "${SPINE_VERIFY_LOG_DIR:-}" ]; then
+        cp "$log" "$SPINE_VERIFY_LOG_DIR/$1.log" || return 1
+    fi
+}
+
 echo "running cargo test --workspace --no-fail-fast ..."
 cargo test --workspace --no-fail-fast >"$log" 2>&1
 test_status=$?
+retain_log tests || exit 1
 
 results=$(grep -c 'test result:' "$log" || true)
 failed_suites=$(grep -c 'test result: FAILED' "$log" || true)
@@ -110,10 +151,12 @@ if [ "$test_status" -ne 0 ] && [ "$ok" -eq 0 ]; then
 fi
 
 echo "running cargo clippy --workspace --all-targets ..."
-clippy_out=$(cargo clippy --workspace --all-targets 2>&1 | grep -E '^(warning|error)' || true)
-if [ -n "$clippy_out" ]; then
-    echo "FAIL: Clippy is not silent"
-    echo "$clippy_out" | head -20
+cargo clippy --workspace --all-targets -- -D warnings >"$log" 2>&1
+clippy_status=$?
+retain_log clippy || exit 1
+if [ "$clippy_status" -ne 0 ]; then
+    echo "FAIL: Clippy exited $clippy_status"
+    tail -40 "$log"
     ok=1
 fi
 
@@ -122,11 +165,12 @@ fi
 # unformatted files were stopping every job downstream of it — including the one
 # that uploads release binaries. Nothing local was looking.
 echo "running cargo fmt --all -- --check ..."
-fmt_out=$(cargo fmt --all -- --check 2>&1 | grep -E '^Diff in ' || true)
-if [ -n "$fmt_out" ]; then
-    fmt_files=$(echo "$fmt_out" | sed 's/^Diff in //; s/:[0-9]*:$//' | sort -u)
-    echo "FAIL: rustfmt is not clean — $(echo "$fmt_files" | wc -l) file(s)"
-    echo "$fmt_files" | head -20
+cargo fmt --all -- --check >"$log" 2>&1
+fmt_status=$?
+retain_log fmt || exit 1
+if [ "$fmt_status" -ne 0 ]; then
+    echo "FAIL: rustfmt exited $fmt_status"
+    head -40 "$log"
     echo "      fix with: cargo fmt --all"
     ok=1
 fi

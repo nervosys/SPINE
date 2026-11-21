@@ -31,11 +31,11 @@ else {
     Write-Host ""
 
     Write-Host "Running kernel benchmarks..." -ForegroundColor Yellow
-    cargo bench -p spine-kernel --bench kernel_bench
+    Push-Location research; cargo bench -p spine-kernel --bench kernel_bench; Pop-Location
     Write-Host ""
 
     Write-Host "Running scalability benchmarks..." -ForegroundColor Yellow
-    cargo bench -p spine-agentic --bench scalability_bench
+    Push-Location research; cargo bench -p spine-agentic --bench scalability_bench; Pop-Location
     Write-Host ""
 
     Write-Host "═══ Reports written to target/criterion/ ═══" -ForegroundColor Green

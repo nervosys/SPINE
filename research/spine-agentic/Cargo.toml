@@ -1,0 +1,76 @@
+[package]
+name = "spine-agentic"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The SPINE Agentic Web Stack - A bioinspired paradigm for agent-native web interaction"
+
+[dependencies]
+tracing = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+tokio.workspace = true
+rand.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+
+# Internal dependencies
+spine-neural = { path = "../spine-neural", version = "2.0.2" }
+spine-crypto = { path = "../spine-crypto", version = "2.0.2" }
+spine-mesh = { path = "../../src/spine-mesh", version = "2.0.2" }
+spine-compiler = { path = "../../src/spine-compiler", version = "2.0.2" }
+spine-knowledge = { path = "../spine-knowledge", version = "2.0.2" }
+spine-name = { path = "../../src/spine-name", version = "2.0.2" }
+# Optional: real sandboxed execution for Action::Execute (fuel-metered WASM).
+# Default-on so the runtime executes out of the box; disable default-features to
+# drop the wasmtime dependency (Action::Execute then returns an honest error,
+# never a fake success).
+spine-wasm = { path = "../../src/spine-wasm", version = "2.0.2", optional = true }
+
+# Agent-specific
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap.workspace = true
+petgraph = "0.6"
+url = { version = "2", features = ["serde"] }
+regex = "1.10"
+futures = "0.3"
+async-trait = "0.1"
+
+[features]
+default = ["wasm-exec"]
+# Run Action::Execute as real, fuel-metered, sandboxed WASM (via spine-wasm).
+wasm-exec = ["dep:spine-wasm"]
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+sha2 = "0.10"
+
+[[bench]]
+name = "scalability_bench"
+harness = false
+
+[[example]]
+name = "agentic_web_demo"
+path = "examples/agentic_web_demo.rs"
+
+[[example]]
+name = "autonomous_agent"
+path = "examples/agentic_autonomous.rs"
+
+[[example]]
+name = "swarm_intelligence"
+path = "examples/swarm_intelligence.rs"
+
+[[example]]
+name = "advanced_agentic"
+path = "examples/advanced_agentic.rs"
+

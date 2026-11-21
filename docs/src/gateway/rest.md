@@ -51,12 +51,6 @@ Response:
 
 #### `GET /api/sessions/{id}/html` — Get raw HTML
 
-#### `POST /api/sessions/{id}/search` — Search
-
-```json
-{ "query": "rust programming" }
-```
-
 #### `GET /api/sessions/{id}/ping` — Ping
 
 Response: `{ "round_trip_ms": 2 }`

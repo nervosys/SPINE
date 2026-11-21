@@ -4,7 +4,7 @@ This document provides a deep dive into the technical architecture of the SPINE 
 
 ## System Overview
 
-SPINE is a **headless semantic browser with adaptive encryption** designed for AI agents. It consists of twenty-five crates that work together to provide semantic web extraction, binary program execution, secure agent communication, distributed scaling, high-performance streaming, and human-readable web compatibility.
+SPINE is a headless semantic browser and native communication stack designed for software agents. The workspace contains 30 Rust crates. The current origin adds persistent signed publications, content-addressed resources, and native read-only tools; HTTP chat uses a configurable model source with explicit demo mode. Signed mesh application RPC binds both recipient ID and key, pins worker keys, and authorizes coordinator keys before accessing owner-scoped persistent tasks and immutable knowledge. Only deterministic hashing and HTML parsing execute through that service. Unsupported legacy swarm execution is refused. See [the component inventory](docs/COMPLETION_STATUS.md) and [operations contract](docs/NATIVE_OPERATIONS.md) for implemented, experimental, and unverified paths; the historical research diagram below does not establish production guarantees.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -13,7 +13,7 @@ SPINE is a **headless semantic browser with adaptive encryption** designed for A
 │  • spine-agent: High-level SDK for AI applications  │
 └────────────────────┬─────────────────────────────────────┘
                      │
-                     │ Chameleon Protocol + Speculative Decoding
+                     │ Native wire (SP body, zstd, fixed frame)
                      │
 ┌────────────────────▼─────────────────────────────────────┐
 │                  Protocol Layer                          │
@@ -21,7 +21,6 @@ SPINE is a **headless semantic browser with adaptive encryption** designed for A
 │  • Titans Neural Encoding (spine-neural)            │
 │  • Titans Prediction (spine-crypto)                 │
 │  • Quantum-Resistant Key Evolution (spine-crypto)   │
-│  • Moving-Target Defense (Morphing)                      │
 └────────────────────┬─────────────────────────────────────┘
                      │
 ┌────────────────────▼─────────────────────────────────────┐
@@ -112,12 +111,10 @@ match command {
         // Execute HLB instructions using spine-wasm
         // Return execution result
     }
-    Click { element_id } => {
-        // Simulate user interaction
+    StoreKnowledge { key, value, tags } => {
+        // Append to the session's knowledge entries
     }
-    Type { element_id, text } => {
-        // Simulate typing
-    }
+    // ... QueryKnowledge, GetBinaryCapabilities and the namespace commands
 }
 ```
 
@@ -171,17 +168,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 
 **Purpose**: Low-latency, secure communication protocol between agents and the core.
 
-**Chameleon Protocol**:
-
-- **Latent-Space Cryptography**: Messages are projected into a high-dimensional latent space using `spine-neural`.
-- **Moving-Target Defense**: The protocol "morphs" its encoding scheme periodically to resist traffic analysis.
-- **Quantum-Resistant**: Uses Ring-LWE lattice-based cryptography from `spine-crypto` for key evolution.
-
-**Speculative Decoding**:
-
-- **Titans Prediction**: Uses a `TitansPredictor` with Neural Long-Term Memory to predict the next bytes of a message before they are fully received.
-- **Anomaly Detection**: Surprise scores identify novel or malicious patterns.
-- **Latency Reduction**: Allows the agent to begin processing responses while they are still in transit.
+**Research, not in this crate**: the Chameleon key (latent-space encoding with per-message key evolution, `ChameleonKey`), `SpineConnection`, the protocol evolution framework and `TitansLatentCodec` are in the experimental, unreviewed `research/spine-protocol-research` crate. `spine-protocol` has no dependency on `spine-neural` or `spine-crypto`. The native wire is spine-wire v1: a fixed 15-byte frame header (length, version, type, flags, request id) and a deterministic-CBOR body, after a `HELLO`/`HELLO_ACK` handshake. There is no padding.
 
 **Message Format**:
 
@@ -192,7 +179,7 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 └─────────────────┴──────────────────────────┘
 ```
 
-**Encryption Layer**:
+**Encryption Layer** (the mesh and session layers, not the native frame, which does no sealing; confidentiality on the client wire comes from TLS):
 
 - Algorithm: AES-256-GCM (Authenticated Encryption with Associated Data)
 - Key Exchange: X3DH (Extended Triple Diffie-Hellman) for initial trust establishment
@@ -209,8 +196,6 @@ fn parse_node(node: NodeRef<Node>) -> Vec<Element> {
 
 - **Request**: Agent → Core (commands like Navigate, GetUR)
 - **Response**: Core → Agent (results or errors)
-- **Event**: Core → Agent (async notifications like page load completion)
-- **BinaryProgram**: Agent → Core (HLB execution request)
 
 **Processing Pipeline**:
 
@@ -307,7 +292,7 @@ HLB programs are executed by the core in a Virtual DOM environment. Unlike HTML 
 3. `AddChild` builds the tree structure
 4. `EmitEvent` triggers callbacks to the agent
 5. `StreamLatent` sends embeddings/vectors back to the agent
-6. `MorphProtocol` triggers Chameleon Protocol morphing
+6. `MorphProtocol` is recorded by the VDOM runtime as a morph request; it does not change the wire framing
 7. `Decoy` injects noise for traffic analysis resistance
 
 ### 5. spine-wasm
@@ -370,7 +355,7 @@ This is essential for:
 
 **Key Features**:
 
-- **TitansPredictor**: Neural Long-Term Memory for byte-level speculative decoding with unbounded context.
+- **TitansPredictor**: Neural Long-Term Memory for byte-level message prediction with unbounded context (a library; the wire does not use it).
 - **Anomaly Detection**: Surprise-gated updates identify novel or malicious message patterns.
 - **Quantum-Resistant Keys**: Ring-LWE lattice cryptography for post-quantum security.
 - **Key Evolution**: Hash-chain based forward secrecy.
@@ -398,7 +383,6 @@ This is essential for:
 
 ```rust
 let mut client = AgentClient::connect("127.0.0.1:8080").await?;
-client.handler.enable_encryption(key);
 
 // Navigate to a website
 client.navigate("https://example.com").await?;
@@ -416,10 +400,7 @@ for element in ur.elements {
 
 // Compile and execute HLS
 let binary = Compiler::compile("element App {}")?;
-client.handler.send_message(&Message::Request(Request {
-    id: "exec-1".to_string(),
-    command: BrowserCommand::ExecuteBinary(binary),
-})).await?;
+let result = client.execute_binary(binary).await?;
 ```
 
 ### 10. spine-human
@@ -532,14 +513,6 @@ pub struct ExecutionResult {
 
 ## Advanced Features
 
-### Titans Speculative Decoding
-
-SPINE reduces perceived latency by predicting the next likely messages in a sequence using Neural Long-Term Memory.
-1. The `TitansPredictor` analyzes historical message patterns with persistent memory.
-2. The `ProtocolHandler` pre-computes responses for predicted requests.
-3. If the agent's next request matches a prediction, the response is served with zero-bandwidth reconstruction from the local cache.
-4. High surprise scores trigger anomaly alerts for security monitoring.
-
 ### MIRAS-Adaptive Encoding
 
 The MIRAS framework (Memory, Inference, Retrieval, and Storage) provides **anomaly detection + pattern adaptation** variants that automatically adapt to traffic patterns:
@@ -569,7 +542,7 @@ let variant = if anomaly > threshold * 2.0 {
 
 **MIRAS Integration Points**:
 
-1. **ChameleonKey (spine-protocol)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
+1. **ChameleonKey (research/spine-protocol-research)**: MIRAS-adaptive latent encoding with automatic variant switching based on traffic anomalies.
 2. **MirasTitansPredictor (spine-crypto)**: Dual-track surprise monitoring from both Titans and MIRAS encoders.
 3. **MirasNeuralEncoder (spine-neural)**: Core MIRAS memory implementations (YAAD, MONETA, MEMORA).
 
@@ -581,9 +554,9 @@ let combined_surprise = (titans_surprise + miras_surprise) / 2.0;
 
 This enables more robust anomaly detection by combining Titans' byte-level predictions with MIRAS's latent-space pattern recognition.
 
-### Chameleon Protocol
+### Chameleon Protocol (research, off the wire)
 
-A moving-target defense protocol that hides communication patterns in latent space.
+An experimental, unreviewed idea in `research/spine-protocol-research` that would hide communication patterns in latent space. It is not part of the native wire and is not a confidentiality mechanism.
 1. Messages are encoded into high-dimensional vectors using the `NeuralLatentEncoder`.
 2. The latent space is dynamically morphed using quantum-resistant seeds.
 3. To an outside observer, the traffic appears as random noise or a different protocol entirely.
@@ -681,8 +654,8 @@ The traditional web was designed for humans: point, click, read, scroll. SPINE i
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 2: Latent Communication                                  │
 │  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
-│  │ Chameleon   │ │ Speculative │ │ Neural      │               │
-│  │ Protocol    │ │ Decoding    │ │ Encoding    │               │
+│  │ Chameleon   │ │ Zstd        │ │ Neural      │               │
+│  │ Protocol    │ │ Compression │ │ Encoding    │               │
 │  └─────────────┘ └─────────────┘ └─────────────┘               │
 ├─────────────────────────────────────────────────────────────────┤
 │  Layer 1: Transport                                             │
@@ -722,9 +695,9 @@ Agents maintain persistent knowledge with embedding-based retrieval for similari
 
 | Agentic Layer   | SPINE Component | Purpose                                        |
 | --------------- | --------------- | ---------------------------------------------- |
-| Transport       | spine-protocol  | QUIC/TCP with Chameleon encryption             |
+| Transport       | spine-protocol  | QUIC/TCP framing (Chameleon is research-only)  |
 | Neural Encoding | spine-neural    | VAE + MIRAS latent projections                 |
-| Prediction      | spine-crypto    | Titans predictor for speculative communication |
+| Prediction      | spine-crypto    | Titans predictor (library only, not on the wire) |
 | Planning        | spine-compiler  | HLS→HLB for executable plans                   |
 | Knowledge       | spine-cluster   | Distributed knowledge synchronization          |
 
@@ -1273,7 +1246,7 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **Axum Router**: RESTful endpoints for sessions, navigation, search, HLS execution
+- **Axum Router**: RESTful endpoints for sessions, navigation, HLS execution
 - **Swagger UI**: Auto-generated interactive API docs via utoipa
 - **Health Endpoints**: /health, /ready, /metrics for production monitoring
 
@@ -1297,7 +1270,7 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **16 Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, search, execute_hls, ping, morph, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
+- **Exported Functions**: connect, disconnect, navigate, get_ur, get_raw_html, execute_hls, ping, get_capabilities, store_knowledge, query_knowledge, parse_html, compile_hls, version, free_string
 - **C Header**: `include/spine.h` with full documentation
 - **Thread-Local Error Handling**: `spine_last_error()` for retrieving error messages
 - **Build Targets**: `cdylib` (.so/.dylib/.dll) and `staticlib` (.a/.lib)
@@ -1310,6 +1283,6 @@ enum StreamPayload {
 
 **Key Components**:
 
-- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, Search, ExecuteHLS, Ping, Morph, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
+- **Client Type**: Connect, Navigate, GetUR, GetRawHTML, ExecuteHLS, Ping, GetCapabilities, StoreKnowledge, QueryKnowledge, Close
 - **Offline Functions**: ParseHTML, CompileHLS, Version (no server needed)
 - **Go-Native Types**: UnifiedRepresentation, Element, SpineBinary, ExecutionResult

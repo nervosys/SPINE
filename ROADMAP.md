@@ -1,5 +1,7 @@
 # SPINE Roadmap
 
+Current local work is tracked in [the completion checklist](COMPLETION_PLAN.md) and [verification report](docs/COMPLETION_STATUS.md). Counts and completed phases below are historical; they do not close the remaining production and release gates.
+
 > **An agentic-first web stack — a World Wide Web built for agents from the ground up**
 > 30 Rust crates · 1,418 tests · 0 warnings · AGPL-3.0-or-later
 
@@ -156,7 +158,7 @@
 
 - [x] **TLA+ specification** (`formal/tla/ChameleonProtocol.tla`): State machine model with epoch monotonicity, synchronized evolution, morphology abstraction, decoy messages, and `ChameleonProtocol_MC.tla` model checking config for TLC
 - [x] **Tamarin prover model** (`formal/tamarin/SpineKeyExchange.spthy`): Symbolic verification of X3DH + RLWE key exchange with 10 security lemmas (secrecy, PFS, KCI resistance), three security levels (Standard/Hardened/PostQuantum), key evolution rules
-- [x] **Kani model checking** (`src/spine-kernel/src/kani_harnesses.rs`): 15 bounded verification harnesses for unsafe code — BumpAllocator (3), SlabAllocator (2), SeqLock (2), LockFreeStack (2), SpscRing (2), MpscRing (1), TaggedPtr (1), AtomicFlags (1), SIMD (1)
+- [x] **Kani model checking** (`research/spine-kernel/src/kani_harnesses.rs`): 15 bounded verification harnesses for unsafe code — BumpAllocator (3), SlabAllocator (2), SeqLock (2), LockFreeStack (2), SpscRing (2), MpscRing (1), TaggedPtr (1), AtomicFlags (1), SIMD (1)
 - [x] **Cryptographic audit** (`formal/audit/CRYPTO_AUDIT.md`): 13 findings (2 critical, 4 high, 4 medium, 3 low) with remediation priorities, verification coverage matrix, third-party audit scope
 - [x] **MISRA compliance** (`formal/misra/MISRA_COMPLIANCE.md`): 16 MISRA C:2012 rules mapped to Rust unsafe, 8 documented deviations with justification/mitigation, verification matrix linked to kani harnesses
 - [x] 349 tests passing (0 new — verification artifacts are external tools)
@@ -215,7 +217,7 @@
 - [x] **spine-agent tests**: 11 unit tests covering SDK API, protocol types, connection handling, compiler re-exports
 - [x] **CI coverage job**: cargo-llvm-cov + Codecov upload with LLVM instrumentation
 - [x] **CI cargo-deny job**: License allow-list, advisory database, ban/source rules via deny.toml
-- [x] **CI MSRV check**: Rust 1.88.0 minimum supported version verification
+- [x] **CI MSRV check**: Rust 1.89.0 minimum supported version verification
 - [x] **Dependabot config**: Weekly updates for Cargo dependencies and GitHub Actions
 - [x] **Cargo.lock committed**: Removed from .gitignore for reproducible builds
 - [x] **415 tests passing**: +13 tests (+11 spine-agent + 2 doc tests), 0 failures, 0 Clippy warnings
@@ -271,8 +273,8 @@
 
 ### Phase 21 — Agent Mesh Networking ✅
 
-- [x] **Ed25519 signing identity** (`src/spine-agentic/src/identity.rs`): `Ed25519Keypair` (generate, from_seed, sign, verify), `SigningIdentity` (agent UUID + keypair), `SignedEnvelope` (signed message wrapper with `open()`/`verify()`), `PublicIdentity` (shareable identity with fingerprint)
-- [x] **Peer-to-peer mesh** (`src/spine-agentic/src/mesh.rs`): `MeshNode` with connection management, peer discovery, multi-hop routing, signed message envelopes
+- [x] **Ed25519 signing identity** (`src/spine-mesh/src/identity.rs`): `Ed25519Keypair` (generate, from_seed, sign, verify), `SigningIdentity` (agent UUID + keypair), `SignedEnvelope` (signed message wrapper with `open()`/`verify()`), `PublicIdentity` (shareable identity with fingerprint)
+- [x] **Peer-to-peer mesh** (`src/spine-mesh/src/mesh.rs`): `MeshNode` with connection management, peer discovery, multi-hop routing, signed message envelopes
 - [x] **Routing table**: `RoutingTable` with shortest-path selection, stale route pruning, route learning from message hops
 - [x] **Gossip protocol**: `PeerAnnouncement` propagation, max_peers enforcement, banned peer filtering, self-announcement
 - [x] **Message deduplication**: `MessageDedup` ring buffer preventing routing loops, TTL-based message expiry
@@ -285,7 +287,7 @@
 
 - [x] **Ed25519 crypto fix**: Replaced homebrew Ed25519 with `ed25519-dalek` v2 (`rand_core` feature); real `SigningKey` / `VerifyingKey` with CSPRNG keygen, proper signature verification
 - [x] **AgentDID real signing**: Swapped stub `[0u8; 64]` signatures for actual Ed25519 signing/verification in `AgentDID`
-- [x] **Dead code removal**: Trimmed `src/spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−5,845 lines, ~41%); removed unused GraphicalModel infrastructure, NeuralProtocol engine, LearningSubsystem, CognitiveArchitecture, InfrastructureManager
+- [x] **Dead code removal**: Trimmed `research/spine-agentic/src/lib.rs` from 14,105 → ~8,260 lines (−5,845 lines, ~41%); removed unused GraphicalModel infrastructure, NeuralProtocol engine, LearningSubsystem, CognitiveArchitecture, InfrastructureManager
 - [x] **Broken example cleanup**: Deleted 8 obsolete examples referencing removed types; retained 5 working examples
 - [x] **Message type unification**: Added `From<AgentMessage> ↔ AgentMessageCompact` conversion traits bridging Layer 5 and mesh messaging
 - [x] **MeshTransport TCP layer**: `MeshTransport` struct with length-prefixed framing (`[u32 BE][JSON]`, 16 MB max), `listen()`, `send_to()`, `send_to_agent()`, `gossip()` methods over TCP
@@ -320,10 +322,10 @@
 
 ### Phase 26 — Autonomous Agent Runtime ✅
 
-- [x] **Persistent agent lifecycle** (`src/spine-agentic/src/lifecycle.rs`): AgentState machine (Spawning→Running→Suspended→Migrating→Stopped→Terminated→Failed), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow (begin→accept→complete), configurable capacity limits
-- [x] **WASM capability sandboxing** (`src/spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry for policy management
-- [x] **Distributed task scheduler** (`src/spine-agentic/src/scheduler.rs`): Priority-based WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement, configurable overload/steal thresholds
-- [x] **Agent-to-agent contracts** (`src/spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
+- [x] **Persistent agent lifecycle** (`research/spine-agentic/src/lifecycle.rs`): AgentState machine (Spawning→Running→Suspended→Migrating→Stopped→Terminated→Failed), LifecycleManager with DashMap storage, AgentCheckpoint with SHA-256 checksums, migration flow (begin→accept→complete), configurable capacity limits
+- [x] **WASM capability sandboxing** (`research/spine-agentic/src/sandbox.rs`): 16 WasmCapability variants, SandboxPolicy with untrusted/trusted presets, URL allow/block with glob matching, SandboxInstance with resource tracking, SandboxRegistry for policy management
+- [x] **Distributed task scheduler** (`research/spine-agentic/src/scheduler.rs`): Priority-based WorkQueue with BinaryHeap, work-stealing with peer depth tracking, dependency resolution, retry with exponential backoff, deadline enforcement, configurable overload/steal thresholds
+- [x] **Agent-to-agent contracts** (`research/spine-agentic/src/contract.rs`): Contract lifecycle (Proposed→Active→Settled/Breached/Cancelled), multi-party acceptance, obligation fulfillment, SLA enforcement, ResourceBudget tracking, dispute system, SHA-256 terms integrity
 - [x] 626 tests passing (+47 tests), 0 failures, 0 Clippy warnings
 
 ---
@@ -395,7 +397,7 @@
 
 ### Phase 36: Complete Agent Discoverability Ontology
 
-- [x] **ontology_vocab module** (`src/spine-agentic/src/ontology_vocab.rs`): 230+ hierarchical terms across 16 categories
+- [x] **ontology_vocab module** (`research/spine-agentic/src/ontology_vocab.rs`): 230+ hierarchical terms across 16 categories
 - [x] **Capability taxonomy**: 9 top-level domains (web, NLP, data, compute, security, communication, knowledge, swarm, specialized) with 150+ leaf terms
 - [x] **Role vocabulary**: 15 agent roles (coordinator, worker, researcher, validator, monitor, gateway, archivist, sentinel, scout, mediator, specialist, generalist, learner, teacher, auditor)
 - [x] **Pre-built ontologies**: 6 role-specific ontologies (web researcher, security sentinel, IoT edge, data pipeline, swarm coordinator, ML inference)
@@ -464,7 +466,7 @@ linked to, referred to, or found without already knowing where it lived.
       TCP and WebSocket share one code path and only connection establishment
       differs. WebSocket traverses the proxies and firewalls that drop bare TCP,
       and is the only transport a browser-resident agent can open at all.
-- [x] **QUIC transport** (`spine-agentic::mesh_quic`): deliberately *not* the
+- [x] **QUIC transport** (`spine-mesh::mesh_quic`): deliberately *not* the
       byte-pipe path — one connection per peer, one bidirectional stream per
       exchange, so concurrent lookups cannot head-of-line block one another.
       Confidentiality from QUIC's TLS 1.3; mesh-identity authentication from a

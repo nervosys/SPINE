@@ -39,7 +39,7 @@ pub enum PutOutcome {
 pub const DEFAULT_CAPACITY: usize = 10_000;
 
 /// A verified, expiry-aware collection of name records.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RecordStore {
     by_key: HashMap<NameKey, NameRecord>,
     /// Capability term -> the names advertising it.

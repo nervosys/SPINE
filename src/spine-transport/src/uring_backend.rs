@@ -2,13 +2,13 @@
 //!
 //! Provides a `UringBackend` that wraps the low-level io_uring primitives
 //! from spine-kernel and spine-transport's uring module into a unified
-//! backend that can be used with the existing `ProtocolHandler`.
+//! backend that can be used with a spine-wire v1 `Connection`.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! ┌────────────────┐
-//! │ ProtocolHandler│  (existing, works with AsyncRead+AsyncWrite)
+//! │ Connection     │  (existing, works with AsyncRead+AsyncWrite)
 //! └───────┬────────┘
 //!         │
 //! ┌───────▼────────┐
@@ -51,7 +51,7 @@ use std::sync::Arc;
 /// High-level io_uring backend for the SPINE transport layer.
 ///
 /// Manages the io_uring ring, buffer pool, and connection tracking.
-/// Designed to be used as the I/O backend for `ProtocolHandler` connections.
+/// Designed to be used as the I/O backend for `Connection` connections.
 pub struct UringBackend {
     ring: UringRing,
     config: UringConfig,

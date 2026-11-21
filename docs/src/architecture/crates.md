@@ -27,7 +27,7 @@
 | Crate             | Type       | Description                                                                     |
 | ----------------- | ---------- | ------------------------------------------------------------------------------- |
 | `spine-core`      | Binary+Lib | Multi-session orchestration server with config management                       |
-| `spine-protocol`  | Library    | Message types, frame encoding, protocol handler, speculation                    |
+| `spine-protocol`  | Library    | Message types, frame encoding, protocol handler                                 |
 | `spine-parser`    | Library    | Recursive semantic HTML to Unified Representation parser                        |
 | `spine-compiler`  | Library    | HLS (SPINE Scripting) to SpineBinary compiler                                   |
 | `spine-knowledge` | Library    | Unified bioinspired memory (episodic, semantic, working, collective) with CRDTs |
@@ -39,6 +39,8 @@
 | `spine-transport` | Library | Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system  |
 | `spine-stream`    | Library | Reactive streams, multiplexing, flow control, priority queuing          |
 | `spine-crypto`    | Library | Titans prediction, quantum cryptography, X3DH, MIRAS memory             |
+| `spine-session`   | Library | Authenticated, forward-secret session handshake (ML-KEM-768, Ed25519) |
+| `spine-mesh`      | Library | Agent mesh: Ed25519 identities, signed envelopes, name records, TCP/WebSocket/QUIC transports, signed frames |
 | `spine-neural`    | Library | VAE encoder, Titans memory, attention, learned projections              |
 | `spine-cluster`   | Library | Distributed coordination, Raft consensus, Sybil resistance, marketplace |
 | `spine-wasm`      | Library | WebAssembly runtime (wasmtime) for HLS execution                        |
@@ -56,6 +58,7 @@
 | `spine-kernel`   | Library | SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC |
 | `spine-nostd`    | Library | `#![no_std]` core primitives (Q8.8 fixed-point, FNV hashing, frame codec)  |
 | `spine-embedded` | Library | Minimal agent runtime for embedded/IoT targets                             |
+| `spine-protocol-research` | Library | Experimental, unreviewed: Chameleon key, `SpineConnection`, protocol evolution, `TitansLatentCodec` (not on the wire) |
 
 ### Bindings
 
@@ -71,9 +74,9 @@
 ```
 spine-cli ------+
 spine-gateway --+
-spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
-                |                                   +-- spine-neural
+spine-browser --+-- spine-agent -- spine-agentic --+-- spine-neural
                 |                                   +-- spine-crypto
+                |                                   +-- spine-mesh -- spine-session, spine-name, spine-transport, spine-protocol (no research dependency)
                 |                                   +-- spine-knowledge -- spine-storage
                 |                                                          spine-cache
                 |

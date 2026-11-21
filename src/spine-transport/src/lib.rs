@@ -408,6 +408,10 @@ impl Default for FrameFlags {
     }
 }
 
+/// Maximum decoded size of a single compressed frame payload (64 MiB),
+/// matching the protocol layer's outer decoded-frame limit.
+pub const MAX_DECOMPRESSED_FRAME_SIZE: usize = 64 * 1024 * 1024;
+
 impl Frame {
     /// Create a new frame
     pub fn new(payload: Bytes) -> Self {
@@ -443,12 +447,40 @@ impl Frame {
             return Ok(self.payload.clone());
         }
 
+        let too_large = || {
+            TransportError::Compression(format!(
+                "decompressed frame exceeds limit of {} bytes",
+                MAX_DECOMPRESSED_FRAME_SIZE
+            ))
+        };
+
         let decompressed = if use_lz4 {
+            // The LZ4 block is prefixed with its claimed decoded size (u32 LE);
+            // check it before the decoder allocates that much.
+            let claimed = self
+                .payload
+                .get(..4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+                .ok_or_else(|| TransportError::Compression("lz4 frame too short".into()))?;
+            if claimed > MAX_DECOMPRESSED_FRAME_SIZE {
+                return Err(too_large());
+            }
             lz4_flex::decompress_size_prepended(&self.payload)
                 .map_err(|e| TransportError::Compression(e.to_string()))?
         } else {
-            zstd::decode_all(&self.payload[..])
-                .map_err(|e| TransportError::Compression(e.to_string()))?
+            use std::io::Read;
+            let decoder = zstd::stream::read::Decoder::new(&self.payload[..])
+                .map_err(|e| TransportError::Compression(e.to_string()))?;
+            let mut out = Vec::new();
+            // Read one byte past the limit so overflow is detectable.
+            decoder
+                .take(MAX_DECOMPRESSED_FRAME_SIZE as u64 + 1)
+                .read_to_end(&mut out)
+                .map_err(|e| TransportError::Compression(e.to_string()))?;
+            if out.len() > MAX_DECOMPRESSED_FRAME_SIZE {
+                return Err(too_large());
+            }
+            out
         };
 
         Ok(Bytes::from(decompressed))
@@ -785,6 +817,31 @@ mod tests {
 
         let decompressed = frame.decompress(true).unwrap();
         assert_eq!(&decompressed[..], &data[..]);
+    }
+
+    #[test]
+    fn test_decompress_rejects_oversized_zstd() {
+        let data = vec![0u8; MAX_DECOMPRESSED_FRAME_SIZE + 1];
+        let frame = Frame::compressed(Bytes::from(data), 1, false).unwrap();
+        assert!(frame.payload.len() < 1024 * 1024);
+        assert!(matches!(
+            frame.decompress(false),
+            Err(TransportError::Compression(_))
+        ));
+    }
+
+    #[test]
+    fn test_decompress_rejects_oversized_lz4() {
+        // Forged header claiming a decoded size above the limit.
+        let claimed = (MAX_DECOMPRESSED_FRAME_SIZE as u32) + 1;
+        let mut payload = claimed.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[0u8; 8]);
+        let mut frame = Frame::new(Bytes::from(payload));
+        frame.header.flags |= FrameFlags::COMPRESSED;
+        assert!(matches!(
+            frame.decompress(true),
+            Err(TransportError::Compression(_))
+        ));
     }
 
     #[test]

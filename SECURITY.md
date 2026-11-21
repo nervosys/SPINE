@@ -1,5 +1,11 @@
 # Security Policy
 
+## Local implementation verification
+
+The 2026-10-02 continuation patches Rustls and Wasmtime advisories, refuses missing certificates when native TCP TLS is enabled, redacts model-routing tokens and native request payloads, bounds resource transfer, and reports replica sends separately from acknowledged durability. Native and WASM HTTP navigation now share DNS-pinned public-address checks, exact internal-origin exceptions, redirect refusal, and response/concurrency/deadline limits; see [native operations](docs/NATIVE_OPERATIONS.md). See [the evidence report](docs/COMPLETION_STATUS.md). These checks do not establish an independent review of the custom handshake, multi-tenant isolation, cryptographic module certification, or verified hardware erasure. The quickstart uses trusted local clients; public multi-user deployment remains gated on authorization and policy across the remaining bridge/mesh paths.
+
+The development task service additionally requires encrypted TCP, pins the recipient's key in the handshake before sending task data, checks pooled connection identity, and matches the signed caller key to the authenticated connection. Workers authorize explicit coordinator keys before accessing owner-scoped tasks or immutable knowledge. Unpinned bootstrap and other application transport modes are refused. Native clients of a coordinator share its identity; these controls do not provide multi-user origin tenancy. Application requests are never transparently replayed after an uncertain write. Read-only task recovery and duplicate semantics are documented in [native operations](docs/NATIVE_OPERATIONS.md).
+
 ## Supported Versions
 
 | Version | Status        | Receives security fixes |
@@ -14,6 +20,8 @@ key generation, AES-GCM nonce reuse, and record-store admission) affect anyone
 running a 1.x mesh. **Upgrading is a wire-breaking change:** 2.0.0 peers cannot
 speak to 1.x peers over the Chameleon layer, so a deployment upgrades together
 or not at all.
+
+The native origin TLS configuration now applies to TCP and WSS, including explicitly required client certificates and revocation lists. Transport admission, complete-message deadlines, bounded decompression, and cancelled mesh-write retirement reduce resource growth; they do not establish a process-wide memory budget. The legacy cluster and diagnostics remain trusted-network interfaces. Native origin clients have operator access; neither mTLS nor the HTTP gateway token defines per-user roles. See [the connection policy](docs/NATIVE_OPERATIONS.md#connection-and-tls-policy) for concrete limits and unsupported modes.
 
 ## Reporting a Vulnerability
 
@@ -47,11 +55,11 @@ shipped components target these properties:
 
 | Asset                            | Property protected             | Mechanism                                  |
 |----------------------------------|--------------------------------|--------------------------------------------|
-| Message payloads on the wire     | Confidentiality                | AES-256-GCM + rustls 0.23 (or QUIC)        |
+| Message payloads on the wire     | Confidentiality                | rustls 0.23 TLS or QUIC; the mesh uses AES-256-GCM. The native frame itself does no sealing |
 | Long-lived agent identity        | Authenticity, non-repudiation  | Ed25519 signing in `spine-agentic`         |
-| Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (default)    |
+| Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (research crate, gateway `research` feature) |
 | Certificate Transparency proofs  | Integrity                      | RFC 6962 + Google v3 JSON log list         |
-| Protocol fingerprint             | Resistance to passive analysis | Chameleon Protocol (moving-target)         |
+| Protocol fingerprint             | Resistance to passive analysis | None on the native wire. The Chameleon key (research, `research/spine-protocol-research`, unreviewed) is not a mitigation |
 | Tool calls and their results     | Correlation                    | Per-call `id` + W3C `traceparent`          |
 
 ### What is **not** in scope
@@ -94,7 +102,7 @@ shipped components target these properties:
 - **Default config**: `CtPolicy::default()` ships with **no trusted
   CT logs** preloaded. Production deployments must call
   `add_logs_from_json_v3()` with the current Google v3 list.
-- **Stateful Titans codec**: `TitansLatentCodec::stateful(...)` is
+- **Stateful Titans codec**: `spine_protocol_research::TitansLatentCodec::stateful(...)` is
   context-aware by design — it leaks request history into subsequent
   encodings. Use only for a single-tenant session you control end to
   end. Never register in a shared `CodecRegistry`.
@@ -146,7 +154,6 @@ The following private-key-bearing structs now `Zeroize` on `Drop`
 - `spine_crypto::QuantumKeyPair` — RLWE secret/public ring elements
 - `spine_crypto::MlKemKeyPair` — FIPS 203 decapsulation key bytes
 - `spine_crypto::QuantumKeyEvolution` — rolling key-hash history
-- `spine_protocol::ProtocolMorphology` — session HMAC key (32 B)
 - `spine_agentic::Ed25519Keypair` — wraps `ed25519-dalek::SigningKey`
   (which itself derives `ZeroizeOnDrop` upstream) plus the cached
   public-key bytes.

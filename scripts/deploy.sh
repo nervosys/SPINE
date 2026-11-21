@@ -7,7 +7,7 @@ echo "🚀 Starting SPINE Native Deployment..."
 
 # 1. Build the project
 echo "🔨 Building SPINE Core..."
-cargo build --release -p spine-core
+cargo build --release -p spine-core --features research
 
 # 2. Create data directories
 mkdir -p ./data/seed ./data/node1 ./data/node2

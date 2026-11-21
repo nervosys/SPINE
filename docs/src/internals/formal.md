@@ -6,7 +6,7 @@ SPINE uses multiple formal verification techniques to ensure correctness of crit
 
 **File**: `formal/tla/ChameleonProtocol.tla`
 
-Models the Chameleon Protocol state machine with:
+Models the Chameleon Protocol state machine (experimental code in `research/spine-protocol-research`, not on the native wire) with:
 - Epoch monotonicity invariant
 - Synchronized evolution between peers
 - Morphology abstraction for latent-space transformations
@@ -26,7 +26,7 @@ Models the X3DH + RLWE key exchange with 10 security lemmas:
 
 ## Kani — Bounded Model Checking
 
-**File**: `src/spine-kernel/src/kani_harnesses.rs`
+**File**: `research/spine-kernel/src/kani_harnesses.rs`
 
 15 verification harnesses for unsafe Rust code:
 - **Allocators**: BumpAllocator, SlabAllocator, ArenaAllocator bounds
