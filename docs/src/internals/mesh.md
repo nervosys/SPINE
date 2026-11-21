@@ -26,6 +26,8 @@ The mesh networking layer provides:
 
 ## Routing
 
+> Only the name-resolution and application payloads are dispatched by any transport. `MeshNode` still has the routing table, TTL and gossip helpers, but no entry point forwards envelopes or handles gossip, and `MeshNode::process_envelope` (which verified signatures only for senders already in a trust map and let unknown senders through) was removed.
+
 Messages are routed via shortest-path selection from the routing table. Routes are learned from incoming messages and gossip announcements. Stale routes are pruned periodically.
 
 ```text
@@ -40,4 +42,4 @@ Nodes periodically broadcast `PeerAnnouncement` messages containing their identi
 
 ## Signature Verification
 
-Every `MeshEnvelope` is signed by the sender using Ed25519. Recipients verify the signature against the sender's public key from the trusted key store, rejecting messages from unknown or banned peers. The signature (v3) covers the domain string `spine-mesh-envelope-v3` and the deterministic CBOR (`spine-cbor`) of the array `[id, from, to, timestamp_secs, timestamp_nanos, payload]`, so the signed bytes depend on the values and not on JSON text formatting; an envelope signed under an earlier version does not verify; `ttl` and `hops` are rewritten by forwarders and are not signed, so treat them as advisory.
+Every `MeshEnvelope` is signed by the sender using Ed25519. A receiver does not take `from` at its word: handlers whose decision depends on who sent an envelope verify the signature against a key this node recorded for that agent id (and, on an authenticated connection, against the connection's own key) and drop what does not verify. The variants are listed with what each handler requires in the trust model section of the `spine-mesh` README. The signature (v3) covers the domain string `spine-mesh-envelope-v3` and the deterministic CBOR (`spine-cbor`) of the array `[id, from, to, timestamp_secs, timestamp_nanos, payload]`, so the signed bytes depend on the values and not on JSON text formatting; an envelope signed under an earlier version does not verify; `ttl` and `hops` are rewritten by forwarders and are not signed, so treat them as advisory.
