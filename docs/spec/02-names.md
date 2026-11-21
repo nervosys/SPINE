@@ -365,7 +365,7 @@ Target design reference: docs/FIRST_PRINCIPLES.md layer 2 and layer 6. Each item
 | f | Strings in `signing_bytes` were NUL-terminated: resolved, length-prefixed since layout v2 (section 3.3) | record.rs: `signing_bytes` |
 | g | Cache accepts an older valid record over a newer one | cache.rs:140-154, resolver.rs:251 |
 | h | Lookup does not check that a returned record is unexpired | naming.rs:319-329 |
-| i | Envelope signature is taken over `serde_json` output, the construct `signing_bytes` avoids for records | mesh.rs:916-924 |
+| i | Resolved 2026-11-21: the envelope signature (v3) is taken over deterministic CBOR via `spine-cbor`, not `serde_json` output | spine-mesh mesh.rs `signature_data` |
 | j | `verify` rather than `verify_strict`: resolved (section 3.4) | record.rs: `verify` |
 | k | Record store capacity is count-based only; no byte or field-count limits | store.rs:39, record.rs |
 | l | `host:` parsing treats a bare IPv6 address as host plus port | uri.rs:104-106 |
