@@ -26,10 +26,12 @@
 //!
 //! ## Authentication
 //!
-//! QUIC brings TLS 1.3, so frames are confidential without further work. But
-//! the endpoints here use self-signed certificates and a permissive verifier
-//! (see `QuicEndpointBuilder`), so that TLS authenticates *nothing* about which
-//! mesh node is on the other end.
+//! QUIC brings TLS 1.3, so frames are confidential without further work. The
+//! client verifies the server certificate like any TLS client (see
+//! `QuicEndpointBuilder::client_config_with_roots`), against a set that starts
+//! empty: listeners present self-signed certificates, which a deployment hands
+//! to its peers with [`QuicNameTransport::trust_certificate`]. A certificate
+//! says which *endpoint* answered, not which mesh node it belongs to.
 //!
 //! The mesh handshake fills that gap, run **once per connection** on the first
 //! stream rather than per exchange: QUIC guarantees every stream belongs to the
@@ -44,6 +46,8 @@ use tokio::sync::mpsc;
 
 use ed25519_dalek::SigningKey;
 use quinn::{Connection, Endpoint};
+use rustls::pki_types::CertificateDer;
+use rustls::RootCertStore;
 use spine_protocol::QuicEndpointBuilder;
 use spine_transport::websocket::QuicStream;
 
@@ -80,6 +84,10 @@ pub fn install_crypto_provider() {
 /// A QUIC transport that opens one stream per exchange.
 pub struct QuicNameTransport {
     endpoint: Endpoint,
+    /// Server certificates and CAs this transport will accept. Starts empty, so a
+    /// transport connects to nobody until told whom to trust; see
+    /// [`QuicNameTransport::trust_certificate`].
+    trusted: std::sync::RwLock<RootCertStore>,
     /// Where each peer can be reached.
     addresses: DashMap<AgentId, SocketAddr>,
     /// Expected mesh identity per peer, pinned during the connection handshake.
@@ -125,13 +133,13 @@ impl QuicNameTransport {
         signing: Option<SigningKey>,
     ) -> Result<(Arc<Self>, mpsc::Receiver<Inbound>), NameMeshError> {
         install_crypto_provider();
-        let endpoint = QuicEndpointBuilder::new()
-            .build_client()
+        let endpoint = Endpoint::client("0.0.0.0:0".parse().expect("valid wildcard address"))
             .map_err(|e| NameMeshError::Transport(format!("quic client endpoint: {e}")))?;
         let (tx, rx) = mpsc::channel(INBOUND_QUEUE);
         Ok((
             Arc::new(Self {
                 endpoint,
+                trusted: std::sync::RwLock::new(RootCertStore::empty()),
                 addresses: DashMap::new(),
                 identities: DashMap::new(),
                 connections: DashMap::new(),
@@ -146,6 +154,38 @@ impl QuicNameTransport {
     /// A sender for the same inbound stream, for a listener to share.
     pub fn inbound_sender(&self) -> mpsc::Sender<Inbound> {
         self.inbound.clone()
+    }
+
+    /// Trust the server certificate `cert` (or a CA certificate that issued
+    /// them), so connections to a peer presenting it can proceed.
+    ///
+    /// A listener returns its own certificate from [`QuicListener::certificate`]
+    /// and [`serve_quic_node`]; a deployment distributes them out of band, as it
+    /// would a CA for the TLS transport. Nothing is trusted by default: the QUIC
+    /// connection is verified like any TLS connection, and the mesh handshake
+    /// then proves which mesh identity is on the other end.
+    pub fn trust_certificate(&self, cert: CertificateDer<'static>) -> Result<(), NameMeshError> {
+        let mut roots = self
+            .trusted
+            .write()
+            .map_err(|_| NameMeshError::Transport("trusted certificate set is poisoned".into()))?;
+        roots
+            .add(cert)
+            .map_err(|e| NameMeshError::Transport(format!("unusable certificate: {e}")))
+    }
+
+    /// Start a connection that verifies the server against the trusted set.
+    fn connect_verified(&self, addr: SocketAddr) -> Result<quinn::Connecting, NameMeshError> {
+        let roots = self
+            .trusted
+            .read()
+            .map_err(|_| NameMeshError::Transport("trusted certificate set is poisoned".into()))?
+            .clone();
+        let config = QuicEndpointBuilder::client_config_with_roots(roots)
+            .map_err(|e| NameMeshError::Transport(format!("quic client config: {e}")))?;
+        self.endpoint
+            .connect_with(config, addr, "localhost")
+            .map_err(|e| NameMeshError::Transport(format!("quic connect {addr}: {e}")))
     }
 
     /// Record where a peer can be reached.
@@ -196,10 +236,7 @@ impl QuicNameTransport {
             .map(|e| *e.value())
             .ok_or_else(|| NameMeshError::Transport(format!("no address known for {agent:?}")))?;
 
-        let connecting = self
-            .endpoint
-            .connect(addr, "localhost")
-            .map_err(|e| NameMeshError::Transport(format!("quic connect {addr}: {e}")))?;
+        let connecting = self.connect_verified(addr)?;
 
         // Bound the handshake ourselves. Quinn's own timeout is tuned for
         // long-lived connections and far exceeds any lookup budget, so an
@@ -294,10 +331,7 @@ impl QuicNameTransport {
             .parse()
             .map_err(|e| NameMeshError::Transport(format!("bad seed address `{endpoint}`: {e}")))?;
 
-        let connecting = self
-            .endpoint
-            .connect(addr, "localhost")
-            .map_err(|e| NameMeshError::Transport(format!("quic connect seed {addr}: {e}")))?;
+        let connecting = self.connect_verified(addr)?;
         let connection = tokio::time::timeout(CONNECT_TIMEOUT, connecting)
             .await
             .map_err(|_| {
@@ -401,6 +435,7 @@ impl NameTransport for QuicNameTransport {
 /// Accepts QUIC connections and serves each stream as one exchange.
 pub struct QuicListener {
     endpoint: Endpoint,
+    certificate: CertificateDer<'static>,
 }
 
 impl std::fmt::Debug for QuicListener {
@@ -413,10 +448,19 @@ impl QuicListener {
     /// Bind a QUIC server endpoint. Pass port 0 to let the OS choose.
     pub fn bind(addr: SocketAddr) -> Result<Self, NameMeshError> {
         install_crypto_provider();
-        let endpoint = QuicEndpointBuilder::new()
-            .build_server(addr)
+        let (endpoint, certificate) = QuicEndpointBuilder::new()
+            .build_server_self_signed(addr)
             .map_err(|e| NameMeshError::Transport(format!("quic bind {addr}: {e}")))?;
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            certificate,
+        })
+    }
+
+    /// The self-signed certificate this listener presents, for peers to
+    /// [trust](QuicNameTransport::trust_certificate).
+    pub fn certificate(&self) -> CertificateDer<'static> {
+        self.certificate.clone()
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr, NameMeshError> {
@@ -490,18 +534,22 @@ async fn serve_connection(
 }
 
 /// Bind a QUIC listener, wire it to `resolver`, and start serving.
+///
+/// Returns the bound address and the self-signed certificate the listener
+/// presents, which clients must [trust](QuicNameTransport::trust_certificate).
 pub async fn serve_quic_node(
     bind_addr: SocketAddr,
     resolver: Arc<MeshNameResolver>,
     transport: Arc<QuicNameTransport>,
     inbound: mpsc::Receiver<Inbound>,
     signing: Option<SigningKey>,
-) -> Result<SocketAddr, NameMeshError> {
+) -> Result<(SocketAddr, CertificateDer<'static>), NameMeshError> {
     let listener = QuicListener::bind(bind_addr)?;
     let addr = listener.local_addr()?;
+    let certificate = listener.certificate();
     tokio::spawn(listener.serve(transport.inbound_sender(), signing));
     tokio::spawn(crate::mesh_tcp::pump(inbound, resolver));
-    Ok(addr)
+    Ok((addr, certificate))
 }
 
 /// Largest envelope this transport will accept, mirroring the others.
@@ -536,6 +584,7 @@ mod tests {
         transport: Arc<QuicNameTransport>,
         mesh: Arc<MeshNode>,
         addr: SocketAddr,
+        certificate: CertificateDer<'static>,
         signing: SigningKey,
     }
 
@@ -554,7 +603,7 @@ mod tests {
                 .with_clock(|| NOW)
                 .with_timeout(Duration::from_secs(10)),
         );
-        let addr = serve_quic_node(
+        let (addr, certificate) = serve_quic_node(
             "127.0.0.1:0".parse().unwrap(),
             resolver.clone(),
             transport.clone(),
@@ -569,11 +618,15 @@ mod tests {
             transport,
             mesh,
             addr,
+            certificate,
             signing,
         }
     }
 
     async fn introduce(a: &QuicNode, b: &QuicNode) {
+        a.transport
+            .trust_certificate(b.certificate.clone())
+            .unwrap();
         a.transport.set_address(*b.mesh.agent_id(), b.addr);
         a.transport
             .set_identity(*b.mesh.agent_id(), b.signing.verifying_key().to_bytes());

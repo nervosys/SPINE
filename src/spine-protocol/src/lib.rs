@@ -37,7 +37,7 @@ use quinn::{ClientConfig, Connection as QuinnConnection, Endpoint, ServerConfig}
 #[cfg(feature = "quic")]
 use rustls as quic_rustls; // rustls 0.23 for QUIC (workspace)
 #[cfg(feature = "quic")]
-use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 #[cfg(feature = "quic")]
 use std::net::SocketAddr;
 
@@ -740,10 +740,35 @@ impl QuicEndpointBuilder {
         Ok((cert_der, key))
     }
 
-    /// Build a server endpoint
+    /// Build a server endpoint with a freshly generated self-signed certificate.
+    ///
+    /// The certificate is discarded, so no client can verify this server: use
+    /// [`QuicEndpointBuilder::build_server_self_signed`] to get it back, or
+    /// [`QuicEndpointBuilder::build_server_with_cert`] to serve a real one.
     pub fn build_server(&self, bind_addr: SocketAddr) -> anyhow::Result<Endpoint> {
-        let (cert, key) = Self::generate_self_signed_cert()?;
+        Ok(self.build_server_self_signed(bind_addr)?.0)
+    }
 
+    /// Build a server endpoint with a freshly generated self-signed certificate
+    /// (subject alternative name `localhost`) and return the certificate, so a
+    /// client can be told to trust exactly it with
+    /// [`QuicEndpointBuilder::build_client_trusting`].
+    pub fn build_server_self_signed(
+        &self,
+        bind_addr: SocketAddr,
+    ) -> anyhow::Result<(Endpoint, CertificateDer<'static>)> {
+        let (cert, key) = Self::generate_self_signed_cert()?;
+        let endpoint = self.build_server_with_cert(bind_addr, cert.clone(), key)?;
+        Ok((endpoint, cert))
+    }
+
+    /// Build a server endpoint that presents `cert` (leaf first) with `key`.
+    pub fn build_server_with_cert(
+        &self,
+        bind_addr: SocketAddr,
+        cert: CertificateDer<'static>,
+        key: PrivateKeyDer<'static>,
+    ) -> anyhow::Result<Endpoint> {
         // Use quinn's crypto config builder with rustls 0.23
         let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(
             quic_rustls::ServerConfig::builder_with_protocol_versions(&[
@@ -768,25 +793,53 @@ impl QuicEndpointBuilder {
         Ok(endpoint)
     }
 
-    /// Build a client endpoint with platform verifier (for development: skip verification)
-    pub fn build_client(&self) -> anyhow::Result<Endpoint> {
-        // Create a permissive client config for development
-        // In production, use rustls-platform-verifier
-        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(
-            quic_rustls::ClientConfig::builder_with_protocol_versions(&[
-                &quic_rustls::version::TLS13,
-            ])
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
-            .with_no_client_auth(),
-        )?;
+    /// A client configuration that verifies the server's certificate chain and
+    /// name against `roots`, exactly as the TLS client does (`RootCertStore` +
+    /// `with_root_certificates`). There is no way to switch verification off.
+    ///
+    /// Useful with [`quinn::Endpoint::connect_with`] when the trusted set
+    /// changes over the life of an endpoint.
+    pub fn client_config_with_roots(
+        roots: quic_rustls::RootCertStore,
+    ) -> anyhow::Result<ClientConfig> {
+        let provider = Arc::new(quic_rustls::crypto::ring::default_provider());
+        let tls = quic_rustls::ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&quic_rustls::version::TLS13])?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
+        Ok(ClientConfig::new(Arc::new(crypto)))
+    }
 
-        let client_config = ClientConfig::new(Arc::new(crypto));
-
+    /// Build a client endpoint that trusts exactly the certificates in `roots`.
+    pub fn build_client_with_roots(
+        &self,
+        roots: quic_rustls::RootCertStore,
+    ) -> anyhow::Result<Endpoint> {
+        let client_config = Self::client_config_with_roots(roots)?;
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
         endpoint.set_default_client_config(client_config);
-
         Ok(endpoint)
+    }
+
+    /// Build a client endpoint that trusts exactly `cert`: a pinned server
+    /// certificate, such as the one [`QuicEndpointBuilder::build_server_self_signed`]
+    /// returns.
+    pub fn build_client_trusting(&self, cert: CertificateDer<'static>) -> anyhow::Result<Endpoint> {
+        let mut roots = quic_rustls::RootCertStore::empty();
+        roots.add(cert)?;
+        self.build_client_with_roots(roots)
+    }
+
+    /// Build a client endpoint that verifies servers against the public web PKI
+    /// roots (Mozilla's, via `webpki-roots`). A server with a self-signed or
+    /// privately issued certificate is refused: pass its certificate or CA to
+    /// [`QuicEndpointBuilder::build_client_trusting`] or
+    /// [`QuicEndpointBuilder::build_client_with_roots`].
+    pub fn build_client(&self) -> anyhow::Result<Endpoint> {
+        let mut roots = quic_rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        self.build_client_with_roots(roots)
     }
 
     /// Connect to a QUIC server
@@ -810,55 +863,65 @@ impl Default for QuicEndpointBuilder {
     }
 }
 
-/// Skip certificate verification (development only!)
-/// WARNING: Do NOT use in production - this accepts any certificate!
-#[cfg(feature = "quic")]
-#[derive(Debug)]
-struct SkipServerVerification;
+#[cfg(all(test, feature = "quic"))]
+mod quic_verification_tests {
+    use super::*;
+    use std::time::Duration;
 
-#[cfg(feature = "quic")]
-impl quic_rustls::client::danger::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<quic_rustls::client::danger::ServerCertVerified, quic_rustls::Error> {
-        Ok(quic_rustls::client::danger::ServerCertVerified::assertion())
+    fn install_provider() {
+        let _ = quic_rustls::crypto::ring::default_provider().install_default();
     }
 
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &quic_rustls::DigitallySignedStruct,
-    ) -> Result<quic_rustls::client::danger::HandshakeSignatureValid, quic_rustls::Error> {
-        Ok(quic_rustls::client::danger::HandshakeSignatureValid::assertion())
+    /// Serve connections until aborted, keeping each alive so a client that
+    /// verified the server is not racing a closed connection.
+    fn hold_connections(server: Endpoint) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Some(incoming) = server.accept().await {
+                if let Ok(connection) = incoming.await {
+                    held.push(connection);
+                }
+            }
+        })
     }
 
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &quic_rustls::DigitallySignedStruct,
-    ) -> Result<quic_rustls::client::danger::HandshakeSignatureValid, quic_rustls::Error> {
-        Ok(quic_rustls::client::danger::HandshakeSignatureValid::assertion())
+    async fn handshake(client: &Endpoint, addr: SocketAddr, name: &str) -> bool {
+        let connecting = client.connect(addr, name).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), connecting)
+            .await
+            .expect("quic handshake neither completed nor failed")
+            .is_ok()
     }
 
-    fn supported_verify_schemes(&self) -> Vec<quic_rustls::SignatureScheme> {
-        vec![
-            quic_rustls::SignatureScheme::RSA_PKCS1_SHA256,
-            quic_rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
-            quic_rustls::SignatureScheme::RSA_PKCS1_SHA384,
-            quic_rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
-            quic_rustls::SignatureScheme::RSA_PKCS1_SHA512,
-            quic_rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
-            quic_rustls::SignatureScheme::RSA_PSS_SHA256,
-            quic_rustls::SignatureScheme::RSA_PSS_SHA384,
-            quic_rustls::SignatureScheme::RSA_PSS_SHA512,
-            quic_rustls::SignatureScheme::ED25519,
-        ]
+    #[tokio::test]
+    async fn the_quic_client_accepts_only_the_server_it_was_told_to_trust() {
+        install_provider();
+        let builder = QuicEndpointBuilder::new();
+        let (server, cert) = builder
+            .build_server_self_signed("127.0.0.1:0".parse().unwrap())
+            .unwrap();
+        let addr = server.local_addr().unwrap();
+        let (other, other_cert) = builder
+            .build_server_self_signed("127.0.0.1:0".parse().unwrap())
+            .unwrap();
+        let acceptor = hold_connections(server);
+
+        let trusting = builder.build_client_trusting(cert.clone()).unwrap();
+        assert!(handshake(&trusting, addr, "localhost").await);
+
+        // A name the certificate was not issued for.
+        assert!(!handshake(&trusting, addr, "example.com").await);
+
+        // A client pinned to a different certificate.
+        let wrong = builder.build_client_trusting(other_cert).unwrap();
+        assert!(!handshake(&wrong, addr, "localhost").await);
+
+        // The default client trusts only the public web PKI, never a
+        // self-signed certificate.
+        let default = builder.build_client().unwrap();
+        assert!(!handshake(&default, addr, "localhost").await);
+
+        acceptor.abort();
+        drop(other);
     }
 }

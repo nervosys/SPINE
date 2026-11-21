@@ -12,7 +12,7 @@ description = "Low-latency communication protocols for SPINE"
 
 [features]
 default = ["quic"]
-quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types"]
+quic = ["dep:quinn", "dep:rcgen", "dep:rustls-pki-types", "dep:webpki-roots"]
 
 [dependencies]
 serde.workspace = true
@@ -37,6 +37,8 @@ rustls.workspace = true
 quinn = { version = "0.11", optional = true }
 rcgen = { version = "0.12", optional = true }
 rustls-pki-types = { version = "1", optional = true }
+# Public web PKI roots for the default QUIC client (the TLS client uses system roots).
+webpki-roots = { version = "1", optional = true }
 
 [dev-dependencies]
 proptest = "1.4"
