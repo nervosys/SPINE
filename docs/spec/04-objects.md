@@ -2,6 +2,8 @@
 
 Status: description of the code as built on branch `completion/agent-web`. It is not a design. Where the code does not determine a behaviour the text says "Undetermined" and names the file inspected. Every behavioural statement carries a `path:line` reference relative to the repository root. The target direction is in `docs/FIRST_PRINCIPLES.md` (layer 4, line 42); the gaps against it are collected in the final section.
 
+Note (2026-11-21): the resource store changed: raw-byte blobs in `spine-resources-v3` with accounting rows, one verification per blob per process, per-publisher fair-share eviction, owner-checked delete (section 4.4). Passages below that describe JSON blobs or per-chunk hashing are superseded by it.
+
 ## 1. Scope
 
 This document covers what a node holds and serves as content:
@@ -92,7 +94,7 @@ Verification (`record.rs:269-282`) uses the public key inside the `did:` name; t
 | Representation size | 8 MiB (`MAX_RESOURCE_BYTES`) | `spine-protocol/src/resource.rs:6`, enforced `resources.rs:33` |
 | Download chunk | 1 to 65,536 bytes (`MAX_RESOURCE_CHUNK` = 64 KiB) | `resource.rs:7`, `resources.rs:70-73` |
 | Content type | 1 to 256 bytes, each byte 32 to 126 | `resources.rs:34-38` |
-| Origin resource store | 256 MiB of serialized storage | `resources.rs:10`, `resources.rs:55-64` |
+| Origin resource store | 256 MiB of accounted bytes (stored row plus 1 KiB per blob), 64 MiB fair share per publisher | `resources.rs` `MAX_STORED_BYTES`, `FAIR_SHARE_BYTES`, `PER_BLOB_OVERHEAD` |
 | Name records per node | 10,000 (`DEFAULT_CAPACITY`) | `spine-name/src/store.rs:39`, `resolver.rs:220-226` |
 | Native message body | 16 MiB | `spine-protocol/src/wire.rs:60` |
 | Batch resolution | 256 names, 16 concurrent | `main.rs:675-694` |
@@ -120,13 +122,13 @@ Origin processing (`main.rs:630-659`), in order:
 
 1. Deserialize `record` as `NameRecord`; failure is an error.
 2. Refuse if `record.is_expired(now)` with `record is expired`.
-3. `ResourceStore::put` (`resources.rs:31-67`): verify the record signature; refuse data over 8 MiB; refuse an invalid content type; require `record.content_hash` and check `verify_resource(id, content_type, data)` (invalid type: `InvalidContentType`; wrong bytes or type: `ResourceIdMismatch`); if a blob under that id already exists, return success (the id fixes the type, so there is nothing to ignore); otherwise check the 256 MiB quota and write the blob under namespace `spine-resources-v2`, key = the 32 id bytes.
+3. `ResourceStore::put` (`resources.rs:31-67`): verify the record signature; refuse data over 8 MiB; refuse an invalid content type; require `record.content_hash` and check `verify_resource(id, content_type, data)` (invalid type: `InvalidContentType`; wrong bytes or type: `ResourceIdMismatch`); if a blob under that id already exists, return success (the id fixes the type, so there is nothing to ignore); otherwise admit it under the quota (section 4.4) and write the blob under namespace `spine-resources-v3`, key = the 32 id bytes, with an accounting row in `spine-resources-meta-v3`.
 4. `LocalResolver::publish` (`resolver.rs:195-248`): verify, compare against the stored record for the name, enforce capacity, persist the record, then replace the in-memory copy.
 5. Replicate: if a mesh is present, `mesh.publish(record)` and report counts (`main.rs:395-421`).
 
 Success response: a JSON object with `status: "published"`, `name`, `stored: true`, `local_persistent`, `replicas`, `replication_sent`, `replication_failed`, `replication_broadcast`, `replication_error`, `replication_acknowledged` (always 0), `durable` (always false) and a `retry` string (`main.rs:413-420`). Only the record is replicated to peers; resource bytes are not sent to them (Undetermined in the strict sense: `MeshNameResolver::publish` was not read, but the announcement payload is `NameAnnounce(AnnouncedRecord)` which carries a record, `spine-agentic/src/mesh.rs:216-220`).
 
-Ordering consequence: step 3 completes before step 4. If step 4 fails (for example `StalePublication`), the blob remains stored and is not rolled back (`main.rs:640-641`).
+Ordering consequence: step 3 completes before step 4. If step 4 fails (for example `StalePublication`) and step 3 created the blob, the handler removes it again; content that was already stored stays.
 
 Client side (`spine-agent/src/resources.rs:21-44`): verifies the record, checks size and that the record's hash equals the hash of the data, sends the command, and fails if `error` is set. No client deadline is applied in this function.
 
@@ -140,7 +142,7 @@ Origin processing (`main.rs:608-629`, `resources.rs:69-96`):
 
 1. `max_bytes` must be in 1 to 65,536, else error `chunk must be 1 through 65536 bytes`.
 2. Load the blob; absent gives `resource not held by this origin`.
-3. Decode the stored JSON, require `data.len() <= 8 MiB` and `verify_resource(hash, stored content_type, data)`, else `stored resource failed integrity check` (a relabelled stored blob fails here). This runs on every chunk request, over the whole blob.
+3. Decode the stored row and require `data.len() <= 8 MiB`; the first time this process serves the blob, also require `verify_resource(hash, stored content_type, data)`, else `stored resource failed integrity check` (a relabelled stored blob fails here). Later chunks of a verified blob do not hash it again (section 4.4).
 4. `offset` must be at most `data.len()`, else `offset beyond resource`. An offset equal to the length yields an empty final chunk.
 5. Return `ResourceChunk { hash, offset, total_bytes, content_type, data, complete }` where `data` is up to `max_bytes` bytes from `offset` and `complete` is true when the chunk reaches the end (`spine-protocol/src/resource.rs:9-18`).
 
@@ -183,7 +185,7 @@ Errors are returned as `Response.error` text; there is no error code field. The 
 | Over 8 MiB | `resource exceeds 8 MiB` (`resources.rs:33`) |
 | Invalid content type | `NameError::InvalidContentType` |
 | Id mismatch (wrong bytes or content type) | `NameError::ResourceIdMismatch` |
-| Quota | `resource store quota exceeded` (`resources.rs:61-64`) |
+| Quota | `resource store quota exceeded` (`resources.rs` `put_at`) |
 | Stale record | `StalePublication` via `NameError` (`resolver.rs:200`) |
 | Bad chunk size | `chunk must be 1 through 65536 bytes` (`resources.rs:70-73`) |
 | Unknown hash | `resource not held by this origin` (`resources.rs:74-77`) |
@@ -211,7 +213,8 @@ All three use one backend instance chosen at startup (`main.rs:1592-1628`): SQLi
 | Namespace string | Contents | Writer |
 | --- | --- | --- |
 | `spine-name-publishers-v1` | Records published at this node, key = canonical name | `resolver.rs:233-235` |
-| `spine-resources-v2` | `Blob` JSON, key = 32-byte resource id | `resources.rs:9`, `resources.rs:65` |
+| `spine-resources-v3` | Blob bytes: version `1`, u32-BE content type length, content type, data; key = 32-byte resource id | `resources.rs` `encode_blob` |
+| `spine-resources-meta-v3` | 57-byte accounting row: version `1`, 32-byte publisher key, u64-BE accounted size, stored-at, referenced-until; key = resource id | `resources.rs` `encode_meta` |
 | `spine-tasks-v1`, `spine-task-knowledge-v1` | Layer 5 state | see `05-interaction.md` |
 
 Session state is separate: a JSON manifest `spine-sessions-v1.json` written atomically with a 64 MiB limit (`docs/NATIVE_OPERATIONS.md`, "Monitor and stop"; code in `spine-core/src/session_store.rs`, not read in detail). It holds navigation sessions and per-session knowledge, not resources.
@@ -219,10 +222,29 @@ Session state is separate: a JSON manifest `spine-sessions-v1.json` written atom
 ### 4.3 Restart
 
 - Records: on startup `LocalResolver::persistent` scans `spine-name-publishers-v1`, rejects the whole snapshot if it holds more than 10,000 records, requires each key to equal the record's name, verifies every signature, and re-admits only records that are not expired (`resolver.rs:141-167`). An expired record stays in storage as a sequence marker so the owner can renew above it (`resolver.rs:137-139`).
-- Resource bytes: read from storage on demand; there is no startup scan or index. Integrity is re-checked on each read (`resources.rs:79-82`). `resources.rs:106-143` is the test for restart, partial reads, and rejection of a tampered blob.
+- Resource bytes: validated at startup (section 4.4) and read from storage on demand.
 - Not persisted: learned cache entries, remote replicas, negative results and peer contacts (`resolver.rs:139`, `docs/AGENT_WEB_QUICKSTART.md`, "Publish and fetch a resource").
 - Not-expired persisted records are re-offered to the mesh after startup (`main.rs:1619-1625`). Owner renewal runs only when `renew_owned_records` is set (`config.rs:110`, `namespace.rs`).
 - Durability: with `synchronous=NORMAL` in WAL mode, SQLite may lose the most recent commits on power loss. This is SQLite behaviour for those settings, not something the repository tests.
+
+### 4.4 Resource store rules (2026-11-21)
+
+Stored layout (`resources.rs`). Blob row in `spine-resources-v3`, key = the 32-byte resource id: byte 0 is the version `1`; bytes 1 to 4 the content type length as a big-endian `u32` (at most 256); then the content type; then the data to the end of the row (at most 8 MiB). Accounting row in `spine-resources-meta-v3`, same key, 57 bytes: version `1`; 32-byte publisher key; big-endian `u64` accounted size (row length plus 1,024); stored-at and referenced-until, both big-endian `u64` seconds since the Unix epoch. Rows from `spine-resources-v2` (JSON) are not read.
+
+Verification.
+
+- On write the resource id is verified against the content type and bytes.
+- On read, the blob is hashed the first time this process serves it, tracked in a bounded set of 256 verified ids; deletion, eviction and rollback drop the id. Chunks after the first do not hash again. This catches corruption at rest across restarts and any damage since the load-time check; damage that occurs while the process is running after that first read is not noticed by the store.
+- The client checks the whole assembled object against the signed id (`spine-agent` `check_assembled`, applied before a retrieval returns), which is the end-to-end guarantee and covers a store that served bad bytes at any point.
+- At startup the store hashes every blob row and drops any whose content does not match its key, that has no valid accounting row, or whose accounted size is wrong; accounting rows with no blob are dropped.
+
+Accounting and admission. The store holds at most 256 MiB of accounted bytes. Each blob is charged to the publisher that first stored it; storing content that already exists charges nobody and only extends how long the blob counts as referenced. While there is room any publisher is admitted. When there is not, the store evicts unreferenced blobs: a publisher holding 64 MiB or more (a quarter of the store) may evict only its own blobs; otherwise publishers are ranked by bytes held, largest first, and the oldest unreferenced blob of the first publisher that has one is evicted, repeating until enough is freed. If that cannot free enough, the publication is refused and nothing is evicted. This is the byte-granularity form of `tasks.rs` `evict_for_admission`.
+
+Referenced. A blob is not evictable while a record stored with it has not expired, or while the daemon's reference source (`with_reference_source`, the content hashes of unexpired records this node publishes) lists it.
+
+Delete. `ResourceStore::delete(owner, hash)` removes a blob only for the publisher recorded when it was stored, even if a name still refers to it. It is not on the wire.
+
+Publisher identity. The daemon currently calls `put_tracked`, which stores for the fixed `LOCAL_OWNER`, so until its call sites pass a publisher all blobs share one share. Publisher keys are free to mint; the per-publisher share limits one key, not one client.
 
 ## 5. Typed links
 
@@ -314,12 +336,12 @@ Target: `docs/FIRST_PRINCIPLES.md` line 42. Each item states the as-built positi
 - [ ] **Declared token size.** Absent. The only declared size is `total_bytes` in bytes, delivered inside chunks after the first request (`resource.rs:13`). The record has no size field and no token estimate.
 - [ ] **Budgeted representations.** Absent. A resource has one representation; `ReadResource` has no budget parameter. `Rel::Alternate` exists as a link relation (`link.rs:29-30`) but nothing selects among alternates by size.
 - [ ] **Data cannot instruct (typing).** Absent. The parser emits text, links and `Button` and `Input` elements as ordinary data (`lib.rs:37-85`), with no marker that the content is untrusted data and no span-level source tag. Tool results are untyped JSON (`05-interaction.md`, section 2). Nothing in the type system separates reader-addressed instructions from content.
-- [ ] **Streaming beyond 8 MiB.** Absent. 8 MiB is a hard cap enforced at publish, store and client (`resource.rs:6`, `resources.rs:33`, `resources.rs:80`, `spine-agent/src/resources.rs:81`). Ranged chunking exists, but the whole blob is stored as one value, parsed from JSON and re-hashed in full for every 64 KiB request (`resources.rs:74-82`), so cost grows with size times chunk count.
+- [ ] **Streaming beyond 8 MiB.** Absent. 8 MiB is a hard cap enforced at publish, store and client. Ranged chunking exists. Since 2026-11-21 blobs are stored as bytes and hashed at most once per process per blob, so cost no longer grows with size times chunk count, but a chunk read still loads the whole blob unless it is the most recently read one.
 
 Further defects and unsafe properties found while reading (not in the requested checklist):
 
-- [ ] **Unauthenticated publication.** Any native client can publish a name and bytes signed by any key it holds, and can fill the 256 MiB store, with no way to remove the data afterwards (section 2.5, section 3.1).
-- [ ] **Orphaned blobs.** A failed name publication leaves its blob stored (section 3.1).
+- [ ] **Unauthenticated publication.** Any native client can publish a name and bytes signed by any key it holds. Since 2026-11-21 the store accounts bytes per publisher key with fair-share eviction, and an owner-checked `delete` exists in the store API but is not on the wire (section 4.4). Residual: publisher keys are free to mint, so the per-publisher share does not bound one client that mints keys, and the daemon still stores for a fixed local owner until its call sites pass the publisher.
+- [x] **Orphaned blobs.** A failed name publication removes the blob it created (`main.rs` calls `ResourceStore::remove`); a blob a previous publication also uses is kept.
 - [x] **Unsigned `content_type`.** Resolved by the resource id (section 2.6): a different type is a different id, and every fetch path verifies it.
 - [ ] **No bounds on record fields** (section 2.5).
 - [ ] **Unsigned link metadata** (section 2.3).
