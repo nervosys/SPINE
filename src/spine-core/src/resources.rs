@@ -73,6 +73,9 @@ fn encode_blob(content_type: &str, data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// An eviction candidate: stored-at time, resource id, accounted size.
+type Candidate = (u64, [u8; 32], u64);
+
 fn decode_blob(bytes: &[u8]) -> Result<Blob> {
     ensure!(bytes.len() >= 5, "stored resource is truncated");
     ensure!(
@@ -182,7 +185,7 @@ fn plan_eviction(
     now: u64,
 ) -> Option<Vec<[u8; 32]>> {
     let mut held: BTreeMap<[u8; 32], u64> = BTreeMap::new();
-    let mut queues: BTreeMap<[u8; 32], Vec<(u64, [u8; 32], u64)>> = BTreeMap::new();
+    let mut queues: BTreeMap<[u8; 32], Vec<Candidate>> = BTreeMap::new();
     for (id, meta) in &index.metas {
         *held.entry(meta.owner).or_default() += meta.size;
         if meta.ref_until > now || referenced.contains(id) {
@@ -194,7 +197,7 @@ fn plan_eviction(
             .push((meta.stored_at, *id, meta.size));
     }
     let caller_over_share = held.get(caller).copied().unwrap_or(0) >= fair_share;
-    let mut queues: BTreeMap<[u8; 32], VecDeque<(u64, [u8; 32], u64)>> = queues
+    let mut queues: BTreeMap<[u8; 32], VecDeque<Candidate>> = queues
         .into_iter()
         .map(|(owner, mut entries)| {
             entries.sort_unstable();
@@ -689,7 +692,7 @@ mod tests {
             let hash = store.put(&record, content_type, &bytes).unwrap();
             let stored = store.backend.get(NAMESPACE, &hash).unwrap().unwrap();
             assert_eq!(stored.len(), 5 + content_type.len() + bytes.len());
-            let chunk = store.read(hash, 0, 64).unwrap();
+            let chunk = store.read(hash, 0, 1024).unwrap();
             assert_eq!(chunk.content_type, content_type);
             assert_eq!(chunk.data, bytes);
             assert_eq!(chunk.total_bytes, bytes.len() as u64);
