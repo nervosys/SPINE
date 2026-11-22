@@ -187,6 +187,10 @@ async fn bootstrap_addresses(cfg: &NamespaceConfig) -> Vec<String> {
 
 /// Owner-driven renewal is opt-in and can never extend a foreign publisher's
 /// names. The durable resolver keeps expired sequence markers for recovery.
+/// A tombstone is never renewed, and neither is a name this node holds a fresh
+/// tombstone for (another persisted row of the same routing key): renewal must
+/// not undo a revocation. Renewed records keep their `ttl_secs`, capped at the
+/// maximum record lifetime.
 pub fn owned_renewals(
     names: &spine_name::LocalResolver,
     signing: &ed25519_dalek::SigningKey,
@@ -197,10 +201,13 @@ pub fn owned_renewals(
     let mut renewed = Vec::new();
     for record in names.published_records()? {
         if record.name.authority() == &authority
+            && !record.is_tombstone()
+            && !names.is_revoked(&record.name)
             && record.ttl_secs > 0
             && record.remaining_ttl(now) <= window.min((record.ttl_secs as u64) / 2)
         {
-            renewed.push(record.renewed(signing, now, record.ttl_secs)?);
+            let ttl = record.ttl_secs.min(spine_name::MAX_RECORD_TTL_SECS);
+            renewed.push(record.renewed(signing, now, ttl)?);
         }
     }
     Ok(renewed)
@@ -422,5 +429,37 @@ mod tests {
             renewed[0].name.authority(),
             &spine_name::Authority::Did(signing.verifying_key().to_bytes())
         );
+    }
+
+    #[test]
+    fn renewal_does_not_resurrect_a_revoked_name_and_stays_within_the_maximum_ttl() {
+        use spine_name::{NameRecord, SpineUri};
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let name = SpineUri::did(signing.verifying_key().to_bytes());
+        let names = spine_name::LocalResolver::persistent(
+            || 200,
+            Arc::new(spine_storage::InMemoryBackend::new()),
+        )
+        .unwrap();
+
+        // A record at the maximum lifetime renews at the maximum, not above.
+        let mut record = NameRecord::new(name.clone(), 1, 100)
+            .unwrap()
+            .with_ttl(spine_name::MAX_RECORD_TTL_SECS);
+        record.sign(&signing).unwrap();
+        names.publish(record).unwrap();
+        let later = 100 + u64::from(spine_name::MAX_RECORD_TTL_SECS) - 10;
+        let renewed = owned_renewals(&names, &signing, later, 25).unwrap();
+        assert_eq!(renewed.len(), 1);
+        assert!(renewed[0].ttl_secs <= spine_name::MAX_RECORD_TTL_SECS);
+
+        // Once the name is tombstoned, nothing is renewed.
+        let mut tombstone = NameRecord::tombstone(name, 2, 150).unwrap();
+        tombstone.sign(&signing).unwrap();
+        names.publish(tombstone).unwrap();
+        assert!(names.is_revoked(&SpineUri::did(signing.verifying_key().to_bytes())));
+        assert!(owned_renewals(&names, &signing, 200, u64::MAX)
+            .unwrap()
+            .is_empty());
     }
 }

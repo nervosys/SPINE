@@ -21,6 +21,25 @@ use crate::NameError;
 /// Default record lifetime: 1 hour.
 pub const DEFAULT_TTL_SECS: u32 = 3600;
 
+/// Longest lifetime a record may claim: 7 days.
+///
+/// A record cannot be recalled from a replica that never hears of its
+/// replacement or revocation, so this is the longest a withdrawn or
+/// compromised record can keep resolving there. It is enforced when signing
+/// ([`NameRecord::sign`]) and when verifying ([`NameRecord::verify`], hence at
+/// every ingress).
+pub const MAX_RECORD_TTL_SECS: u32 = 7 * 24 * 60 * 60;
+
+/// How far ahead of the verifier's clock `published_at` may be, in seconds.
+/// Without a bound a signer extends a record's life by post-dating it.
+pub const MAX_CLOCK_SKEW_SECS: u64 = 300;
+
+/// The reserved `meta` key that marks a record as a tombstone (a revocation).
+pub const REVOKED_META_KEY: &str = "spine.revoked";
+
+/// The only value a tombstone's [`REVOKED_META_KEY`] entry may carry.
+const REVOKED_META_VALUE: &str = "1";
+
 /// Domain-separation prefix of the signed bytes. Bump it whenever the layout
 /// in [`NameRecord::signing_bytes`] changes.
 const SIGNING_DOMAIN: &[u8] = b"spine-name-record-v2\0";
@@ -112,6 +131,28 @@ impl NameRecord {
         })
     }
 
+    /// A tombstone: a signed record that withdraws `name`.
+    ///
+    /// It is an ordinary record for the same name with a higher `seq` than
+    /// anything it is to revoke, no endpoints, capabilities, content hash or
+    /// links, the reserved `spine.revoked` marker in `meta`, and a lifetime of
+    /// exactly [`MAX_RECORD_TTL_SECS`]. Sign it like any other record.
+    pub fn tombstone(name: SpineUri, seq: u64, published_at: u64) -> Result<Self, NameError> {
+        let mut record = Self::new(name, seq, published_at)?;
+        record.ttl_secs = MAX_RECORD_TTL_SECS;
+        record
+            .meta
+            .insert(REVOKED_META_KEY.to_string(), REVOKED_META_VALUE.to_string());
+        Ok(record)
+    }
+
+    /// Whether this record withdraws its name (carries the reserved marker).
+    /// A record with the marker that is not a well-formed tombstone is refused
+    /// by [`NameRecord::validate_lifetime`].
+    pub fn is_tombstone(&self) -> bool {
+        self.meta.contains_key(REVOKED_META_KEY)
+    }
+
     /// A record for a `host:` name, derived from the name itself.
     ///
     /// This is the one binding that needs no publisher: `spine://host:h:9440/`
@@ -162,6 +203,10 @@ impl NameRecord {
     /// sequence is an error rather than a wraparound to an older record.
     pub fn renewed(&self, key: &SigningKey, now: u64, ttl_secs: u32) -> Result<Self, NameError> {
         self.verify()?;
+        // A revocation is never renewed back to life.
+        if self.is_tombstone() {
+            return Err(NameError::Revoked(self.name.to_string()));
+        }
         let mut record = self.clone();
         record.seq = record
             .seq
@@ -290,7 +335,10 @@ impl NameRecord {
     /// Sign with the key that the name certifies against.
     ///
     /// Fails if `key` is not the key in the name — signing a record under
-    /// someone else's name must be impossible, not merely discouraged.
+    /// someone else's name must be impossible, not merely discouraged. Also
+    /// fails ([`NameRecord::validate_lifetime`]) for a `ttl_secs` above
+    /// [`MAX_RECORD_TTL_SECS`] or a malformed tombstone: no honest signer
+    /// produces a record every verifier will refuse.
     pub fn sign(&mut self, key: &SigningKey) -> Result<(), NameError> {
         let expected = self
             .name
@@ -299,6 +347,7 @@ impl NameRecord {
         if key.verifying_key().to_bytes() != *expected {
             return Err(NameError::KeyMismatch);
         }
+        self.validate_lifetime()?;
         let sig: Signature = key.sign(&self.signing_bytes());
         self.signature = sig.to_bytes().to_vec();
         Ok(())
@@ -306,6 +355,13 @@ impl NameRecord {
 
     /// Verify the signature against the public key embedded in the name. No
     /// external trust anchor is consulted, and none is needed.
+    ///
+    /// A record that verifies also satisfies [`NameRecord::validate_lifetime`]
+    /// (a `ttl_secs` within [`MAX_RECORD_TTL_SECS`], and a well-formed
+    /// tombstone if it carries the marker), so every path that verifies
+    /// untrusted input enforces the lifetime bound. That check needs no clock;
+    /// the bound on `published_at` does, and is made by
+    /// [`NameRecord::validate`].
     pub fn verify(&self) -> Result<(), NameError> {
         let pk_bytes = self
             .name
@@ -318,7 +374,8 @@ impl NameRecord {
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
         vk.verify_strict(&self.signing_bytes(), &Signature::from_bytes(&sig))
-            .map_err(|_| NameError::BadSignature)
+            .map_err(|_| NameError::BadSignature)?;
+        self.validate_lifetime()
     }
 
     /// When the record stops being fresh.
@@ -338,14 +395,25 @@ impl NameRecord {
 
     /// Whether this record should replace `other`.
     ///
-    /// Higher `seq` wins; equal `seq` breaks toward the later publication; an
-    /// exact tie on both breaks toward the greater signature. The last step
+    /// Higher `seq` wins; at equal `seq` a tombstone beats an ordinary record
+    /// (so a revocation cannot be undone by a same-`seq` record, whatever order
+    /// a replica sees them in); then the later publication wins; an exact tie
+    /// on all of these breaks toward the greater signature. The last step
     /// makes the order total over *distinct* records: without it, two different
     /// records with the same `seq` and `published_at` each lose to whichever a
     /// replica saw first, and replicas never converge.
     pub fn supersedes(&self, other: &NameRecord) -> bool {
-        (self.seq, self.published_at, &self.signature)
-            > (other.seq, other.published_at, &other.signature)
+        (
+            self.seq,
+            self.is_tombstone(),
+            self.published_at,
+            &self.signature,
+        ) > (
+            other.seq,
+            other.is_tombstone(),
+            other.published_at,
+            &other.signature,
+        )
     }
 
     /// Endpoints ordered by preference.
@@ -390,6 +458,61 @@ pub const MAX_META_ENTRIES: usize = 64;
 pub const MAX_FIELD_BYTES: usize = 1024;
 
 impl NameRecord {
+    /// Check the lifetime rules that need no clock: `ttl_secs` is at most
+    /// [`MAX_RECORD_TTL_SECS`], and a record carrying the tombstone marker is a
+    /// well-formed tombstone (the marker is its only metadata, it has no
+    /// endpoints, capabilities, content hash or links, and its `ttl_secs` is
+    /// exactly [`MAX_RECORD_TTL_SECS`]). Does not check the signature.
+    pub fn validate_lifetime(&self) -> Result<(), NameError> {
+        if self.ttl_secs > MAX_RECORD_TTL_SECS {
+            return Err(NameError::TtlTooLong(self.ttl_secs));
+        }
+        if self.is_tombstone() {
+            let marker_only = self.meta.len() == 1
+                && self.meta.get(REVOKED_META_KEY).map(String::as_str) == Some(REVOKED_META_VALUE);
+            let empty = self.endpoints.is_empty()
+                && self.capabilities.is_empty()
+                && self.content_hash.is_none()
+                && self.links.is_empty();
+            if !marker_only || !empty {
+                return Err(NameError::MalformedTombstone(
+                    "only the spine.revoked marker is allowed, with no endpoints, capabilities, content hash or links"
+                        .to_string(),
+                ));
+            }
+            if self.ttl_secs != MAX_RECORD_TTL_SECS {
+                return Err(NameError::MalformedTombstone(
+                    "ttl_secs must equal the maximum record lifetime".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse a record whose `published_at` is more than
+    /// [`MAX_CLOCK_SKEW_SECS`] ahead of the verifier's clock `now`, which would
+    /// let its signer extend its life by post-dating it.
+    pub fn validate_not_postdated(&self, now: u64) -> Result<(), NameError> {
+        if self.published_at > now.saturating_add(MAX_CLOCK_SKEW_SECS) {
+            return Err(NameError::PostDated {
+                published_at: self.published_at,
+                now,
+            });
+        }
+        Ok(())
+    }
+
+    /// Full admission check for a record that came from outside, before
+    /// [`NameRecord::verify`]: size ([`NameRecord::validate_size`]), lifetime
+    /// ([`NameRecord::validate_lifetime`]) and the bound on `published_at`
+    /// against `now` ([`NameRecord::validate_not_postdated`]). `now` is the
+    /// caller's clock in Unix seconds; this function never reads one.
+    pub fn validate(&self, now: u64) -> Result<(), NameError> {
+        self.validate_size()?;
+        self.validate_lifetime()?;
+        self.validate_not_postdated(now)
+    }
+
     /// Sanity-check the size of a record that came from a peer.
     ///
     /// A valid signature proves only who published a record, not that it is
@@ -525,6 +648,157 @@ mod tests {
         assert!(matches!(
             r.validate_size(),
             Err(NameError::RecordTooLarge(_))
+        ));
+    }
+
+    fn tombstone_for(seed: u8, seq: u64, at: u64) -> (SigningKey, NameRecord) {
+        let key = keypair(seed);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::tombstone(name, seq, at).unwrap();
+        rec.sign(&key).unwrap();
+        (key, rec)
+    }
+
+    #[test]
+    fn signing_refuses_a_ttl_over_the_maximum() {
+        let key = keypair(1);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut at_max = NameRecord::new(name.clone(), 1, 1_000)
+            .unwrap()
+            .with_ttl(MAX_RECORD_TTL_SECS);
+        assert_eq!(at_max.sign(&key), Ok(()));
+        assert_eq!(at_max.verify(), Ok(()));
+
+        let mut over = NameRecord::new(name, 1, 1_000)
+            .unwrap()
+            .with_ttl(MAX_RECORD_TTL_SECS + 1);
+        assert_eq!(
+            over.sign(&key),
+            Err(NameError::TtlTooLong(MAX_RECORD_TTL_SECS + 1))
+        );
+        assert!(over.signature.is_empty());
+    }
+
+    #[test]
+    fn verification_and_admission_refuse_a_ttl_over_the_maximum() {
+        // A signature made around `sign` (a hostile signer) is still refused.
+        let key = keypair(1);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut over = NameRecord::new(name, 1, 1_000)
+            .unwrap()
+            .with_ttl(MAX_RECORD_TTL_SECS + 1);
+        let sig: Signature = key.sign(&over.signing_bytes());
+        over.signature = sig.to_bytes().to_vec();
+        assert_eq!(
+            over.verify(),
+            Err(NameError::TtlTooLong(MAX_RECORD_TTL_SECS + 1))
+        );
+        assert_eq!(
+            over.validate(1_000),
+            Err(NameError::TtlTooLong(MAX_RECORD_TTL_SECS + 1))
+        );
+    }
+
+    #[test]
+    fn a_record_post_dated_past_the_skew_is_refused() {
+        let (_, rec) = signed(1, 1, 1_000 + MAX_CLOCK_SKEW_SECS);
+        assert_eq!(
+            rec.validate(1_000),
+            Ok(()),
+            "exactly the skew ahead is allowed"
+        );
+        let (_, rec) = signed(1, 1, 1_001 + MAX_CLOCK_SKEW_SECS);
+        assert_eq!(
+            rec.validate(1_000),
+            Err(NameError::PostDated {
+                published_at: 1_001 + MAX_CLOCK_SKEW_SECS,
+                now: 1_000
+            })
+        );
+        // The past is always fine, and a clock at the epoch does not overflow.
+        let (_, old) = signed(1, 1, 0);
+        assert_eq!(old.validate(u64::MAX), Ok(()));
+        assert_eq!(old.validate(0), Ok(()));
+    }
+
+    #[test]
+    fn a_tombstone_is_a_signed_record_with_the_reserved_marker() {
+        let (_, t) = tombstone_for(1, 9, 1_000);
+        assert!(t.is_tombstone());
+        assert_eq!(t.ttl_secs, MAX_RECORD_TTL_SECS);
+        assert!(t.endpoints.is_empty() && t.links.is_empty() && t.content_hash.is_none());
+        assert_eq!(t.verify(), Ok(()));
+        assert_eq!(t.validate(1_000), Ok(()));
+        assert!(t.signing_bytes().starts_with(b"spine-name-record-v2\0"));
+        let (_, plain) = signed(1, 1, 1_000);
+        assert!(!plain.is_tombstone());
+    }
+
+    #[test]
+    fn a_tombstone_with_a_ttl_other_than_the_maximum_is_refused() {
+        let key = keypair(1);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut short = NameRecord::tombstone(name, 2, 1_000)
+            .unwrap()
+            .with_ttl(MAX_RECORD_TTL_SECS - 1);
+        assert!(matches!(
+            short.sign(&key),
+            Err(NameError::MalformedTombstone(_))
+        ));
+        let sig: Signature = key.sign(&short.signing_bytes());
+        short.signature = sig.to_bytes().to_vec();
+        assert!(matches!(
+            short.verify(),
+            Err(NameError::MalformedTombstone(_))
+        ));
+    }
+
+    #[test]
+    fn a_tombstone_with_content_or_extra_metadata_is_refused() {
+        let key = keypair(1);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let base = NameRecord::tombstone(name, 2, 1_000).unwrap();
+        for mut bad in [
+            base.clone().with_endpoint(Endpoint::new("tcp", "a:1")),
+            base.clone().with_capability("web.search"),
+            base.clone().with_content_hash([1u8; 32]),
+            base.clone()
+                .with_link(Link::new(Rel::Peer, SpineUri::did([3u8; 32]))),
+            base.clone().with_meta("title", "x"),
+            base.clone().with_meta(REVOKED_META_KEY, "yes"),
+        ] {
+            assert!(
+                matches!(bad.sign(&key), Err(NameError::MalformedTombstone(_))),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tombstone_supersedes_lower_seq_and_blocks_lower_or_equal_seq() {
+        let (_, old) = signed(1, 5, 1_000);
+        let (_, t) = tombstone_for(1, 6, 1_000);
+        assert!(t.supersedes(&old));
+        assert!(!old.supersedes(&t));
+
+        // Even published later, a record of the same or lower seq loses.
+        let (_, same_seq_later) = signed(1, 6, 9_000);
+        assert!(t.supersedes(&same_seq_later));
+        assert!(!same_seq_later.supersedes(&t));
+        let (_, lower_later) = signed(1, 3, 9_000);
+        assert!(!lower_later.supersedes(&t));
+
+        // A higher seq re-publishes the name.
+        let (_, reborn) = signed(1, 7, 2_000);
+        assert!(reborn.supersedes(&t));
+    }
+
+    #[test]
+    fn a_tombstone_cannot_be_renewed() {
+        let (key, t) = tombstone_for(1, 6, 1_000);
+        assert!(matches!(
+            t.renewed(&key, 2_000, MAX_RECORD_TTL_SECS),
+            Err(NameError::Revoked(_))
         ));
     }
 

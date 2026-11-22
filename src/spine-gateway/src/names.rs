@@ -91,6 +91,11 @@ pub async fn upload_resource(
 ) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<ErrorResponse>)> {
     let record: spine_name::NameRecord = serde_json::from_value(req.record)
         .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid signed resource record"))?;
+    // Size, lifetime and the bound on `published_at` against this gateway's
+    // clock, then the signature (which also enforces the lifetime bound).
+    record
+        .validate(unix_now())
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     record
         .verify()
         .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid resource signature"))?;
@@ -136,6 +141,7 @@ pub async fn download_resource(
                 return Ok(into_response(resolution));
             };
             let record: spine_name::NameRecord = serde_json::from_value(record)?;
+            record.validate(unix_now())?;
             record.verify()?;
             if validator.is_some() && record.content_hash == validator {
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
@@ -199,6 +205,14 @@ pub struct ResolveBatchResponse {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Seconds since the Unix epoch, for the bound on a record's `published_at`.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 /// Idle origin connections, kept so a namespace request need not open one.
 ///

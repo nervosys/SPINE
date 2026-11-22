@@ -160,8 +160,10 @@ impl LocalResolver {
             // A record that no longer verifies (for example one signed under
             // an older signing-bytes layout) must not stop the node starting.
             // It is skipped here, never served, and replaced by the owner's
-            // next publication.
-            if record.verify().is_err() {
+            // next publication. The same goes for a record that breaks the
+            // lifetime rules (a `ttl_secs` over the maximum, written before the
+            // bound existed) or is post-dated against this node's clock.
+            if record.validate(resolver.now()).is_err() || record.verify().is_err() {
                 continue;
             }
             if !record.is_expired(resolver.now()) {
@@ -199,8 +201,14 @@ impl LocalResolver {
     }
 
     /// Publish a record into the local store. Verification happens in the store,
-    /// so an invalid record cannot be published.
+    /// so an invalid record cannot be published. A record that fails
+    /// [`NameRecord::validate`] against this resolver's clock (too large, a
+    /// `ttl_secs` over the maximum, a malformed tombstone, or `published_at`
+    /// past the allowed skew) is refused. Publishing a tombstone withdraws the
+    /// name: later resolutions fail with [`NameError::Revoked`] and a record of
+    /// the same or lower `seq` is refused with `StalePublication`.
     pub fn publish(&self, record: NameRecord) -> Result<(), NameError> {
+        record.validate(self.now())?;
         record.verify()?;
         let mut store = self.store.lock().unwrap();
         if let Some(previous) = store.get(&record.name) {
@@ -235,7 +243,7 @@ impl LocalResolver {
                 return Err(NameError::Capacity);
             }
             let mut candidate = store.clone();
-            if candidate.put(record.clone())? == crate::PutOutcome::Rejected {
+            if candidate.put(record.clone(), self.now())? == crate::PutOutcome::Rejected {
                 return Err(NameError::Capacity);
             }
             let bytes =
@@ -249,7 +257,7 @@ impl LocalResolver {
             return Ok(());
         }
         let name = record.name.clone();
-        if store.put(record)? == crate::PutOutcome::Rejected {
+        if store.put(record, self.now())? == crate::PutOutcome::Rejected {
             return Err(NameError::Capacity);
         }
         drop(store);
@@ -258,10 +266,21 @@ impl LocalResolver {
     }
 
     /// Seed the cache with a record learned elsewhere (e.g. from the mesh).
+    /// The record is checked like a published one ([`NameRecord::validate`]
+    /// against this resolver's clock, then its signature). A tombstone is
+    /// cached too, so a revoked name stays revoked here.
     pub fn cache_record(&self, record: NameRecord) -> Result<(), NameError> {
+        record.validate(self.now())?;
         record.verify()?;
         self.cache.lock().unwrap().put(record);
         Ok(())
+    }
+
+    /// Whether this node holds a fresh tombstone for `uri` in its store.
+    /// Owner renewal consults this so it never renews a revoked name.
+    pub fn is_revoked(&self, uri: &SpineUri) -> bool {
+        let now = self.now();
+        self.store.lock().unwrap().is_revoked(uri, now)
     }
 
     /// Remember that a name did not resolve.
@@ -329,8 +348,14 @@ impl Resolver for LocalResolver {
             return Ok(Resolution::new(record, Provenance::Address));
         }
 
+        // A fresh tombstone, cached or stored, is a distinct answer: the name was
+        // withdrawn by its owner, which is not the same as nobody having heard
+        // of it.
         match self.cache.lock().unwrap().get(uri, now) {
             CacheLookup::Fresh(record) => {
+                if record.is_tombstone() {
+                    return Err(NameError::Revoked(uri.to_string()));
+                }
                 return Ok(Resolution::new(record, Provenance::Cache));
             }
             CacheLookup::NegativeHit => return Err(NameError::NotFound(uri.to_string())),
@@ -338,7 +363,14 @@ impl Resolver for LocalResolver {
             // store first, and only use it if nothing better exists.
             CacheLookup::Stale(record) => {
                 if let Some(local) = self.store.lock().unwrap().get_fresh(uri, now) {
+                    if local.is_tombstone() {
+                        return Err(NameError::Revoked(uri.to_string()));
+                    }
                     return Ok(Resolution::new(local.clone(), Provenance::Local));
+                }
+                // A lapsed tombstone is not an answer: the name is unknown again.
+                if record.is_tombstone() {
+                    return Err(NameError::NotFound(uri.to_string()));
                 }
                 return Ok(Resolution::new(record, Provenance::StaleCache));
             }
@@ -346,6 +378,9 @@ impl Resolver for LocalResolver {
         }
 
         if let Some(record) = self.store.lock().unwrap().get_fresh(uri, now) {
+            if record.is_tombstone() {
+                return Err(NameError::Revoked(uri.to_string()));
+            }
             return Ok(Resolution::new(record.clone(), Provenance::Local));
         }
         Err(NameError::NotFound(uri.to_string()))
@@ -382,6 +417,104 @@ mod tests {
         }
         rec.sign(&key).unwrap();
         rec
+    }
+
+    fn tombstone(seed: u8, seq: u64, at: u64) -> NameRecord {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::tombstone(name, seq, at).unwrap();
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    #[test]
+    fn publishing_refuses_an_over_long_or_post_dated_record() {
+        let r = LocalResolver::at_time(1_000);
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut over = NameRecord::new(name, 1, 1_000)
+            .unwrap()
+            .with_ttl(crate::MAX_RECORD_TTL_SECS + 1);
+        let sig: ed25519_dalek::Signature =
+            ed25519_dalek::Signer::sign(&key, &over.signing_bytes());
+        over.signature = sig.to_bytes().to_vec();
+        assert!(matches!(
+            r.publish(over.clone()),
+            Err(NameError::TtlTooLong(_))
+        ));
+        assert!(matches!(
+            r.cache_record(over),
+            Err(NameError::TtlTooLong(_))
+        ));
+
+        let ahead = signed(1, 1_000 + crate::MAX_CLOCK_SKEW_SECS + 1, 100, &[], 1);
+        assert!(matches!(
+            r.publish(ahead.clone()),
+            Err(NameError::PostDated { .. })
+        ));
+        assert!(matches!(
+            r.cache_record(ahead),
+            Err(NameError::PostDated { .. })
+        ));
+        assert_eq!(r.local_len(), 0);
+        r.publish(signed(1, 1_000 + crate::MAX_CLOCK_SKEW_SECS, 100, &[], 1))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_published_tombstone_resolves_as_revoked_not_not_found() {
+        let r = LocalResolver::at_time(1_000);
+        let rec = signed(1, 1_000, 100, &["web.search"], 1);
+        r.publish(rec.clone()).unwrap();
+        r.cache_record(rec.clone()).unwrap();
+        assert!(r.resolve(&rec.name).await.is_ok());
+
+        let t = tombstone(1, 2, 1_000);
+        r.publish(t.clone()).unwrap();
+        assert!(r.is_revoked(&rec.name));
+        assert!(matches!(
+            r.resolve(&rec.name).await,
+            Err(NameError::Revoked(_))
+        ));
+        assert!(r.find_providers("web.search").await.unwrap().is_empty());
+
+        // The old record, and a same-seq one, can neither replace it nor be
+        // re-published; a higher seq re-publishes the name.
+        assert_eq!(r.publish(rec.clone()), Err(NameError::StalePublication));
+        r.publish(t.clone()).unwrap();
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let mut reborn = NameRecord::new(rec.name.clone(), 3, 1_000)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "new:1"));
+        reborn.sign(&key).unwrap();
+        r.publish(reborn.clone()).unwrap();
+        assert!(!r.is_revoked(&rec.name));
+        assert_eq!(r.resolve(&rec.name).await.unwrap().record, reborn);
+    }
+
+    #[tokio::test]
+    async fn a_cached_tombstone_blocks_an_older_cached_record() {
+        let r = LocalResolver::at_time(1_000);
+        let old = signed(1, 1_000, 100, &[], 1);
+        let t = tombstone(1, 2, 1_000);
+        r.cache_record(t).unwrap();
+        r.cache_record(old.clone()).unwrap();
+        assert!(matches!(
+            r.resolve(&old.name).await,
+            Err(NameError::Revoked(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_tombstone_leaves_the_name_unknown_not_revoked() {
+        let t = tombstone(1, 2, 1_000);
+        let after = 1_000 + u64::from(crate::MAX_RECORD_TTL_SECS);
+        let r = LocalResolver::at_time(after);
+        r.cache_record(t.clone()).unwrap();
+        assert!(matches!(
+            r.resolve(&t.name).await,
+            Err(NameError::NotFound(_))
+        ));
     }
 
     /// The escape hatch: a `host:` name resolves with nothing published and no

@@ -490,6 +490,13 @@ async fn resolve_one(
         // starts being a participant. Cache what the walk returns, so the next
         // ask for the same name is answered without another round trip.
         Err(spine_name::NameError::NotFound(_)) => match resolve_over_mesh(state, &uri).await {
+            Ok(Some(record)) if record.is_tombstone() => {
+                let _ = state.names.cache_record(record);
+                spine_protocol::NameResolution::Invalid {
+                    name: raw.to_string(),
+                    reason: spine_name::NameError::Revoked(raw.to_string()).to_string(),
+                }
+            }
             Ok(Some(record)) => {
                 let _ = state.names.cache_record(record.clone());
                 match serde_json::to_value(&record) {

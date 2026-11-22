@@ -80,7 +80,10 @@ pub use cache::{CacheLookup, CacheStats, ResolverCache};
 pub use frontier::{CrawlBudget, CrawlFrontier, Skipped, Visit};
 pub use key::{Distance, NameKey};
 pub use link::{Link, Rel};
-pub use record::{Endpoint, NameRecord, DEFAULT_TTL_SECS};
+pub use record::{
+    Endpoint, NameRecord, DEFAULT_TTL_SECS, MAX_CLOCK_SKEW_SECS, MAX_RECORD_TTL_SECS,
+    REVOKED_META_KEY,
+};
 pub use resolver::{LocalResolver, Provenance, Resolution, Resolver};
 pub use routing::{NodeInfo, RoutingTable, DEFAULT_K};
 pub use store::{PutOutcome, RecordStore, DEFAULT_CAPACITY};
@@ -206,6 +209,22 @@ pub enum NameError {
 
     #[error("name record too large: {0}")]
     RecordTooLarge(String),
+
+    #[error("record ttl_secs {0} exceeds the maximum record lifetime")]
+    TtlTooLong(u32),
+
+    #[error(
+        "record published_at {published_at} is further ahead of the clock ({now}) than the allowed skew"
+    )]
+    PostDated { published_at: u64, now: u64 },
+
+    #[error("malformed tombstone: {0}")]
+    MalformedTombstone(String),
+
+    /// The name has been withdrawn by its owner. Distinct from `NotFound`: a
+    /// tombstone is held, and a resolver must not go looking for another answer.
+    #[error("name revoked: {0}")]
+    Revoked(String),
 }
 
 #[cfg(test)]

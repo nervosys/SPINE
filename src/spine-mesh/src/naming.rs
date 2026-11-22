@@ -357,6 +357,15 @@ impl Lookup {
         !record.name.is_immutable() && record.is_expired(self.now)
     }
 
+    /// Size, lifetime and (when a clock was supplied) post-dating checks on a
+    /// record a peer returned. Without a clock the bound on `published_at`
+    /// cannot be applied, the same way nothing counts as stale.
+    fn admissible(&self, record: &NameRecord) -> bool {
+        record.validate_size().is_ok()
+            && record.validate_lifetime().is_ok()
+            && (self.now == 0 || record.validate_not_postdated(self.now).is_ok())
+    }
+
     /// Candidates not yet queried.
     fn unqueried(&self) -> usize {
         self.shortlist
@@ -470,7 +479,7 @@ impl Lookup {
         // forgery or a lapsed one must not be able to redirect the lookup; the
         // peer still counts as having answered.
         if let Some(record) = &response.record {
-            if record.validate_size().is_ok()
+            if self.admissible(record)
                 && !self.is_stale(record)
                 && record.verify().is_ok()
                 && self.matches_query(record)
@@ -488,7 +497,7 @@ impl Lookup {
         // A response never needs more than K providers, so a longer list is
         // padding, and each entry costs a signature check.
         for provider in response.providers.iter().take(K) {
-            if provider.validate_size().is_ok()
+            if self.admissible(provider)
                 && !self.is_stale(provider)
                 && provider.verify().is_ok()
                 && self.wants_capability(provider)
@@ -648,20 +657,24 @@ impl NameService {
         &self.local_key
     }
 
-    /// Store a signed record. Verification happens inside the store, so an
-    /// unverifiable announcement cannot enter.
+    /// Store a signed record at time `now` (the caller's clock, Unix seconds).
+    /// Verification happens inside the store, so an unverifiable announcement
+    /// cannot enter.
     ///
     /// The outcome matters to whatever is above this: a record that was
     /// superseded by one already held must not be replicated onward, or two
     /// nodes holding different versions will announce at each other forever.
+    /// That includes a record a held tombstone outranks.
     pub fn publish(
         &mut self,
         record: NameRecord,
+        now: u64,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
-        // The store verifies the signature; size is checked here so a record a
-        // peer would refuse is never stored or replicated.
-        record.validate_size()?;
-        self.store.put(record)
+        // The store verifies the signature; size, lifetime and the bound on
+        // `published_at` are checked here so a record a peer would refuse is
+        // never stored or replicated.
+        record.validate(now)?;
+        self.store.put(record, now)
     }
 
     /// Accept a record announced by someone else.
@@ -679,9 +692,13 @@ impl NameService {
     pub fn accept_announcement(
         &mut self,
         record: NameRecord,
+        now: u64,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
-        // Cheapest check first: refuse a record whose size alone disqualifies it.
-        record.validate_size()?;
+        // Cheapest checks first: refuse a record whose size, lifetime or
+        // publication time alone disqualifies it. Tombstones travel this path
+        // like any record: they have no endpoints and no capabilities, and
+        // responsibility is judged by their name key.
+        record.validate(now)?;
         // A record is also placed near each capability key it advertises, so a
         // capability walk converges on nodes that hold it. Responsibility for
         // any of those keys suffices; the set is capped, so a record cannot
@@ -693,7 +710,7 @@ impl NameService {
         if !responsible {
             return Ok(spine_name::PutOutcome::Rejected);
         }
-        self.store.put(record)
+        self.store.put(record, now)
     }
 
     /// Learn about a keyspace peer whose mesh identity is not known.
@@ -1168,7 +1185,7 @@ mod tests {
     fn a_node_answers_from_its_own_store() {
         let mut svc = NameService::new(NameKey::of(b"local"));
         let rec = record(1, 1, 1_000, &["web.search"]);
-        svc.publish(rec.clone()).unwrap();
+        svc.publish(rec.clone(), 1_000).unwrap();
 
         let req = ResolveRequest {
             request_id: 7,
@@ -1183,9 +1200,12 @@ mod tests {
     #[test]
     fn a_node_answers_capability_queries_without_a_central_index() {
         let mut svc = NameService::new(NameKey::of(b"local"));
-        svc.publish(record(1, 1, 1_000, &["web.search"])).unwrap();
-        svc.publish(record(2, 1, 1_000, &["web.search"])).unwrap();
-        svc.publish(record(3, 1, 1_000, &["data.analyze"])).unwrap();
+        svc.publish(record(1, 1, 1_000, &["web.search"]), 1_000)
+            .unwrap();
+        svc.publish(record(2, 1, 1_000, &["web.search"]), 1_000)
+            .unwrap();
+        svc.publish(record(3, 1, 1_000, &["data.analyze"]), 1_000)
+            .unwrap();
 
         let resp = svc.handle_request(
             &ResolveRequest {
@@ -1232,7 +1252,7 @@ mod tests {
         let mut rec = record(1, 1, 1_000, &[]).with_ttl(60);
         rec.sign(&key).unwrap();
         let name = rec.name.clone();
-        svc.publish(rec).unwrap();
+        svc.publish(rec, 1_000).unwrap();
 
         let req = ResolveRequest {
             request_id: 1,
@@ -1569,7 +1589,7 @@ mod tests {
     fn a_locally_held_record_answers_without_starting_a_lookup() {
         let mut svc = NameService::new(NameKey::of(b"local"));
         let rec = record(1, 1, 1_000, &["web.search"]);
-        svc.publish(rec.clone()).unwrap();
+        svc.publish(rec.clone(), 1_000).unwrap();
 
         assert_eq!(
             svc.resolve_locally(&ResolveQuery::Name(rec.name.clone()), 1_000),
@@ -1722,7 +1742,7 @@ mod tests {
 
         // The holder stores the record.
         let mut holder = NameService::new(holder_key);
-        holder.publish(rec.clone()).unwrap();
+        holder.publish(rec.clone(), 1_000).unwrap();
 
         // The middle node knows the holder but not the record.
         let mut middle = NameService::new(middle_key);
@@ -1839,7 +1859,7 @@ mod tests {
         let target = rec.name.key();
 
         let mut service = NameService::new(NameKey::of(b"far away"));
-        service.publish(rec.clone()).unwrap();
+        service.publish(rec.clone(), 1_000).unwrap();
         assert_eq!(
             service.records_to_maintain(1_000).len(),
             1,
@@ -1884,7 +1904,7 @@ mod tests {
         }
 
         assert_eq!(
-            service.accept_announcement(rec.clone()).unwrap(),
+            service.accept_announcement(rec.clone(), 1_000).unwrap(),
             spine_name::PutOutcome::Rejected,
             "a record belonging elsewhere in the keyspace is not this node's to hold"
         );
@@ -1892,7 +1912,7 @@ mod tests {
 
         // The same record, published by this node rather than announced to it.
         assert_eq!(
-            service.publish(rec).unwrap(),
+            service.publish(rec, 1_000).unwrap(),
             spine_name::PutOutcome::Inserted,
             "a node must be able to serve what it publishes, wherever it sits"
         );
@@ -1923,7 +1943,7 @@ mod tests {
         assert!(!service.is_responsible_for(&target));
 
         assert_eq!(
-            service.accept_announcement(rec.clone()).unwrap(),
+            service.accept_announcement(rec.clone(), 1_000).unwrap(),
             spine_name::PutOutcome::Inserted,
         );
         assert_eq!(
@@ -1993,7 +2013,7 @@ mod tests {
 
         let mut service = NameService::new(NameKey::of(b"receiver"));
         assert!(matches!(
-            service.accept_announcement(rec),
+            service.accept_announcement(rec, 1_000),
             Err(spine_name::NameError::RecordTooLarge(_))
         ));
         assert_eq!(service.record_count(), 0);
@@ -2003,7 +2023,7 @@ mod tests {
     #[test]
     fn maintenance_ignores_records_that_have_already_expired() {
         let mut service = NameService::new(NameKey::of(&[1]));
-        service.publish(record(4, 1, 1_000, &[])).unwrap(); // ttl 3600
+        service.publish(record(4, 1, 1_000, &[]), 1_000).unwrap(); // ttl 3600
         assert_eq!(service.records_to_maintain(2_000).len(), 1);
         assert!(service.records_to_maintain(9_000).is_empty());
     }
@@ -2015,7 +2035,7 @@ mod tests {
         let mut service = NameService::new(NameKey::of(&[1]));
         let rec = record(4, 1, 1_000, &[]); // ttl 3600
         let name = rec.name.clone();
-        service.publish(rec).unwrap();
+        service.publish(rec, 1_000).unwrap();
 
         assert!(service.lapsing(1_000, 900).is_empty(), "not yet");
         assert_eq!(service.lapsing(4_000, 900), vec![name], "600s left");
@@ -2202,7 +2222,7 @@ mod tests {
 
         let mut service = NameService::new(NameKey::of(b"publisher"));
         assert!(matches!(
-            service.publish(rec),
+            service.publish(rec, 1_000),
             Err(spine_name::NameError::RecordTooLarge(_))
         ));
         assert_eq!(service.record_count(), 0);
@@ -2286,11 +2306,11 @@ mod tests {
         let mut service = NameService::new(NameKey::of(&[1]));
         let rec = record(4, 1, 1_000, &[]);
         assert_eq!(
-            service.publish(rec.clone()).unwrap(),
+            service.publish(rec.clone(), 1_000).unwrap(),
             spine_name::PutOutcome::Inserted
         );
         assert_eq!(
-            service.publish(rec).unwrap(),
+            service.publish(rec, 1_000).unwrap(),
             spine_name::PutOutcome::Superseded
         );
     }

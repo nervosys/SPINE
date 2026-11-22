@@ -695,15 +695,21 @@ impl MeshNameResolver {
     /// The report says how many copies landed. A publisher that cares whether
     /// its name outlives its own process should check it — `sent == 0` means the
     /// record exists in exactly one place.
+    ///
+    /// A tombstone ([`NameRecord::tombstone`]) is published, replicated and
+    /// maintained like any record. A record the node already holds a
+    /// superseding version of (including a tombstone) is not replicated.
     pub async fn publish(&self, record: NameRecord) -> Result<ReplicationReport, NameMeshError> {
-        self.service.lock().await.publish(record.clone())?;
+        let now = self.now();
+        self.service.lock().await.publish(record.clone(), now)?;
         Ok(self.replicate(&record).await)
     }
 
     /// Publish locally without announcing — for names that should be resolvable
     /// but not advertised.
     pub async fn publish_local(&self, record: NameRecord) -> Result<(), NameMeshError> {
-        self.service.lock().await.publish(record)?;
+        let now = self.now();
+        self.service.lock().await.publish(record, now)?;
         Ok(())
     }
 
@@ -866,6 +872,11 @@ impl MeshNameResolver {
     }
 
     /// Resolve a name, walking the mesh if it is not held locally.
+    ///
+    /// The answer is the highest-`seq` record the lookup saw. When the name has
+    /// been revoked that is the signed tombstone, returned as an ordinary record:
+    /// check [`NameRecord::is_tombstone`] before using its endpoints (it has
+    /// none) and treat the name as revoked, not as missing.
     pub async fn resolve(&self, uri: &SpineUri) -> Result<NameRecord, NameMeshError> {
         match self.run_lookup(ResolveQuery::Name(uri.clone())).await? {
             LookupOutcome::Found(record) => Ok(*record),
@@ -1208,7 +1219,7 @@ impl MeshNameResolver {
                     .service
                     .lock()
                     .await
-                    .accept_announcement(announced.record.clone());
+                    .accept_announcement(announced.record.clone(), now);
                 let mut m = self.metrics.lock().await;
                 match outcome {
                     Ok(spine_name::PutOutcome::Rejected) => m.announcements_declined += 1,
@@ -2446,6 +2457,89 @@ mod tests {
 
         let found = lookup.await.unwrap().unwrap();
         assert_eq!(found.seq, 2, "the superseding record must win");
+    }
+
+    fn tombstone_of(seed: u8, seq: u64) -> NameRecord {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::tombstone(name, seq, NOW).unwrap();
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    /// A tombstone has no endpoints and no capabilities; the announce path must
+    /// not drop it for that, and a replay of the revoked record must not undo it.
+    #[tokio::test]
+    async fn a_tombstone_announced_to_a_replica_replaces_the_record_and_blocks_a_replay() {
+        let h = Harness::new(2);
+        let old = record_versioned(1, 1);
+        h.nodes[1].publish_local(old.clone()).await.unwrap();
+
+        let envelope = h.nodes[0].node.announce_name(tombstone_of(1, 2)).unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert_eq!(h.nodes[1].metrics().await.announcements_accepted, 1);
+        assert!(h.nodes[1].resolve(&old.name).await.unwrap().is_tombstone());
+
+        let replay = h.nodes[0].node.announce_name(old.clone()).unwrap();
+        assert!(h.nodes[1].handle_envelope(&replay, NOW).await);
+        assert!(h.nodes[1].resolve(&old.name).await.unwrap().is_tombstone());
+        assert_eq!(h.nodes[1].record_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_tombstone_wins_a_lookup_from_a_second_node() {
+        let h = Harness::new(3);
+        h.introduce(0, 1).await;
+        h.introduce(0, 2).await;
+        h.nodes[1]
+            .publish_local(record_versioned(1, 1))
+            .await
+            .unwrap();
+        h.nodes[2].publish_local(tombstone_of(1, 2)).await.unwrap();
+
+        let seeker = h.nodes[0].clone();
+        let name = record_versioned(1, 1).name;
+        let lookup = tokio::spawn(async move { seeker.resolve(&name).await });
+        for _ in 0..16 {
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
+
+        let found = lookup.await.unwrap().unwrap();
+        assert!(found.is_tombstone(), "the revocation must win");
+        assert_eq!(found.seq, 2);
+        assert!(found.endpoints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn announcements_with_an_over_long_ttl_or_a_post_dated_record_are_rejected() {
+        let h = Harness::new(2);
+        let key = SigningKey::from_bytes(&[1; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+
+        // Signed around `sign`, which would refuse it.
+        let mut over = NameRecord::new(name.clone(), 1, NOW)
+            .unwrap()
+            .with_ttl(spine_name::MAX_RECORD_TTL_SECS + 1);
+        let sig: ed25519_dalek::Signature =
+            ed25519_dalek::Signer::sign(&key, &over.signing_bytes());
+        over.signature = sig.to_bytes().to_vec();
+        let mut ahead =
+            NameRecord::new(name, 1, NOW + spine_name::MAX_CLOCK_SKEW_SECS + 1).unwrap();
+        ahead.sign(&key).unwrap();
+
+        for bad in [over, ahead] {
+            let envelope = h.nodes[0]
+                .node
+                .create_envelope(
+                    crate::mesh::MeshTarget::Broadcast,
+                    MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(bad))),
+                )
+                .unwrap();
+            assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        }
+        assert_eq!(h.nodes[1].record_count().await, 0);
+        assert_eq!(h.nodes[1].metrics().await.announcements_rejected, 2);
     }
 
     #[tokio::test]

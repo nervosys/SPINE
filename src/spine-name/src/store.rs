@@ -21,7 +21,8 @@ pub enum PutOutcome {
     Inserted,
     /// Replaced an older version.
     Updated,
-    /// Kept the existing record because it was newer or equal.
+    /// Kept the existing record because it was newer or equal. This includes a
+    /// record that a held tombstone for the same name outranks.
     Superseded,
     /// The store was full and this record was the least worth keeping.
     ///
@@ -104,12 +105,21 @@ impl RecordStore {
             .max_by(|a, b| a.1.cmp(&b.1))
     }
 
-    /// Offer a record to the store.
+    /// Offer a record to the store at time `now` (the caller's clock, Unix
+    /// seconds).
     ///
     /// The signature is verified here rather than at a call site, so there is no
     /// path that admits an unverified record. Records whose name is not
-    /// self-certifying are rejected outright.
-    pub fn put(&mut self, record: NameRecord) -> Result<PutOutcome, NameError> {
+    /// self-certifying are rejected outright. The lifetime bound
+    /// ([`NameRecord::verify`]) and the bound on `published_at` against `now`
+    /// ([`NameRecord::validate_not_postdated`]) are enforced here too.
+    ///
+    /// A held tombstone keeps its name revoked: a record of the same or lower
+    /// `seq` does not supersede it ([`NameRecord::supersedes`]) and is answered
+    /// with [`PutOutcome::Superseded`]. A tombstone is evictable under capacity
+    /// pressure like any record.
+    pub fn put(&mut self, record: NameRecord, now: u64) -> Result<PutOutcome, NameError> {
+        record.validate_not_postdated(now)?;
         record.verify()?;
         let key = record.name.key();
 
@@ -153,6 +163,11 @@ impl RecordStore {
     /// Look up by name, returning `None` once the record has gone stale.
     pub fn get_fresh(&self, uri: &SpineUri, now: u64) -> Option<&NameRecord> {
         self.get(uri).filter(|r| !r.is_expired(now))
+    }
+
+    /// Whether a fresh tombstone is held for `uri`.
+    pub fn is_revoked(&self, uri: &SpineUri, now: u64) -> bool {
+        self.get_fresh(uri, now).is_some_and(|r| r.is_tombstone())
     }
 
     /// Look up by routing key — what a node answers a DHT query with.
@@ -269,6 +284,9 @@ mod tests {
     use crate::record::Endpoint;
     use ed25519_dalek::SigningKey;
 
+    /// The store clock in these tests; every record is published at 1_000.
+    const NOW: u64 = 1_000;
+
     fn record(seed: u8, seq: u64, now: u64, caps: &[&str], endpoints: usize) -> NameRecord {
         let key = SigningKey::from_bytes(&[seed; 32]);
         let name = SpineUri::did(key.verifying_key().to_bytes());
@@ -287,10 +305,85 @@ mod tests {
     fn stores_and_retrieves_a_record() {
         let mut s = RecordStore::new();
         let rec = record(1, 1, 1_000, &[], 0);
-        assert_eq!(s.put(rec.clone()).unwrap(), PutOutcome::Inserted);
+        assert_eq!(s.put(rec.clone(), NOW).unwrap(), PutOutcome::Inserted);
         assert_eq!(s.get(&rec.name), Some(&rec));
         assert_eq!(s.get_by_key(&rec.name.key()), Some(&rec));
         assert_eq!(s.len(), 1);
+    }
+
+    fn tombstone(seed: u8, seq: u64, at: u64) -> NameRecord {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::tombstone(name, seq, at).unwrap();
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    #[test]
+    fn refuses_an_over_long_or_post_dated_record() {
+        let mut s = RecordStore::new();
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+
+        // Signed around `sign`, which would refuse it.
+        let mut over = NameRecord::new(name, 1, NOW)
+            .unwrap()
+            .with_ttl(crate::MAX_RECORD_TTL_SECS + 1);
+        let sig: ed25519_dalek::Signature =
+            ed25519_dalek::Signer::sign(&key, &over.signing_bytes());
+        over.signature = sig.to_bytes().to_vec();
+        assert!(matches!(s.put(over, NOW), Err(NameError::TtlTooLong(_))));
+
+        let ahead = record(1, 1, NOW + crate::MAX_CLOCK_SKEW_SECS + 1, &[], 0);
+        assert!(matches!(
+            s.put(ahead, NOW),
+            Err(NameError::PostDated { .. })
+        ));
+        let edge = record(1, 1, NOW + crate::MAX_CLOCK_SKEW_SECS, &[], 0);
+        assert_eq!(s.put(edge, NOW).unwrap(), PutOutcome::Inserted);
+    }
+
+    #[test]
+    fn a_held_tombstone_blocks_lower_and_equal_seq_but_not_a_higher_one() {
+        let mut s = RecordStore::new();
+        s.put(record(1, 5, NOW, &["web.search"], 1), NOW).unwrap();
+        assert_eq!(
+            s.put(tombstone(1, 6, NOW), NOW).unwrap(),
+            PutOutcome::Updated
+        );
+        let name = tombstone(1, 6, NOW).name;
+        assert!(s.is_revoked(&name, NOW));
+        assert!(s.providers_of("web.search", NOW).is_empty());
+        assert!(s.capability_terms().is_empty());
+
+        // Lower seq, equal seq (even published later), and a replayed old record.
+        for seq in [1, 5, 6] {
+            assert_eq!(
+                s.put(record(1, seq, NOW + 100, &["web.search"], 1), NOW + 100)
+                    .unwrap(),
+                PutOutcome::Superseded
+            );
+        }
+        assert!(s.get(&name).unwrap().is_tombstone());
+
+        assert_eq!(
+            s.put(record(1, 7, NOW, &[], 0), NOW).unwrap(),
+            PutOutcome::Updated
+        );
+        assert!(!s.is_revoked(&name, NOW));
+    }
+
+    #[test]
+    fn a_tombstone_replaces_a_same_seq_record_in_either_arrival_order() {
+        let mut a = RecordStore::new();
+        a.put(record(1, 5, NOW + 50, &[], 0), NOW + 50).unwrap();
+        a.put(tombstone(1, 5, NOW), NOW + 50).unwrap();
+        let mut b = RecordStore::new();
+        b.put(tombstone(1, 5, NOW), NOW + 50).unwrap();
+        b.put(record(1, 5, NOW + 50, &[], 0), NOW + 50).unwrap();
+        let name = tombstone(1, 5, NOW).name;
+        assert!(a.get(&name).unwrap().is_tombstone());
+        assert!(b.get(&name).unwrap().is_tombstone());
     }
 
     #[test]
@@ -298,16 +391,16 @@ mod tests {
         let mut s = RecordStore::new();
         let mut rec = record(1, 1, 1_000, &[], 0);
         rec.capabilities.push("admin".into()); // invalidates the signature
-        assert!(matches!(s.put(rec), Err(NameError::BadSignature)));
+        assert!(matches!(s.put(rec, NOW), Err(NameError::BadSignature)));
         assert!(s.is_empty(), "nothing unverified may enter the store");
     }
 
     #[test]
     fn a_newer_version_replaces_an_older_one() {
         let mut s = RecordStore::new();
-        s.put(record(1, 1, 1_000, &[], 0)).unwrap();
+        s.put(record(1, 1, 1_000, &[], 0), NOW).unwrap();
         assert_eq!(
-            s.put(record(1, 2, 1_000, &[], 0)).unwrap(),
+            s.put(record(1, 2, 1_000, &[], 0), NOW).unwrap(),
             PutOutcome::Updated
         );
         assert_eq!(s.len(), 1);
@@ -317,9 +410,9 @@ mod tests {
     #[test]
     fn an_older_version_cannot_roll_the_store_back() {
         let mut s = RecordStore::new();
-        s.put(record(1, 5, 1_000, &[], 0)).unwrap();
+        s.put(record(1, 5, 1_000, &[], 0), NOW).unwrap();
         assert_eq!(
-            s.put(record(1, 2, 1_000, &[], 0)).unwrap(),
+            s.put(record(1, 2, 1_000, &[], 0), NOW).unwrap(),
             PutOutcome::Superseded
         );
         assert_eq!(
@@ -333,10 +426,11 @@ mod tests {
     #[test]
     fn capability_lookup_finds_providers_without_a_directory() {
         let mut s = RecordStore::new();
-        s.put(record(1, 1, 1_000, &["web.search"], 1)).unwrap();
-        s.put(record(2, 1, 1_000, &["web.search", "web.crawl"], 2))
+        s.put(record(1, 1, 1_000, &["web.search"], 1), NOW).unwrap();
+        s.put(record(2, 1, 1_000, &["web.search", "web.crawl"], 2), NOW)
             .unwrap();
-        s.put(record(3, 1, 1_000, &["data.analyze"], 1)).unwrap();
+        s.put(record(3, 1, 1_000, &["data.analyze"], 1), NOW)
+            .unwrap();
 
         let providers = s.providers_of("web.search", 1_000);
         assert_eq!(providers.len(), 2);
@@ -354,7 +448,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[1u8; 32]);
         let mut rec = rec;
         rec.sign(&key).unwrap();
-        s.put(rec).unwrap();
+        s.put(rec, NOW).unwrap();
 
         assert_eq!(s.providers_of("web.search", 1_030).len(), 1);
         assert!(s.providers_of("web.search", 1_100).is_empty());
@@ -363,11 +457,12 @@ mod tests {
     #[test]
     fn updating_a_record_removes_its_stale_capability_index_entries() {
         let mut s = RecordStore::new();
-        s.put(record(1, 1, 1_000, &["web.search"], 0)).unwrap();
+        s.put(record(1, 1, 1_000, &["web.search"], 0), NOW).unwrap();
         assert_eq!(s.providers_of("web.search", 1_000).len(), 1);
 
         // v2 drops web.search and gains data.analyze.
-        s.put(record(1, 2, 1_000, &["data.analyze"], 0)).unwrap();
+        s.put(record(1, 2, 1_000, &["data.analyze"], 0), NOW)
+            .unwrap();
         assert!(
             s.providers_of("web.search", 1_000).is_empty(),
             "a withdrawn capability must stop being advertised"
@@ -383,7 +478,7 @@ mod tests {
         let mut rec = record(1, 1, 1_000, &[], 0).with_ttl(60);
         rec.sign(&key).unwrap();
         let name = rec.name.clone();
-        s.put(rec).unwrap();
+        s.put(rec, NOW).unwrap();
 
         assert!(s.get_fresh(&name, 1_050).is_some());
         assert!(s.get_fresh(&name, 1_060).is_none());
@@ -399,8 +494,8 @@ mod tests {
         let key = SigningKey::from_bytes(&[1u8; 32]);
         let mut short = record(1, 1, 1_000, &["web.search"], 0).with_ttl(60);
         short.sign(&key).unwrap();
-        s.put(short).unwrap();
-        s.put(record(2, 1, 1_000, &["web.crawl"], 0)).unwrap();
+        s.put(short, NOW).unwrap();
+        s.put(record(2, 1, 1_000, &["web.crawl"], 0), NOW).unwrap();
 
         assert_eq!(s.sweep_expired(1_100), 1);
         assert_eq!(s.len(), 1);
@@ -414,7 +509,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[1u8; 32]);
         let mut rec = record(1, 1, 1_000, &[], 0).with_ttl(100);
         rec.sign(&key).unwrap();
-        s.put(rec).unwrap();
+        s.put(rec, NOW).unwrap();
 
         assert!(s.needing_republish(1_000, 30).is_empty());
         assert_eq!(s.needing_republish(1_080, 30).len(), 1);
@@ -428,7 +523,7 @@ mod tests {
     fn closest_ranks_records_by_keyspace_distance() {
         let mut s = RecordStore::new();
         for seed in 1..=5u8 {
-            s.put(record(seed, 1, 1_000, &[], 0)).unwrap();
+            s.put(record(seed, 1, 1_000, &[], 0), NOW).unwrap();
         }
         let target = record(3, 1, 1_000, &[], 0).name.key();
         let closest = s.closest(&target, 3);
@@ -440,7 +535,7 @@ mod tests {
     fn removal_clears_both_indexes() {
         let mut s = RecordStore::new();
         let rec = record(1, 1, 1_000, &["web.search"], 0);
-        s.put(rec.clone()).unwrap();
+        s.put(rec.clone(), NOW).unwrap();
         assert!(s.remove(&rec.name).is_some());
         assert!(s.is_empty());
         assert!(s.providers_of("web.search", 1_000).is_empty());
@@ -454,7 +549,7 @@ mod tests {
     fn a_full_store_stops_growing() {
         let mut s = RecordStore::with_limits(NameKey::of(b"home"), 3);
         for seed in 1..=8u8 {
-            let _ = s.put(record(seed, 1, 1_000, &[], 0));
+            let _ = s.put(record(seed, 1, 1_000, &[], 0), NOW);
         }
         assert_eq!(s.len(), 3, "the cap has to hold under a flood");
     }
@@ -468,9 +563,9 @@ mod tests {
         let home = near.name.key();
 
         let mut s = RecordStore::with_limits(home, 2);
-        s.put(near.clone()).unwrap();
+        s.put(near.clone(), NOW).unwrap();
         for seed in 2..=6u8 {
-            let _ = s.put(record(seed, 1, 1_000, &[], 0));
+            let _ = s.put(record(seed, 1, 1_000, &[], 0), NOW);
         }
 
         assert_eq!(s.len(), 2);
@@ -488,12 +583,12 @@ mod tests {
         let near = record(1, 1, 1_000, &[], 0);
         let home = near.name.key();
         let mut s = RecordStore::with_limits(home, 1);
-        s.put(near.clone()).unwrap();
+        s.put(near.clone(), NOW).unwrap();
 
         // Find some record further from home than `near` — which is at distance
         // zero, so any other will do.
         let far = record(9, 1, 1_000, &[], 0);
-        assert_eq!(s.put(far.clone()).unwrap(), PutOutcome::Rejected);
+        assert_eq!(s.put(far.clone(), NOW).unwrap(), PutOutcome::Rejected);
         assert!(s.get(&near.name).is_some(), "the nearer record stayed");
         assert!(s.get(&far.name).is_none());
     }

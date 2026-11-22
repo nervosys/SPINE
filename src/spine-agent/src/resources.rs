@@ -104,6 +104,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
         ensure!(!record.is_expired(now), "resource binding expired");
+        record
+            .validate_not_postdated(now)
+            .context("resource binding is post-dated")?;
         let hash = record
             .content_hash
             .context("resource has no signed content hash")?;
@@ -196,6 +199,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
         ensure!(!record.is_expired(now), "resource binding expired");
+        record
+            .validate_not_postdated(now)
+            .context("resource binding is post-dated")?;
         let mut failures = Vec::new();
         for endpoint in record.endpoints_by_priority() {
             if endpoint.transport != "tcp" {
