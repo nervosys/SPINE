@@ -142,17 +142,26 @@ pub struct SigningIdentity {
 }
 
 impl SigningIdentity {
-    /// Create a new signing identity with a fresh keypair.
+    /// Create a new signing identity with a fresh keypair. The agent id is
+    /// [`AgentId::from_public_key`] of that key (self-certifying).
     pub fn new(name: &str) -> Self {
+        let keypair = Ed25519Keypair::generate();
         Self {
-            agent_id: AgentId::new(),
-            keypair: Ed25519Keypair::generate(),
+            agent_id: AgentId::from_public_key(keypair.public_key()),
+            keypair,
             created_at: Utc::now(),
             name: name.to_string(),
         }
     }
 
-    /// Create from an existing AgentId with a fresh keypair.
+    /// Attach a fresh keypair to an arbitrary, caller-chosen `agent_id`.
+    ///
+    /// The result is NOT self-certifying: its id is not a function of its key,
+    /// so the hardened mesh handlers (`MeshNameResolver` hello, ack, referral,
+    /// application and response handling, and the transports' pin tables)
+    /// refuse it. Use it only to build an impostor in a test or to model a keyless
+    /// legacy id; production code constructs identities with
+    /// [`SigningIdentity::new`] or [`SigningIdentity::from_seed`].
     pub fn from_agent_id(agent_id: AgentId, name: &str) -> Self {
         Self {
             agent_id,
@@ -162,12 +171,13 @@ impl SigningIdentity {
         }
     }
 
-    /// Create from a deterministic seed (for testing / key recovery).
+    /// Create from a deterministic seed (key recovery, tests). The agent id is
+    /// [`AgentId::from_public_key`] of the seed's public key (self-certifying).
     pub fn from_seed(name: &str, seed: [u8; 32]) -> Self {
-        let agent_id = AgentId::from_bytes(&seed);
+        let keypair = Ed25519Keypair::from_seed(seed);
         Self {
-            agent_id,
-            keypair: Ed25519Keypair::from_seed(seed),
+            agent_id: AgentId::from_public_key(keypair.public_key()),
+            keypair,
             created_at: Utc::now(),
             name: name.to_string(),
         }
@@ -321,6 +331,30 @@ mod tests {
 
         assert_eq!(id1.agent_id, id2.agent_id);
         assert_eq!(id1.public_key(), id2.public_key());
+    }
+
+    #[test]
+    fn agent_id_derivation_is_stable() {
+        // Derived by hand, outside this crate:
+        //   python3 -c "import hashlib; print(hashlib.sha256(
+        //       b'spine-agent-id-v1\0' + bytes([1]*32)).digest()[:16].hex())"
+        let id = AgentId::from_public_key(&[1u8; 32]);
+        assert_eq!(
+            id.0.simple().to_string(),
+            "a30e53aeb1ca38bab4c33058442cdc06"
+        );
+        assert!(id.is_derived_from(&[1u8; 32]));
+        assert!(!id.is_derived_from(&[2u8; 32]));
+    }
+
+    #[test]
+    fn signing_identities_are_self_certifying() {
+        let seeded = SigningIdentity::from_seed("seeded", [7u8; 32]);
+        assert!(seeded.agent_id.is_derived_from(seeded.public_key()));
+        let fresh = SigningIdentity::new("fresh");
+        assert!(fresh.agent_id.is_derived_from(fresh.public_key()));
+        let forced = SigningIdentity::from_agent_id(AgentId::new(), "forced");
+        assert!(!forced.agent_id.is_derived_from(forced.public_key()));
     }
 
     #[test]

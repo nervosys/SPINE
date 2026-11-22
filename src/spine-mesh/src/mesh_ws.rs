@@ -110,6 +110,11 @@ impl WsNameTransport {
         self.identities.insert(agent, identity);
     }
 
+    /// Pairs refused because the agent id is not derived from the key.
+    pub fn id_mismatches(&self) -> u64 {
+        self.pins.id_mismatches()
+    }
+
     /// Dials refused because the peer proved a key other than the pinned one.
     pub fn pin_mismatches(&self) -> u64 {
         self.pins.mismatches()
@@ -153,7 +158,8 @@ impl WsNameTransport {
                 let outcome = client_handshake(&mut stream, &cfg.signing, expected.as_ref()).await;
                 let session = self.pins.observe(&url, outcome)?;
                 if expected.is_none() {
-                    pin_if_absent(&self.identities, *agent, *session.peer_identity());
+                    self.pins
+                        .pin_proved(&self.identities, agent, *session.peer_identity())?;
                 }
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
@@ -256,6 +262,9 @@ impl NameTransport for WsNameTransport {
     /// Learn the URL, and on an encrypted transport pin the key a hello, ack
     /// or referral named for the peer, unless a key is already pinned.
     async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        if !self.pins.admit_pair(&agent, &key) {
+            return;
+        }
         if self.is_encrypted() {
             pin_if_absent(&self.identities, agent, key);
         }

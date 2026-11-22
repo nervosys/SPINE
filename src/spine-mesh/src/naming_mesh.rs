@@ -205,6 +205,13 @@ pub struct ResolverMetrics {
     /// signature by a key other than the connection's authenticated peer).
     /// Counts unsigned or forged `NameResolveResponse`s in particular.
     pub envelopes_unauthenticated: u64,
+    /// (agent id, key) pairs that arrived from outside and were refused because
+    /// the id is not `AgentId::from_public_key` of the key: a hello or ack whose
+    /// `from` is not derived from its carried key, an `Application` envelope
+    /// whose `from` is not derived from the signing key, a referral naming a
+    /// key under an id it does not derive, or a registration with such a pair.
+    /// A hello or ack is counted here as well as in `greetings_rejected`.
+    pub agent_id_mismatches: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -504,6 +511,11 @@ impl MeshNameResolver {
             // one would put the peer somewhere nothing could find it.
             return;
         };
+        if !identity.agent_id.is_derived_from(&key_bytes) {
+            // A pair that is not self-certifying is refused whoever supplied it.
+            self.metrics.lock().await.agent_id_mismatches += 1;
+            return;
+        }
         let key = NameKey::from_bytes(key_bytes);
         self.transport
             .learn_peer(identity.agent_id, key_bytes, &endpoints)
@@ -517,7 +529,16 @@ impl MeshNameResolver {
     /// Record a peer in both routing spaces *and* in the transport's address
     /// book, so that knowing about it and being able to reach it stay the same
     /// thing.
+    ///
+    /// Refuses (and counts in `agent_id_mismatches`) a pair whose id is not
+    /// derived from its key, so nothing learned from a hello, ack or referral
+    /// reaches the routing table or the transport's pin table unless the id
+    /// names the key.
     async fn adopt_peer(&self, key: NameKey, agent_id: AgentId, endpoints: Vec<String>, now: u64) {
+        if !agent_id.is_derived_from(key.as_bytes()) {
+            self.metrics.lock().await.agent_id_mismatches += 1;
+            return;
+        }
         self.transport
             .learn_peer(agent_id, *key.as_bytes(), &endpoints)
             .await;
@@ -525,6 +546,22 @@ impl MeshNameResolver {
             .lock()
             .await
             .add_peer(NodeInfo::new(key, endpoints, now), agent_id);
+    }
+
+    /// Bound a referral list received from a peer and keep only the entries whose
+    /// agent id is derived from the key they name; the rest are counted in
+    /// `agent_id_mismatches` and never learned.
+    async fn derived_referrals(&self, closer: &[KeyspacePeer]) -> Vec<KeyspacePeer> {
+        let bounded = bound_referrals(closer);
+        let total = bounded.len();
+        let kept: Vec<KeyspacePeer> = bounded
+            .into_iter()
+            .filter(|p| p.agent_id.is_derived_from(p.info.id.as_bytes()))
+            .collect();
+        if kept.len() != total {
+            self.metrics.lock().await.agent_id_mismatches += (total - kept.len()) as u64;
+        }
+        kept
     }
 
     /// Require `key` (an Ed25519 public key, the same bytes as the seed's
@@ -1022,10 +1059,10 @@ impl MeshNameResolver {
 
     /// The key `envelope` provably came from, if any.
     ///
-    /// `envelope.from` is an unauthenticated label: an agent id is not derived
-    /// from a key. The only thing that binds it is the pairing this node itself
-    /// recorded (registration, hello, ack), so the sender is whoever signed the
-    /// envelope with a key recorded for that agent id. When the connection has an
+    /// `envelope.from` is a label, but a self-certifying one: an agent id is
+    /// `AgentId::from_public_key` of its key. The sender is whoever signed the
+    /// envelope with a key recorded for that agent id *and* from which the id is
+    /// derived (a recorded pair that does not derive is never used). When the connection has an
     /// authenticated peer key `peer`, that key must be the signer too, so an
     /// envelope signed by a different (even known) key is refused here.
     async fn authenticate_sender(
@@ -1035,7 +1072,8 @@ impl MeshNameResolver {
     ) -> Option<NameKey> {
         let keys = self.service.lock().await.keys_for_agent(envelope.from);
         keys.into_iter().find(|key| {
-            peer.is_none_or(|p| &p == key.as_bytes())
+            envelope.from.is_derived_from(key.as_bytes())
+                && peer.is_none_or(|p| &p == key.as_bytes())
                 && MeshNode::verify_carried_key(envelope, key.as_bytes())
         })
     }
@@ -1055,6 +1093,14 @@ impl MeshNameResolver {
     ) -> bool {
         match &envelope.payload {
             MeshPayload::Application(message) => {
+                // The id must be the signing key's own derivation, so a caller
+                // cannot present a valid signature under someone else's label.
+                if !envelope.from.is_derived_from(&message.public_key) {
+                    let mut metrics = self.metrics.lock().await;
+                    metrics.envelopes_unauthenticated += 1;
+                    metrics.agent_id_mismatches += 1;
+                    return true;
+                }
                 if message.recipient != *self.node.agent_id()
                     || &message.recipient_key != self.local_key().as_bytes()
                     || !matches!(envelope.to, MeshTarget::Agent(id) if id == *self.node.agent_id())
@@ -1216,6 +1262,14 @@ impl MeshNameResolver {
                     self.metrics.lock().await.greetings_rejected += 1;
                     return true;
                 }
+                // The key is proven; the id must be its derivation, or the hello
+                // would attach an arbitrary label to a key the sender holds.
+                if !envelope.from.is_derived_from(&hello.public_key) {
+                    let mut metrics = self.metrics.lock().await;
+                    metrics.greetings_rejected += 1;
+                    metrics.agent_id_mismatches += 1;
+                    return true;
+                }
 
                 let key = NameKey::from_bytes(hello.public_key);
                 self.adopt_peer(key, envelope.from, bound_endpoints(&hello.endpoints), now)
@@ -1249,11 +1303,17 @@ impl MeshNameResolver {
                     self.metrics.lock().await.greetings_rejected += 1;
                     return true;
                 }
+                if !envelope.from.is_derived_from(&ack.public_key) {
+                    let mut metrics = self.metrics.lock().await;
+                    metrics.greetings_rejected += 1;
+                    metrics.agent_id_mismatches += 1;
+                    return true;
+                }
 
                 let key = NameKey::from_bytes(ack.public_key);
                 // Endpoints and referrals are peer-controlled: bound them here.
                 let ack_endpoints = bound_endpoints(&ack.endpoints);
-                let referrals = bound_referrals(&ack.closer);
+                let referrals = self.derived_referrals(&ack.closer).await;
                 self.adopt_peer(key, envelope.from, ack_endpoints.clone(), now)
                     .await;
                 // The referrals are as useful as the seed itself: they are what
@@ -1304,6 +1364,11 @@ impl MeshNameResolver {
     /// Feed a response into its lookup and continue or finish it.
     async fn absorb_response(&self, signer: NameKey, response: &ResolveResponse) {
         let request_id = response.request_id;
+        // Referrals are unsigned (id, key) pairs: only those whose id derives from
+        // their key are used, by the lookup and by the routing table alike.
+        let mut filtered = response.clone();
+        filtered.closer = self.derived_referrals(&response.closer).await;
+        let response = &filtered;
 
         let (next_wave, done) = {
             let mut service = self.service.lock().await;
@@ -2587,5 +2652,143 @@ mod tests {
             .handle_envelope_from_peer(&envelope, NOW, None, Some(key0))
             .await;
         assert!(!h.board.is_empty());
+    }
+
+    // ───────────── self-certifying agent ids ─────────────
+
+    /// A node whose id is not the derivation of its key. Its signatures are
+    /// genuine, so only the id check can refuse it.
+    fn mislabelled_node(name: &str) -> MeshNode {
+        MeshNode::new(
+            SigningIdentity::from_agent_id(AgentId::new(), name),
+            MeshConfig::default(),
+        )
+    }
+
+    fn key_of(node: &MeshNode) -> [u8; 32] {
+        node.public_identity()
+            .public_key
+            .as_slice()
+            .try_into()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_hello_whose_from_is_not_derived_from_its_key_is_refused_and_counted() {
+        let h = Harness::new(2);
+        let liar = mislabelled_node("liar");
+        let hello = liar.name_hello(vec!["liar:9440".into()]).unwrap();
+        // The signature verifies under the carried key; the label is the lie.
+        assert!(MeshNode::verify_carried_key(&hello, &key_of(&liar)));
+
+        assert!(h.nodes[1].handle_envelope(&hello, NOW).await);
+        assert_eq!(h.nodes[1].peer_count().await, 0, "no contact was recorded");
+        let metrics = h.nodes[1].metrics().await;
+        assert_eq!(metrics.greetings_rejected, 1);
+        assert_eq!(metrics.agent_id_mismatches, 1);
+        assert!(h.board.is_empty(), "a mislabelled hello gets no answer");
+
+        // A node with a derived id is greeted normally.
+        let hello = h.nodes[0].node.name_hello(vec!["n0:9440".into()]).unwrap();
+        h.nodes[1].handle_envelope(&hello, NOW).await;
+        assert_eq!(h.nodes[1].peer_count().await, 1);
+        assert_eq!(h.nodes[1].metrics().await.agent_id_mismatches, 1);
+    }
+
+    #[tokio::test]
+    async fn an_ack_whose_from_is_not_derived_from_its_key_is_refused_and_counted() {
+        let h = Harness::new(2);
+        let liar = mislabelled_node("liar");
+        let ack = liar
+            .name_hello_ack(*h.nodes[0].node.agent_id(), Vec::new(), Vec::new())
+            .unwrap();
+        assert!(h.nodes[0].handle_envelope(&ack, NOW).await);
+        assert_eq!(h.nodes[0].peer_count().await, 0);
+        let metrics = h.nodes[0].metrics().await;
+        assert_eq!(metrics.greetings_rejected, 1);
+        assert_eq!(metrics.agent_id_mismatches, 1);
+    }
+
+    #[tokio::test]
+    async fn a_referral_pairing_an_id_with_a_non_matching_key_is_not_learned() {
+        let h = Harness::new(3);
+        let honest = &h.identities[2];
+        let honest_key = NameKey::from_bytes(honest.public_key.as_slice().try_into().unwrap());
+        let other = SigningIdentity::from_seed("other", [200u8; 32]);
+        let other_key = NameKey::from_bytes(*other.public_key());
+        let bogus_agent = AgentId::new();
+        let closer = vec![
+            KeyspacePeer::new(
+                NodeInfo::new(honest_key, vec!["n2:9440".into()], NOW),
+                honest.agent_id,
+            ),
+            // A real key under an id it does not derive.
+            KeyspacePeer::new(
+                NodeInfo::new(other_key, vec!["other:9440".into()], NOW),
+                bogus_agent,
+            ),
+        ];
+        let ack = h.nodes[1]
+            .node
+            .name_hello_ack(*h.nodes[0].node.agent_id(), vec!["n1:9440".into()], closer)
+            .unwrap();
+        assert!(h.nodes[0].handle_envelope(&ack, NOW).await);
+
+        // The acking peer and the matching referral are learned; the other is not.
+        assert_eq!(h.nodes[0].peer_count().await, 2);
+        let service = h.nodes[0].service.lock().await;
+        assert!(service.keys_for_agent(bogus_agent).is_empty());
+        assert_eq!(service.keys_for_agent(honest.agent_id), vec![honest_key]);
+        drop(service);
+        assert_eq!(h.nodes[0].metrics().await.agent_id_mismatches, 1);
+    }
+
+    #[tokio::test]
+    async fn registering_a_pair_that_does_not_match_is_refused() {
+        let h = Harness::new(2);
+        let mut forged = h.identities[1].clone();
+        forged.agent_id = AgentId::new();
+        h.nodes[0]
+            .register_peer(&forged, vec!["n1:9440".into()], NOW)
+            .await;
+        assert_eq!(h.nodes[0].peer_count().await, 0);
+        assert_eq!(h.nodes[0].metrics().await.agent_id_mismatches, 1);
+    }
+
+    /// A request carrying a valid signature and the signer's own key, under an
+    /// id that is not derived from that key, is dropped even where a connection
+    /// to reply on exists (which skips the recorded-pair check).
+    #[tokio::test]
+    async fn an_application_message_with_a_valid_signature_and_wrong_id_is_dropped() {
+        let h = Harness::new(2);
+        let n1 = *h.nodes[1].node.agent_id();
+        let key1 = *h.nodes[1].local_key().as_bytes();
+        let liar = mislabelled_node("liar");
+        let liar_key = key_of(&liar);
+        let envelope = liar
+            .create_envelope(
+                crate::mesh::MeshTarget::Agent(n1),
+                MeshPayload::Application(Box::new(ApplicationMessage {
+                    public_key: liar_key,
+                    recipient: n1,
+                    recipient_key: key1,
+                    request_id: Uuid::new_v4(),
+                    response: false,
+                    data: serde_json::json!({}),
+                })),
+            )
+            .unwrap();
+        assert!(MeshNode::verify_carried_key(&envelope, &liar_key));
+
+        let back = SwitchTransport {
+            board: h.board.clone(),
+        };
+        h.nodes[1]
+            .handle_envelope_with_reply(&envelope, NOW, Some(&back))
+            .await;
+        assert!(h.board.is_empty(), "no answer: the request was dropped");
+        let metrics = h.nodes[1].metrics().await;
+        assert_eq!(metrics.envelopes_unauthenticated, 1);
+        assert_eq!(metrics.agent_id_mismatches, 1);
     }
 }

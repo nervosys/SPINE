@@ -270,6 +270,11 @@ impl QuicNameTransport {
         self.connections.len()
     }
 
+    /// Pairs refused because the agent id is not derived from the key.
+    pub fn id_mismatches(&self) -> u64 {
+        self.pins.id_mismatches()
+    }
+
     /// Dials refused because the peer proved a key other than the pinned one.
     pub fn pin_mismatches(&self) -> u64 {
         self.pins.mismatches()
@@ -338,7 +343,7 @@ impl QuicNameTransport {
                 .observe(&format!("{agent:?} at {addr}"), outcome)?;
             let proved = *session.peer_identity();
             if expected.is_none() {
-                pin_if_absent(&self.identities, *agent, proved);
+                self.pins.pin_proved(&self.identities, agent, proved)?;
             }
             // `finish` already pins; checked again so that the connection is
             // never pooled under a key other than the one demanded.
@@ -560,6 +565,9 @@ impl NameTransport for QuicNameTransport {
     /// hello, ack or referral named for the peer, unless a key is already
     /// pinned.
     async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        if !self.pins.admit_pair(&agent, &key) {
+            return;
+        }
         if self.is_authenticated() {
             pin_if_absent(&self.identities, agent, key);
         }

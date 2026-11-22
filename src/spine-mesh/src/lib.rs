@@ -39,6 +39,37 @@ impl AgentId {
         Self(Uuid::new_v4())
     }
 
+    /// The agent id a public key determines: the first 16 bytes of
+    /// SHA-256(`"spine-agent-id-v1\0"` || key).
+    ///
+    /// Every identity that signs mesh envelopes ([`identity::SigningIdentity`])
+    /// has this id, and every handler that learns or uses an (id, key) pair from
+    /// the network requires it ([`AgentId::is_derived_from`]), so `envelope.from`
+    /// is a function of the key rather than a free label and a claimed pair that
+    /// does not match is dropped.
+    ///
+    /// The id is 128 bits, so a collision between two keys costs about 2^64
+    /// work (birthday bound). That is acceptable because the id is a routing
+    /// label and authentication is always against the full 32-byte key:
+    /// signatures verify under the key, pins hold keys, and an `Application`
+    /// caller is the signing key, never the id. A collision lets an attacker give
+    /// two keys of its own the same label; it does not let a key pass as another
+    /// key.
+    pub fn from_public_key(key: &[u8; 32]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"spine-agent-id-v1\0");
+        hasher.update(key);
+        let digest = hasher.finalize();
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&digest[..16]);
+        Self(Uuid::from_bytes(id))
+    }
+
+    /// Whether this id is [`AgentId::from_public_key`] of `key`.
+    pub fn is_derived_from(&self, key: &[u8; 32]) -> bool {
+        *self == Self::from_public_key(key)
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(bytes);

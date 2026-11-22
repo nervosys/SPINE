@@ -492,6 +492,7 @@ pub(crate) fn pin_if_absent(map: &DashMap<AgentId, [u8; 32]>, agent: AgentId, ke
 pub struct PinBook {
     endpoints: DashMap<String, [u8; 32]>,
     mismatches: std::sync::atomic::AtomicU64,
+    id_mismatches: std::sync::atomic::AtomicU64,
 }
 
 impl PinBook {
@@ -524,6 +525,44 @@ impl PinBook {
     /// pinned for it.
     pub fn mismatches(&self) -> u64 {
         self.mismatches.load(Ordering::Relaxed)
+    }
+
+    /// (Agent id, key) pairs refused so far because the id is not
+    /// `AgentId::from_public_key` of the key.
+    pub fn id_mismatches(&self) -> u64 {
+        self.id_mismatches.load(Ordering::Relaxed)
+    }
+
+    /// Whether `agent` is the id `key` determines. A pair that fails is counted
+    /// and logged; the caller must drop it (learn no address, record no pin).
+    pub(crate) fn admit_pair(&self, agent: &AgentId, key: &[u8; 32]) -> bool {
+        if agent.is_derived_from(key) {
+            return true;
+        }
+        self.id_mismatches.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            key = %hex_prefix(key),
+            "agent id is not derived from the key it is paired with; pair dropped"
+        );
+        false
+    }
+
+    /// Record the key a completed handshake proved for the dialed `agent`, as
+    /// [`pin_if_absent`] does, but only if `agent` is derived from that key.
+    /// Otherwise the dial fails: the peer is not the agent that was dialed.
+    pub(crate) fn pin_proved(
+        &self,
+        map: &DashMap<AgentId, [u8; 32]>,
+        agent: &AgentId,
+        key: [u8; 32],
+    ) -> Result<(), NameMeshError> {
+        if !self.admit_pair(agent, &key) {
+            return Err(NameMeshError::Transport(
+                "peer proved a key that does not derive the agent id dialed".into(),
+            ));
+        }
+        pin_if_absent(map, *agent, key);
+        Ok(())
     }
 
     /// Pass a handshake result through, counting and logging a pin mismatch.
@@ -923,6 +962,11 @@ impl TcpNameTransport {
         self.pins.mismatches()
     }
 
+    /// Pairs refused because the agent id is not derived from the key.
+    pub fn id_mismatches(&self) -> u64 {
+        self.pins.id_mismatches()
+    }
+
     /// Record where a peer can be reached. New entries beyond [`MAX_KNOWN_PEERS`]
     /// are ignored; existing contacts can still update their address.
     pub fn set_address(&self, agent: AgentId, addr: SocketAddr) {
@@ -1025,7 +1069,8 @@ impl TcpNameTransport {
                         .contacts
                         .lock()
                         .unwrap_or_else(|error| error.into_inner());
-                    pin_if_absent(&self.identities, *agent, *session.peer_identity());
+                    self.pins
+                        .pin_proved(&self.identities, agent, *session.peer_identity())?;
                 }
                 ReplyPath::Secure(attach_secure_bounded(
                     stream,
@@ -1203,6 +1248,9 @@ impl NameTransport for TcpNameTransport {
     /// Learn the address, and on an encrypted transport pin the key a hello,
     /// ack or referral named for the peer, unless a key is already pinned.
     async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        if !self.pins.admit_pair(&agent, &key) {
+            return;
+        }
         if self.is_encrypted() {
             let _contacts = self
                 .contacts
@@ -2510,7 +2558,7 @@ mod secure_tests {
         let (addr, slot) = switchable_responder().await;
         let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[14u8; 32]));
         let wait = Duration::from_secs(10);
-        let referred = AgentId::new();
+        let referred = AgentId::from_public_key(&public_of(15));
 
         // A referral names agent `referred` and its key (the node id).
         client
@@ -2524,11 +2572,13 @@ mod secure_tests {
         assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
         assert_eq!(client.pin_mismatches(), 1);
 
-        // A later, unsigned referral cannot replace the first claim.
+        // A later, unsigned referral cannot replace the first claim: its key
+        // does not derive `referred`, so the pair is dropped and counted.
         client
             .learn_peer(referred, public_of(11), &[addr.to_string()])
             .await;
         assert_eq!(client.expected_identity(&referred), Some(public_of(15)));
+        assert_eq!(client.id_mismatches(), 1);
 
         // The responder with the named key is accepted.
         *slot.lock().unwrap() = SigningKey::from_bytes(&[15u8; 32]);
@@ -2543,7 +2593,7 @@ mod secure_tests {
         let (addr, slot) = switchable_responder().await;
         let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[16u8; 32]));
         let wait = Duration::from_secs(10);
-        let peer = AgentId::new();
+        let peer = AgentId::from_public_key(&public_of(11));
         client.set_address(peer, addr);
         assert_eq!(client.expected_identity(&peer), None);
 
@@ -2560,6 +2610,41 @@ mod secure_tests {
             .expect("dial hung")
             .unwrap_err();
         assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_dial_whose_peer_key_does_not_derive_the_agent_id_is_refused() {
+        let (addr, _slot) = switchable_responder().await;
+        let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[18u8; 32]));
+        // An id that is not the derivation of the key the responder proves.
+        let peer = AgentId::new();
+        client.set_address(peer, addr);
+
+        let err = tokio::time::timeout(Duration::from_secs(10), client.connection(&peer, None))
+            .await
+            .expect("dial hung")
+            .unwrap_err();
+        assert!(err.to_string().contains("does not derive"), "{err}");
+        assert_eq!(client.id_mismatches(), 1);
+        assert_eq!(client.expected_identity(&peer), None, "nothing was pinned");
+    }
+
+    #[tokio::test]
+    async fn learn_peer_drops_a_pair_whose_id_is_not_derived_from_its_key() {
+        let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[19u8; 32]));
+        let liar = AgentId::new();
+        client
+            .learn_peer(liar, public_of(15), &["127.0.0.1:9".to_string()])
+            .await;
+        assert_eq!(client.expected_identity(&liar), None);
+        assert_eq!(client.id_mismatches(), 1);
+
+        let honest = AgentId::from_public_key(&public_of(15));
+        client
+            .learn_peer(honest, public_of(15), &["127.0.0.1:9".to_string()])
+            .await;
+        assert_eq!(client.expected_identity(&honest), Some(public_of(15)));
+        assert_eq!(client.id_mismatches(), 1);
     }
 
     #[tokio::test]
