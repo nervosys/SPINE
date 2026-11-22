@@ -394,6 +394,15 @@ def resource_id(content_type, data):
 
 SIGNING_DOMAIN = b"spine-name-record-v2\x00"
 
+# Record lifetime rules (spec section 3.5). A record is admitted only if it
+# verifies, its ttl_secs is within MAX_TTL_SECS, it is a well-formed tombstone if
+# it carries the reserved marker, and (when the verifier has a clock) its
+# published_at is at most MAX_SKEW_SECS ahead of that clock.
+MAX_TTL_SECS = 7 * 24 * 60 * 60
+MAX_SKEW_SECS = 300
+REVOKED_KEY = "spine.revoked"
+U64_MAX = 2 ** 64 - 1
+
 
 def _str(s):
     raw = s.encode("utf-8")
@@ -473,13 +482,44 @@ def record_json(rec, signature):
     }
 
 
-def record_verifies(rec, signature):
-    """Strict verification against the did: key in the record's name."""
+def signature_verifies(rec, signature):
+    """Strict signature check against the did: key in the record's name."""
     parts = parse_name(rec["name"])
     if parts["kind"] != "did":
         return False
     public = bytes.fromhex(parts["detail"]["key"])
     return ed25519_verify(public, signing_bytes(rec), signature, strict=True)
+
+
+def is_tombstone(rec):
+    return any(k == REVOKED_KEY for k, _ in rec["meta"])
+
+
+def lifetime_error(rec):
+    """None if the record obeys the clock-free lifetime rules, else the reason."""
+    if rec["ttl_secs"] > MAX_TTL_SECS:
+        return "ttl"
+    if is_tombstone(rec):
+        marker_only = [list(kv) for kv in rec["meta"]] == [[REVOKED_KEY, "1"]]
+        empty = (not rec["endpoints"] and not rec["capabilities"]
+                 and rec["content_hash"] is None and not rec["links"])
+        if not marker_only or not empty or rec["ttl_secs"] != MAX_TTL_SECS:
+            return "tombstone"
+    return None
+
+
+def admission_error(rec, signature, now=None):
+    """None if the record is admitted, else why not: signature, ttl, tombstone,
+    postdated. The signature is checked first; `now` (Unix seconds) enables the
+    bound on published_at."""
+    if not signature_verifies(rec, signature):
+        return "signature"
+    reason = lifetime_error(rec)
+    if reason is not None:
+        return reason
+    if now is not None and rec["published_at"] > min(now + MAX_SKEW_SECS, U64_MAX):
+        return "postdated"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -716,9 +756,19 @@ def make_records(keys):
     )))
 
     specs.append(("numeric extremes", 2, rec(
-        did(2, "/"), 2 ** 64 - 1, 2 ** 32 - 1, 2 ** 64 - 1,
+        did(2, "/"), 2 ** 64 - 1, MAX_TTL_SECS, 2 ** 64 - 1,
         endpoints=[ep("tcp", "h:1", 255)],
         content_hash="ff" * 32,
+    )))
+
+    specs.append(("maximum lifetime", 1, rec(
+        did(1, "/"), 6, MAX_TTL_SECS, 1700000450,
+        endpoints=[ep("tcp", "10.0.0.7:9440")],
+    )))
+
+    specs.append(("tombstone", 0, rec(
+        did(0, "/"), 2, MAX_TTL_SECS, 1700000500,
+        meta=[[REVOKED_KEY, "1"]],
     )))
 
     specs.append(("case is not normalised", 0, rec(
@@ -734,6 +784,7 @@ def make_records(keys):
         records.append({
             "label": label,
             "signer": key_label(signer),
+            "is_tombstone": is_tombstone(r),
             "record": r,
             "signing_bytes": signing_bytes(r).hex(),
             "signature": signature.hex(),
@@ -754,10 +805,14 @@ def make_invalid_records(keys, records):
     min_sig = bytes.fromhex(minimal["signature"])
     out = []
 
-    def add(label, base, mutate, signature=None):
+    def add(label, base, mutate, signature=None, reason="signature", signer=None):
         r = clone(base["record"])
         mutate(r)
-        sig = bytes.fromhex(base["signature"]) if signature is None else signature
+        if signer is not None:
+            # Re-signed after the change, so only the lifetime rules can refuse it.
+            sig = ed25519_sign(SEEDS[signer], signing_bytes(r))
+        else:
+            sig = bytes.fromhex(base["signature"]) if signature is None else signature
         out.append({
             "label": label,
             "base": base["label"],
@@ -765,6 +820,7 @@ def make_invalid_records(keys, records):
             "signature": sig.hex(),
             "json": record_json(r, sig),
             "expected": "reject",
+            "reason": reason,
         })
 
     def set_(key, value):
@@ -867,7 +923,61 @@ def make_invalid_records(keys, records):
         "signature": weak_sig.hex(),
         "json": record_json(weak, weak_sig),
         "expected": "reject",
+        "reason": "signature",
     })
+
+    # Lifetime rules. Each record is correctly signed by the name's key, so the
+    # signature is valid and only the lifetime rule refuses it.
+    tomb = by_label["tombstone"]
+    add("ttl_secs one over the maximum", minimal,
+        set_("ttl_secs", MAX_TTL_SECS + 1), reason="ttl", signer=0)
+    add("ttl_secs at the u32 maximum", minimal,
+        set_("ttl_secs", 2 ** 32 - 1), reason="ttl", signer=0)
+    add("tombstone with a shorter ttl_secs", tomb,
+        set_("ttl_secs", MAX_TTL_SECS - 1), reason="tombstone", signer=0)
+    add("tombstone with an endpoint", tomb,
+        lambda r: r["endpoints"].append(ep("tcp", "1.2.3.4:5")), reason="tombstone", signer=0)
+    add("tombstone with a capability", tomb,
+        lambda r: r["capabilities"].append("web.search"), reason="tombstone", signer=0)
+    add("tombstone with a content hash", tomb,
+        set_("content_hash", "00" * 32), reason="tombstone", signer=0)
+    add("tombstone with extra metadata", tomb,
+        lambda r: r["meta"].append(["title", "x"]), reason="tombstone", signer=0)
+    add("revoked marker with another value", tomb,
+        lambda r: r["meta"].__setitem__(0, [REVOKED_KEY, "0"]), reason="tombstone", signer=0)
+    add("revoked marker on an ordinary record", minimal,
+        lambda r: r["meta"].append([REVOKED_KEY, "1"]), reason="tombstone", signer=0)
+    return out
+
+
+def make_admission(records, invalid_records):
+    """Cases that depend on the verifier's clock or combine the rules above.
+    'record' names an entry of `records` or `invalid_records`; 'now' is the
+    verifier's clock in Unix seconds."""
+    by_label = {r["label"]: r for r in records}
+    minimal = by_label["minimal"]["record"]["published_at"]
+    out = []
+
+    def add(label, record, now, expected, reason=None):
+        out.append({"label": label, "record": record, "now": now,
+                    "expected": expected, "reason": reason})
+
+    add("published exactly the skew ahead", "minimal", minimal - MAX_SKEW_SECS, "admit")
+    add("published one second past the skew", "minimal",
+        minimal - MAX_SKEW_SECS - 1, "reject", "postdated")
+    add("published in the past", "minimal", minimal + 10 ** 9, "admit")
+    add("published at the u64 maximum, clock at the u64 maximum", "numeric extremes",
+        U64_MAX, "admit")
+    add("published at the u64 maximum, clock now", "numeric extremes",
+        minimal, "reject", "postdated")
+    add("maximum lifetime", "maximum lifetime", 1700000450, "admit")
+    add("tombstone", "tombstone", 1700000500, "admit")
+    add("tombstone published past the skew", "tombstone",
+        1700000500 - MAX_SKEW_SECS - 1, "reject", "postdated")
+    add("ttl_secs one over the maximum", "ttl_secs one over the maximum",
+        minimal, "reject", "ttl")
+    add("tombstone with a shorter ttl_secs", "tombstone with a shorter ttl_secs",
+        1700000500, "reject", "tombstone")
     return out
 
 
@@ -881,7 +991,9 @@ CONVENTIONS = [
     "resource_ids: id = SHA-256('spine/resource-id/v1' 00 || u32be len(type) || type || u64be len(bytes) || bytes). content_hash is the plain SHA-256 of the bytes, shown for contrast.",
     "rel_aliases: a Rel read from 'json' must have the given as_str, and be an Other variant only if is_other. Other(x) with x the exact name of a built-in relation reads as that built-in.",
     "records: 'record' is the structured description (meta is a list of [key, value] pairs in insertion order; content_hash is hex or null; link rel is its wire string). 'signing_bytes' and 'signature' are hex. 'json' is the object serde_json emits for the NameRecord (signature as unpadded base32).",
-    "invalid_records: each 'json' must deserialize (it is well formed) and then fail verification, under the strict profile (RFC 8032 plus rejecting a small-order public key or R).",
+    "invalid_records: each 'json' must deserialize (it is well formed) and then be refused. 'reason' says why: 'signature' (verification fails, under the strict profile: RFC 8032 plus rejecting a small-order public key or R), 'ttl' (ttl_secs above the maximum record lifetime, 604800), or 'tombstone' (carries the spine.revoked marker but is not a well-formed tombstone). The 'ttl' and 'tombstone' records are correctly signed.",
+    "lifetime: a record is admitted only if its signature verifies, ttl_secs <= 604800, and, if it carries the 'spine.revoked' meta key, it is a well-formed tombstone: meta is exactly {spine.revoked: '1'}, no endpoints, capabilities, content hash or links, and ttl_secs == 604800. A signer MUST refuse to sign anything else. 'records[].is_tombstone' says whether the marker is present.",
+    "admission: 'record' names an entry of records or invalid_records; 'now' is the verifier's clock (Unix seconds). 'admit' means the lifetime rules hold and published_at <= now + 300 (saturating at the u64 maximum); 'reject' gives the reason ('postdated', 'ttl', 'tombstone').",
 ]
 
 
@@ -889,6 +1001,7 @@ def generate():
     rfc8032_self_check()
     keys = make_keys()
     records = make_records(keys)
+    invalid_records = make_invalid_records(keys, records)
     doc = {
         "conventions": CONVENTIONS,
         "keys": keys,
@@ -900,7 +1013,8 @@ def generate():
         ],
         "rel_aliases": make_rel_aliases(),
         "records": records,
-        "invalid_records": make_invalid_records(keys, records),
+        "invalid_records": invalid_records,
+        "admission": make_admission(records, invalid_records),
     }
     return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
 
@@ -997,7 +1111,8 @@ def check_doc(doc):
         for link_ in r["links"]:
             expect(canonical_name(link_["target"]) == link_["target"], w + ": link target is canonical")
         sig = bytes.fromhex(v["signature"])
-        expect(record_verifies(r, sig), w + ": signature does not verify")
+        expect(admission_error(r, sig) is None, w + ": record is not admitted")
+        expect(v["is_tombstone"] == is_tombstone(r), w + ": is_tombstone")
         seed = bytes.fromhex(keys[v["signer"]]["seed"])
         expect(ed25519_sign(seed, sb) == sig, w + ": re-signing differs")
         expect(parse_name(r["name"])["detail"]["key"] == keys[v["signer"]]["public"], w + ": signer owns the name")
@@ -1009,9 +1124,25 @@ def check_doc(doc):
         expect(v["expected"] == "reject", w + ": expected")
         expect(v["base"] in labels, w + ": base record exists")
         sig = bytes.fromhex(v["signature"])
-        expect(not record_verifies(v["record"], sig), w + ": verifies but must be rejected")
+        expect(v["reason"] in ("signature", "ttl", "tombstone"), w + ": reason")
+        expect(admission_error(v["record"], sig) == v["reason"],
+               w + ": must be refused for reason %s, got %s"
+               % (v["reason"], admission_error(v["record"], sig)))
         expect(record_json(v["record"], sig) == v["json"], w + ": json form")
     counts["invalid_records"] = len(doc["invalid_records"])
+
+    known = {v["label"]: v for v in doc["records"] + doc["invalid_records"]}
+    for v in doc["admission"]:
+        w = "admission/" + v["label"]
+        expect(v["record"] in known, w + ": record exists")
+        target = known[v["record"]]
+        got = admission_error(target["record"], bytes.fromhex(target["signature"]), v["now"])
+        if v["expected"] == "admit":
+            expect(got is None and v["reason"] is None, w + ": must be admitted, got %s" % got)
+        else:
+            expect(v["expected"] == "reject" and got == v["reason"],
+                   w + ": must be refused for %s, got %s" % (v["reason"], got))
+    counts["admission"] = len(doc["admission"])
     return n, counts
 
 

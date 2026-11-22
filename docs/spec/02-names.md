@@ -1,6 +1,6 @@
 # Layer 2: Names (as built)
 
-Status: sections 2.5, 2.6, 2.8, 2.9, 3 (except 3.2 and 3.5), 6 and 9 are normative and match the code of branch `completion/agent-web` after the changes that accompany `docs/spec/02-names.vectors.json`. They cite `file: function` and are checked by the vectors (section 6). The other sections (2.1 to 2.4, 2.7, 4, 5, 7, 8) are the earlier read-through description of the code, unchanged except where noted; their `file:line` citations may have drifted and the paths under `research/spine-agentic` have since moved into `src/spine-mesh`. Where a claim there disagrees with a normative section, the normative section wins. Section 9 is the list of known open issues.
+Status: sections 2.5, 2.6, 2.8, 2.9, 3 (except 3.2), 6 and 9 are normative and match the code of branch `completion/agent-web` after the changes that accompany `docs/spec/02-names.vectors.json`. They cite `file: function` and are checked by the vectors (section 6). The other sections (2.1 to 2.4, 2.7, 4, 5, 7, 8) are the earlier read-through description of the code, unchanged except where noted; their `file:line` citations may have drifted and the paths under `research/spine-agentic` have since moved into `src/spine-mesh`. Where a claim there disagrees with a normative section, the normative section wins. Section 9 is the list of known open issues.
 
 Primary sources: `src/spine-name/src/` (uri.rs, base32.rs, key.rs, record.rs, link.rs, lib.rs, store.rs, cache.rs, resolver.rs, routing.rs, frontier.rs), the naming code in `src/spine-mesh`, and the node glue in `src/spine-core`. Key words MUST and MUST NOT in the normative sections describe what a conforming implementation does; they restate the code, they do not change it.
 
@@ -109,13 +109,13 @@ so it commits to the content type as well as the bytes, and the prefix and lengt
 | --- | --- | --- | --- |
 | `name` | `SpineUri` | yes (canonical string, including query and fragment) | MUST have a `did` authority. |
 | `seq` | `u64` | yes | Version counter. |
-| `ttl_secs` | `u32` | yes | Default 3600 (`DEFAULT_TTL_SECS`). 0 is accepted and means expired at publication. No maximum. |
-| `published_at` | `u64` | yes | Unix seconds, set by the publisher. No bound against the clock is checked in spine-name. |
+| `ttl_secs` | `u32` | yes | Default 3600 (`DEFAULT_TTL_SECS`). 0 is accepted and means expired at publication. At most `MAX_RECORD_TTL_SECS` (604800, 7 days): `sign` refuses more and `verify` fails with `TtlTooLong` (3.5). |
+| `published_at` | `u64` | yes | Unix seconds, set by the publisher. A verifier with a clock refuses a value more than `MAX_CLOCK_SKEW_SECS` (300) ahead of it (3.5). |
 | `endpoints` | `Vec<Endpoint>` | yes | Each `{transport, address, priority: u8}`; strings are free text. |
 | `capabilities` | `Vec<String>` | yes | Free text. `with_capability` lower-cases; deserialisation does not, and the signature covers the string as stored. |
 | `content_hash` | `Option<[u8; 32]>` | yes | A resource id (2.9) of the current representation. |
 | `links` | `Vec<Link>` | yes | Every field of every link is signed: `rel`, `target`, `title` and `capabilities`. |
-| `meta` | `BTreeMap<String, String>` | yes | Signed in byte-wise key order. |
+| `meta` | `BTreeMap<String, String>` | yes | Signed in byte-wise key order. The key `spine.revoked` is reserved: it marks a tombstone (3.7). |
 | `signature` | `Vec<u8>` | n/a | 64 bytes of Ed25519; JSON form is unpadded lower-case base32. |
 
 `Rel` is `child, parent, peer, provides, requires, alternate, describes, snapshot` or `Other(String)`. Its wire string is the lower-case name, and `Other` carries its own string. Deserialising `Other(s)` where `s` is exactly a built-in name yields the built-in variant (link.rs: `Rel::other`, `From<RelRepr>`), so the alias cannot come out of deserialisation; `Rel::parse` lower-cases and also maps built-in names. `Other("Mirrors")` keeps its case, which is signed. Constructing `Rel::Other("child")` directly in Rust is still possible and signs as `child` (open issue 1).
@@ -146,20 +146,26 @@ Everything in the record except `signature` is covered. No field is terminated b
 ### 3.4 Signature and verification (record.rs: `sign`, `verify`)
 
 - Algorithm: Ed25519 over exactly the bytes of 3.3, no prehash, no context. The key is the 32-byte key of the `did:` authority of `name`.
-- `sign` fails with `KeyMismatch` unless the signing key's public key equals the key in the name.
+- `sign` fails with `KeyMismatch` unless the signing key's public key equals the key in the name. It also fails, after that check, if the record breaks the lifetime rules of 3.5 (`TtlTooLong`, `MalformedTombstone`): no honest signer produces a record every verifier refuses.
 - `verify` MUST fail with `BadSignature` unless the signature is exactly 64 bytes and the key in the name is a valid point, and then uses `verify_strict` (`ed25519_dalek::VerifyingKey::verify_strict`): in addition to RFC 8032 verification it rejects a small-order public key or R and a non-canonical S. The reference implementation's strict profile is RFC 8032 section 5.1.7 plus rejecting S >= L and a small-order A or R. `invalid_records[]` includes S + L and an identity public key with R = identity, S = 0 (accepted by non-strict verification).
+- After the signature, `verify` applies the clock-free lifetime rules of 3.5 (`validate_lifetime`), so a record that verifies has `ttl_secs <= MAX_RECORD_TTL_SECS` and, if it carries the tombstone marker, is a well-formed tombstone. Every path that verifies untrusted input therefore enforces them.
 - Verification is performed at every ingress (store put, resolver publish and cache, lookup responses, announcements, restore from disk). Signature validity does not depend on time.
 
-### 3.5 Validity and expiry
+### 3.5 Validity, expiry and lifetime bounds (record.rs: `validate_lifetime`, `validate_not_postdated`, `validate`, `is_expired`)
 
-- `expires_at = published_at + ttl_secs`, saturating (record.rs:285). `is_expired(now)` is `now >= expires_at` (record.rs:290). A record is fresh for `published_at <= t < expires_at`; there is no lower bound, so a record with `published_at` in the future is treated as fresh now.
-- Signature validity does not depend on time. `verify` does not check expiry. Stores accept expired records (`put` does not test expiry, store.rs:112-145). Expiry is applied at read time: `get_fresh`, `providers_of`, `handle_request` (naming.rs:559), and by sweeping (store.rs:197).
-- Publication at the origin rejects an already-expired record (main.rs:796), but `LocalResolver::publish` itself does not.
-- Clock: injected function returning Unix seconds (resolver.rs:121, naming_mesh.rs:341). No skew tolerance exists.
+Constants: `MAX_RECORD_TTL_SECS` = 604800 (7 days), `MAX_CLOCK_SKEW_SECS` = 300.
+
+- `expires_at = published_at + ttl_secs`, saturating. `is_expired(now)` is `now >= expires_at`. A record is fresh for `published_at <= t < expires_at`.
+- Maximum lifetime. A record MUST have `ttl_secs <= MAX_RECORD_TTL_SECS`. `sign` refuses to sign more (`TtlTooLong`); `verify` fails with `TtlTooLong` for a signed record that has more; `validate_lifetime` makes the same test without a signature. The bound exists because a record cannot be recalled from a replica that never hears of its replacement or revocation: it limits how long a withdrawn or compromised record can keep resolving there to seven days from its `published_at`.
+- Post-dating. A verifier that has a clock MUST refuse a record whose `published_at` is greater than `now + MAX_CLOCK_SKEW_SECS` (`PostDated`; `now + 300` saturates at the largest `u64`). Without it a signer extends a record's life by publishing it in the future. A record published in the past is never refused for that reason; whether it is still fresh is a separate test.
+- Admission. `NameRecord::validate(now)` is the full check made on a record from outside: size (`validate_size`), then lifetime, then the bound on `published_at`. It is called, with the caller's clock and before `verify`, at: `RecordStore::put` (the bound on `published_at`, with `verify` supplying the lifetime rules), `LocalResolver::publish`, `LocalResolver::cache_record`, `LocalResolver::persistent` (restore: a record that fails is skipped, like a bad signature), `NameService::publish`, `NameService::accept_announcement` (mesh announcements), `Lookup` (records and providers in lookup responses: size, lifetime, and the bound when the lookup was given a clock, which a lookup started without one is not), the gateway resource routes, the CLI `read_record`, and the agent client's `read_resource` and `fetch_resource_with` (the bound). Pure functions take the time as an argument; none reads a clock.
+- Signature validity does not depend on time. Stores accept expired records (`put` does not test expiry). Expiry is applied at read time: `get_fresh`, `providers_of`, `handle_request`, and by sweeping.
+- Publication at the origin rejects an already-expired record (main.rs `PublishName`, `PublishResource`).
+- Clock: injected function returning Unix seconds (resolver.rs, naming_mesh.rs). The only tolerance is the 300 s skew above.
 
 ### 3.6 Ordering and conflict resolution (record.rs: `supersedes`)
 
-`self` replaces `other` iff `(seq, published_at, signature)` of `self` is lexicographically greater than that of `other` (signatures compared as byte strings). The signature is the final tiebreak, which makes the order total over distinct records, so replicas converge when they see the same set. Records are compared only within one routing key (same authority and path; query and fragment ignored).
+`self` replaces `other` iff `(seq, is_tombstone, published_at, signature)` of `self` is lexicographically greater than that of `other` (`false` below `true`; signatures compared as byte strings). The second component makes a tombstone beat an ordinary record of the same `seq` whatever the arrival order; between two ordinary records, or two tombstones, the rule is the earlier `(seq, published_at, signature)` order. The signature is the final tiebreak, which makes the order total over distinct records, so replicas converge when they see the same set. Records are compared only within one routing key (same authority and path; query and fragment ignored).
 
 - `RecordStore::put`: an existing record for the key is replaced only if the new one supersedes it; otherwise the outcome is `Superseded` and the stored record is kept.
 - `LocalResolver::publish`: a different record that does not supersede the stored one returns `StalePublication`; offering the identical record again is accepted as a no-op.
@@ -167,18 +173,46 @@ Everything in the record except `signature` is covered. No field is terminated b
 - `seq` is a bare counter chosen by the signer: no chain, no hash link, no required step of one. `renewed` verifies the old record, increments `seq` by one (checked: `SequenceExhausted` at `u64::MAX`), sets `published_at` and `ttl_secs`, and re-signs.
 - The resolver cache does not compare `seq` (cache.rs: `ResolverCache::put`), so a node can cache an older valid record over a newer one (8.6 g).
 
+### 3.7 Tombstones (revocation) (record.rs: `NameRecord::tombstone`, `is_tombstone`)
+
+A tombstone withdraws a name. It is not a new signed object type: it is an ordinary `NameRecord`, signed with the unchanged layout v2 (3.3), for the same name as the records it withdraws.
+
+- Encoding. The `meta` entry `spine.revoked` with value `1` (`REVOKED_META_KEY`). Because `meta` is signed (3.3, row 8), the marker is covered by the signature, and no byte of the layout changes: the signing domain stays `spine-name-record-v2`, and every existing record keeps its bytes and signature. `is_tombstone` is true iff the key `spine.revoked` is present.
+- Shape. A well-formed tombstone has `meta` equal to exactly `{spine.revoked: "1"}`, no endpoints, no capabilities, no content hash and no links, and `ttl_secs` equal to `MAX_RECORD_TTL_SECS`. Anything else carrying the key (another value, extra metadata, content, a different ttl) is refused with `MalformedTombstone`, by `sign` and by `verify`.
+- Supersession. A tombstone has a `seq` above that of the records it withdraws and supersedes them by 3.6. Replicas converge on it by the same rule as for any record.
+- Holders. A store, resolver or replica that holds a fresh tombstone for a name MUST NOT accept a record for that name of the same or lower `seq` (it does not supersede, 3.6: `RecordStore::put` answers `Superseded`, `LocalResolver::publish` answers `StalePublication`) and MUST answer a resolution of the name with the distinct outcome revoked, not "not found": `LocalResolver::resolve` returns `NameError::Revoked`, from cache or store. `find_providers` never returns a tombstone (it has no capabilities). A higher `seq` re-publishes the name.
+- Replication. A tombstone is announced, stored, replicated, re-offered by maintenance and answered in a lookup exactly like a record; nothing on those paths needs an endpoint or a capability. A lookup returns it as the highest-`seq` record (`MeshNameResolver::resolve` returns the signed tombstone, which the caller maps to revoked); the daemon reports it as `NameResolution::Invalid` with a reason naming the revocation, as it does for a locally held tombstone.
+- Renewal. `NameRecord::renewed` refuses a tombstone (`Revoked`), and owner renewal (5.3) skips a tombstone and any name this node holds a fresh tombstone for.
+- Lifetime and the limit of revocation. A tombstone has the same maximum lifetime as any record and is required to have exactly that: `ttl_secs == MAX_RECORD_TTL_SECS`. After it expires the name is simply unknown again unless it is re-published with a higher `seq`. Revocation by tombstone is therefore not permanent: permanence needs the succession log planned for a later stage (open issue 9.10).
+
+Replay argument. Let T be a tombstone and R a record it withdraws, signed by an owner who assigns `seq` in publication order, so `published_at(R) <= published_at(T)`; since `ttl(R) <= MAX_RECORD_TTL_SECS = ttl(T)`, `expires_at(R) <= expires_at(T)`, so R is already expired when T lapses and an attacker replaying R afterwards gets a record that `is_expired` and that no replica serves. The bound on `ttl_secs` is what makes `ttl(T) = MAX` enough, and the bound on `published_at` is what stops R from having been post-dated beyond what its signer's own clock allowed when T was signed; a key holder who signs a lower-`seq` record dated after T is acting with the key, which no tombstone defends against.
+
+### 3.8 Provisional decisions
+
+Taken for the lifetime and revocation change; each is open to revision, with the alternative that was not taken.
+
+1. Maximum lifetime 7 days (604800 s). Alternative: 24 hours (shorter exposure, but owners offline for a day lose their names) or 30 days (fewer renewals, a longer window for a withdrawn record).
+2. Clock skew 300 s. Alternative: 60 s (less room for honest clock error) or 900 s.
+3. Tombstone marker as the reserved `meta` key `spine.revoked` = `1`, with the v2 signing layout unchanged. Alternative: a v3 layout with an explicit record-kind byte, which is unambiguous in the layout but invalidates every signed record and the vectors.
+4. A tombstone's `ttl_secs` must equal the maximum. Alternative: at least the maximum or free; equality is the simplest rule to verify and to prove (3.7).
+5. A tombstone beats an ordinary record of equal `seq`. Alternative: leave equal-`seq` ties to `published_at`, which lets two replicas that see a tombstone and a record in different orders disagree.
+6. The revoked outcome is `NameError::Revoked` at the local resolver, and the mesh returns the tombstone record, mapped by the daemon to `NameResolution::Invalid`. Alternative: a `NameResolution::Revoked` wire variant, which changes spine-protocol and spec 00 and is left to a wire revision.
+7. The lifetime bound (clock-free) is part of `verify`; the clock-dependent bound is part of `validate(now)`. Alternative: only in `validate(now)`, which leaves every plain `verify` call site (resource store, mesh envelope builders) unprotected.
+8. `RecordStore::put`, `NameService::publish` and `NameService::accept_announcement` take `now`. Alternative: a clock stored in the store, which is a hidden time source in a pure structure.
+9. A `Lookup` without a clock (`now` = 0) skips the bound on `published_at`, as it already skips expiry. Alternative: refuse every record, which breaks callers that never supply a clock.
+
 ## 4. Resolution
 
-### 4.1 Local algorithm (`LocalResolver::resolve`, resolver.rs:296-333)
+### 4.1 Local algorithm (`LocalResolver::resolve`)
 
 1. `cap` authority: error `NotASingleName`.
 2. `host` authority: build an unsigned record from the name itself: sequence 0, ttl from `DEFAULT_TTL_SECS`, one endpoint `("tcp", host[:port])`, return provenance `Address` (record.rs:120-140). Never cached. `is_attested` is false.
 3. Cache lookup:
-   - Fresh hit: provenance `Cache`.
+   - Fresh hit: provenance `Cache`; a fresh tombstone gives error `Revoked`.
    - Negative hit: error `NotFound`.
-   - Stale hit: if the store holds a fresh record, return it with `Local`; otherwise return the stale record with `StaleCache`.
+   - Stale hit: if the store holds a fresh record, return it with `Local` (a fresh tombstone gives `Revoked`); otherwise return the stale record with `StaleCache`, except that a lapsed tombstone gives `NotFound`.
    - Miss: continue.
-4. Store: fresh record gives `Local`; otherwise error `NotFound`.
+4. Store: fresh record gives `Local`; a fresh tombstone gives error `Revoked`; otherwise error `NotFound`.
 
 `blob` names go through the same path and, since no record can exist for them, always end in `NotFound` locally (the cache never holds them either, since `cache_record` verifies). The cache's "immutable entries never expire" branch (cache.rs:119) is therefore unreachable for `blob` names in practice.
 
@@ -253,7 +287,7 @@ Driver (`MeshNameResolver::run_lookup`, naming_mesh.rs:738-785): first tries loc
 | `Resolved{record, provenance}` | A record came from cache, store, host synthesis, or a successful mesh walk (a mesh-found record is cached after signature verification, main.rs:480). |
 | `Unchanged{ttl_secs}` | Caller supplied `if_none_match` equal to the record's `content_hash` (main.rs:457-463). |
 | `NotFound{name}` | The local resolver returned `NotFound` and `resolve_over_mesh` returned `Ok(None)`; then a 30 s negative entry is written (main.rs:492-499). `Ok(None)` arises when there is no mesh configured at all (main.rs:517-519), or when the mesh lookup outcome was not `Found`, including a lookup that settled `NotFound` because no peer could be reached or all dispatches failed (naming_mesh.rs:855-857, 761). |
-| `Invalid{name, reason}` | Parse failure, serialisation failure, or any local resolver error other than `NotFound`, including `cap:` names (`NotASingleName`). |
+| `Invalid{name, reason}` | Parse failure, serialisation failure, or any local resolver error other than `NotFound`, including `cap:` names (`NotASingleName`) and a revoked name (`NameError::Revoked`, locally held or found as a tombstone on the mesh; the tombstone is cached so later resolutions answer the same without a walk). |
 | `Unavailable{name, reason}` | Only when the mesh is configured but the routing table has zero addressable peers (main.rs:520-522), or the mesh lookup returned an error, which in practice is the 10 s timeout (naming_mesh.rs:781-782, main.rs:526). |
 
 Consequence: "absent" is reported when every peer in a non-empty routing table was unreachable or when the walk ended without an answer, and it is then negatively cached for 30 s. "Unavailable" is reported only for an empty table or a timeout. COMPLETION_STATUS.md describes disconnected lookup as unavailable and notes that partial visibility cannot prove global absence; the code agrees with the second statement and only partly with the first.
@@ -286,7 +320,7 @@ The origin returns JSON with `stored: true`, `local_persistent`, `replicas` and 
 
 ### 5.3 Renewal and maintenance
 
-- Owner renewal (`spawn_owner_renewal`, namespace.rs:199-235): off unless `renew_owned_records` is set (config.rs:287). Every `renewal_secs` (default 60) it takes persisted records whose authority equals the node's own key, `ttl_secs > 0`, and remaining life no more than `min(lapse_window_secs, ttl_secs / 2)`, renews each with `renewed(...)` keeping the same ttl, and publishes locally and to the mesh, at most `maintain_batch` (64) per tick (namespace.rs:180-197, 216-226). It only renews records signed by the node key; records for other `did` names that were published to this node are never renewed here.
+- Owner renewal (`spawn_owner_renewal`, namespace.rs:199-235): off unless `renew_owned_records` is set (config.rs:287). Every `renewal_secs` (default 60) it takes persisted records whose authority equals the node's own key, that are not tombstones and whose name the node does not hold a fresh tombstone for, `ttl_secs > 0`, and remaining life no more than `min(lapse_window_secs, ttl_secs / 2)`, renews each with `renewed(...)` keeping the same ttl (capped at `MAX_RECORD_TTL_SECS`), and publishes locally and to the mesh, at most `maintain_batch` (64) per tick (namespace.rs: `owned_renewals`). A revoked name is not renewed back to life. It only renews records signed by the node key; records for other `did` names that were published to this node are never renewed here.
 - Replica maintenance (`maintain`, naming_mesh.rs:662-716), run every `maintain_secs` (config default 3600, namespace.rs:245-260): sweep expired records from the mesh store; take held, unexpired records for which this node is responsible; re-offer up to `max_records` (64) of them via `replicate`, one at a time, resuming from a key cursor on the next pass; report names within `lapse_window_secs` (900) of expiry as lapsing. Re-announcing does not extend life because expiry is signed into the record (naming_mesh.rs:659-661).
 - Sweep also drops expired entries from the `LocalResolver` store and cache (resolver.rs:274-278); who calls it on a schedule was not traced (Undetermined; searched namespace.rs and main.rs for `sweep`).
 
@@ -307,12 +341,13 @@ The script carries its own Ed25519 (RFC 8032 section 6 reference algorithm) and 
 | `resource_ids` | content type, bytes, id and plain hash; empty bytes; the ("a", "bcdef") / ("ab", "cdef") boundary pair |
 | `invalid_content_types` | types that `resource_id` MUST refuse |
 | `rel_aliases` | `Rel` JSON forms, including `{"other": "<built-in>"}` |
-| `records` | structured record, signing bytes, signature and serde JSON: minimal, every optional field, every relation, multi-byte UTF-8, empty strings, numeric extremes, case |
-| `invalid_records` | one field changed after signing (per field), signature damaged in several ways, a signature by another key, and a weak-key signature: all MUST fail `verify` |
+| `records` | structured record, signing bytes, signature, `is_tombstone` and serde JSON: minimal, every optional field, every relation, multi-byte UTF-8, empty strings, numeric extremes (with the maximum ttl), case, a record at the maximum lifetime, and a tombstone. All MUST verify |
+| `invalid_records` | each with a `reason`. `signature`: one field changed after signing (per field), signature damaged in several ways, a signature by another key, and a weak-key signature. `ttl`: correctly signed, `ttl_secs` one over the maximum and at the `u32` maximum. `tombstone`: correctly signed, carrying the marker but with a ttl other than the maximum, an endpoint, a capability, a content hash, extra metadata, another marker value, or on an ordinary record. All MUST fail `verify` (with `BadSignature`, `TtlTooLong`, `MalformedTombstone` respectively) and `sign` MUST refuse the last two groups |
+| `admission` | a record from the two sections above, the verifier's clock `now`, and whether it is admitted (3.5): published exactly the skew ahead (admit), one second past it (reject), in the past, at the `u64` maximum with the clock at the maximum (admit) and at 1.7e9 (reject), the maximum lifetime, a tombstone, and over-long or malformed ones |
 
 The Rust test pins the layout two ways: it compares `signing_bytes()` byte for byte with the vector, and, because Ed25519 is deterministic, re-signs the deserialised record with the vector's seed and compares the signature. It also compares `serde_json::to_value(&record)` with `records[].json`.
 
-Not covered by vectors: distance and bucket arithmetic (key.rs tests assert relations and the extreme indexes), `join`, equal-`(seq, published_at)` conflicts, and the resolution and replication behaviour of sections 4 and 5.
+Not covered by vectors: distance and bucket arithmetic (key.rs tests assert relations and the extreme indexes), `join`, equal-`(seq, published_at)` conflicts and the tombstone ordering of 3.6, and the resolution and replication behaviour of sections 4 and 5 (the Rust tests cover a tombstone's supersession, the revoked outcome locally and through a lookup from a second node, and refusal at every admission point).
 
 ## 7. What is not defined in this layer
 
@@ -328,12 +363,14 @@ Target design reference: docs/FIRST_PRINCIPLES.md layer 2 and layer 6. Each item
 - Verification checks the signature against the key in the name only (record.rs:269-282). A new key means a new name, and nothing links the two.
 - A lost or compromised key therefore ends the name or hands it to the attacker permanently. The node key is a file written once (`spine-node.key`, namespace.rs:289-328) and doubles as the node's DHT position, so a node identity change also relocates the node.
 
-### 8.2 Revocation: absent
+### 8.2 Revocation: names yes, keys no
 
-- No record type, flag, or message revokes a name, a key or a record. Searched spine-name and the naming modules for revoke, revocation, rotate, succession: no matches.
-- The only ways a record stops being served are expiry (record.rs:290; no cap on `ttl_secs`) and replacement by a higher `(seq, published_at)` signed by the same key (record.rs:304). An attacker holding the key can publish a higher seq with a long ttl and the legitimate holder cannot override it without the same key and a still higher seq.
-- Removal APIs exist locally (`RecordStore::remove`, store.rs:220) but are not signed or propagated.
-- Rollback exposure at lookup: a `Name` lookup ends at the first valid record returned (naming.rs:364) without seeking the highest seq, so a stale replica or a malicious peer holding an older, still-unexpired signed record can answer for the name. Combined with no revocation, an old record (for example an old endpoint list) stays authoritative until it expires.
+Resolved for names (3.5, 3.7): record lifetime is capped at 7 days, and an owner withdraws a name with a signed tombstone that supersedes lower-`seq` records and is answered as revoked. What this read originally found, and what remains:
+
+- A name is revoked by a tombstone; a key is not. There is still no key rotation, succession or key revocation record (8.1): an attacker holding the key can publish a higher `seq`, including a tombstone of its own, and the legitimate holder cannot override it without a still higher `seq` under the same key.
+- Revocation lasts until the tombstone expires (at most 7 days after publication). It is not permanent (open issue 9.10).
+- The only ways a record stops being served are expiry, replacement by a record that supersedes it, and a tombstone. Removal APIs exist locally (`RecordStore::remove`) but are not signed or propagated.
+- Rollback exposure at lookup is reduced, not removed: a `Name` lookup now settles on the highest-`seq` record seen once a quorum has answered (naming.rs: `name_settled`), so a tombstone held by one peer wins against an older record held by another, but a lookup whose peers all hold only the old record cannot learn of a tombstone it never hears, and the old record stays authoritative there for at most its remaining lifetime, bounded by 7 days.
 
 ### 8.3 Human-meaningful labels and attestations: absent
 
@@ -392,7 +429,12 @@ Each item was checked against the source when this section was written.
 3. The routing key has no domain separation: it is a bare SHA-256 of `spine://` + authority + path (uri.rs: `SpineUri::key`), in a keyspace shared with node ids that are raw Ed25519 keys (key.rs: `NameKey::from_bytes`). It excludes the query and fragment while the signed name (record.rs: `signing_bytes`) includes them, so records for names that differ only there collide in the store's by-key map (store.rs: `put`). The persisted row key is the full canonical name string (resolver.rs: `LocalResolver::publish`, `persistent`), unlike the in-memory key, so the two views of "one name" differ.
 4. `capability_key(term)` in spine-mesh hashes `"cap:" + term` (naming.rs: `capability_key`) while `SpineUri::capability(term).key()` hashes `"spine://cap:" + term + "/"` (uri.rs: `SpineUri::key`). Two different points in the keyspace for one capability.
 5. Lengths are written with `as u32` (record.rs: `signing_bytes`, `put_str`, `put_count`; lib.rs: `resource_id`), which truncates silently above 4 GiB (or above 2^32 elements). Not reachable for records that pass `validate_size`, but nothing forces that call.
-6. `validate_size` is not called inside `sign` or `verify` (record.rs). A peer can sign an enormous record and `verify` will accept it; ingress code must call `validate_size` first.
+6. `validate_size` is not called inside `sign` or `verify` (record.rs). A peer can sign an enormous record and `verify` will accept it; ingress code must call `validate_size` first (now `validate(now)`, which also applies the lifetime and clock bounds; the lifetime bound alone is inside `verify`).
 7. One Ed25519 key signs name records, mesh envelopes (spine-mesh mesh.rs: `ENVELOPE_SIG_DOMAIN`, `spine-mesh-envelope-v2\0`) and the session handshake (spine-session handshake.rs: `LABEL_INITIATOR`, `spine-mesh-hs-v1/initiator`), separated only by those prefixes. Record and envelope prefixes both end in a NUL after a version; the handshake label has no NUL. The domains are distinct, but a single key compromise breaks all three and the prefixes are the only separation.
 8. A `cap:` term is not validated beyond non-empty, no whitespace, no `/`; a `host:` is not validated as a host; an IPv6 literal without brackets mis-parses (8.6 l).
+9. Names that differ only in query or fragment share a routing key and a store slot, so a tombstone for one revokes the others in the store, while the persisted publisher rows (one per full canonical name) are separate; owner renewal consults the store (`LocalResolver::is_revoked`) so it does not renew the others past the tombstone, but the rows remain on disk.
+10. Revocation is not permanent. A tombstone lapses after at most 7 days (3.7) and the name is then unknown again, available to anyone who can sign for it. A permanent revocation needs a succession log (key rotation, 8.1), planned for a later stage. Until then an owner who wants a name to stay dead must renew the tombstone (publish a new one with a higher `seq`) at least every 7 days; the tombstone is the only record `renewed` refuses, so this means signing a fresh one with `spine name revoke`.
+11. A tombstone is an ordinary record to the store's capacity rule: under pressure it can be evicted before it expires, after which a replica no longer blocks an older unexpired record, for at most that record's remaining lifetime.
+12. `NameResolution` has no revoked variant: the daemon reports a revoked name as `Invalid` with a reason (3.8, decision 6).
+13. A key holder can sign a lower-`seq` record dated after a tombstone; the replay argument in 3.7 assumes `seq` follows publication order.
 

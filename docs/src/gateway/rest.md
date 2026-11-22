@@ -103,6 +103,11 @@ Beyond the session API above, the gateway also serves (see Swagger UI for schema
 | `GET /v1/names/crawl` | Crawl names from a seed |
 | `GET`/`POST /v1/resources` | Download or upload a signed resource |
 
+A resource upload is refused with `400` when the record's `ttl_secs` exceeds
+604800 (7 days) or its `published_at` is more than 300 seconds ahead of the
+gateway's clock; name publication is refused the same way by the origin. A revoked
+name resolves as an invalid-name answer whose reason says it was revoked.
+
 The gateway reaches a daemon over the native wire (spine-wire v1) through
 `spine-agent`; the REST side is plain HTTP unless you terminate TLS in front of it.
 

@@ -72,6 +72,10 @@ spine name --addr 127.0.0.1:8180 fetch NAME --output downloaded.txt --allow-priv
 spine name --addr 127.0.0.1:8080 renew record.json --key owner.key --output renewed.json --ttl 3600
 ```
 
+A record's `--ttl` may not exceed 604800 seconds (7 days): `create` and `renew` refuse more, and nodes refuse a record that claims a longer lifetime or is dated more than five minutes ahead of their clock.
+
+To withdraw a name, sign a tombstone and publish it: `spine name revoke record.json --key owner.key --output tombstone.json`, then `spine name --addr 127.0.0.1:8080 publish tombstone.json`. It supersedes every earlier record of the name and resolves as revoked rather than not found. It lasts 7 days; after that the name is unknown again unless you publish a higher sequence. Renewal never revives a revoked name.
+
 Renewal signs a higher sequence with the same owner key and saves the record before sending it, so failed delivery leaves a recoverable publication. Preserve the latest record. A lower sequence cannot replace a newer stored record. Reusing a name with different bytes requires a new signed record with a higher sequence and an updated content hash.
 
 Resource limits are 8 MiB per representation, 64 KiB per download chunk, and 256 MiB of serialized storage per origin. The signed record carries a resource id: SHA-256 over a length-prefixed, domain-separated encoding of the content type and the bytes (see [objects](spec/04-objects.md)), so `create` and `upload` must be given the same `--content-type` (lowercase printable ASCII, at most 256 bytes). Reads verify that id over both the bytes and the content type, chunk bounds, progress, and final size. The SDK's `fetch_resource` resolves a name and tries TCP endpoints in priority order, with connection and transfer deadlines. Endpoints that resolve to loopback, link-local, private, unspecified, multicast or broadcast addresses are refused unless the caller opts in (`FetchPolicy::allow_private()`, or `--allow-private` in the CLI; the commands above run on 127.0.0.1 and need it). Retries apply only to these immutable reads. `FetchName` continues to return endpoints without transferring bytes.

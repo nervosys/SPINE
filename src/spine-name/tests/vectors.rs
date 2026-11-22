@@ -299,6 +299,12 @@ fn records_layout_signature_and_json() {
             "{w}: stored signature"
         );
         assert_eq!(record.verify(), Ok(()), "{w}: verify");
+        assert_eq!(record.validate_lifetime(), Ok(()), "{w}: lifetime");
+        assert_eq!(
+            record.is_tombstone(),
+            v["is_tombstone"].as_bool().unwrap(),
+            "{w}: is_tombstone"
+        );
 
         // Ed25519 is deterministic, so this also pins the signed bytes.
         let key = signing_key(&doc, text(v, "signer"));
@@ -330,10 +336,66 @@ fn invalid_records_fail_verification() {
         assert_eq!(text(v, "expected"), "reject", "{w}: expected");
         let record: NameRecord = serde_json::from_value(v["json"].clone())
             .unwrap_or_else(|e| panic!("{w}: json does not deserialize: {e}"));
-        assert_eq!(
-            record.verify(),
-            Err(NameError::BadSignature),
-            "{w}: must be rejected"
-        );
+        let got = record.verify();
+        match text(v, "reason") {
+            "signature" => assert_eq!(got, Err(NameError::BadSignature), "{w}: must be rejected"),
+            "ttl" => assert!(
+                matches!(got, Err(NameError::TtlTooLong(_))),
+                "{w}: must be refused for its ttl, got {got:?}"
+            ),
+            "tombstone" => assert!(
+                matches!(got, Err(NameError::MalformedTombstone(_))),
+                "{w}: must be refused as a malformed tombstone, got {got:?}"
+            ),
+            other => panic!("{w}: unknown reason {other}"),
+        }
+        // A correctly signed but unadmissible record cannot be produced by `sign`.
+        if text(v, "reason") != "signature" {
+            let key = signing_key(&doc, "k0");
+            let mut resigned = record.clone();
+            resigned.signature.clear();
+            assert!(resigned.sign(&key).is_err(), "{w}: sign must refuse it");
+        }
+    }
+}
+
+#[test]
+fn admission_applies_the_lifetime_rules_and_the_clock_bound() {
+    let doc = load();
+    for v in section(&doc, "admission") {
+        let w = text(v, "label");
+        let name = text(v, "record");
+        let target = section(&doc, "records")
+            .iter()
+            .chain(section(&doc, "invalid_records").iter())
+            .find(|r| text(r, "label") == name)
+            .unwrap_or_else(|| panic!("{w}: no record {name}"));
+        let record: NameRecord = serde_json::from_value(target["json"].clone())
+            .unwrap_or_else(|e| panic!("{w}: json does not deserialize: {e}"));
+        let now = v["now"].as_u64().unwrap();
+        // verify() covers the signature and the clock-free lifetime rules;
+        // validate_not_postdated() is the clock bound.
+        let got = record
+            .verify()
+            .and_then(|()| record.validate_not_postdated(now));
+        match text(v, "expected") {
+            "admit" => assert_eq!(got, Ok(()), "{w}: must be admitted"),
+            "reject" => match text(v, "reason") {
+                "postdated" => assert!(
+                    matches!(got, Err(NameError::PostDated { .. })),
+                    "{w}: got {got:?}"
+                ),
+                "ttl" => assert!(
+                    matches!(got, Err(NameError::TtlTooLong(_))),
+                    "{w}: got {got:?}"
+                ),
+                "tombstone" => assert!(
+                    matches!(got, Err(NameError::MalformedTombstone(_))),
+                    "{w}: got {got:?}"
+                ),
+                other => panic!("{w}: unknown reason {other}"),
+            },
+            other => panic!("{w}: unknown expectation {other}"),
+        }
     }
 }

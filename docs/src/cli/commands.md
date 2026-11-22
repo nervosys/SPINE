@@ -112,9 +112,22 @@ spine cert info certs/ca.crt   # Show a PEM certificate
 
 ## `spine name --addr <addr> <action>`
 
-Actions: `status`, `create`, `resolve <name>`, `providers <capability>`,
-`publish <record>`, `renew <record>`, `upload <record> <resource>` and
-`fetch <name> --output <file>`. Run `spine name --help` for each action's options.
+Actions: `status`, `create`, `revoke <record>`, `resolve <name>`,
+`providers <capability>`, `publish <record>`, `renew <record>`,
+`upload <record> <resource>` and `fetch <name> --output <file>`. Run
+`spine name --help` for each action's options.
+
+A record's `--ttl` is at most 604800 seconds (7 days); `create` and `renew`
+refuse more, and every node refuses a record with a longer lifetime or one
+dated more than five minutes ahead of its clock.
+
+`revoke <record> --key <key> --output <file>` signs a tombstone for the name in
+`<record>`: a record one sequence number higher, with no endpoints or content and
+a 7-day lifetime, which supersedes every lower-sequence record for the name. Like
+`create`, it only writes the file; send it with `publish <file>`. A name with a
+tombstone resolves as revoked, not as missing. The tombstone lapses after at most
+7 days, after which the name is unknown again unless re-published with a higher
+sequence, so keep re-signing it if the name must stay withdrawn.
 
 ## `spine task --addr <addr> --peer <id> --peer-key <hex> <action>`
 
