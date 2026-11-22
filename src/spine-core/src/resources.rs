@@ -860,7 +860,7 @@ mod tests {
     }
 
     fn id_of(n: u8) -> [u8; 32] {
-        resource_id("text/plain", &vec![n; 100]).unwrap()
+        resource_id("text/plain", &[n; 100]).unwrap()
     }
 
     fn has(store: &ResourceStore, n: u8) -> bool {
