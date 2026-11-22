@@ -164,27 +164,47 @@ protocol label is compared for exact equality, so version skew is a refusal to
 talk rather than a negotiation. **Review question:** does the absence of a
 version field make a future migration harder than the downgrade risk it avoids?
 
-**Unpinned dialing exists, and is the default for DHT traffic.**
-`expected_peer = None` accepts whoever answers. It is used for bootstrap-seed
-dials by address (`mesh_tcp.rs:958`, `provisional`). In addition, pooled dials
-pin only if the pin map has an entry or the caller supplies one
-(`mesh_tcp.rs:888`, `expected_identity` at `:913`). The only writer of the pin map, `set_identity`
-(`mesh_tcp.rs:786`; likewise `mesh_ws.rs:102`, `mesh_quic.rs:160`), has no caller
-outside test modules anywhere in the repository, so every dial made by
-spine-core's namespace transport (`spine-core/src/namespace.rs`) for DHT traffic
-is unpinned. The one pinned path is application RPC, which pins to the signed
-`recipient_key` (`mesh_tcp.rs:926`). Peer identity for DHT traffic is therefore
-established by the handshake signature plus the signed records carried over it,
-not by a prior expectation. **Review question:** is that adequately bounded?
+**Unpinned dialing happens once per bare seed address, per process.**
+Updated 2026-11-21 (the statement before this date, that every DHT dial made
+by spine-core was unpinned because the pin map had no production writer, was
+true of the code at 3d58059 and is no longer). `expected_peer = None` accepts
+whoever answers, and is now passed in one case in spine-core: the first
+bootstrap dial (`provisional`) to a seed address that has no configured key
+(`namespace.seed_keys`) and has not been dialed before in this process. (A
+library user who calls `set_address` for a peer without naming its key gets the
+same single unpinned first dial; spine-core never does, because it learns every
+address together with its key.) The
+key that answers is recorded in a `PinBook` against that address and required
+on every later dial to it; a different key fails the dial with
+`NameMeshError::PinMismatch`, which is logged and counted. Every other dial
+passes `expected_peer`: a pooled dial to an agent id expects the key named
+by the hello, ack or referral that introduced the peer (a node id is the
+peer's Ed25519 key; `NameTransport::learn_peer`, first claim stands), or
+`set_identity`, or, for a peer nothing named, the first key it proved;
+application RPC pins to the signed `recipient_key`. Pins are in memory and are
+forgotten on restart, so a seed with no configured key is trust on first use
+again after one. A pin learned from a referral is the referrer's unsigned
+claim. This is a statement about the dialer: the handshake itself is unchanged.
+The review question stands in a narrower form: **is first contact with an
+unconfigured seed, once per process, adequately bounded** by the signature over
+the key the ack carries?
 
 **The AAD is only the frame counter**, and the record layer carries no explicit
 length, type or direction field beyond what the framing above it provides
 (direction is separated by distinct keys).
 
-**QUIC transport certificates authenticate nothing.** `QuicEndpointBuilder` uses
-self-signed certificates with a permissive verifier; endpoint authentication
-comes from this handshake, which must be enabled explicitly via
-`QuicNameTransport::authenticated`.
+**QUIC: the handshake is not bound to the TLS channel.** Updated 2026-11-21.
+The permissive client verifier is gone: `QuicNameTransport` verifies the server
+certificate against the set given to `trust_certificate` (empty by default).
+`QuicNameTransport::authenticated` runs this handshake once, on the first
+stream; the key it proves is kept for the whole connection and is what
+`handle_envelope_from_peer` receives for every later stream, and a connection
+that fails it is closed. The session keys are discarded (TLS encrypts the
+streams). The handshake has no input for channel context, so nothing ties the
+key it proves to the TLS session carrying it; a party that can terminate TLS
+with a certificate the client trusts can relay a genuine peer's handshake. This
+package asks for that input: a TLS exporter value passed as a handshake
+prologue would close the gap (`docs/spec/01-session.md` O1).
 
 ## 6. A defect already found, and what it says about where to look
 
@@ -222,7 +242,7 @@ by a test that does not actually test it.
 | Key schedule | `Session::derive` |
 | Record layer, nonces, counters | `Session::seal` / `Session::open` |
 | Identity pinning | `Initiator::finish`, `expected_peer` |
-| Where pinning is skipped | `mesh_tcp.rs` / `mesh_ws.rs` / `mesh_quic.rs`, `provisional` |
+| Where pinning is skipped (first contact with an unconfigured seed only, since 2026-11-21) | `mesh_tcp.rs` / `mesh_ws.rs` / `mesh_quic.rs`, `provisional`; `PinBook` |
 | Test suite | `handshake.rs`, `mod tests` (25 tests) |
 
 ## 8. Status
