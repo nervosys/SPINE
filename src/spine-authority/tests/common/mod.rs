@@ -251,3 +251,41 @@ impl Rng {
         self.below(one_in) == 0
     }
 }
+
+/// Position just after the `body` key of a signed object's encoding: the
+/// header of the body map.
+fn body_header_at(bytes: &[u8]) -> usize {
+    let key = [0x64u8, b'b', b'o', b'd', b'y'];
+    let found: Vec<usize> = (0..=bytes.len().saturating_sub(key.len()))
+        .filter(|at| bytes[*at..*at + key.len()] == key)
+        .collect();
+    assert_eq!(found.len(), 1, "the body key must occur once");
+    found[0] + key.len()
+}
+
+/// The encoding with one more entry in the body map, `"zz": 0`, placed where
+/// the canonical key order wants it. Decoding must refuse it (unknown field).
+/// Works for objects whose body is `{"v": 1, ...}` with fewer than 23 entries.
+pub fn with_extra_field(bytes: &[u8]) -> Vec<u8> {
+    let at = body_header_at(bytes);
+    let header = bytes[at];
+    assert!((0xa1..=0xb6).contains(&header));
+    assert_eq!(bytes[at + 1..at + 4], [0x61, b'v', 0x01]);
+    let mut out = bytes[..at].to_vec();
+    out.push(header + 1);
+    out.extend_from_slice(&bytes[at + 1..at + 4]);
+    out.extend_from_slice(&[0x62, b'z', b'z', 0x00]);
+    out.extend_from_slice(&bytes[at + 4..]);
+    out
+}
+
+/// The encoding with the version written in the two-byte integer form
+/// instead of the shortest form. Decoding must refuse it (non-canonical).
+pub fn with_long_form_version(bytes: &[u8]) -> Vec<u8> {
+    let at = body_header_at(bytes);
+    assert_eq!(bytes[at + 1..at + 4], [0x61, b'v', 0x01]);
+    let mut out = bytes[..at + 3].to_vec();
+    out.extend_from_slice(&[0x18, 0x01]);
+    out.extend_from_slice(&bytes[at + 4..]);
+    out
+}

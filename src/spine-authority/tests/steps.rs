@@ -105,7 +105,7 @@ fn a_decision_charged_to_the_ledger_makes_the_next_use_a_replay() {
     let rev = w.revocations();
     let mut ledger = MemoryLedger::new();
     let decision = run_full(&grants, &inv, &c, &rev, &ledger).unwrap();
-    ledger.charge(&decision);
+    ledger.charge(&decision).unwrap();
     assert_eq!(
         run_full(&grants, &inv, &c, &rev, &ledger),
         Err(Denial::NonceReplayed)
@@ -661,15 +661,20 @@ fn step_9_a_nonce_that_was_used() {
     let roots = w.roots();
     let c = ctx(&w, &roots);
     let mut ledger = MemoryLedger::new();
-    ledger.charge(&Decision {
-        chain_ids: Vec::new(),
-        invoker: public(&w.keys[3]),
-        nonce: [7u8; 16],
-        now: NOW,
-        effect: Effect::Read,
-        cost: 0,
-        bytes: 0,
-    });
+    ledger
+        .charge(&Decision {
+            chain_ids: Vec::new(),
+            chain_limits: Vec::new(),
+            chain_expiries: Vec::new(),
+            nonce_horizon: NOW + 60,
+            invoker: public(&w.keys[3]),
+            nonce: [7u8; 16],
+            now: NOW,
+            effect: Effect::Read,
+            cost: 0,
+            bytes: 0,
+        })
+        .unwrap();
     assert_eq!(
         run_full(&grants, &inv, &c, &w.revocations(), &ledger),
         Err(Denial::NonceReplayed)

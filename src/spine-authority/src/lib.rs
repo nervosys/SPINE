@@ -17,6 +17,9 @@
 //! | Issue and delegate | [`Grant::issue_root`], [`Grant::delegate`] |
 //! | Narrowing rule | [`is_attenuation_of`], [`Broadening`] |
 //! | The eleven steps | [`verify`], [`Denial`] |
+//! | Signed revocation, and the feed that carries it | [`Revocation`], [`FeedHead`], [`RevocationFeed`] |
+//! | Signed record of what was done | [`Receipt`] |
+//! | Atomic in-memory usage ledger | [`MemoryLedger`] |
 //!
 //! Encodings, bounds and the scope rule are documented on [`grant`],
 //! [`invocation`] and [`scope`]. Choices the draft design left open are listed
@@ -29,6 +32,8 @@ pub mod attenuation;
 mod bytes;
 pub mod grant;
 pub mod invocation;
+pub mod receipt;
+pub mod revocation;
 pub mod scope;
 pub mod state;
 pub mod verification;
@@ -41,13 +46,22 @@ pub use grant::{
     MAX_CHAIN_BYTES, MAX_CHAIN_DEPTH, MAX_GRANT_BYTES, MAX_RESOURCES, MAX_ROLE_LEN,
 };
 pub use invocation::{
-    Invocation, InvocationBody, INVOCATION_DOMAIN, INVOCATION_VERSION, MAX_INVOCATION_BYTES,
-    MAX_INVOCATION_RESOURCES,
+    Invocation, InvocationBody, InvocationId, INVOCATION_DOMAIN, INVOCATION_ID_DOMAIN,
+    INVOCATION_VERSION, MAX_INVOCATION_BYTES, MAX_INVOCATION_RESOURCES,
+};
+pub use receipt::{
+    Receipt, ReceiptBody, ReceiptError, MAX_RECEIPT_BYTES, RECEIPT_DOMAIN, RECEIPT_VERSION,
+};
+pub use revocation::{
+    feed_digest, FeedCheck, FeedError, FeedHead, FeedHeadBody, Revocation, RevocationBody,
+    RevocationFeed, RevocationId, FEED_DIGEST_DOMAIN, FEED_HEAD_DOMAIN, FEED_HEAD_VERSION,
+    MAX_FEED_HEAD_BYTES, MAX_FEED_REVOCATIONS, MAX_REVOCATION_BYTES, REVOCATION_DOMAIN,
+    REVOCATION_ID_DOMAIN, REVOCATION_VERSION,
 };
 pub use scope::{ResourceName, ResourcePattern, ScopeError, MAX_PATH_SEGMENTS, MAX_SEGMENT_LEN};
 pub use state::{
-    MemoryLedger, NoLedger, NoRevocationData, RevocationSet, RevocationView, Spent, UsageLedger,
-    RATE_WINDOW_SECS,
+    ChargeError, LedgerConfig, MemoryLedger, NoLedger, NoRevocationData, RevocationSet,
+    RevocationView, Spent, UsageLedger, RATE_WINDOW_SECS,
 };
 pub use verification::{
     verify, verify_encoded, Decision, Denial, RevocationBounds, VerifyContext, MAX_CLOCK_SKEW_SECS,

@@ -23,7 +23,7 @@
 
 use crate::attenuation::is_attenuation_of;
 use crate::grant::{
-    Chain, DecodeError, Effect, Grant, GrantId, Malformation, PublicKey, MAX_CHAIN_BYTES,
+    Chain, DecodeError, Effect, Grant, GrantId, Limits, Malformation, PublicKey, MAX_CHAIN_BYTES,
     MAX_CHAIN_DEPTH, MAX_GRANT_BYTES,
 };
 use crate::invocation::{Invocation, MAX_INVOCATION_BYTES, MAX_INVOCATION_RESOURCES};
@@ -107,6 +107,15 @@ impl<'a> VerifyContext<'a> {
 pub struct Decision {
     /// The ids of the chain's grants, root first. Charge every one.
     pub chain_ids: Vec<GrantId>,
+    /// The limits of each grant of the chain, in the order of `chain_ids`, so
+    /// that a ledger can check them all before charging any.
+    pub chain_limits: Vec<Limits>,
+    /// The `exp` of each grant of the chain, in the order of `chain_ids`.
+    pub chain_expiries: Vec<u64>,
+    /// The last time at which an invocation accepted now could still pass the
+    /// freshness check of step 9: `now + skew + max_invocation_age_secs`. A
+    /// ledger must remember the nonce at least until then.
+    pub nonce_horizon: u64,
     /// The acting key. Record its nonce.
     pub invoker: PublicKey,
     /// The invocation's nonce.
@@ -266,7 +275,7 @@ impl Denial {
 }
 
 /// `true` if `spent + add` is over `limit`. An overflow counts as over.
-fn over(spent: u64, add: u64, limit: Option<u64>) -> bool {
+pub(crate) fn over(spent: u64, add: u64, limit: Option<u64>) -> bool {
     match limit {
         None => false,
         Some(ceiling) => match spent.checked_add(add) {
@@ -360,7 +369,8 @@ fn check_invocation(
 ///
 /// Returns the [`Decision`] if every step passes, otherwise the first
 /// [`Denial`]. `revocations` and `ledger` are read, never written; see
-/// [`crate::MemoryLedger::charge`] for the caller's part.
+/// [`crate::MemoryLedger::charge`] for the caller's part. Step 8 asks
+/// [`RevocationView::chain_revoked`].
 pub fn verify(
     chain: &Chain,
     invocation: &Invocation,
@@ -439,10 +449,8 @@ pub fn verify(
     }
 
     // Step 8: nothing revoked, and the data is fresh enough for the effect class.
-    for id in &ids {
-        if revocations.is_revoked(id) {
-            return Err(Denial::Revoked);
-        }
+    if revocations.chain_revoked(chain, ids.as_slice()) {
+        return Err(Denial::Revoked);
     }
     let bound = ctx.revocation_bounds.for_effect(invocation.body.effect);
     match revocations.data_age_secs(ctx.now) {
@@ -491,8 +499,16 @@ pub fn verify(
         }
     }
 
+    let chain_limits: Vec<Limits> = chain.grants.iter().map(|g| g.body.limits).collect();
+    let chain_expiries: Vec<u64> = chain.grants.iter().map(|g| g.body.exp).collect();
     Ok(Decision {
         chain_ids: ids,
+        chain_limits,
+        chain_expiries,
+        nonce_horizon: ctx
+            .now
+            .saturating_add(skew)
+            .saturating_add(ctx.max_invocation_age_secs),
         invoker: invocation.body.invoker,
         nonce: invocation.body.nonce,
         now: ctx.now,

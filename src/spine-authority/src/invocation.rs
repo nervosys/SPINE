@@ -24,6 +24,7 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use spine_cbor::CborError;
 
 use crate::grant::{Action, DecodeError, Effect, GrantId, PublicKey};
@@ -34,6 +35,12 @@ pub const INVOCATION_VERSION: u64 = 1;
 
 /// Prefix of the signed bytes of an invocation.
 pub const INVOCATION_DOMAIN: &[u8] = b"spine-authority-invocation-v1\0";
+
+/// Prefix of the hash that is an invocation's id.
+pub const INVOCATION_ID_DOMAIN: &[u8] = b"spine-authority-invocation-id-v1\0";
+
+/// The id of an invocation: see [`Invocation::id`].
+pub type InvocationId = [u8; 32];
 
 /// Most resources one invocation may touch.
 pub const MAX_INVOCATION_RESOURCES: usize = 16;
@@ -116,6 +123,18 @@ impl Invocation {
     /// The canonical encoding.
     pub fn encode(&self) -> Result<Vec<u8>, CborError> {
         spine_cbor::to_vec(self)
+    }
+
+    /// The id of the invocation: SHA-256 over [`INVOCATION_ID_DOMAIN`] and the
+    /// encoding of the whole signed invocation (the same convention as
+    /// [`crate::Grant::id`]). Receipts cite it.
+    pub fn id(&self) -> Result<InvocationId, CborError> {
+        let encoded = self.encode()?;
+        let mut hasher = Sha256::new();
+        hasher.update(INVOCATION_ID_DOMAIN);
+        hasher.update(encoded.as_slice());
+        let digest: [u8; 32] = hasher.finalize().into();
+        Ok(digest)
     }
 
     /// Decodes an invocation: exactly the canonical encoding, within
