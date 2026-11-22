@@ -93,6 +93,16 @@ pub async fn join_with_application(
     resolver.set_endpoints(advertise).await;
 
     let seeds = bootstrap_addresses(cfg).await;
+    // A seed with a configured key must prove it on every dial, from the very
+    // first. The others are trusted on first contact, recorded, and then
+    // pinned for the life of the process by the transport. A key that cannot
+    // be enforced is a startup error, never silently ignored.
+    for (address, key) in cfg.seed_pins()? {
+        resolver
+            .pin_seed(&address, key)
+            .await
+            .map_err(|e| anyhow::anyhow!("namespace seed key: {e}"))?;
+    }
     let bootstrap = resolver.bootstrap(&seeds).await;
 
     if bootstrap.is_connected() {

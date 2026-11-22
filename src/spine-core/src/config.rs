@@ -41,6 +41,12 @@
 //! enabled = true
 //! seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
 //! advertise = ["203.0.113.4:9440"]
+//!
+//! # Optional: the Ed25519 public key (64 hex characters) each seed must prove.
+//! # A seed without an entry is trusted on first contact and then pinned for the
+//! # life of the process.
+//! [namespace.seed_keys]
+//! "10.0.0.7:9440" = "4f1c0a9e5d3b7a8c2e6f1d0b9a8c7e5d4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -76,6 +82,18 @@ pub struct NamespaceConfig {
     pub seeds: Vec<String>,
     /// Optional DNS host:port bootstrap sources, resolved with bounded fan-out.
     pub dns_seeds: Vec<String>,
+    /// Expected mesh keys for seeds, as a table from the seed address to the
+    /// seed's Ed25519 public key (64 hex characters; the same bytes as its
+    /// keyspace id). The address is spelled as in `seeds` (a bare `host:port`
+    /// or a `spine://host:h:p/` name) and must appear there.
+    ///
+    /// A seed with a key here must prove exactly that key on every dial, so a
+    /// wrong or replaced node at the address is refused at first contact. A seed
+    /// without one is trusted on first contact: its key is recorded for the life
+    /// of the process and then required on every later dial to that address.
+    /// Addresses found through `dns_seeds` have no key and are always in the
+    /// second case.
+    pub seed_keys: std::collections::BTreeMap<String, String>,
     /// Enable durable read-only task and knowledge RPC for explicitly allowed keys.
     pub tasks_enabled: bool,
     pub task_peers: Vec<String>,
@@ -297,6 +315,7 @@ impl Default for NamespaceConfig {
         Self {
             seeds: Vec::new(),
             dns_seeds: Vec::new(),
+            seed_keys: std::collections::BTreeMap::new(),
             advertise: Vec::new(),
             enabled: false,
             port: 9440,
@@ -345,6 +364,40 @@ impl NamespaceConfig {
             .map(|s| host_address(s).unwrap_or_else(|| s.clone()))
             .collect()
     }
+
+    /// Seeds configured with an expected key, as `(dialable address, key)`.
+    ///
+    /// Fails if a key is not 64 hex characters or its address is not one of
+    /// the configured `seeds`: a pin that can never apply would be a silent
+    /// misconfiguration. Error text does not echo the configured values.
+    pub fn seed_pins(&self) -> anyhow::Result<Vec<(String, [u8; 32])>> {
+        let seeds = self.seed_addresses();
+        let mut pins = Vec::new();
+        for (address, key) in &self.seed_keys {
+            let address = host_address(address).unwrap_or_else(|| address.clone());
+            anyhow::ensure!(
+                seeds.contains(&address),
+                "namespace.seed_keys has an entry whose address is not in namespace.seeds"
+            );
+            let key = parse_key_hex(key).ok_or_else(|| {
+                anyhow::anyhow!("namespace.seed_keys values must be 64 hex characters")
+            })?;
+            pins.push((address, key));
+        }
+        Ok(pins)
+    }
+}
+
+/// Decode a 32-byte key from 64 hex characters.
+fn parse_key_hex(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// Split a comma- or whitespace-separated env var into non-empty entries.
@@ -441,6 +494,7 @@ impl SpineConfig {
                 || (self.namespace.enabled && !self.namespace.task_peers.is_empty()),
             "task worker requires an enabled namespace and explicit peer keys"
         );
+        self.namespace.seed_pins()?;
         Ok(())
     }
 
@@ -633,6 +687,35 @@ seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
             config.namespace.seed_addresses(),
             vec!["seed.example.org:9440", "10.0.0.7:9440"]
         );
+    }
+
+    /// A seed key is a 64-hex Ed25519 key for an address that is in `seeds`;
+    /// anything else is a configuration error, not a pin that never applies.
+    #[test]
+    fn seed_keys_must_be_hex_keys_for_listed_seeds() {
+        let key = "ab".repeat(32);
+        let good = format!(
+            "[namespace]\nenabled = true\nseeds = [\"spine://host:seed.example.org:9440/\", \
+             \"10.0.0.7:9440\"]\n[namespace.seed_keys]\n\"10.0.0.7:9440\" = \"{key}\"\n\
+             \"spine://host:seed.example.org:9440/\" = \"{key}\"\n"
+        );
+        let config: SpineConfig = toml::from_str(&good).unwrap();
+        assert!(config.validate().is_ok());
+        let pins = config.namespace.seed_pins().unwrap();
+        assert_eq!(pins.len(), 2);
+        assert!(pins.iter().all(|(_, k)| k == &[0xab; 32]));
+        assert!(pins.iter().any(|(a, _)| a == "seed.example.org:9440"));
+
+        let bad_hex = good.replace(&key, "not-hex");
+        let config: SpineConfig = toml::from_str(&bad_hex).unwrap();
+        assert!(config.validate().is_err());
+
+        let unlisted = format!(
+            "[namespace]\nenabled = true\nseeds = [\"10.0.0.7:9440\"]\n\
+             [namespace.seed_keys]\n\"10.9.9.9:9440\" = \"{key}\"\n"
+        );
+        let config: SpineConfig = toml::from_str(&unlisted).unwrap();
+        assert!(config.validate().is_err());
     }
 
     /// An entry that is neither must survive to the dial, so the error names

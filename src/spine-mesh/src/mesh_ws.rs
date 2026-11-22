@@ -26,8 +26,8 @@ use spine_transport::websocket::{
 
 use crate::mesh::MeshEnvelope;
 use crate::mesh_tcp::{
-    attach, attach_secure, client_handshake, server_handshake, Inbound, ReplyPath, Security,
-    INBOUND_QUEUE,
+    attach, attach_secure, client_handshake, pin_if_absent, server_handshake, Inbound, PinBook,
+    ReplyPath, Security, INBOUND_QUEUE,
 };
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
 use crate::AgentId;
@@ -40,7 +40,13 @@ pub struct WsNameTransport {
     /// `ws://host:port/path` per peer.
     urls: DashMap<AgentId, String>,
     /// Expected mesh identity per peer, used to pin the handshake.
+    ///
+    /// Written by `set_identity`, by every hello, ack and referral that names
+    /// the peer's key (`NameTransport::learn_peer`), and by the first handshake
+    /// with a peer nothing named. Not persisted.
     identities: DashMap<AgentId, [u8; 32]>,
+    /// Pins for bare seed URLs, see [`PinBook`].
+    pins: PinBook,
     /// Live outbound connections.
     pool: DashMap<AgentId, ReplyPath>,
     /// Connections opened to seed URLs during bootstrap, keyed by URL because
@@ -74,6 +80,7 @@ impl WsNameTransport {
         let transport = Arc::new(Self {
             urls: DashMap::new(),
             identities: DashMap::new(),
+            pins: PinBook::default(),
             pool: DashMap::new(),
             bootstrap: DashMap::new(),
             inbound: tx,
@@ -101,6 +108,11 @@ impl WsNameTransport {
     /// Record the mesh identity expected at a peer, so the handshake can pin it.
     pub fn set_identity(&self, agent: AgentId, identity: [u8; 32]) {
         self.identities.insert(agent, identity);
+    }
+
+    /// Dials refused because the peer proved a key other than the pinned one.
+    pub fn pin_mismatches(&self) -> u64 {
+        self.pins.mismatches()
     }
 
     pub fn known_urls(&self) -> usize {
@@ -138,8 +150,11 @@ impl WsNameTransport {
             Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
             Security::Encrypted(cfg) => {
                 let expected = self.identities.get(agent).map(|e| *e.value());
-                let session =
-                    client_handshake(&mut stream, &cfg.signing, expected.as_ref()).await?;
+                let outcome = client_handshake(&mut stream, &cfg.signing, expected.as_ref()).await;
+                let session = self.pins.observe(&url, outcome)?;
+                if expected.is_none() {
+                    pin_if_absent(&self.identities, *agent, *session.peer_identity());
+                }
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
         };
@@ -179,9 +194,15 @@ impl WsNameTransport {
         let path = match &self.security {
             Security::Plaintext => ReplyPath::Plain(attach(stream, self.inbound.clone())),
             Security::Encrypted(cfg) => {
-                // Nothing to pin to: establishing the identity is the point
-                // of dialing a bootstrap address.
-                let session = client_handshake(&mut stream, &cfg.signing, None).await?;
+                // A seed configured with a key, or one already met in this
+                // process, must prove it. A first contact is accepted and its
+                // key recorded: trust on first use, once.
+                let expected = self.pins.expected(endpoint);
+                let outcome = client_handshake(&mut stream, &cfg.signing, expected.as_ref()).await;
+                let session = self.pins.observe(endpoint, outcome)?;
+                if expected.is_none() {
+                    self.pins.record(endpoint, *session.peer_identity());
+                }
                 ReplyPath::Secure(attach_secure(stream, session, self.inbound.clone()))
             }
         };
@@ -230,6 +251,24 @@ impl NameTransport for WsNameTransport {
         {
             self.set_url(agent, url.clone());
         }
+    }
+
+    /// Learn the URL, and on an encrypted transport pin the key a hello, ack
+    /// or referral named for the peer, unless a key is already pinned.
+    async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        if self.is_encrypted() {
+            pin_if_absent(&self.identities, agent, key);
+        }
+        self.learn(agent, endpoints).await;
+    }
+
+    async fn pin_endpoint(&self, endpoint: &str, key: [u8; 32]) -> Result<(), NameMeshError> {
+        if !self.is_encrypted() {
+            return Err(NameMeshError::Transport(
+                "a plaintext transport cannot enforce a seed identity".into(),
+            ));
+        }
+        self.pins.set(endpoint, key)
     }
 
     async fn release(&self, endpoint: &str) {
@@ -423,6 +462,41 @@ mod tests {
         let rec = record(1, &[]);
         holder.resolver.publish_local(rec.clone()).await.unwrap();
         assert_eq!(seeker.resolver.resolve(&rec.name).await.unwrap(), rec);
+    }
+
+    #[tokio::test]
+    async fn a_websocket_seed_with_a_configured_key_refuses_a_wrong_key() {
+        let seed = spawn_ws(20, true).await;
+        seed.resolver.set_endpoints(vec![seed.url.clone()]).await;
+
+        let wrong = spawn_ws(21, true).await;
+        wrong
+            .resolver
+            .pin_seed(&seed.url, [99u8; 32])
+            .await
+            .unwrap();
+        let report = wrong
+            .resolver
+            .bootstrap(std::slice::from_ref(&seed.url))
+            .await;
+        assert!(!report.is_connected(), "{report:?}");
+        assert!(
+            report.failed[0].1.contains("not the expected"),
+            "{report:?}"
+        );
+        assert_eq!(wrong.transport.pin_mismatches(), 1);
+
+        let right = spawn_ws(22, true).await;
+        right
+            .resolver
+            .pin_seed(&seed.url, seed.signing.verifying_key().to_bytes())
+            .await
+            .unwrap();
+        let report = right
+            .resolver
+            .bootstrap(std::slice::from_ref(&seed.url))
+            .await;
+        assert!(report.is_connected(), "{report:?}");
     }
 
     #[tokio::test]

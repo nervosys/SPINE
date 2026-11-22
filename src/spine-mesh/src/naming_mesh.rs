@@ -114,6 +114,33 @@ pub trait NameTransport: Send + Sync {
         let _ = (agent, endpoints);
     }
 
+    /// Learn where a peer can be reached *and* which mesh key is expected there.
+    ///
+    /// A node's keyspace id is its Ed25519 public key, so every hello, ack and
+    /// referral that names a peer also names the key a dial to it must prove.
+    /// A transport that authenticates its connections records `key` as the
+    /// expected identity of `agent`, unless a key is already recorded for it:
+    /// a first claim stands and later, unsigned referrals cannot replace it. A
+    /// dial that then meets a different key fails with
+    /// [`NameMeshError::PinMismatch`]. The default only learns the address.
+    async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        let _ = key;
+        self.learn(agent, endpoints).await;
+    }
+
+    /// Require `key` from whoever answers at the bare address `endpoint`, on
+    /// every dial made by [`NameTransport::send_to`]. Used for seeds configured
+    /// with an expected key.
+    ///
+    /// A transport that cannot enforce the pin refuses, so a configured key is
+    /// never silently ignored.
+    async fn pin_endpoint(&self, endpoint: &str, key: [u8; 32]) -> Result<(), NameMeshError> {
+        let _ = key;
+        Err(NameMeshError::Transport(format!(
+            "this transport cannot pin the identity at `{endpoint}`"
+        )))
+    }
+
     /// Drop a connection opened by [`NameTransport::send_to`].
     ///
     /// Called once bootstrap has learned the peer's identity, after which the
@@ -478,7 +505,9 @@ impl MeshNameResolver {
             return;
         };
         let key = NameKey::from_bytes(key_bytes);
-        self.transport.learn(identity.agent_id, &endpoints).await;
+        self.transport
+            .learn_peer(identity.agent_id, key_bytes, &endpoints)
+            .await;
         self.service
             .lock()
             .await
@@ -489,11 +518,24 @@ impl MeshNameResolver {
     /// book, so that knowing about it and being able to reach it stay the same
     /// thing.
     async fn adopt_peer(&self, key: NameKey, agent_id: AgentId, endpoints: Vec<String>, now: u64) {
-        self.transport.learn(agent_id, &endpoints).await;
+        self.transport
+            .learn_peer(agent_id, *key.as_bytes(), &endpoints)
+            .await;
         self.service
             .lock()
             .await
             .add_peer(NodeInfo::new(key, endpoints, now), agent_id);
+    }
+
+    /// Require `key` (an Ed25519 public key, the same bytes as the seed's
+    /// keyspace id) from whoever answers at the seed address `endpoint`.
+    ///
+    /// Call before [`MeshNameResolver::bootstrap`]. A seed that proves another
+    /// key is refused with [`NameMeshError::PinMismatch`]. Errors if the
+    /// transport cannot enforce it (plaintext transports), so a configured key
+    /// is never silently dropped.
+    pub async fn pin_seed(&self, endpoint: &str, key: [u8; 32]) -> Result<(), NameMeshError> {
+        self.transport.pin_endpoint(endpoint, key).await
     }
 
     /// Set the addresses this node advertises when introducing itself.
@@ -1280,7 +1322,11 @@ impl MeshNameResolver {
         // walk at all. Bounded like the routing table's copy.
         for peer in bound_referrals(&response.closer) {
             self.transport
-                .learn(peer.agent_id, &peer.info.endpoints)
+                .learn_peer(
+                    peer.agent_id,
+                    *peer.info.id.as_bytes(),
+                    &peer.info.endpoints,
+                )
                 .await;
         }
 

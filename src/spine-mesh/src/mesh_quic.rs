@@ -89,8 +89,8 @@ use spine_transport::websocket::QuicStream;
 
 use crate::mesh::MeshEnvelope;
 use crate::mesh_tcp::{
-    client_handshake, hex_prefix, server_handshake, Inbound, ReplyPath, SocketTransport,
-    INBOUND_QUEUE, MAX_FRAME_BYTES,
+    client_handshake, hex_prefix, pin_if_absent, server_handshake, Inbound, PinBook, ReplyPath,
+    SocketTransport, INBOUND_QUEUE, MAX_FRAME_BYTES,
 };
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
 use crate::AgentId;
@@ -143,7 +143,13 @@ pub struct QuicNameTransport {
     /// Where each peer can be reached.
     addresses: DashMap<AgentId, SocketAddr>,
     /// Expected mesh identity per peer, pinned during the connection handshake.
+    ///
+    /// Written by `set_identity`, by every hello, ack and referral that names
+    /// the peer's key (`NameTransport::learn_peer`), and by the first handshake
+    /// with a peer nothing named. Not persisted.
     identities: DashMap<AgentId, [u8; 32]>,
+    /// Pins for bare seed addresses, see [`PinBook`].
+    pins: PinBook,
     /// Live connections, one per peer.
     connections: DashMap<AgentId, Pooled>,
     /// Connections opened to bare seed addresses during bootstrap, keyed by
@@ -194,6 +200,7 @@ impl QuicNameTransport {
                 trusted: std::sync::RwLock::new(RootCertStore::empty()),
                 addresses: DashMap::new(),
                 identities: DashMap::new(),
+                pins: PinBook::default(),
                 connections: DashMap::new(),
                 bootstrap: DashMap::new(),
                 inbound: tx,
@@ -263,6 +270,11 @@ impl QuicNameTransport {
         self.connections.len()
     }
 
+    /// Dials refused because the peer proved a key other than the pinned one.
+    pub fn pin_mismatches(&self) -> u64 {
+        self.pins.mismatches()
+    }
+
     pub fn is_authenticated(&self) -> bool {
         self.signing.is_some()
     }
@@ -320,8 +332,14 @@ impl QuicNameTransport {
             let expected = required.or_else(|| self.identities.get(agent).map(|e| *e.value()));
             // The derived session keys are dropped: QUIC already encrypts, and
             // this exchange exists only to prove who is on the far end.
-            let session = client_handshake(&mut stream, signing, expected.as_ref()).await?;
+            let outcome = client_handshake(&mut stream, signing, expected.as_ref()).await;
+            let session = self
+                .pins
+                .observe(&format!("{agent:?} at {addr}"), outcome)?;
             let proved = *session.peer_identity();
+            if expected.is_none() {
+                pin_if_absent(&self.identities, *agent, proved);
+            }
             // `finish` already pins; checked again so that the connection is
             // never pooled under a key other than the one demanded.
             if let Some(expected) = expected {
@@ -428,7 +446,15 @@ impl QuicNameTransport {
                 .await
                 .map_err(|e| NameMeshError::Transport(format!("open control stream: {e}")))?;
             let mut stream = QuicStream::new(send, recv);
-            let session = client_handshake(&mut stream, signing, None).await?;
+            // A seed configured with a key, or one already met in this
+            // process, must prove it; a first contact is accepted and its key
+            // recorded (trust on first use, once).
+            let expected = self.pins.expected(endpoint);
+            let outcome = client_handshake(&mut stream, signing, expected.as_ref()).await;
+            let session = self.pins.observe(endpoint, outcome)?;
+            if expected.is_none() {
+                self.pins.record(endpoint, *session.peer_identity());
+            }
             Some(*session.peer_identity())
         } else {
             None
@@ -528,6 +554,25 @@ impl NameTransport for QuicNameTransport {
         if let Some(addr) = endpoints.iter().find_map(|e| e.parse::<SocketAddr>().ok()) {
             self.set_address(agent, addr);
         }
+    }
+
+    /// Learn the address, and on an authenticated transport pin the key a
+    /// hello, ack or referral named for the peer, unless a key is already
+    /// pinned.
+    async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        if self.is_authenticated() {
+            pin_if_absent(&self.identities, agent, key);
+        }
+        self.learn(agent, endpoints).await;
+    }
+
+    async fn pin_endpoint(&self, endpoint: &str, key: [u8; 32]) -> Result<(), NameMeshError> {
+        if !self.is_authenticated() {
+            return Err(NameMeshError::Transport(
+                "a transport without mesh authentication cannot enforce a seed identity".into(),
+            ));
+        }
+        self.pins.set(endpoint, key)
     }
 
     async fn release(&self, endpoint: &str) {
@@ -1019,6 +1064,52 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
         assert_eq!(client.transport.open_connections(), 0, "nothing pooled");
+    }
+
+    #[tokio::test]
+    async fn a_quic_seed_with_a_configured_key_refuses_a_wrong_key() {
+        let seed = spawn_quic(40, true).await;
+        seed.resolver
+            .set_endpoints(vec![seed.addr.to_string()])
+            .await;
+        let endpoint = seed.addr.to_string();
+
+        let wrong = spawn_quic(41, true).await;
+        wrong
+            .transport
+            .trust_certificate(seed.certificate.clone())
+            .unwrap();
+        wrong
+            .resolver
+            .pin_seed(&endpoint, [99u8; 32])
+            .await
+            .unwrap();
+        let report = wrong
+            .resolver
+            .bootstrap(std::slice::from_ref(&endpoint))
+            .await;
+        assert!(!report.is_connected(), "{report:?}");
+        assert!(
+            report.failed[0].1.contains("not the expected"),
+            "{report:?}"
+        );
+        assert_eq!(wrong.transport.pin_mismatches(), 1);
+
+        let right = spawn_quic(42, true).await;
+        right
+            .transport
+            .trust_certificate(seed.certificate.clone())
+            .unwrap();
+        right
+            .resolver
+            .pin_seed(&endpoint, seed.signing.verifying_key().to_bytes())
+            .await
+            .unwrap();
+        let report = right
+            .resolver
+            .bootstrap(std::slice::from_ref(&endpoint))
+            .await;
+        assert!(report.is_connected(), "{report:?}");
     }
 
     #[tokio::test]

@@ -468,6 +468,79 @@ pub(crate) fn hex_prefix(key: &[u8; 32]) -> String {
     key.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
+/// Record `key` as the identity expected at `agent` unless one is already
+/// recorded, and only while the table has room. A first claim stands: a later
+/// referral (unsigned) cannot replace it. Callers that need the bound to be
+/// exact hold their own lock around it.
+pub(crate) fn pin_if_absent(map: &DashMap<AgentId, [u8; 32]>, agent: AgentId, key: [u8; 32]) {
+    if map.len() >= MAX_KNOWN_PEERS && !map.contains_key(&agent) {
+        return;
+    }
+    let _ = map.entry(agent).or_insert(key);
+}
+
+/// Identity pins for dials made to a bare address (seeds), shared by the TCP,
+/// WebSocket and QUIC transports, and the count of dials refused on a mismatch.
+///
+/// A pin comes from one of two places: an operator-configured key
+/// ([`PinBook::set`]), or the key a first contact proved ([`PinBook::record`]).
+/// Either way every later dial to that address in this process must prove the
+/// same key. Pins live in memory only; a restart forgets recorded ones, and a
+/// seed's first contact after a restart is trust on first use again unless its
+/// key is configured.
+#[derive(Debug, Default)]
+pub struct PinBook {
+    endpoints: DashMap<String, [u8; 32]>,
+    mismatches: std::sync::atomic::AtomicU64,
+}
+
+impl PinBook {
+    /// The key a dial to `endpoint` must prove, if one is pinned.
+    pub fn expected(&self, endpoint: &str) -> Option<[u8; 32]> {
+        self.endpoints.get(endpoint).map(|e| *e.value())
+    }
+
+    /// Pin `endpoint` to an operator-supplied key, replacing any recorded one.
+    pub fn set(&self, endpoint: &str, key: [u8; 32]) -> Result<(), NameMeshError> {
+        if self.endpoints.len() >= MAX_KNOWN_PEERS && !self.endpoints.contains_key(endpoint) {
+            return Err(NameMeshError::Transport(
+                "too many pinned endpoints; refusing another".into(),
+            ));
+        }
+        self.endpoints.insert(endpoint.to_string(), key);
+        Ok(())
+    }
+
+    /// Record the key that answered at `endpoint`, keeping an existing pin.
+    pub fn record(&self, endpoint: &str, key: [u8; 32]) {
+        if self.endpoints.len() >= MAX_KNOWN_PEERS && !self.endpoints.contains_key(endpoint) {
+            tracing::warn!("pin table full; first contact with a seed address is not recorded");
+            return;
+        }
+        let _ = self.endpoints.entry(endpoint.to_string()).or_insert(key);
+    }
+
+    /// Dials refused so far because the peer proved a key other than the one
+    /// pinned for it.
+    pub fn mismatches(&self) -> u64 {
+        self.mismatches.load(Ordering::Relaxed)
+    }
+
+    /// Pass a handshake result through, counting and logging a pin mismatch.
+    /// The dial still fails: there is no fallback to an unpinned connection.
+    pub fn observe<T>(
+        &self,
+        peer: &str,
+        result: Result<T, NameMeshError>,
+    ) -> Result<T, NameMeshError> {
+        if let Err(NameMeshError::PinMismatch { expected, got }) = &result {
+            self.mismatches.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(%peer, %expected, %got, "mesh identity pin mismatch; dial refused");
+        }
+        result
+    }
+}
+
 /// Perform the accepting half of a handshake over a socket.
 pub async fn server_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
@@ -722,7 +795,13 @@ pub struct TcpNameTransport {
     /// because the peer behind them has no known identity yet.
     bootstrap: DashMap<String, ReplyPath>,
     /// Expected mesh identity per peer, used to pin the handshake.
+    ///
+    /// Written by [`TcpNameTransport::set_identity`], by every hello, ack and
+    /// referral that names the peer's key (`NameTransport::learn_peer`), and by
+    /// the first handshake with a peer nothing named. Not persisted.
     identities: DashMap<AgentId, [u8; 32]>,
+    /// Pins for bare seed addresses, see [`PinBook`].
+    pins: PinBook,
     /// Everything read off any connection this transport opened.
     inbound: mpsc::Sender<Inbound>,
     /// Whether connections are encrypted.
@@ -800,6 +879,7 @@ impl TcpNameTransport {
             pool: DashMap::new(),
             bootstrap: DashMap::new(),
             identities: DashMap::new(),
+            pins: PinBook::default(),
             inbound: tx,
             security,
             connections: Arc::new(Semaphore::new(limits.max_connections)),
@@ -836,6 +916,11 @@ impl TcpNameTransport {
     /// A sender for the same inbound stream, for a listener to share.
     pub fn inbound_sender(&self) -> mpsc::Sender<Inbound> {
         self.inbound.clone()
+    }
+
+    /// Dials refused because the peer proved a key other than the pinned one.
+    pub fn pin_mismatches(&self) -> u64 {
+        self.pins.mismatches()
     }
 
     /// Record where a peer can be reached. New entries beyond [`MAX_KNOWN_PEERS`]
@@ -923,14 +1008,25 @@ impl TcpNameTransport {
                 // Ed25519 key, so "the peer I dialed" and "the peer whose
                 // records I would trust" are one fact.
                 let expected = required.or_else(|| self.expected_identity(agent));
-                let session = tokio::time::timeout(
+                let outcome = tokio::time::timeout(
                     self.limits.handshake_timeout,
                     client_handshake_inner(&mut stream, signing, expected.as_ref()),
                 )
                 .await
-                .map_err(|_| {
-                    NameMeshError::Transport("mesh handshake deadline exceeded".into())
-                })??;
+                .map_err(|_| NameMeshError::Transport("mesh handshake deadline exceeded".into()))?;
+                let session = self
+                    .pins
+                    .observe(&format!("{agent:?} at {addr}"), outcome)?;
+                // Nothing named the key expected here (a bare `set_address`):
+                // the first handshake fixes it, and every later dial to this
+                // peer must prove the same one.
+                if expected.is_none() {
+                    let _contacts = self
+                        .contacts
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    pin_if_absent(&self.identities, *agent, *session.peer_identity());
+                }
                 ReplyPath::Secure(attach_secure_bounded(
                     stream,
                     session,
@@ -1026,16 +1122,21 @@ impl TcpNameTransport {
                 Some(permit),
             )),
             Security::Encrypted(cfg) => {
-                // Nothing to pin to: establishing the identity is the point of
-                // dialing a bootstrap address.
-                let session = tokio::time::timeout(
+                // A seed configured with a key, or one already met in this
+                // process, must prove that key. A bare address met for the
+                // first time is accepted and its key recorded: that first
+                // contact is trust on first use, and the only one.
+                let expected = self.pins.expected(endpoint);
+                let outcome = tokio::time::timeout(
                     self.limits.handshake_timeout,
-                    client_handshake_inner(&mut stream, &cfg.signing, None),
+                    client_handshake_inner(&mut stream, &cfg.signing, expected.as_ref()),
                 )
                 .await
-                .map_err(|_| {
-                    NameMeshError::Transport("mesh handshake deadline exceeded".into())
-                })??;
+                .map_err(|_| NameMeshError::Transport("mesh handshake deadline exceeded".into()))?;
+                let session = self.pins.observe(endpoint, outcome)?;
+                if expected.is_none() {
+                    self.pins.record(endpoint, *session.peer_identity());
+                }
                 ReplyPath::Secure(attach_secure_bounded(
                     stream,
                     session,
@@ -1097,6 +1198,28 @@ impl NameTransport for TcpNameTransport {
         if let Some(addr) = endpoints.iter().find_map(|e| e.parse::<SocketAddr>().ok()) {
             self.set_address(agent, addr);
         }
+    }
+
+    /// Learn the address, and on an encrypted transport pin the key a hello,
+    /// ack or referral named for the peer, unless a key is already pinned.
+    async fn learn_peer(&self, agent: AgentId, key: [u8; 32], endpoints: &[String]) {
+        if self.is_encrypted() {
+            let _contacts = self
+                .contacts
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pin_if_absent(&self.identities, agent, key);
+        }
+        self.learn(agent, endpoints).await;
+    }
+
+    async fn pin_endpoint(&self, endpoint: &str, key: [u8; 32]) -> Result<(), NameMeshError> {
+        if !self.is_encrypted() {
+            return Err(NameMeshError::Transport(
+                "a plaintext transport cannot enforce a seed identity".into(),
+            ));
+        }
+        self.pins.set(endpoint, key)
     }
 
     async fn release(&self, endpoint: &str) {
@@ -2317,6 +2440,178 @@ mod secure_tests {
             err.to_string().contains("not the expected"),
             "a mismatched identity must abort the connection: {err}"
         );
+    }
+
+    /// A listener that completes the mesh handshake with whichever key is
+    /// currently in the returned slot, then drops the connection. Swapping the
+    /// key models a different node answering at the same address.
+    async fn switchable_responder() -> (SocketAddr, Arc<std::sync::Mutex<SigningKey>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let slot = Arc::new(std::sync::Mutex::new(SigningKey::from_bytes(&[11u8; 32])));
+        let shared = slot.clone();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let key = shared.lock().unwrap().clone();
+                tokio::spawn(async move {
+                    let _ = server_handshake(&mut stream, &key).await;
+                });
+            }
+        });
+        (addr, slot)
+    }
+
+    fn public_of(seed: u8) -> [u8; 32] {
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes()
+    }
+
+    #[tokio::test]
+    async fn a_later_dial_to_a_seed_address_whose_key_changed_is_refused() {
+        let (addr, slot) = switchable_responder().await;
+        let endpoint = addr.to_string();
+        let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[12u8; 32]));
+        let wait = Duration::from_secs(10);
+
+        // First contact with a bare address: accepted, and the key recorded.
+        tokio::time::timeout(wait, client.provisional(&endpoint))
+            .await
+            .expect("first dial hung")
+            .unwrap();
+        assert_eq!(client.pins.expected(&endpoint), Some(public_of(11)));
+        client.release(&endpoint).await;
+
+        // A different node now answers there: the dial fails, distinctly, and
+        // does not fall back to accepting it.
+        *slot.lock().unwrap() = SigningKey::from_bytes(&[13u8; 32]);
+        let err = tokio::time::timeout(wait, client.provisional(&endpoint))
+            .await
+            .expect("second dial hung")
+            .unwrap_err();
+        assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
+        assert_eq!(client.pin_mismatches(), 1);
+        assert_eq!(
+            client.pins.expected(&endpoint),
+            Some(public_of(11)),
+            "a refused dial must not replace the pin"
+        );
+
+        // The original key is still welcome.
+        *slot.lock().unwrap() = SigningKey::from_bytes(&[11u8; 32]);
+        tokio::time::timeout(wait, client.provisional(&endpoint))
+            .await
+            .expect("third dial hung")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dial_to_a_node_named_by_key_refuses_a_responder_with_another_key() {
+        let (addr, slot) = switchable_responder().await;
+        let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[14u8; 32]));
+        let wait = Duration::from_secs(10);
+        let referred = AgentId::new();
+
+        // A referral names agent `referred` and its key (the node id).
+        client
+            .learn_peer(referred, public_of(15), &[addr.to_string()])
+            .await;
+        // The responder proves key 11, not 15.
+        let err = tokio::time::timeout(wait, client.connection(&referred, None))
+            .await
+            .expect("dial hung")
+            .unwrap_err();
+        assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
+        assert_eq!(client.pin_mismatches(), 1);
+
+        // A later, unsigned referral cannot replace the first claim.
+        client
+            .learn_peer(referred, public_of(11), &[addr.to_string()])
+            .await;
+        assert_eq!(client.expected_identity(&referred), Some(public_of(15)));
+
+        // The responder with the named key is accepted.
+        *slot.lock().unwrap() = SigningKey::from_bytes(&[15u8; 32]);
+        tokio::time::timeout(wait, client.connection(&referred, None))
+            .await
+            .expect("dial hung")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dial_with_no_named_key_pins_the_first_key_it_meets() {
+        let (addr, slot) = switchable_responder().await;
+        let (client, _rx) = TcpNameTransport::encrypted(SigningKey::from_bytes(&[16u8; 32]));
+        let wait = Duration::from_secs(10);
+        let peer = AgentId::new();
+        client.set_address(peer, addr);
+        assert_eq!(client.expected_identity(&peer), None);
+
+        tokio::time::timeout(wait, client.connection(&peer, None))
+            .await
+            .expect("dial hung")
+            .unwrap();
+        assert_eq!(client.expected_identity(&peer), Some(public_of(11)));
+
+        client.evict(&peer);
+        *slot.lock().unwrap() = SigningKey::from_bytes(&[17u8; 32]);
+        let err = tokio::time::timeout(wait, client.connection(&peer, None))
+            .await
+            .expect("dial hung")
+            .unwrap_err();
+        assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_seed_with_a_configured_key_refuses_a_wrong_key_on_first_contact() {
+        let seed = spawn_secure(70).await;
+        seed.resolver
+            .set_endpoints(vec![seed.addr.to_string()])
+            .await;
+        let endpoint = seed.addr.to_string();
+
+        // The wrong key configured: bootstrap fails, with the pin error.
+        let wrong = spawn_secure(71).await;
+        wrong
+            .resolver
+            .pin_seed(&endpoint, [99u8; 32])
+            .await
+            .unwrap();
+        let report = wrong
+            .resolver
+            .bootstrap(std::slice::from_ref(&endpoint))
+            .await;
+        assert!(!report.is_connected(), "{report:?}");
+        assert!(
+            report.failed[0].1.contains("not the expected"),
+            "{report:?}"
+        );
+        assert_eq!(wrong.transport.pin_mismatches(), 1);
+        assert_eq!(wrong.resolver.peer_count().await, 0);
+
+        // The right key configured: bootstrap succeeds, and the seed is then
+        // also pinned by agent id from its ack.
+        let right = spawn_secure(72).await;
+        right
+            .resolver
+            .pin_seed(&endpoint, seed.signing.verifying_key().to_bytes())
+            .await
+            .unwrap();
+        let report = right
+            .resolver
+            .bootstrap(std::slice::from_ref(&endpoint))
+            .await;
+        assert!(report.is_connected(), "{report:?}");
+        assert_eq!(
+            right
+                .transport
+                .expected_identity(&report.reached[0].agent_id),
+            Some(seed.signing.verifying_key().to_bytes())
+        );
+
+        // A transport that cannot authenticate refuses to take a pin at all.
+        let (plain, _rx) = TcpNameTransport::new();
+        assert!(plain.pin_endpoint(&endpoint, [1u8; 32]).await.is_err());
     }
 
     #[tokio::test]
