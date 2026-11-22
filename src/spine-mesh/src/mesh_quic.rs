@@ -38,6 +38,42 @@
 //! same authenticated connection, so one handshake covers all of them. It is
 //! used for identity only — the ML-KEM session keys are discarded, because
 //! encrypting inside TLS would buy nothing but CPU.
+//!
+//! The key the handshake proved is **kept for the life of the connection**.
+//! The accepting side hands it to every later stream's reply path
+//! ([`ReplyPath::authenticated_peer`]), so `pump` passes it to
+//! `handle_envelope_from_peer` exactly as it does for an encrypted TCP session,
+//! and the dialing side keeps it with the pooled connection for the replies. A
+//! connection whose first stream does not complete the handshake is closed
+//! and none of its streams is read.
+//!
+//! ## What protects what
+//!
+//! - **Confidentiality and integrity of the bytes**: QUIC's TLS 1.3 alone. The
+//!   mesh session keys are not used to seal QUIC streams.
+//! - **Which endpoint answered**: the TLS server certificate, verified against
+//!   the set given to [`QuicNameTransport::trust_certificate`] (empty by
+//!   default).
+//! - **Which mesh key is on the connection**: the first-stream handshake. When
+//!   the dialer knows the key it expects (`set_identity`, a referral, a
+//!   configured seed key, or the signed `recipient_key` of an application call)
+//!   the handshake must prove exactly that key or the dial fails with
+//!   [`NameMeshError::PinMismatch`].
+//! - **Who sent an envelope**: its own signature, plus (for `Application`
+//!   messages) equality of the signing key with the connection's key.
+//!
+//! ## Channel binding: not provided
+//!
+//! The handshake is **not bound to the TLS channel**. `spine-session`'s
+//! handshake has no input for transcript or channel context (it is under
+//! external review and is not modified here), so nothing ties the key proven on
+//! the first stream to the TLS session carrying it. The consequence is bounded
+//! by the pinning above: an attacker able to terminate the TLS connection must
+//! hold a certificate the client trusts, and can then relay the handshake of a
+//! genuine peer, after which it can read and forward that peer's traffic as a
+//! man in the middle. The client's protection is trusting only the server
+//! certificates it was told to trust and pinning the expected mesh key. The
+//! gap closes when the handshake accepts a TLS exporter value as context.
 
 use dashmap::DashMap;
 use std::net::SocketAddr;
@@ -53,8 +89,8 @@ use spine_transport::websocket::QuicStream;
 
 use crate::mesh::MeshEnvelope;
 use crate::mesh_tcp::{
-    client_handshake, server_handshake, Inbound, ReplyPath, SocketTransport, INBOUND_QUEUE,
-    MAX_FRAME_BYTES,
+    client_handshake, hex_prefix, server_handshake, Inbound, ReplyPath, SocketTransport,
+    INBOUND_QUEUE, MAX_FRAME_BYTES,
 };
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
 use crate::AgentId;
@@ -81,6 +117,22 @@ pub fn install_crypto_provider() {
     });
 }
 
+/// A live QUIC connection and the mesh key its first-stream handshake proved
+/// (`None` when this transport does no mesh authentication).
+#[derive(Clone)]
+struct Pooled {
+    connection: Connection,
+    peer: Option<[u8; 32]>,
+}
+
+/// The reply path for one stream of a connection whose peer proved `peer`.
+fn stream_path(stream: QuicStream, peer: Option<[u8; 32]>) -> ReplyPath {
+    ReplyPath::Plain(match peer {
+        Some(peer) => SocketTransport::from_authenticated_writer(stream, peer),
+        None => SocketTransport::from_writer(stream),
+    })
+}
+
 /// A QUIC transport that opens one stream per exchange.
 pub struct QuicNameTransport {
     endpoint: Endpoint,
@@ -93,10 +145,10 @@ pub struct QuicNameTransport {
     /// Expected mesh identity per peer, pinned during the connection handshake.
     identities: DashMap<AgentId, [u8; 32]>,
     /// Live connections, one per peer.
-    connections: DashMap<AgentId, Connection>,
+    connections: DashMap<AgentId, Pooled>,
     /// Connections opened to bare seed addresses during bootstrap, keyed by
     /// endpoint because the peer behind them has no known identity yet.
-    bootstrap: DashMap<String, Connection>,
+    bootstrap: DashMap<String, Pooled>,
     inbound: mpsc::Sender<Inbound>,
     /// Identity used to authenticate connections, when authentication is on.
     signing: Option<SigningKey>,
@@ -220,11 +272,21 @@ impl QuicNameTransport {
     }
 
     /// Get or establish the connection to a peer.
-    async fn connection(&self, agent: &AgentId) -> Result<Connection, NameMeshError> {
+    ///
+    /// `required` is a key the caller will not do without (the signed
+    /// `recipient_key` of an application call): a pooled connection whose
+    /// handshake proved another key is dropped, and a new dial must prove it.
+    async fn connection(
+        &self,
+        agent: &AgentId,
+        required: Option<[u8; 32]>,
+    ) -> Result<Pooled, NameMeshError> {
         if let Some(existing) = self.connections.get(agent) {
             // A closed connection is worse than none: it would fail every
             // subsequent stream open with a stale error.
-            if existing.close_reason().is_none() {
+            if existing.connection.close_reason().is_none()
+                && required.is_none_or(|key| existing.peer == Some(key))
+            {
                 return Ok(existing.value().clone());
             }
         }
@@ -247,21 +309,37 @@ impl QuicNameTransport {
             .map_err(|_| NameMeshError::Transport(format!("quic handshake to {addr} timed out")))?
             .map_err(|e| NameMeshError::Transport(format!("quic handshake {addr}: {e}")))?;
 
-        // Authenticate the connection once, on its first stream.
-        if let Some(signing) = &self.signing {
+        // Authenticate the connection once, on its first stream, and keep the
+        // key it proves with the connection.
+        let peer = if let Some(signing) = &self.signing {
             let (send, recv) = connection
                 .open_bi()
                 .await
                 .map_err(|e| NameMeshError::Transport(format!("open control stream: {e}")))?;
             let mut stream = QuicStream::new(send, recv);
-            let expected = self.identities.get(agent).map(|e| *e.value());
+            let expected = required.or_else(|| self.identities.get(agent).map(|e| *e.value()));
             // The derived session keys are dropped: QUIC already encrypts, and
             // this exchange exists only to prove who is on the far end.
-            let _session = client_handshake(&mut stream, signing, expected.as_ref()).await?;
-        }
+            let session = client_handshake(&mut stream, signing, expected.as_ref()).await?;
+            let proved = *session.peer_identity();
+            // `finish` already pins; checked again so that the connection is
+            // never pooled under a key other than the one demanded.
+            if let Some(expected) = expected {
+                if proved != expected {
+                    return Err(NameMeshError::PinMismatch {
+                        expected: hex_prefix(&expected),
+                        got: hex_prefix(&proved),
+                    });
+                }
+            }
+            Some(proved)
+        } else {
+            None
+        };
 
-        self.connections.insert(*agent, connection.clone());
-        Ok(connection)
+        let pooled = Pooled { connection, peer };
+        self.connections.insert(*agent, pooled.clone());
+        Ok(pooled)
     }
 
     /// Send one envelope on its own stream, then read the reply on the same one.
@@ -269,20 +347,25 @@ impl QuicNameTransport {
         &self,
         target: AgentId,
         envelope: &MeshEnvelope,
+        required: Option<[u8; 32]>,
     ) -> Result<(), NameMeshError> {
-        let connection = self.connection(&target).await?;
-        let (send, recv) = match connection.open_bi().await {
-            Ok(pair) => pair,
+        let pooled = self.connection(&target, required).await?;
+        let opened = pooled.connection.open_bi().await;
+        let (pooled, (send, recv)) = match opened {
+            Ok(pair) => (pooled, pair),
             Err(_) => {
                 // The pooled connection died. One transparent retry.
                 self.connections.remove(&target);
-                let connection = self.connection(&target).await?;
-                connection
+                let pooled = self.connection(&target, required).await?;
+                let pair = pooled
+                    .connection
                     .open_bi()
                     .await
-                    .map_err(|e| NameMeshError::Transport(format!("open stream: {e}")))?
+                    .map_err(|e| NameMeshError::Transport(format!("open stream: {e}")))?;
+                (pooled, pair)
             }
         };
+        let peer = pooled.peer;
 
         let mut stream = QuicStream::new(send, recv);
         crate::mesh_tcp::write_envelope(&mut stream, envelope).await?;
@@ -293,10 +376,10 @@ impl QuicNameTransport {
         tokio::spawn(async move {
             match crate::mesh_tcp::read_envelope(&mut stream).await {
                 Ok(Some(reply)) => {
-                    // A response needs no reply path of its own — but the type
-                    // requires one, and answering back down the same stream is
-                    // the correct behaviour if the peer ever asks something.
-                    let path = ReplyPath::Plain(SocketTransport::from_writer(stream));
+                    // The reply path carries the key this connection's
+                    // handshake proved, so the response is judged against it
+                    // like any other envelope from an authenticated peer.
+                    let path = stream_path(stream, peer);
                     let _ = inbound
                         .send(Inbound {
                             envelope: reply,
@@ -319,9 +402,9 @@ impl QuicNameTransport {
     /// authenticated the handshake still runs, but unpinned: it proves the peer
     /// holds *some* key, and the ack's signature is what binds that key to an
     /// identity we then trust.
-    async fn provisional(&self, endpoint: &str) -> Result<Connection, NameMeshError> {
+    async fn provisional(&self, endpoint: &str) -> Result<Pooled, NameMeshError> {
         if let Some(existing) = self.bootstrap.get(endpoint) {
-            if existing.close_reason().is_none() {
+            if existing.connection.close_reason().is_none() {
                 return Ok(existing.value().clone());
             }
         }
@@ -339,18 +422,21 @@ impl QuicNameTransport {
             })?
             .map_err(|e| NameMeshError::Transport(format!("quic handshake {addr}: {e}")))?;
 
-        if let Some(signing) = &self.signing {
+        let peer = if let Some(signing) = &self.signing {
             let (send, recv) = connection
                 .open_bi()
                 .await
                 .map_err(|e| NameMeshError::Transport(format!("open control stream: {e}")))?;
             let mut stream = QuicStream::new(send, recv);
-            let _session = client_handshake(&mut stream, signing, None).await?;
-        }
+            let session = client_handshake(&mut stream, signing, None).await?;
+            Some(*session.peer_identity())
+        } else {
+            None
+        };
 
-        self.bootstrap
-            .insert(endpoint.to_string(), connection.clone());
-        Ok(connection)
+        let pooled = Pooled { connection, peer };
+        self.bootstrap.insert(endpoint.to_string(), pooled.clone());
+        Ok(pooled)
     }
 
     /// Run one exchange over a provisional connection.
@@ -359,8 +445,10 @@ impl QuicNameTransport {
         endpoint: &str,
         envelope: &MeshEnvelope,
     ) -> Result<(), NameMeshError> {
-        let connection = self.provisional(endpoint).await?;
-        let (send, recv) = connection
+        let pooled = self.provisional(endpoint).await?;
+        let peer = pooled.peer;
+        let (send, recv) = pooled
+            .connection
             .open_bi()
             .await
             .map_err(|e| NameMeshError::Transport(format!("open seed stream: {e}")))?;
@@ -372,7 +460,7 @@ impl QuicNameTransport {
         tokio::spawn(async move {
             match crate::mesh_tcp::read_envelope(&mut stream).await {
                 Ok(Some(reply)) => {
-                    let path = ReplyPath::Plain(SocketTransport::from_writer(stream));
+                    let path = stream_path(stream, peer);
                     let _ = inbound
                         .send(Inbound {
                             envelope: reply,
@@ -391,19 +479,34 @@ impl QuicNameTransport {
 #[async_trait]
 impl NameTransport for QuicNameTransport {
     async fn send(&self, envelope: MeshEnvelope) -> Result<(), NameMeshError> {
-        if matches!(envelope.payload, crate::mesh::MeshPayload::Application(_)) {
-            return Err(NameMeshError::Transport(
-                "application RPC is supported only over key-pinned encrypted TCP".into(),
-            ));
-        }
+        // An application call goes only over a connection whose handshake
+        // proved the key the call is signed for. That needs the mesh
+        // handshake, so an unauthenticated transport refuses it.
+        let required = match &envelope.payload {
+            crate::mesh::MeshPayload::Application(message) => {
+                if !self.is_authenticated() {
+                    return Err(NameMeshError::Transport(
+                        "application RPC requires an authenticated QUIC transport".into(),
+                    ));
+                }
+                if !matches!(envelope.to, crate::mesh::MeshTarget::Agent(id) if id == message.recipient)
+                {
+                    return Err(NameMeshError::Transport(
+                        "application RPC must target its signed recipient".into(),
+                    ));
+                }
+                Some(message.recipient_key)
+            }
+            _ => None,
+        };
         match envelope.to {
-            crate::mesh::MeshTarget::Agent(id) => self.exchange(id, &envelope).await,
+            crate::mesh::MeshTarget::Agent(id) => self.exchange(id, &envelope, required).await,
             _ => {
                 let peers: Vec<AgentId> = self.addresses.iter().map(|e| *e.key()).collect();
                 for peer in peers {
                     let mut addressed = envelope.clone();
                     addressed.to = crate::mesh::MeshTarget::Agent(peer);
-                    let _ = self.exchange(peer, &addressed).await;
+                    let _ = self.exchange(peer, &addressed, None).await;
                 }
                 Ok(())
             }
@@ -470,6 +573,10 @@ impl QuicListener {
     }
 
     /// Accept connections until the task is dropped.
+    ///
+    /// With `signing`, a connection must complete the mesh handshake on its
+    /// first stream before any envelope on it is read; the key it proves is
+    /// attached to every later stream's reply path.
     pub async fn serve(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
         while let Some(incoming) = self.endpoint.accept().await {
             let inbound = inbound.clone();
@@ -491,14 +598,20 @@ async fn serve_connection(
     signing: Option<SigningKey>,
 ) {
     // If authentication is on, the first stream is the handshake and carries no
-    // envelope. Every stream after it belongs to the same proven connection.
-    if let Some(key) = &signing {
+    // envelope. Every stream after it belongs to the same proven connection,
+    // and the key it proved is the identity of all of them. A connection that
+    // does not complete it is closed without reading anything else.
+    let peer: Option<[u8; 32]> = if let Some(key) = &signing {
         match connection.accept_bi().await {
             Ok((send, recv)) => {
                 let mut stream = QuicStream::new(send, recv);
-                if let Err(e) = server_handshake(&mut stream, key).await {
-                    tracing::debug!("quic peer failed authentication: {e}");
-                    return;
+                match server_handshake(&mut stream, key).await {
+                    Ok(session) => Some(*session.peer_identity()),
+                    Err(e) => {
+                        tracing::debug!("quic peer failed authentication: {e}");
+                        connection.close(1u32.into(), b"authentication failed");
+                        return;
+                    }
                 }
             }
             Err(e) => {
@@ -506,7 +619,9 @@ async fn serve_connection(
                 return;
             }
         }
-    }
+    } else {
+        None
+    };
 
     loop {
         let (send, recv) = match connection.accept_bi().await {
@@ -518,7 +633,7 @@ async fn serve_connection(
             let mut stream = QuicStream::new(send, recv);
             match crate::mesh_tcp::read_envelope(&mut stream).await {
                 Ok(Some(envelope)) => {
-                    let path = ReplyPath::Plain(SocketTransport::from_writer(stream));
+                    let path = stream_path(stream, peer);
                     let _ = inbound
                         .send(Inbound {
                             envelope,
@@ -589,6 +704,14 @@ mod tests {
     }
 
     async fn spawn_quic(seed: u8, authenticated: bool) -> QuicNode {
+        spawn_quic_with(seed, authenticated, None).await
+    }
+
+    async fn spawn_quic_with(
+        seed: u8,
+        authenticated: bool,
+        application: Option<Arc<dyn crate::naming_mesh::MeshApplication>>,
+    ) -> QuicNode {
         let identity = SigningIdentity::from_seed(&format!("quic{seed}"), [90 + seed; 32]);
         let signing = SigningKey::from_bytes(&[90 + seed; 32]);
         let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
@@ -598,11 +721,13 @@ mod tests {
         } else {
             QuicNameTransport::new().unwrap()
         };
-        let resolver = Arc::new(
-            MeshNameResolver::new(mesh.clone(), transport.clone())
-                .with_clock(|| NOW)
-                .with_timeout(Duration::from_secs(10)),
-        );
+        let mut resolver = MeshNameResolver::new(mesh.clone(), transport.clone())
+            .with_clock(|| NOW)
+            .with_timeout(Duration::from_secs(10));
+        if let Some(application) = application {
+            resolver = resolver.with_application(application);
+        }
+        let resolver = Arc::new(resolver);
         let (addr, certificate) = serve_quic_node(
             "127.0.0.1:0".parse().unwrap(),
             resolver.clone(),
@@ -811,5 +936,172 @@ mod tests {
             .transport
             .set_address(*holder.mesh.agent_id(), "127.0.0.1:1".parse().unwrap());
         assert_eq!(seeker.transport.open_connections(), 0);
+    }
+
+    /// An application that counts how often it is invoked and echoes the request.
+    struct Counting(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait]
+    impl crate::naming_mesh::MeshApplication for Counting {
+        async fn handle(&self, _caller: [u8; 32], request: serde_json::Value) -> serde_json::Value {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            request
+        }
+    }
+
+    fn request_to(from: &MeshNode, target: AgentId) -> MeshEnvelope {
+        from.name_resolve_request(
+            target,
+            1,
+            crate::naming::ResolveQuery::Name(SpineUri::did([1u8; 32])),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_skips_the_handshake_is_not_processed() {
+        let server = spawn_quic(20, true).await;
+        let target = *server.mesh.agent_id();
+
+        // Control: an authenticated client is answered, so the counter below
+        // can move at all.
+        let client = spawn_quic(21, true).await;
+        introduce(&client, &server).await;
+        let rec = record(1, &[]);
+        server.resolver.publish_local(rec.clone()).await.unwrap();
+        client.resolver.resolve(&rec.name).await.unwrap();
+        let answered = server.resolver.metrics().await.requests_answered;
+        assert!(answered >= 1);
+
+        // A client that trusts the certificate but does no mesh handshake: its
+        // first stream is an envelope, not a handshake.
+        let (bare, _rx) = QuicNameTransport::new().unwrap();
+        bare.trust_certificate(server.certificate.clone()).unwrap();
+        bare.set_address(target, server.addr);
+        let probe = MeshNode::new(
+            SigningIdentity::from_seed("probe", [31u8; 32]),
+            MeshConfig::default(),
+        );
+        let _ = tokio::time::timeout(
+            Duration::from_secs(10),
+            bare.send(request_to(&probe, target)),
+        )
+        .await
+        .expect("send hung");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        assert_eq!(
+            server.resolver.metrics().await.requests_answered,
+            answered,
+            "an envelope on an unauthenticated connection must not be processed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_client_refuses_a_server_that_proves_another_key() {
+        let client = spawn_quic(22, true).await;
+        let server = spawn_quic(23, true).await;
+        client
+            .transport
+            .trust_certificate(server.certificate.clone())
+            .unwrap();
+        let target = *server.mesh.agent_id();
+        client.transport.set_address(target, server.addr);
+        // Expect some other key at that address.
+        client.transport.set_identity(target, [99u8; 32]);
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.transport.send(request_to(&client.mesh, target)),
+        )
+        .await
+        .expect("send hung")
+        .unwrap_err();
+        assert!(matches!(err, NameMeshError::PinMismatch { .. }), "{err}");
+        assert_eq!(client.transport.open_connections(), 0, "nothing pooled");
+    }
+
+    #[tokio::test]
+    async fn an_application_call_over_quic_is_bound_to_the_connection_key() {
+        use crate::mesh::{ApplicationMessage, MeshPayload, MeshTarget};
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let caller = spawn_quic_with(30, true, None).await;
+        let worker = spawn_quic_with(31, true, Some(Arc::new(Counting(count.clone())))).await;
+        introduce(&caller, &worker).await;
+        let worker_id = *worker.mesh.agent_id();
+        let worker_key = worker.signing.verifying_key().to_bytes();
+
+        // A request signed by a key other than the connection's: delivered on
+        // the caller's authenticated connection, it must be dropped.
+        let impostor = MeshNode::new(
+            SigningIdentity::from_seed("impostor", [77u8; 32]),
+            MeshConfig::default(),
+        );
+        let impostor_key = SigningKey::from_bytes(&[77u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let forged = impostor
+            .create_envelope(
+                MeshTarget::Agent(worker_id),
+                MeshPayload::Application(Box::new(ApplicationMessage {
+                    public_key: impostor_key,
+                    recipient: worker_id,
+                    recipient_key: worker_key,
+                    request_id: uuid::Uuid::new_v4(),
+                    response: false,
+                    data: serde_json::json!({"who": "impostor"}),
+                })),
+            )
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), caller.transport.send(forged))
+            .await
+            .expect("send hung")
+            .unwrap();
+
+        // The genuine call, with the right key, succeeds end to end.
+        let reply = tokio::time::timeout(
+            Duration::from_secs(15),
+            caller.resolver.application_call(
+                worker_id,
+                worker_key,
+                serde_json::json!({"who": "caller"}),
+            ),
+        )
+        .await
+        .expect("application call hung")
+        .unwrap();
+        assert_eq!(reply, serde_json::json!({"who": "caller"}));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "only the call signed by the connection's own key reaches the application"
+        );
+
+        // A call signed for a key the server does not hold is refused by the
+        // dialer before any task data is sent.
+        let wrong = caller
+            .resolver
+            .application_call(worker_id, [99u8; 32], serde_json::json!({}))
+            .await;
+        assert!(wrong.is_err());
+
+        // And a transport with no mesh authentication refuses application RPC.
+        let (bare, _rx) = QuicNameTransport::new().unwrap();
+        let envelope = caller
+            .mesh
+            .create_envelope(
+                MeshTarget::Agent(worker_id),
+                MeshPayload::Application(Box::new(ApplicationMessage {
+                    public_key: caller.signing.verifying_key().to_bytes(),
+                    recipient: worker_id,
+                    recipient_key: worker_key,
+                    request_id: uuid::Uuid::new_v4(),
+                    response: false,
+                    data: serde_json::json!({}),
+                })),
+            )
+            .unwrap();
+        assert!(bare.send(envelope).await.is_err());
     }
 }

@@ -138,6 +138,12 @@ pub enum NameMeshError {
 
     #[error("naming error: {0}")]
     Name(#[from] spine_name::NameError),
+
+    /// A dial reached a peer that proved a different mesh key than the one the
+    /// dialer pinned for it. The dial is abandoned; there is no fallback to an
+    /// unpinned connection.
+    #[error("peer identity {got} is not the expected {expected}")]
+    PinMismatch { expected: String, got: String },
 }
 
 /// Statistics worth watching: a resolver that answers mostly from cache is the

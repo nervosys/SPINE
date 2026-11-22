@@ -51,7 +51,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 use ed25519_dalek::SigningKey;
-use spine_session::handshake::{Initiator, Responder, Session, MAX_HANDSHAKE_BYTES};
+use spine_session::handshake::{
+    HandshakeError, Initiator, Responder, Session, MAX_HANDSHAKE_BYTES,
+};
 
 use crate::mesh::MeshEnvelope;
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
@@ -227,6 +229,10 @@ pub struct SocketTransport {
     writer: Arc<Mutex<Box<dyn AsyncWrite + Send + Unpin>>>,
     closed: Arc<ConnectionState>,
     limits: ConnectionLimits,
+    /// The mesh key the transport beneath this socket has already
+    /// authenticated for the whole connection (QUIC), if any. `None` for a
+    /// socket nothing has authenticated.
+    peer: Option<[u8; 32]>,
 }
 
 impl std::fmt::Debug for SocketTransport {
@@ -242,11 +248,25 @@ impl SocketTransport {
         Self::new(writer)
     }
 
+    /// As [`SocketTransport::from_writer`], for a stream on a connection whose
+    /// peer has already proved the mesh key `peer` (the QUIC transport's
+    /// first-stream handshake). Frames on it are not sealed at this layer; the
+    /// authenticated key is surfaced through [`ReplyPath::authenticated_peer`].
+    pub fn from_authenticated_writer(
+        writer: impl AsyncWrite + Send + Unpin + 'static,
+        peer: [u8; 32],
+    ) -> Self {
+        let mut transport = Self::new(writer);
+        transport.peer = Some(peer);
+        transport
+    }
+
     fn new(writer: impl AsyncWrite + Send + Unpin + 'static) -> Self {
         Self {
             writer: Arc::new(Mutex::new(Box::new(writer))),
             closed: Arc::new(ConnectionState::default()),
             limits: ConnectionLimits::default(),
+            peer: None,
         }
     }
 }
@@ -282,9 +302,12 @@ pub enum ReplyPath {
 }
 
 impl ReplyPath {
+    /// The mesh key the connection's peer proved, if the transport
+    /// authenticated one: the session key on `Secure`, the first-stream
+    /// handshake key on a QUIC stream, `None` on an unauthenticated socket.
     pub fn authenticated_peer(&self) -> Option<[u8; 32]> {
         match self {
-            Self::Plain(_) => None,
+            Self::Plain(path) => path.peer,
             Self::Secure(path) => Some(path.peer_identity),
         }
     }
@@ -430,7 +453,19 @@ async fn client_handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
         .ok_or_else(|| NameMeshError::Transport("peer closed during handshake".into()))?;
     initiator
         .finish(&reply, expected_peer)
-        .map_err(|e| NameMeshError::Transport(format!("handshake: {e}")))
+        .map_err(|e| match e {
+            // Distinct from every other handshake failure: the peer proved a
+            // valid key, just not the one this dial was pinned to.
+            HandshakeError::WrongPeer { expected, got } => {
+                NameMeshError::PinMismatch { expected, got }
+            }
+            other => NameMeshError::Transport(format!("handshake: {other}")),
+        })
+}
+
+/// A short, log-safe rendering of a mesh key.
+pub(crate) fn hex_prefix(key: &[u8; 32]) -> String {
+    key.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 /// Perform the accepting half of a handshake over a socket.
