@@ -27,6 +27,9 @@ What it implements:
 * Attenuation and the eleven verification steps, for cases that are decidable
   from bytes plus a stated clock, trusted roots, revoked ids, the age of the
   revocation data, nonces already used, and totals already charged.
+* Signed revocation records (who may revoke), the signed feed head and the rules
+  for loading a feed, signed receipts (verifying one and matching it to an
+  invocation and a decision), and a reference model of the usage ledger.
 
 `generate` is deterministic: fixed seeds, sorted keys, LF line ends, no times.
 `check` re-derives every value in a vector file, runs every case through the
@@ -238,6 +241,20 @@ GRANT_ID_DOMAIN = b"spine-authority-grant-id-v1\x00"
 INVOCATION_DOMAIN = b"spine-authority-invocation-v1\x00"
 GRANT_VERSION = 1
 INVOCATION_VERSION = 1
+REVOCATION_VERSION = 1
+FEED_HEAD_VERSION = 1
+RECEIPT_VERSION = 1
+REVOCATION_DOMAIN = b"spine-authority-revocation-v1\x00"
+REVOCATION_ID_DOMAIN = b"spine-authority-revocation-id-v1\x00"
+FEED_HEAD_DOMAIN = b"spine-authority-feed-head-v1\x00"
+FEED_DIGEST_DOMAIN = b"spine-authority-feed-digest-v1\x00"
+RECEIPT_DOMAIN = b"spine-authority-receipt-v1\x00"
+INVOCATION_ID_DOMAIN = b"spine-authority-invocation-id-v1\x00"
+MAX_REVOCATION_BYTES = 512
+MAX_FEED_HEAD_BYTES = 512
+MAX_RECEIPT_BYTES = 512
+MAX_FEED_REVOCATIONS = 16384
+RATE_WINDOW_SECS = 60
 MAX_CHAIN_DEPTH = 8
 MAX_GRANT_BYTES = 4096
 MAX_INVOCATION_BYTES = 4096
@@ -260,6 +277,18 @@ U32_MAX = 2 ** 32 - 1
 U64_MAX = 2 ** 64 - 1
 AUTO = bytes(32)
 
+DOMAINS = {
+    "grant": GRANT_DOMAIN.hex(),
+    "grant_id": GRANT_ID_DOMAIN.hex(),
+    "invocation": INVOCATION_DOMAIN.hex(),
+    "invocation_id": INVOCATION_ID_DOMAIN.hex(),
+    "revocation": REVOCATION_DOMAIN.hex(),
+    "revocation_id": REVOCATION_ID_DOMAIN.hex(),
+    "feed_head": FEED_HEAD_DOMAIN.hex(),
+    "feed_digest": FEED_DIGEST_DOMAIN.hex(),
+    "receipt": RECEIPT_DOMAIN.hex(),
+}
+
 BOUNDS = {
     "max_chain_depth": MAX_CHAIN_DEPTH,
     "max_grant_bytes": MAX_GRANT_BYTES,
@@ -273,6 +302,10 @@ BOUNDS = {
     "max_path_segments": MAX_PATH_SEGMENTS,
     "max_segment_len": MAX_SEGMENT_LEN,
     "max_invocation_resources": MAX_INVOCATION_RESOURCES,
+    "max_revocation_bytes": MAX_REVOCATION_BYTES,
+    "max_feed_head_bytes": MAX_FEED_HEAD_BYTES,
+    "max_feed_revocations": MAX_FEED_REVOCATIONS,
+    "max_receipt_bytes": MAX_RECEIPT_BYTES,
 }
 
 # denial name -> step number (spec "Verification")
@@ -773,7 +806,8 @@ def verify_inner(c):
     if any(i in revoked for i in ids):
         deny("Revoked")
     as_of = c["revocation_as_of"]
-    if as_of is None or max(now - as_of, 0) > 0:
+    bounds = c.get("revocation_bounds") or {"read": 0, "reversible": 0, "irreversible": 0}
+    if as_of is None or max(now - as_of, 0) > bounds[ib["effect"]]:
         deny("RevocationDataStale")
 
     # Step 9
@@ -820,10 +854,350 @@ def verify_inner(c):
 
 
 # ---------------------------------------------------------------------------
+# Revocations, feed heads and receipts (docs/spec/03-authority.md,
+# "Revocation records", "Feed head", "Receipts"): shapes, decoding, checks
+# ---------------------------------------------------------------------------
+
+REVOCATION_BODY_KEYS = ["v", "revoker", "grant", "revoked_at", "nonce"]
+HEAD_BODY_KEYS = ["v", "publisher", "seq", "as_of", "count", "digest"]
+RECEIPT_BODY_KEYS = ["v", "recipient", "invocation", "leaf", "allowed", "effect", "step", "calls",
+                     "cost", "bytes", "result", "time"]
+
+
+def decode_signed(data, limit, shape_ok):
+    """Decodes an object of the form {body, sig}: within the size limit, of the
+    stated shape, and exactly the canonical encoding of what it decodes to."""
+    if len(data) > limit:
+        raise DecodeFail("too_large")
+    try:
+        value = cbor_decode(data)
+    except Malformed as e:
+        raise DecodeFail("malformed", str(e))
+    if not shape_ok(value):
+        raise DecodeFail("malformed", "shape")
+    if encode(value) != data:
+        raise DecodeFail("malformed", "not the canonical encoding")
+    return value
+
+
+def revocation_shape_ok(r):
+    if not keys_are(r, ["body", "sig"]) or not is_bytes(r["sig"], 64):
+        return False
+    b = r["body"]
+    return (keys_are(b, REVOCATION_BODY_KEYS) and is_uint(b["v"], U64_MAX) and is_bytes(b["revoker"], 32)
+            and is_bytes(b["grant"], 32) and is_uint(b["revoked_at"], U64_MAX) and is_bytes(b["nonce"], 16))
+
+
+def head_shape_ok(h):
+    if not keys_are(h, ["body", "sig"]) or not is_bytes(h["sig"], 64):
+        return False
+    b = h["body"]
+    return (keys_are(b, HEAD_BODY_KEYS) and is_uint(b["v"], U64_MAX) and is_bytes(b["publisher"], 32)
+            and is_uint(b["seq"], U64_MAX) and is_uint(b["as_of"], U64_MAX)
+            and is_uint(b["count"], U64_MAX) and is_bytes(b["digest"], 32))
+
+
+def receipt_shape_ok(r):
+    if not keys_are(r, ["body", "sig"]) or not is_bytes(r["sig"], 64):
+        return False
+    b = r["body"]
+    if not keys_are(b, RECEIPT_BODY_KEYS):
+        return False
+    return (is_uint(b["v"], U64_MAX) and is_bytes(b["recipient"], 32) and is_bytes(b["invocation"], 32)
+            and is_bytes(b["leaf"], 32) and type(b["allowed"]) is bool
+            and (b["effect"] is None or b["effect"] in EFFECTS)
+            and (b["step"] is None or is_uint(b["step"], U64_MAX))
+            and is_uint(b["calls"], U64_MAX) and is_uint(b["cost"], U64_MAX)
+            and is_uint(b["bytes"], U64_MAX) and is_bytes(b["result"], 32) and is_uint(b["time"], U64_MAX))
+
+
+def decode_revocation(data):
+    return decode_signed(data, MAX_REVOCATION_BYTES, revocation_shape_ok)
+
+
+def decode_head(data):
+    return decode_signed(data, MAX_FEED_HEAD_BYTES, head_shape_ok)
+
+
+def decode_receipt(data):
+    return decode_signed(data, MAX_RECEIPT_BYTES, receipt_shape_ok)
+
+
+def revocation_id(encoded):
+    return hashlib.sha256(REVOCATION_ID_DOMAIN + encoded).digest()
+
+
+def invocation_id(encoded):
+    return hashlib.sha256(INVOCATION_ID_DOMAIN + encoded).digest()
+
+
+def feed_digest(ids):
+    return hashlib.sha256(FEED_DIGEST_DOMAIN + b"".join(sorted(ids))).digest()
+
+
+def check_revocation(data):
+    """'ok', 'DecodeError', 'UnknownVersion' or 'BadRevocationSignature'."""
+    try:
+        r = decode_revocation(data)
+    except DecodeFail:
+        return "DecodeError"
+    b = r["body"]
+    if b["v"] != REVOCATION_VERSION:
+        return "UnknownVersion"
+    if not verify_cached(b["revoker"], REVOCATION_DOMAIN + encode(b), r["sig"]):
+        return "BadRevocationSignature"
+    return "ok"
+
+
+def check_head(data, publisher):
+    """'ok', 'DecodeError', 'UnknownVersion', 'WrongPublisher' or 'BadHeadSignature'."""
+    try:
+        h = decode_head(data)
+    except DecodeFail:
+        return "DecodeError"
+    b = h["body"]
+    if b["v"] != FEED_HEAD_VERSION:
+        return "UnknownVersion"
+    if b["publisher"] != publisher:
+        return "WrongPublisher"
+    if not verify_cached(b["publisher"], FEED_HEAD_DOMAIN + encode(b), h["sig"]):
+        return "BadHeadSignature"
+    return "ok"
+
+
+def revocation_authorized(revocation, chain_bytes):
+    """True when the revoked grant is in the chain and the revoker issued that
+    grant or a grant above it."""
+    ids = [grant_id(raw) for raw in chain_bytes]
+    issuers = [decode_grant(raw)["body"]["iss"] for raw in chain_bytes]
+    b = revocation["body"]
+    if b["grant"] not in ids:
+        return False
+    index = ids.index(b["grant"])
+    return b["revoker"] in issuers[:index + 1]
+
+
+def feed_load(feed, now):
+    """Loads a feed. `feed` has hex strings 'revocations', 'head', 'publisher'
+    and 'last_seen_sequence' (an integer or None). Returns ('ok', head body,
+    list of decoded revocations) or (error name, None, None)."""
+    try:
+        head = decode_head(bytes.fromhex(feed["head"]))
+        revs = [decode_revocation(bytes.fromhex(h)) for h in feed["revocations"]]
+    except DecodeFail:
+        return "DecodeError", None, None
+    hb = head["body"]
+    if hb["v"] != FEED_HEAD_VERSION:
+        return "UnknownVersion", None, None
+    if hb["publisher"] != bytes.fromhex(feed["publisher"]):
+        return "WrongPublisher", None, None
+    if not verify_cached(hb["publisher"], FEED_HEAD_DOMAIN + encode(hb), head["sig"]):
+        return "BadHeadSignature", None, None
+    last = feed["last_seen_sequence"]
+    if last is not None and hb["seq"] <= last:
+        return "SequenceRollback", None, None
+    if hb["as_of"] > now:
+        return "FutureHead", None, None
+    if len(revs) > MAX_FEED_REVOCATIONS:
+        return "TooMany", None, None
+    ids = [revocation_id(encode(r)) for r in revs]
+    if len(set(ids)) != len(ids):
+        return "DuplicateRevocation", None, None
+    if hb["count"] != len(ids):
+        return "CountMismatch", None, None
+    if hb["digest"] != feed_digest(ids):
+        return "DigestMismatch", None, None
+    for r in revs:
+        rb = r["body"]
+        if rb["v"] != REVOCATION_VERSION:
+            return "UnknownVersion", None, None
+        if not verify_cached(rb["revoker"], REVOCATION_DOMAIN + encode(rb), r["sig"]):
+            return "BadRevocationSignature", None, None
+        if rb["revoked_at"] > hb["as_of"]:
+            return "RevokedAfterHead", None, None
+    return "ok", hb, revs
+
+
+def feed_step8(case):
+    """What step 8 learns from the case's feed: (revoked grant ids that an
+    authorized revocation names, the feed's as_of or None, feed error or None).
+    A feed that fails to load is no data."""
+    status, head, revs = feed_load(case["feed"], case["now"])
+    if status != "ok":
+        return [], None, status
+    chain_bytes = [bytes.fromhex(h) for h in case["chain"]]
+    ids = [grant_id(raw) for raw in chain_bytes]
+    issuers = [decode_grant(raw)["body"]["iss"] for raw in chain_bytes]
+    revoked = []
+    for index, gid in enumerate(ids):
+        for r in revs:
+            rb = r["body"]
+            if rb["grant"] == gid and rb["revoker"] in issuers[:index + 1]:
+                revoked.append(gid.hex())
+                break
+    return revoked, head["as_of"], None
+
+
+def verify_feed_case(case):
+    revoked, as_of, _ = feed_step8(case)
+    c = dict(case)
+    c["revoked"] = revoked
+    c["revocation_as_of"] = as_of
+    return verify_case(c)
+
+
+def receipt_well_formed(b):
+    if b["v"] != RECEIPT_VERSION:
+        return False
+    if b["allowed"]:
+        return b["effect"] is not None and b["step"] is None and b["calls"] == 1
+    return (b["effect"] is None and b["step"] is not None and 1 <= b["step"] <= 11
+            and b["calls"] == 0 and b["cost"] == 0 and b["bytes"] == 0 and b["result"] == bytes(32))
+
+
+def check_receipt(data, expected_recipient):
+    """'ok', 'DecodeError', 'Malformed', 'WrongRecipient' or 'BadSignature'."""
+    try:
+        r = decode_receipt(data)
+    except DecodeFail:
+        return "DecodeError"
+    b = r["body"]
+    if not receipt_well_formed(b):
+        return "Malformed"
+    if b["recipient"] != expected_recipient:
+        return "WrongRecipient"
+    if not verify_cached(b["recipient"], RECEIPT_DOMAIN + encode(b), r["sig"]):
+        return "BadSignature"
+    return "ok"
+
+
+def receipt_body_for(inv_bytes, verdict, result, time):
+    """The receipt body a verdict on the invocation produces, or the string
+    'DecisionMismatch'. `verdict` is {ok: true, leaf, invoker, nonce, effect,
+    cost, bytes} or {ok: false, step}."""
+    inv = decode_invocation(inv_bytes)
+    ib = inv["body"]
+    body = {"v": RECEIPT_VERSION, "recipient": ib["recipient"], "invocation": invocation_id(inv_bytes),
+            "leaf": ib["leaf"], "allowed": False, "effect": None, "step": None, "calls": 0, "cost": 0,
+            "bytes": 0, "result": bytes(32), "time": time}
+    if verdict["ok"]:
+        if not (bytes.fromhex(verdict["leaf"]) == ib["leaf"] and bytes.fromhex(verdict["invoker"]) == ib["invoker"]
+                and bytes.fromhex(verdict["nonce"]) == ib["nonce"]):
+            return "DecisionMismatch"
+        body.update({"allowed": True, "effect": verdict["effect"], "calls": 1, "cost": verdict["cost"],
+                     "bytes": verdict["bytes"], "result": result})
+    else:
+        body["step"] = verdict["step"]
+    return body
+
+
+def match_receipt(data, inv_bytes, verdict):
+    """'ok', 'InvocationMismatch', 'LeafMismatch', 'WrongRecipient', 'DecisionMismatch'
+    or 'OutcomeMismatch'."""
+    b = decode_receipt(data)["body"]
+    ib = decode_invocation(inv_bytes)["body"]
+    if b["invocation"] != invocation_id(inv_bytes):
+        return "InvocationMismatch"
+    if b["leaf"] != ib["leaf"]:
+        return "LeafMismatch"
+    if b["recipient"] != ib["recipient"]:
+        return "WrongRecipient"
+    expected = receipt_body_for(inv_bytes, verdict, b["result"], b["time"])
+    if expected == "DecisionMismatch":
+        return expected
+    return "ok" if b == expected else "OutcomeMismatch"
+
+
+# ---------------------------------------------------------------------------
+# The in-memory usage ledger (spec "Usage ledger"): a reference model
+# ---------------------------------------------------------------------------
+
+class RefLedger:
+    """One charge is atomic: every check is made before anything changes."""
+
+    def __init__(self, max_nonces, max_grants):
+        self.max_nonces = max_nonces
+        self.max_grants = max_grants
+        self.nonces = {}  # (invoker, nonce) -> horizon
+        self.usage = {}   # grant id -> {calls, cost, bytes, expires, window {second: count}}
+
+    @staticmethod
+    def _recent(u, now):
+        return sum(n for second, n in u["window"].items() if second + RATE_WINDOW_SECS > now)
+
+    def spent(self, gid, now):
+        u = self.usage.get(gid)
+        if u is None:
+            return {"calls": 0, "cost": 0, "bytes": 0, "recent_calls": 0}
+        return {"calls": u["calls"], "cost": u["cost"], "bytes": u["bytes"],
+                "recent_calls": self._recent(u, now)}
+
+    def charge(self, d):
+        ids = [bytes.fromhex(h) for h in d["chain_ids"]]
+        limits, expiries = d["chain_limits"], d["chain_expiries"]
+        if len(limits) != len(ids) or len(expiries) != len(ids) or len(set(ids)) != len(ids):
+            return "MalformedDecision"
+        now = d["now"]
+        for key in [k for k, horizon in self.nonces.items() if horizon < now]:
+            del self.nonces[key]
+        key = (bytes.fromhex(d["invoker"]), bytes.fromhex(d["nonce"]))
+        if key in self.nonces:
+            return "NonceReplayed"
+        new_records = 0
+        for gid, lim in zip(ids, limits):
+            if all(lim[k] is None for k in LIMIT_KINDS):
+                continue
+            if gid in self.usage:
+                spent = self.spent(gid, now)
+            else:
+                new_records += 1
+                spent = {"calls": 0, "cost": 0, "bytes": 0, "recent_calls": 0}
+            if (over(spent["calls"], 1, lim["calls"]) or over(spent["cost"], d["cost"], lim["cost"])
+                    or over(spent["bytes"], d["bytes"], lim["bytes"])
+                    or over(spent["recent_calls"], 1, lim["rate"])):
+                return "LimitExhausted"
+        if len(self.nonces) >= self.max_nonces:
+            return "LedgerFull"
+        if len(self.usage) + new_records > self.max_grants:
+            self.usage = {g: u for g, u in self.usage.items() if u["expires"] > now}
+            if len(self.usage) + new_records > self.max_grants:
+                return "LedgerFull"
+        self.nonces[key] = d["nonce_horizon"]
+        for gid, lim, exp in zip(ids, limits, expiries):
+            if all(lim[k] is None for k in LIMIT_KINDS):
+                continue
+            u = self.usage.setdefault(gid, {"calls": 0, "cost": 0, "bytes": 0, "expires": exp, "window": {}})
+            u["expires"] = max(u["expires"], exp)
+            u["calls"] += 1
+            u["cost"] += d["cost"]
+            u["bytes"] += d["bytes"]
+            u["window"] = {s: n for s, n in u["window"].items() if s + RATE_WINDOW_SECS > now}
+            u["window"][now] = u["window"].get(now, 0) + 1
+        return "ok"
+
+
+def run_ledger_case(case):
+    """Runs the steps of a ledger case; returns (results, queries) in the
+    shape stored in the case."""
+    ledger = RefLedger(case["config"]["max_nonces"], case["config"]["max_grants"])
+    results = [ledger.charge(step["decision"]) for step in case["steps"]]
+    q = case["queries"]
+    out = {
+        "nonces": [{"invoker": n["invoker"], "nonce": n["nonce"],
+                    "seen": (bytes.fromhex(n["invoker"]), bytes.fromhex(n["nonce"])) in ledger.nonces}
+                   for n in q["nonces"]],
+        "spent": [dict(s, **ledger.spent(bytes.fromhex(s["id"]), s["now"])) for s in q["spent"]],
+        "nonce_count": len(ledger.nonces),
+        "grant_count": len(ledger.usage),
+    }
+    return results, out
+
+
+# ---------------------------------------------------------------------------
 # Building vectors
 # ---------------------------------------------------------------------------
 
-SEEDS = {"owner": 1, "alice": 2, "bob": 3, "carol": 4, "dave": 5, "verifier": 9, "mallory": 20}
+SEEDS = {"owner": 1, "alice": 2, "bob": 3, "carol": 4, "dave": 5, "verifier": 9, "mallory": 20, "publisher": 30}
 NOW = 5000
 SESSION = bytes([0x55]) * 32
 
@@ -1395,7 +1769,552 @@ def make_invocations():
         "signed_bytes": r["signed"].hex(),
         "signature": r["sig"].hex(),
         "encoded": r["encoded"].hex(),
+        "id": invocation_id(r["encoded"]).hex(),
     } for label, r in [("standard", rec), ("minimal", rec2)]]
+
+
+# ---------------------------------------------------------------------------
+# Building the revocation, feed, receipt and ledger vectors
+# ---------------------------------------------------------------------------
+
+def sign_object(domain, signer, body):
+    signed = domain + encode(body)
+    sig = sign_cached(seed_of(signer), signed)
+    return {"signer": signer, "body": body, "signed": signed, "sig": sig,
+            "encoded": encode({"body": body, "sig": sig})}
+
+
+def make_revocation(signer, gid, revoked_at, nonce_byte, v=REVOCATION_VERSION, revoker=None):
+    body = {"v": v, "revoker": pub(revoker or signer), "grant": gid, "revoked_at": revoked_at,
+            "nonce": bytes([nonce_byte]) * 16}
+    record = sign_object(REVOCATION_DOMAIN, signer, body)
+    record["id"] = revocation_id(record["encoded"])
+    return record
+
+
+def make_head(signer, seq, as_of, revs, v=FEED_HEAD_VERSION, count=None, digest=None):
+    ids = [r["id"] for r in revs]
+    body = {"v": v, "publisher": pub(signer), "seq": seq, "as_of": as_of,
+            "count": len(revs) if count is None else count,
+            "digest": feed_digest(ids) if digest is None else digest}
+    return sign_object(FEED_HEAD_DOMAIN, signer, body)
+
+
+def make_receipt(signer, inv_record, verdict, v=RECEIPT_VERSION, result=bytes([0xCD]) * 32, time=NOW,
+                 **changes):
+    body = receipt_body_for(inv_record["encoded"], verdict, result, time)
+    assert body != "DecisionMismatch"
+    body["v"] = v
+    body.update(changes)
+    return sign_object(RECEIPT_DOMAIN, signer, body)
+
+
+def body_header_index(encoded):
+    key = b"\x64body"
+    assert encoded.count(key) == 1
+    return encoded.index(key) + len(key)
+
+
+def with_extra_field(encoded):
+    at = body_header_index(encoded)
+    header = encoded[at]
+    assert 0xA1 <= header <= 0xB6 and encoded[at + 1:at + 4] == b"\x61v\x01"
+    return (encoded[:at] + bytes([header + 1]) + encoded[at + 1:at + 4] + b"\x62zz\x00"
+            + encoded[at + 4:])
+
+
+def with_long_form_version(encoded):
+    at = body_header_index(encoded)
+    assert encoded[at + 1:at + 4] == b"\x61v\x01"
+    return encoded[:at + 3] + b"\x18\x01" + encoded[at + 4:]
+
+
+def with_array_for_bytes(encoded, value):
+    """The 32-byte string `value` written as an array of 32 integers instead."""
+    marker = b"\x58\x20" + value
+    assert encoded.count(marker) == 1
+    at = encoded.index(marker)
+    return encoded[:at] + b"\x98\x20" + b"".join(encode(x) for x in value) + encoded[at + 34:]
+
+
+def mutations(encoded, array_value=None):
+    out = [
+        ("trailing-byte", encoded + b"\x00"),
+        ("truncated", encoded[:-1]),
+        ("unknown-field", with_extra_field(encoded)),
+        ("long-form-integer", with_long_form_version(encoded)),
+        ("empty", b""),
+    ]
+    if array_value is not None:
+        out.append(("array-instead-of-bytes", with_array_for_bytes(encoded, array_value)))
+    return out
+
+
+def make_revocations_section():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    ids = [g["id"] for g in chain]
+    records = [
+        ("alice-revokes-her-grant", make_revocation("alice", ids[1], 4000, 1)),
+        ("owner-revokes-the-root-grant", make_revocation("owner", ids[0], 4500, 2)),
+        ("bob-revokes-the-last-grant", make_revocation("bob", ids[2], 4999, 3)),
+        ("revocation-at-time-zero", make_revocation("owner", bytes([0x42]) * 32, 0, 0)),
+        ("revocation-extreme-time", make_revocation("mallory", bytes([0xFF]) * 32, U64_MAX, 255)),
+    ]
+    out = []
+    for label, r in records:
+        out.append({
+            "label": label,
+            "signer": r["signer"],
+            "body": {"v": r["body"]["v"], "revoker": r["body"]["revoker"].hex(),
+                     "grant": r["body"]["grant"].hex(), "revoked_at": r["body"]["revoked_at"],
+                     "nonce": r["body"]["nonce"].hex()},
+            "signed_bytes": r["signed"].hex(),
+            "signature": r["sig"].hex(),
+            "encoded": r["encoded"].hex(),
+            "id": r["id"].hex(),
+        })
+    return out
+
+
+def make_heads_section():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    revs = [make_revocation("alice", chain[1]["id"], 4000, 1), make_revocation("owner", chain[0]["id"], 4500, 2)]
+    heads = [
+        ("empty-feed", make_head("publisher", 1, NOW, [])),
+        ("two-revocations", make_head("publisher", 7, NOW, revs)),
+        ("two-revocations-reversed-order", make_head("publisher", 8, NOW, list(reversed(revs)))),
+        ("extreme-numbers", make_head("publisher", U64_MAX, U64_MAX, [])),
+    ]
+    out = []
+    for label, h in heads:
+        b = h["body"]
+        out.append({
+            "label": label,
+            "signer": h["signer"],
+            "body": {"v": b["v"], "publisher": b["publisher"].hex(), "seq": b["seq"], "as_of": b["as_of"],
+                     "count": b["count"], "digest": b["digest"].hex()},
+            "signed_bytes": h["signed"].hex(),
+            "signature": h["sig"].hex(),
+            "encoded": h["encoded"].hex(),
+        })
+    return out
+
+
+def make_revocation_checks():
+    """Valid and invalid encodings of revocations, each with its outcome."""
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    good = make_revocation("alice", chain[1]["id"], 4000, 1)
+    cases = [("valid", good["encoded"], "ok")]
+    for label, raw in mutations(good["encoded"], array_value=chain[1]["id"]):
+        cases.append((label, raw, "DecodeError"))
+    cases.append(("oversize", bytes(MAX_REVOCATION_BYTES + 1), "DecodeError"))
+    bad_sig = bytearray(good["encoded"])
+    bad_sig[bad_sig.index(b"\x63sig\x58\x40") + 6] ^= 1
+    cases.append(("bad-signature", bytes(bad_sig), "BadRevocationSignature"))
+    forged = make_revocation("mallory", chain[1]["id"], 4000, 1, revoker="alice")
+    cases.append(("signed-by-someone-else", forged["encoded"], "BadRevocationSignature"))
+    for field, change in [("grant", lambda b: b.update(grant=chain[2]["id"])),
+                          ("revoked-at", lambda b: b.update(revoked_at=4001)),
+                          ("nonce", lambda b: b.update(nonce=bytes([9]) * 16)),
+                          ("revoker", lambda b: b.update(revoker=pub("owner")))]:
+        body = dict(good["body"])
+        change(body)
+        cases.append(("tampered-" + field, encode({"body": body, "sig": good["sig"]}), "BadRevocationSignature"))
+    cases.append(("unknown-version", make_revocation("alice", chain[1]["id"], 4000, 1, v=2)["encoded"],
+                  "UnknownVersion"))
+    return [{"label": label, "encoded": raw.hex(), "expect": expect} for label, raw, expect in cases]
+
+
+def make_authority_cases():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    ids = [g["id"] for g in chain]
+    raw = [g["encoded"].hex() for g in chain]
+    names = ["owner", "alice", "bob", "carol", "mallory"]
+    out = []
+    for revoker in names:
+        for target, gid in enumerate(ids):
+            r = make_revocation(revoker, gid, 4000, 1)
+            out.append({"label": "%s-revokes-grant-%d" % (revoker, target + 1), "chain": raw,
+                        "revocation": r["encoded"].hex(),
+                        "expect_authorized": revocation_authorized(decode_revocation(r["encoded"]), chain_bytes_of(raw))})
+    unknown = make_revocation("owner", bytes([0x77]) * 32, 4000, 1)
+    out.append({"label": "owner-revokes-a-grant-outside-the-chain", "chain": raw,
+                "revocation": unknown["encoded"].hex(), "expect_authorized": False})
+    return out
+
+
+def chain_bytes_of(raw_hex):
+    return [bytes.fromhex(h) for h in raw_hex]
+
+
+def feed_json(revs, head, publisher="publisher", last_seen=None):
+    return {"publisher": pub(publisher).hex(), "last_seen_sequence": last_seen,
+            "revocations": [r["encoded"].hex() for r in revs], "head": head["encoded"].hex()}
+
+
+def make_feed_cases():
+    """Whether a set and a head load, and why not."""
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    ids = [g["id"] for g in chain]
+    a = make_revocation("alice", ids[1], 4000, 1)
+    b = make_revocation("owner", ids[0], 4500, 2)
+    c = make_revocation("bob", ids[2], 4600, 3)
+    pubr = "publisher"
+    cases = []
+
+    def add(label, note, feed, expect, now=NOW):
+        cases.append({"label": label, "note": note, "now": now, "feed": feed, "expect": expect})
+
+    head = make_head(pubr, 3, NOW, [a, b])
+    add("complete-set", "the set the head describes", feed_json([a, b], head), "ok")
+    add("complete-set-other-order", "the same set in another order", feed_json([b, a], head), "ok")
+    add("empty-feed", "no revocations, a head that says so", feed_json([], make_head(pubr, 1, NOW, [])), "ok")
+    add("first-contact", "no last-seen sequence: nothing to roll back", feed_json([a, b], head, last_seen=None), "ok")
+    add("sequence-advances", "last seen 2, head 3", feed_json([a, b], head, last_seen=2), "ok")
+    add("sequence-equal", "last seen 3, head 3", feed_json([a, b], head, last_seen=3), "SequenceRollback")
+    add("sequence-lower", "last seen 9, head 3", feed_json([a, b], head, last_seen=9), "SequenceRollback")
+    add("truncated-set", "one record missing", feed_json([a], head), "CountMismatch")
+    add("padded-set", "one record more than the head lists", feed_json([a, b, c], head), "CountMismatch")
+    add("swapped-record", "same count, one record replaced", feed_json([a, c], head), "DigestMismatch")
+    add("empty-set-for-a-head-of-two", "everything dropped", feed_json([], head), "CountMismatch")
+    dup_head = make_head(pubr, 3, NOW, [a, a])
+    add("duplicate-record", "the same record twice, head over both", feed_json([a, a], dup_head), "DuplicateRevocation")
+    add("replayed-old-head", "an old head with a newer set", feed_json([a, b], make_head(pubr, 1, NOW - 500, [a])), "CountMismatch")
+    add("old-head-after-newer", "an old head, genuine, after a newer one was seen",
+        feed_json([a], make_head(pubr, 1, NOW - 500, [a]), last_seen=2), "SequenceRollback")
+    add("wrong-publisher", "head signed by another key",
+        feed_json([a, b], make_head("mallory", 3, NOW, [a, b]), publisher="publisher"), "WrongPublisher")
+    forged = make_head(pubr, 3, NOW, [a, b])
+    bad = bytearray(forged["encoded"])
+    bad[bad.index(b"\x63sig\x58\x40") + 6] ^= 1
+    add("head-bad-signature", "one bit of the head signature flipped",
+        {"publisher": pub(pubr).hex(), "last_seen_sequence": None,
+         "revocations": [a["encoded"].hex(), b["encoded"].hex()], "head": bytes(bad).hex()}, "BadHeadSignature")
+    tampered = dict(forged["body"], as_of=NOW - 1)
+    add("head-tampered-as-of", "as_of changed, signature kept",
+        {"publisher": pub(pubr).hex(), "last_seen_sequence": None,
+         "revocations": [a["encoded"].hex(), b["encoded"].hex()],
+         "head": encode({"body": tampered, "sig": forged["sig"]}).hex()}, "BadHeadSignature")
+    add("head-future", "as_of after the verifier's clock", feed_json([a, b], make_head(pubr, 3, NOW + 1, [a, b])),
+        "FutureHead")
+    add("head-unknown-version", "version 2", feed_json([a, b], make_head(pubr, 3, NOW, [a, b], v=2)), "UnknownVersion")
+    add("head-wrong-count", "count says 3, digest of two (signed)",
+        feed_json([a, b], make_head(pubr, 3, NOW, [a, b], count=3)), "CountMismatch")
+    add("head-wrong-digest", "digest of nothing (signed)",
+        feed_json([a, b], make_head(pubr, 3, NOW, [a, b], digest=feed_digest([]))), "DigestMismatch")
+    badrev = make_revocation("alice", ids[1], 4000, 1, revoker="bob")
+    add("record-bad-signature", "a record signed by someone else, head over the set",
+        feed_json([badrev], make_head(pubr, 3, NOW, [badrev])), "BadRevocationSignature")
+    oldrev = make_revocation("alice", ids[1], 4000, 1, v=2)
+    add("record-unknown-version", "a record of version 2, head over the set",
+        feed_json([oldrev], make_head(pubr, 3, NOW, [oldrev])), "UnknownVersion")
+    later = make_revocation("alice", ids[1], NOW + 1, 1)
+    add("record-after-the-head", "revoked_at after the head's as_of",
+        feed_json([later], make_head(pubr, 3, NOW, [later])), "RevokedAfterHead")
+    cases.append({"label": "undecodable-record", "note": "a record with a trailing byte", "now": NOW,
+                  "feed": {"publisher": pub(pubr).hex(), "last_seen_sequence": None,
+                           "revocations": [(a["encoded"] + b"\x00").hex()],
+                           "head": make_head(pubr, 3, NOW, [a])["encoded"].hex()},
+                  "expect": "DecodeError"})
+    return cases
+
+
+def feed_step_case(label, note, expect, revs, head=None, bounds=None, effect="reversible", feed_over=None,
+                   now=NOW, last_seen=None):
+    """A chain and invocation checked against a feed (step 8)."""
+    case, chain, _ = chain_case(label, note, expect, inv={"effect": effect}, now=now)
+    head = head or make_head("publisher", 1, now, revs)
+    case["feed"] = feed_json(revs, head, last_seen=last_seen)
+    if feed_over:
+        case["feed"].update(feed_over)
+    case["revocation_bounds"] = bounds or {"read": 0, "reversible": 0, "irreversible": 0}
+    del case["revoked"]
+    del case["revocation_as_of"]
+    return case, chain
+
+
+def make_feed_step_cases():
+    base, chain = feed_step_case("x", "x", ok(), [])
+    ids = [g["id"] for g in chain]
+    cases = []
+
+    def add(label, note, expect, revs, **kw):
+        case, _ = feed_step_case(label, note, expect, revs, **kw)
+        _, _, error = feed_step8(case)
+        if error is not None:
+            case["feed_error"] = error
+        cases.append(case)
+
+    add("feed-empty-and-current", "an empty feed as of now", ok(), [])
+    add("alice-revokes-the-middle-grant", "the issuer of grant 2 revokes it; the leaf is below",
+        refused("Revoked"), [make_revocation("alice", ids[1], 4000, 1)])
+    add("owner-revokes-the-root-grant", "the root issuer revokes grant 1",
+        refused("Revoked"), [make_revocation("owner", ids[0], 4000, 1)])
+    add("owner-revokes-the-last-grant", "the root issuer revokes the last grant",
+        refused("Revoked"), [make_revocation("owner", ids[2], 4000, 1)])
+    add("bob-revokes-the-last-grant", "the issuer of the last grant revokes it",
+        refused("Revoked"), [make_revocation("bob", ids[2], 4000, 1)])
+    add("alice-revokes-the-last-grant", "an issuer above the last grant revokes it",
+        refused("Revoked"), [make_revocation("alice", ids[2], 4000, 1)])
+    add("bob-revokes-a-grant-above-hers", "bob issued only grant 3; grant 2 is above it: ignored",
+        ok(), [make_revocation("bob", ids[1], 4000, 1)])
+    add("alice-revokes-the-root-grant", "alice issued grant 2, below grant 1: ignored",
+        ok(), [make_revocation("alice", ids[0], 4000, 1)])
+    add("carol-revokes-the-last-grant", "carol only holds grant 3: ignored",
+        ok(), [make_revocation("carol", ids[2], 4000, 1)])
+    add("mallory-revokes-the-middle-grant", "a stranger: ignored",
+        ok(), [make_revocation("mallory", ids[1], 4000, 1)])
+    add("revocation-of-an-unrelated-grant", "a grant outside the chain: nothing to do",
+        ok(), [make_revocation("owner", bytes([0x42]) * 32, 4000, 1)])
+
+    stale = make_head("publisher", 1, NOW - 60, [])
+    bounds = {"read": 100, "reversible": 50, "irreversible": 0}
+    add("data-60s-old-reversible-bound-50", "age 60 over the bound of 50", refused("RevocationDataStale"), [],
+        head=stale, bounds=bounds)
+    add("data-60s-old-reversible-bound-60", "age equal to the bound", ok(), [],
+        head=stale, bounds=dict(bounds, reversible=60))
+    add("data-60s-old-read-bound-100", "a read may use older data", ok(), [],
+        head=stale, bounds=bounds, effect="read")
+    add("data-1s-old-irreversible-bound-0", "stale at step 8, before step 10 refuses the class",
+        refused("RevocationDataStale"), [], head=make_head("publisher", 1, NOW - 1, []), bounds=bounds,
+        effect="irreversible")
+    add("data-current-irreversible", "fresh data reaches step 10, which refuses the class",
+        refused("EffectExceeded"), [], bounds=bounds, effect="irreversible")
+    add("default-bounds-refuse-any-age", "age 1 and the all-zero bounds",
+        refused("RevocationDataStale"), [], head=make_head("publisher", 1, NOW - 1, []))
+    add("revoked-before-stale-is-considered", "a revoked grant is refused as revoked",
+        refused("Revoked"), [make_revocation("owner", ids[0], 4000, 1)],
+        head=make_head("publisher", 1, NOW - 50, [make_revocation("owner", ids[0], 4000, 1)]), bounds=bounds)
+
+    # A feed that does not load is no data: step 8 refuses as stale.
+    rev = make_revocation("alice", ids[1], 4000, 1)
+    add("feed-with-a-truncated-set", "the head lists a record the set lacks: no data",
+        refused("RevocationDataStale"), [], head=make_head("publisher", 1, NOW, [rev]))
+    add("feed-with-a-rolled-back-sequence", "the head does not advance: no data",
+        refused("RevocationDataStale"), [rev], last_seen=1)
+    add("feed-from-the-wrong-publisher", "no data",
+        refused("RevocationDataStale"), [rev], feed_over={"publisher": pub("mallory").hex()})
+    return cases
+
+
+def decision_json(ids, limits, expiries, horizon, invoker, nonce_byte, now, cost=0, nbytes=0):
+    return {"chain_ids": [i.hex() for i in ids], "chain_limits": limits, "chain_expiries": expiries,
+            "nonce_horizon": horizon, "invoker": pub(invoker).hex(), "nonce": (bytes([nonce_byte]) * 16).hex(),
+            "now": now, "cost": cost, "bytes": nbytes}
+
+
+def ledger_case(label, note, steps, nonces=(), spent=(), max_nonces=65536, max_grants=16384):
+    case = {"label": label, "note": note,
+            "config": {"max_nonces": max_nonces, "max_grants": max_grants},
+            "steps": [{"decision": d, "expect": None} for d in steps],
+            "queries": {"nonces": [{"invoker": pub(i).hex(), "nonce": (bytes([n]) * 16).hex()} for i, n in nonces],
+                        "spent": [{"id": g.hex(), "now": t} for g, t in spent]}}
+    results, out = run_ledger_case(case)
+    for step, result in zip(case["steps"], results):
+        step["expect"] = result
+    case["queries"] = {"nonces": out["nonces"], "spent": out["spent"], "nonce_count": out["nonce_count"],
+                       "grant_count": out["grant_count"]}
+    return case
+
+
+def make_ledger_cases():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    ids = [g["id"] for g in chain]
+    sb = standard_bodies()
+    limits = [b["limits"] for b in sb]
+    exps = [b["exp"] for b in sb]
+    one = lim(calls=1)
+    rate2 = lim(rate=2)
+    nolim = lim()
+    cases = []
+    add = cases.append
+
+    def full(n, now, **kw):
+        return decision_json(ids, limits, exps, now + 60, "carol", n, now, **kw)
+
+    add(ledger_case(
+        "charge-the-whole-chain", "one charge: every grant, and the nonce",
+        [full(1, NOW, cost=1, nbytes=10)],
+        nonces=[("carol", 1), ("carol", 2)], spent=[(g, NOW) for g in ids]))
+    add(ledger_case(
+        "replay-of-a-recorded-nonce", "the second charge with the same nonce changes nothing",
+        [full(1, NOW, cost=1, nbytes=10), full(1, NOW + 1, cost=1, nbytes=10)],
+        nonces=[("carol", 1)], spent=[(ids[0], NOW + 1)]))
+    # Atomic: the last grant has one call; a charge of the chain after another charge of the last grant alone.
+    add(ledger_case(
+        "exhausted-last-grant-charges-nothing", "the third grant is used up: the first two stay untouched",
+        [decision_json([ids[2]], [one], [exps[2]], NOW + 60, "carol", 1, NOW, 1, 1),
+         decision_json(ids, [limits[0], limits[1], one], exps, NOW + 60, "carol", 2, NOW, 1, 1)],
+        nonces=[("carol", 1), ("carol", 2)], spent=[(g, NOW) for g in ids]))
+    add(ledger_case(
+        "exhausted-middle-grant-charges-nothing", "the middle grant is used up: the others stay untouched",
+        [decision_json([ids[1]], [lim(calls=1)], [exps[1]], NOW + 60, "carol", 1, NOW, 1, 1),
+         decision_json(ids, [limits[0], one, limits[2]], exps, NOW + 60, "carol", 2, NOW, 1, 1)],
+        nonces=[("carol", 2)], spent=[(g, NOW) for g in ids]))
+    add(ledger_case(
+        "cost-and-bytes-ceilings", "cost 100 and bytes 10000 on the last grant",
+        [full(1, NOW, cost=100, nbytes=10000), full(2, NOW, cost=1, nbytes=0), full(3, NOW, cost=0, nbytes=1)],
+        spent=[(ids[2], NOW)]))
+    add(ledger_case(
+        "rate-window-rolls", "a rate of 2: the window follows the time passed in",
+        [decision_json([ids[2]], [rate2], [9000], t + 60, "carol", n, t)
+         for n, t in [(1, 1000), (2, 1001), (3, 1002), (4, 1060), (5, 1060), (6, 1121)]],
+        spent=[(ids[2], 1000), (ids[2], 1060), (ids[2], 1121), (ids[2], 1180)]))
+    add(ledger_case(
+        "grants-without-limits-are-not-tracked", "a nonce is recorded, no usage record is made",
+        [decision_json([ids[0]], [nolim], [exps[0]], NOW + 60, "carol", 1, NOW)],
+        nonces=[("carol", 1)], spent=[(ids[0], NOW)]))
+    add(ledger_case(
+        "malformed-decisions", "lists of different lengths, and a grant twice",
+        [decision_json([ids[0]], [], [exps[0]], NOW + 60, "carol", 1, NOW),
+         decision_json([ids[0]], [one], [], NOW + 60, "carol", 2, NOW),
+         decision_json([ids[0], ids[0]], [one, one], [9000, 9000], NOW + 60, "carol", 3, NOW)],
+        nonces=[("carol", 1), ("carol", 2), ("carol", 3)]))
+    # Nonce retention: kept until the horizon, refused rather than forgotten when full.
+    nonce_steps = ([decision_json([], [], [], 160, "carol", n, 100) for n in range(1, 5)]
+                   + [decision_json([], [], [], 160, "carol", 9, 100),
+                      decision_json([], [], [], 220, "carol", 9, 160),
+                      decision_json([], [], [], 221, "carol", 9, 161),
+                      decision_json([], [], [], 221, "carol", 1, 161)])
+    add(ledger_case(
+        "nonces-are-kept-until-the-horizon", "four nonces with horizon 160, room for four: refuse, do not forget; "
+        "evict only after 160",
+        nonce_steps, nonces=[("carol", n) for n in (1, 2, 3, 4, 9)], max_nonces=4))
+    add(ledger_case(
+        "usage-records-go-when-the-grant-expires", "room for two grants: a third needs an expired one gone",
+        [decision_json([ids[0]], [one], [500], 160, "carol", 1, 100),
+         decision_json([ids[1]], [one], [600], 160, "carol", 2, 100),
+         decision_json([ids[2]], [one], [700], 460, "carol", 3, 400),
+         decision_json([ids[2]], [one], [700], 560, "carol", 3, 500)],
+        spent=[(ids[0], 500), (ids[1], 500), (ids[2], 500)], max_grants=2))
+    return cases
+
+
+def make_receipts_section():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    inv = sign_invocation("carol", standard_invocation(chain[-1]["id"]))
+    other = sign_invocation("carol", standard_invocation(chain[-1]["id"], nonce_byte=8))
+    leaf = chain[-1]["id"]
+    allowed = {"ok": True, "leaf": leaf.hex(), "invoker": pub("carol").hex(), "nonce": (bytes([7]) * 16).hex(),
+               "effect": "reversible", "cost": 1, "bytes": 10}
+    denied8 = {"ok": False, "denial": "Revoked", "step": 8}
+    denied8b = {"ok": False, "denial": "RevocationDataStale", "step": 8}
+    denied11 = {"ok": False, "denial": "LimitExhausted", "step": 11}
+    cases = []
+
+    def add(label, note, receipt, verdict, expect_verify, expect_matches, recipient="verifier", inv_record=None):
+        record = inv_record or inv
+        cases.append({
+            "label": label, "note": note, "receipt": receipt["encoded"].hex(),
+            "expected_recipient": pub(recipient).hex(), "invocation": record["encoded"].hex(),
+            "verdict": verdict, "expect_verify": expect_verify, "expect_matches": expect_matches})
+
+    good = make_receipt("verifier", inv, allowed)
+    add("allowed", "an allowed invocation, charged and performed", good, allowed, "ok", "ok")
+    add("denied-at-step-8", "a denial records the step only", make_receipt("verifier", inv, denied8), denied8, "ok", "ok")
+    add("two-denials-of-one-step-are-one-receipt", "the receipt for RevocationDataStale is the receipt for Revoked",
+        make_receipt("verifier", inv, denied8), denied8b, "ok", "ok")
+    add("denied-at-step-11", "limit exhausted", make_receipt("verifier", inv, denied11), denied11, "ok", "ok")
+    add("wrong-expected-recipient", "checked against another key", good, allowed, "WrongRecipient", "ok",
+        recipient="alice")
+    bad = bytearray(good["encoded"])
+    bad[bad.index(b"\x63sig\x58\x40") + 6] ^= 1
+    cases.append({"label": "bad-signature", "note": "one bit of the signature flipped",
+                  "receipt": bytes(bad).hex(), "expected_recipient": pub("verifier").hex(),
+                  "invocation": inv["encoded"].hex(), "verdict": allowed, "expect_verify": "BadSignature",
+                  "expect_matches": "ok"})
+    add("signed-by-someone-else", "mallory signs a receipt that names the verifier",
+        sign_object(RECEIPT_DOMAIN, "mallory", dict(good["body"])), allowed, "BadSignature", "ok")
+    tampered = dict(good["body"], cost=2)
+    add("tampered-cost", "cost changed, signature kept",
+        {"encoded": encode({"body": tampered, "sig": good["sig"]})}, allowed, "BadSignature", "OutcomeMismatch")
+    add("recorded-cost-differs-from-the-decision", "a genuine receipt of another cost",
+        sign_object(RECEIPT_DOMAIN, "verifier", dict(good["body"], cost=2)), allowed, "ok", "OutcomeMismatch")
+    add("allowed-without-effect", "inconsistent: allowed but no effect class",
+        sign_object(RECEIPT_DOMAIN, "verifier", dict(good["body"], effect=None)), allowed, "Malformed", "OutcomeMismatch")
+    add("allowed-with-a-step", "inconsistent: allowed with a refusing step",
+        sign_object(RECEIPT_DOMAIN, "verifier", dict(good["body"], step=3)), allowed, "Malformed", "OutcomeMismatch")
+    add("allowed-with-two-calls", "calls must be 1 when allowed",
+        sign_object(RECEIPT_DOMAIN, "verifier", dict(good["body"], calls=2)), allowed, "Malformed", "OutcomeMismatch")
+    den = make_receipt("verifier", inv, denied8)
+    for label, change in [("denial-with-a-cost", {"cost": 1}), ("denial-with-bytes", {"bytes": 1}),
+                          ("denial-with-a-call", {"calls": 1}), ("denial-with-a-result", {"result": bytes([1]) * 32}),
+                          ("denial-with-an-effect", {"effect": "read"}), ("denial-with-step-12", {"step": 12}),
+                          ("denial-with-step-0", {"step": 0}), ("denial-without-a-step", {"step": None})]:
+        add(label, "a denial that says more than the step, or an impossible step",
+            sign_object(RECEIPT_DOMAIN, "verifier", dict(den["body"], **change)), denied8, "Malformed",
+            "OutcomeMismatch")
+    add("unknown-version", "version 2", make_receipt("verifier", inv, allowed, v=2), allowed, "Malformed",
+        "OutcomeMismatch")
+    add("receipt-for-another-invocation", "a genuine receipt, checked against a different invocation",
+        good, allowed, "ok", "InvocationMismatch", inv_record=other)
+    add("receipt-for-an-allowed-invocation-checked-against-a-denial", "recorded as allowed, the verdict was a denial",
+        good, denied8, "ok", "OutcomeMismatch")
+    add("denial-checked-against-another-step", "recorded at step 8, the verdict says 11",
+        make_receipt("verifier", inv, denied8), denied11, "ok", "OutcomeMismatch")
+    add("wrong-leaf", "a genuine receipt naming another last grant",
+        sign_object(RECEIPT_DOMAIN, "verifier", dict(good["body"], leaf=bytes([1]) * 32)), allowed, "ok", "LeafMismatch")
+    add("decision-for-another-nonce", "the decision's nonce is not the invocation's", good,
+        dict(allowed, nonce=(bytes([8]) * 16).hex()), "ok", "DecisionMismatch")
+    return cases
+
+
+def make_receipt_records():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    inv = sign_invocation("carol", standard_invocation(chain[-1]["id"]))
+    allowed = {"ok": True, "leaf": chain[-1]["id"].hex(), "invoker": pub("carol").hex(),
+               "nonce": (bytes([7]) * 16).hex(), "effect": "reversible", "cost": 1, "bytes": 10}
+    records = [
+        ("allowed", make_receipt("verifier", inv, allowed)),
+        ("allowed-irreversible-extreme-amounts",
+         make_receipt("verifier", inv, dict(allowed, effect="irreversible", cost=U64_MAX, bytes=U64_MAX),
+                      time=U64_MAX)),
+        ("denied-at-step-8", make_receipt("verifier", inv, {"ok": False, "denial": "Revoked", "step": 8})),
+        ("denied-at-step-1", make_receipt("verifier", inv, {"ok": False, "denial": "ChainLimits", "step": 1})),
+        ("denied-at-step-11", make_receipt("verifier", inv, {"ok": False, "denial": "LimitExhausted", "step": 11})),
+    ]
+    out = []
+    for label, r in records:
+        b = r["body"]
+        out.append({
+            "label": label,
+            "signer": r["signer"],
+            "body": {"v": b["v"], "recipient": b["recipient"].hex(), "invocation": b["invocation"].hex(),
+                     "leaf": b["leaf"].hex(), "allowed": b["allowed"], "effect": b["effect"], "step": b["step"],
+                     "calls": b["calls"], "cost": b["cost"], "bytes": b["bytes"], "result": b["result"].hex(),
+                     "time": b["time"]},
+            "signed_bytes": r["signed"].hex(),
+            "signature": r["sig"].hex(),
+            "encoded": r["encoded"].hex(),
+        })
+    return out
+
+
+def make_receipt_checks():
+    chain = build_chain(standard_bodies(), STANDARD_SIGNERS)
+    inv = sign_invocation("carol", standard_invocation(chain[-1]["id"]))
+    allowed = {"ok": True, "leaf": chain[-1]["id"].hex(), "invoker": pub("carol").hex(),
+               "nonce": (bytes([7]) * 16).hex(), "effect": "reversible", "cost": 1, "bytes": 10}
+    good = make_receipt("verifier", inv, allowed)
+    cases = [("valid", good["encoded"], "ok")]
+    for label, raw in mutations(good["encoded"], array_value=chain[-1]["id"]):
+        cases.append((label, raw, "DecodeError"))
+    cases.append(("oversize", bytes(MAX_RECEIPT_BYTES + 1), "DecodeError"))
+    return [{"label": label, "encoded": raw.hex(), "expected_recipient": pub("verifier").hex(), "expect": expect}
+            for label, raw, expect in cases]
+
+
+def make_head_checks():
+    revs = []
+    good = make_head("publisher", 1, NOW, revs)
+    cases = [("valid", good["encoded"], "ok")]
+    for label, raw in mutations(good["encoded"], array_value=good["body"]["digest"]):
+        cases.append((label, raw, "DecodeError"))
+    cases.append(("oversize", bytes(MAX_FEED_HEAD_BYTES + 1), "DecodeError"))
+    cases.append(("unknown-version", make_head("publisher", 1, NOW, revs, v=2)["encoded"], "UnknownVersion"))
+    cases.append(("signed-by-another-publisher", make_head("mallory", 1, NOW, revs)["encoded"], "WrongPublisher"))
+    return [{"label": label, "encoded": raw.hex(), "publisher": pub("publisher").hex(), "expect": expect}
+            for label, raw, expect in cases]
 
 
 CONVENTIONS = [
@@ -1406,8 +2325,36 @@ CONVENTIONS = [
     "invocations: same shape; 'signed_bytes' = domains.invocation || CBOR of the body; 'encoded' is CBOR of {body, sig}.",
     "cases: run the invocation against the chain as encoded bytes (the entries of 'chain', root first), with: 'now' (Unix seconds), 'recipient' (the verifier's own key), 'session' (its session binding), 'trusted_roots', 'revoked' (grant ids), 'revocation_as_of' (the time the revocation data is complete as of, or null for none), 'seen_nonces' (invoker/nonce pairs already used) and 'preload' (totals already charged to grant ids). Policy: no clock skew, invocations at most 60 seconds old, revocation data must be as of now or later (bound 0 for every effect class), no other state.",
     "cases[].expect is {ok: true} or {ok: false, step, denial}: verification must stop at that step with that denial, reading the chain as bytes (a chain entry that does not decode is step 1 if over a bound, step 2 otherwise).",
+    "invocations also carry 'id' = SHA-256(domains.invocation_id || encoded), the value receipts cite.",
+    "revocations, feed_heads, receipts: same shape as grants. 'signed_bytes' = the domain || CBOR of the body; 'encoded' is CBOR of {body, sig}. A revocation's 'id' = SHA-256(domains.revocation_id || encoded). A feed head's digest = SHA-256(domains.feed_digest || the revocation ids sorted ascending, concatenated).",
+    "revocation_checks, feed_head_checks, receipt_checks: an encoding and the outcome of decoding and verifying it: 'ok', 'DecodeError' (not the canonical encoding of a value of that shape, or over the size bound), or the error name (UnknownVersion, BadRevocationSignature, WrongPublisher, BadHeadSignature, Malformed, WrongRecipient, BadSignature). For receipts 'expected_recipient' is the key the verifier expects; the checks run in the order stated.",
+    "authority_cases: whether the revoker of 'revocation' may revoke its grant for the given 'chain': the grant must be in the chain and the revoker must be the issuer of that grant or of a grant above it.",
+    "feed_cases: whether a feed (hex 'revocations', hex 'head', the trusted 'publisher', 'last_seen_sequence' or null, and the verifier's clock 'now') loads, in this order: decode (DecodeError), head version (UnknownVersion), publisher (WrongPublisher), head signature (BadHeadSignature), sequence above last seen (SequenceRollback), as_of not after now (FutureHead), at most max_feed_revocations (TooMany), no duplicate record (DuplicateRevocation), count (CountMismatch), digest (DigestMismatch), then for each record version (UnknownVersion), signature (BadRevocationSignature) and revoked_at not after as_of (RevokedAfterHead). 'expect' is 'ok' or the first error.",
+    "feed_step_cases: like cases, but step 8 reads a feed instead of 'revoked'/'revocation_as_of'. A feed that does not load is no data (step 8 refuses as stale; 'feed_error' says why). Otherwise the feed's as_of is the age basis and a grant counts as revoked when a record in the feed names it and its revoker issued that grant or a grant above it in the chain. 'revocation_bounds' gives the staleness bound in seconds per effect class.",
+    "receipt_cases: 'verdict' is the outcome the receipt should record: {ok: true, leaf, invoker, nonce, effect, cost, bytes} for an allowed invocation or {ok: false, denial, step} for a refusal. 'expect_verify' is the outcome of checking the receipt against 'expected_recipient'; 'expect_matches' the outcome of matching it to 'invocation' and 'verdict' (invocation id, last grant, recipient, then the whole body the verdict implies, with the receipt's own result digest and time; DecisionMismatch when the verdict is not for that invocation).",
+    "ledger_cases: a fresh in-memory ledger with 'config' bounds; each step charges one decision (chain_ids, chain_limits and chain_expiries in the same order, nonce_horizon, invoker, nonce, now, cost, bytes) and states the result: ok, NonceReplayed, LimitExhausted, LedgerFull or MalformedDecision. A refused charge changes nothing. 'queries' then state which nonces are remembered, what each grant has been charged (calls, cost, bytes, and calls within the 60 seconds before the query time) and how many nonces and grants have records.",
     "bounds and domains are normative constants; an implementation must use them.",
 ]
+
+
+def build_new_sections():
+    """The revocation, feed, receipt and ledger sections, each case checked
+    against the reference implementation as it is built."""
+    sections = {
+        "revocations": make_revocations_section(),
+        "feed_heads": make_heads_section(),
+        "receipts": make_receipt_records(),
+        "revocation_checks": make_revocation_checks(),
+        "feed_head_checks": make_head_checks(),
+        "receipt_checks": make_receipt_checks(),
+        "authority_cases": make_authority_cases(),
+        "feed_cases": make_feed_cases(),
+        "feed_step_cases": make_feed_step_cases(),
+        "receipt_cases": make_receipts_section(),
+        "ledger_cases": make_ledger_cases(),
+    }
+    check_new_sections(sections, {k["label"]: k for k in make_keys()})
+    return sections
 
 
 def build_document():
@@ -1418,19 +2365,18 @@ def build_document():
         if got != want:
             raise AssertionError("case %s: the reference verifier says %r, the case expects %r"
                                  % (c["label"], got, want))
-    return {
+    sections = build_new_sections()
+    doc = {
         "conventions": CONVENTIONS,
-        "domains": {
-            "grant": GRANT_DOMAIN.hex(),
-            "grant_id": GRANT_ID_DOMAIN.hex(),
-            "invocation": INVOCATION_DOMAIN.hex(),
-        },
+        "domains": DOMAINS,
         "bounds": BOUNDS,
         "keys": make_keys(),
         "grants": make_grants(),
         "invocations": make_invocations(),
         "cases": cases,
     }
+    doc.update(sections)
+    return doc
 
 
 def generate():
@@ -1452,11 +2398,112 @@ def expect_(cond, message):
         raise Failure(message)
 
 
+def hex_body(j, fields):
+    out = dict(j)
+    for f in fields:
+        out[f] = bytes.fromhex(j[f])
+    return out
+
+
+def check_signed_records(name, items, domain, byte_fields, signer_field, decode, keys):
+    for r in items:
+        w = name + "/" + r["label"]
+        body = hex_body(r["body"], byte_fields)
+        signed = domain + encode(body)
+        expect_(signed.hex() == r["signed_bytes"], w + ": signed_bytes")
+        sig = bytes.fromhex(r["signature"])
+        expect_(ed25519_verify(body[signer_field], signed, sig, strict=True), w + ": signature does not verify")
+        expect_(ed25519_sign(bytes.fromhex(keys[r["signer"]]["seed"]), signed) == sig, w + ": re-signing differs")
+        encoded = encode({"body": body, "sig": sig})
+        expect_(encoded.hex() == r["encoded"], w + ": encoded")
+        expect_(decode(encoded) == {"body": body, "sig": sig}, w + ": decode")
+        if "id" in r:
+            expect_(revocation_id(encoded).hex() == r["id"], w + ": id")
+
+
+def check_new_sections(doc, keys):
+    """Re-derives and runs every revocation, feed, receipt and ledger vector.
+    Used when building (against the data just made) and by `check`."""
+    counts = {}
+    check_signed_records("revocations", doc["revocations"], REVOCATION_DOMAIN,
+                         ["revoker", "grant", "nonce"], "revoker", decode_revocation, keys)
+    counts["revocations"] = len(doc["revocations"])
+    check_signed_records("feed_heads", doc["feed_heads"], FEED_HEAD_DOMAIN, ["publisher", "digest"],
+                         "publisher", decode_head, keys)
+    counts["feed_heads"] = len(doc["feed_heads"])
+    for h in doc["feed_heads"]:
+        # The digest is over the revocations the head was made for; the empty
+        # feed's digest is fixed.
+        if h["body"]["count"] == 0:
+            expect_(h["body"]["digest"] == feed_digest([]).hex(), "feed_heads/" + h["label"] + ": empty digest")
+    check_signed_records("receipts", doc["receipts"], RECEIPT_DOMAIN, ["recipient", "invocation", "leaf", "result"],
+                         "recipient", decode_receipt, keys)
+    counts["receipts"] = len(doc["receipts"])
+
+    for c in doc["revocation_checks"]:
+        got = check_revocation(bytes.fromhex(c["encoded"]))
+        expect_(got == c["expect"], "revocation_checks/%s: got %s, expected %s" % (c["label"], got, c["expect"]))
+    counts["revocation_checks"] = len(doc["revocation_checks"])
+    for c in doc["feed_head_checks"]:
+        got = check_head(bytes.fromhex(c["encoded"]), bytes.fromhex(c["publisher"]))
+        expect_(got == c["expect"], "feed_head_checks/%s: got %s, expected %s" % (c["label"], got, c["expect"]))
+    counts["feed_head_checks"] = len(doc["feed_head_checks"])
+    for c in doc["receipt_checks"]:
+        got = check_receipt(bytes.fromhex(c["encoded"]), bytes.fromhex(c["expected_recipient"]))
+        expect_(got == c["expect"], "receipt_checks/%s: got %s, expected %s" % (c["label"], got, c["expect"]))
+    counts["receipt_checks"] = len(doc["receipt_checks"])
+
+    for c in doc["authority_cases"]:
+        got = revocation_authorized(decode_revocation(bytes.fromhex(c["revocation"])), chain_bytes_of(c["chain"]))
+        expect_(got == c["expect_authorized"], "authority_cases/" + c["label"])
+    counts["authority_cases"] = len(doc["authority_cases"])
+
+    seen = set()
+    for c in doc["feed_cases"]:
+        got = feed_load(c["feed"], c["now"])[0]
+        expect_(got == c["expect"], "feed_cases/%s: got %s, expected %s" % (c["label"], got, c["expect"]))
+        seen.add(got)
+    expect_(seen == {"ok", "DecodeError", "UnknownVersion", "WrongPublisher", "BadHeadSignature",
+                     "SequenceRollback", "FutureHead", "DuplicateRevocation", "CountMismatch", "DigestMismatch",
+                     "BadRevocationSignature", "RevokedAfterHead"}, "feed_cases: every error but TooMany has a case")
+    counts["feed_cases"] = len(doc["feed_cases"])
+
+    for c in doc["feed_step_cases"]:
+        w = "feed_step_cases/" + c["label"]
+        got = verify_feed_case(c)
+        want = None if c["expect"]["ok"] else c["expect"]["denial"]
+        expect_(got == want, "%s: the verifier says %r, the case says %r" % (w, got, want))
+        if not c["expect"]["ok"]:
+            expect_(DENIALS[c["expect"]["denial"]] == c["expect"]["step"], w + ": step number")
+        expect_(c.get("feed_error") == feed_step8(c)[2], w + ": feed_error")
+    counts["feed_step_cases"] = len(doc["feed_step_cases"])
+
+    for c in doc["receipt_cases"]:
+        w = "receipt_cases/" + c["label"]
+        raw = bytes.fromhex(c["receipt"])
+        got = check_receipt(raw, bytes.fromhex(c["expected_recipient"]))
+        expect_(got == c["expect_verify"], "%s: verify gives %s, expected %s" % (w, got, c["expect_verify"]))
+        got = match_receipt(raw, bytes.fromhex(c["invocation"]), c["verdict"])
+        expect_(got == c["expect_matches"], "%s: matches gives %s, expected %s" % (w, got, c["expect_matches"]))
+    counts["receipt_cases"] = len(doc["receipt_cases"])
+
+    results_seen = set()
+    for c in doc["ledger_cases"]:
+        w = "ledger_cases/" + c["label"]
+        results, out = run_ledger_case(c)
+        expect_(results == [step["expect"] for step in c["steps"]], w + ": results")
+        expect_(out == c["queries"], w + ": queries")
+        results_seen.update(results)
+    expect_(results_seen == {"ok", "NonceReplayed", "LimitExhausted", "LedgerFull", "MalformedDecision"},
+            "ledger_cases: every charge result has a case")
+    counts["ledger_cases"] = len(doc["ledger_cases"])
+    return counts
+
+
 def check_doc(doc):
     n = rfc8032_self_check()
     counts = {}
-    expect_(doc["domains"] == {"grant": GRANT_DOMAIN.hex(), "grant_id": GRANT_ID_DOMAIN.hex(),
-                               "invocation": INVOCATION_DOMAIN.hex()}, "domains")
+    expect_(doc["domains"] == DOMAINS, "domains")
     expect_(doc["bounds"] == BOUNDS, "bounds")
 
     keys = {k["label"]: k for k in doc["keys"]}
@@ -1490,6 +2537,7 @@ def check_doc(doc):
         expect_(ed25519_sign(bytes.fromhex(keys[i["signer"]]["seed"]), signed) == sig, w + ": re-signing differs")
         encoded = encode({"body": body, "sig": sig})
         expect_(encoded.hex() == i["encoded"], w + ": encoded")
+        expect_(invocation_id(encoded).hex() == i["id"], w + ": id")
         expect_(decode_invocation(encoded) == {"body": body, "sig": sig}, w + ": decode")
     counts["invocations"] = len(doc["invocations"])
 
@@ -1512,6 +2560,7 @@ def check_doc(doc):
     expect_(not missing, "no case for denial(s): %s" % ", ".join(missing))
     counts["cases"] = len(doc["cases"])
     counts["denial_kinds"] = len(seen_denials)
+    counts.update(check_new_sections(doc, keys))
     return n, counts
 
 
