@@ -412,7 +412,7 @@ fn a_set_that_does_not_match_the_head_is_refused() {
 fn a_replayed_head_does_not_vouch_for_a_newer_set() {
     let a = revoke(&key(1), [1u8; 32], 100, 1);
     let b = revoke(&key(2), [2u8; 32], 100, 2);
-    let old_head = head_for(&[a.clone()], 1, NOW - 1_000);
+    let old_head = head_for(std::slice::from_ref(&a), 1, NOW - 1_000);
     // The newer set holds b as well: the old head does not describe it.
     assert_eq!(
         RevocationFeed::load(vec![a.clone(), b], &old_head, &check(None)).unwrap_err(),
@@ -434,7 +434,7 @@ fn duplicates_and_oversize_sets_are_refused() {
         FeedError::DuplicateRevocation
     );
 
-    let head = head_for(&[a.clone()], 1, NOW);
+    let head = head_for(std::slice::from_ref(&a), 1, NOW);
     let many = vec![a; MAX_FEED_REVOCATIONS + 1];
     assert_eq!(
         RevocationFeed::load(many, &head, &check(None)).unwrap_err(),
