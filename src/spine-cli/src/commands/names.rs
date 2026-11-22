@@ -3,7 +3,7 @@ use anyhow::{ensure, Context, Result};
 use clap::Subcommand;
 use ed25519_dalek::SigningKey;
 use spine_agent::AgentClient;
-use spine_name::{resource_id, Endpoint, NameRecord, SpineUri};
+use spine_name::{resource_id, Endpoint, NameRecord, SpineUri, MAX_RECORD_TTL_SECS};
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -31,8 +31,23 @@ pub enum NameAction {
         /// Content type signed into the resource id; `upload` must use the same one.
         #[arg(long, default_value = "application/octet-stream")]
         content_type: String,
+        /// Record lifetime in seconds, at most 604800 (7 days).
         #[arg(long, default_value_t = 3600)]
         ttl: u32,
+    },
+    /// Sign a tombstone that withdraws a name; publish it with `name publish`.
+    ///
+    /// The tombstone is for the name in RECORD, one sequence number higher, with
+    /// the maximum lifetime (7 days). It supersedes every lower-seq record for
+    /// the name. After it expires the name is simply unknown again, so it is not
+    /// permanent revocation.
+    Revoke {
+        /// The name's current record: its name is revoked, at its seq plus one.
+        record: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
     },
     Resolve {
         name: String,
@@ -50,6 +65,7 @@ pub enum NameAction {
         key: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Record lifetime in seconds, at most 604800 (7 days).
         #[arg(long, default_value_t = 3600)]
         ttl: u32,
     },
@@ -76,6 +92,9 @@ fn now() -> Result<u64> {
 }
 fn read_record(path: &Path) -> Result<NameRecord> {
     let record: NameRecord = serde_json::from_slice(&std::fs::read(path)?)?;
+    // Size, lifetime and the bound on `published_at` against this machine's
+    // clock, then the signature.
+    record.validate(now()?)?;
     record.verify()?;
     Ok(record)
 }
@@ -124,7 +143,10 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
         ttl,
     } = action
     {
-        ensure!(ttl > 0, "TTL must be positive");
+        ensure!(
+            ttl > 0 && ttl <= MAX_RECORD_TTL_SECS,
+            "TTL must be between 1 and {MAX_RECORD_TTL_SECS} seconds"
+        );
         ensure!(!output.exists(), "output already exists");
         if !key.exists() {
             let seed: [u8; 32] = rand::random();
@@ -151,6 +173,25 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
         println!("{}", record.name);
         return Ok(());
     }
+    if let NameAction::Revoke {
+        record,
+        key,
+        output,
+    } = action
+    {
+        ensure!(!output.exists(), "output already exists");
+        let current = read_record(&record)?;
+        let seq = current
+            .seq
+            .checked_add(1)
+            .context("record sequence is exhausted")?;
+        let signing = read_key(&key)?;
+        let mut tombstone = NameRecord::tombstone(current.name.clone(), seq, now()?)?;
+        tombstone.sign(&signing)?;
+        create_file(&output, &serde_json::to_vec_pretty(&tombstone)?, false)?;
+        println!("{}", tombstone.name);
+        return Ok(());
+    }
     let mut client = AgentClient::<TcpStream>::connect(&addr).await?;
     let result = match action {
         NameAction::Status => client.namespace_status().await?,
@@ -170,8 +211,8 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
             ttl,
         } => {
             ensure!(
-                ttl > 0 && !output.exists(),
-                "TTL must be positive and output must not exist"
+                ttl > 0 && ttl <= MAX_RECORD_TTL_SECS && !output.exists(),
+                "TTL must be between 1 and {MAX_RECORD_TTL_SECS} seconds and output must not exist"
             );
             let renewed = read_record(&record)?.renewed(&read_key(&key)?, now()?, ttl)?;
             // Save before publishing so a network failure cannot lose the new
@@ -205,7 +246,7 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
             create_file(&output, &resource.data, false)?;
             serde_json::json!({"name":name,"bytes":resource.data.len(),"content_type":resource.content_type})
         }
-        NameAction::Create { .. } => unreachable!(),
+        NameAction::Create { .. } | NameAction::Revoke { .. } => unreachable!(),
     };
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())

@@ -49,6 +49,79 @@ fn name_create_signs_content_and_refuses_to_overwrite_owner_files() {
     assert_eq!(std::fs::read(dir.path().join("owner.key")).unwrap(), before);
 }
 
+#[test]
+fn name_create_refuses_a_ttl_over_the_maximum_and_revoke_signs_a_tombstone() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_spine"))
+            .current_dir(dir.path())
+            .arg("name")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let too_long = (spine_name::MAX_RECORD_TTL_SECS + 1).to_string();
+    let output = run(&[
+        "create",
+        "--key",
+        "owner.key",
+        "--output",
+        "long.json",
+        "--endpoint",
+        "127.0.0.1:8080",
+        "--ttl",
+        &too_long,
+    ]);
+    assert!(!output.status.success());
+    assert!(!dir.path().join("long.json").exists());
+
+    let output = run(&[
+        "create",
+        "--key",
+        "owner.key",
+        "--output",
+        "record.json",
+        "--endpoint",
+        "127.0.0.1:8080",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record: spine_name::NameRecord =
+        serde_json::from_slice(&std::fs::read(dir.path().join("record.json")).unwrap()).unwrap();
+
+    let revoke = || {
+        run(&[
+            "revoke",
+            "record.json",
+            "--key",
+            "owner.key",
+            "--output",
+            "tombstone.json",
+        ])
+    };
+    let output = revoke();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let tombstone: spine_name::NameRecord =
+        serde_json::from_slice(&std::fs::read(dir.path().join("tombstone.json")).unwrap()).unwrap();
+    tombstone.verify().unwrap();
+    assert!(tombstone.is_tombstone());
+    assert_eq!(tombstone.name, record.name);
+    assert_eq!(tombstone.seq, record.seq + 1);
+    assert_eq!(tombstone.ttl_secs, spine_name::MAX_RECORD_TTL_SECS);
+    assert!(tombstone.supersedes(&record));
+    assert!(
+        !revoke().status.success(),
+        "an existing output is not overwritten"
+    );
+}
+
 // =============================================================================
 // INIT COMMAND TESTS
 // =============================================================================
