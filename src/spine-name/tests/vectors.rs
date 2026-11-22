@@ -9,11 +9,12 @@
 
 use std::path::Path;
 
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signature, Signer, SigningKey};
 use serde_json::Value;
 use spine_name::{
-    base32, content_hash, resource_id, verify_resource, Authority, NameError, NameKey, NameRecord,
-    Rel, SpineUri,
+    base32, content_hash, detect_equivocation, record_authorised, resource_id, verify_resource,
+    Authority, Current, NameError, NameKey, NameRecord, RecordAuthority, Rel, SpineUri, Succession,
+    SuccessionLog,
 };
 
 fn load() -> Value {
@@ -397,5 +398,189 @@ fn admission_applies_the_lifetime_rules_and_the_clock_bound() {
             },
             other => panic!("{w}: unknown expectation {other}"),
         }
+    }
+}
+
+fn any_key<'a>(doc: &'a Value, label: &str) -> &'a Value {
+    section(doc, "keys")
+        .iter()
+        .chain(section(doc, "succession_keys").iter())
+        .find(|k| k["label"] == label)
+        .unwrap_or_else(|| panic!("no key `{label}`"))
+}
+
+fn load_log(v: &Value) -> SuccessionLog {
+    let w = text(v, "label");
+    let mut entries = Vec::new();
+    for x in v["entries"].as_array().expect("entries") {
+        let e: Succession = serde_json::from_value(x["json"].clone())
+            .unwrap_or_else(|e| panic!("{w}: entry does not deserialize: {e}"));
+        assert_eq!(
+            hex(&e.signing_bytes()),
+            text(x, "signing_bytes"),
+            "{w}: signing_bytes"
+        );
+        assert_eq!(hex(&e.hash()), text(x, "hash"), "{w}: hash");
+        assert_eq!(
+            serde_json::to_value(&e).unwrap(),
+            x["json"],
+            "{w}: serde output"
+        );
+        entries.push(e);
+    }
+    SuccessionLog { entries }
+}
+
+fn inception_of(doc: &Value, v: &Value) -> [u8; 32] {
+    unhex32(text(any_key(doc, text(v, "inception")), "public"))
+}
+
+#[test]
+fn succession_logs_verify_to_the_stated_state() {
+    let doc = load();
+    for v in section(&doc, "succession_logs") {
+        let w = text(v, "label");
+        let log = load_log(v);
+        let state = log
+            .verify(&inception_of(&doc, v))
+            .unwrap_or_else(|e| panic!("{w}: must verify: {e}"));
+        let want = &v["state"];
+        assert_eq!(state.index(), want["index"].as_u64().unwrap(), "{w}: index");
+        assert_eq!(
+            state.head().map(|h| hex(h)),
+            want["head"].as_str().map(String::from),
+            "{w}: head"
+        );
+        let current = match state.current() {
+            Current::Key(k) => hex(&k),
+            Current::Retired => "retired".to_string(),
+        };
+        assert_eq!(current, text(want, "current"), "{w}: current");
+        assert_eq!(
+            state.commitment().map(|c| hex(c)),
+            want["commitment"].as_str().map(String::from),
+            "{w}: commitment"
+        );
+        let superseded: Vec<String> = state.superseded_keys().iter().map(|k| hex(k)).collect();
+        let want_superseded: Vec<String> =
+            serde_json::from_value(want["superseded"].clone()).unwrap();
+        assert_eq!(superseded, want_superseded, "{w}: superseded keys");
+    }
+}
+
+#[test]
+fn invalid_succession_logs_are_refused_for_the_stated_reason() {
+    let doc = load();
+    for v in section(&doc, "invalid_succession_logs") {
+        let w = text(v, "label");
+        let log = load_log(v);
+        let err = log
+            .verify(&inception_of(&doc, v))
+            .expect_err("must be refused");
+        assert_eq!(err.reason(), text(v, "reason"), "{w}: {err}");
+    }
+}
+
+#[test]
+fn equivocation_is_detected_as_specified() {
+    let doc = load();
+    let logs: Vec<(&str, SuccessionLog, [u8; 32])> = section(&doc, "succession_logs")
+        .iter()
+        .chain(section(&doc, "invalid_succession_logs").iter())
+        .map(|v| (text(v, "label"), load_log(v), inception_of(&doc, v)))
+        .collect();
+    let find = |label: &str| {
+        logs.iter()
+            .find(|(l, _, _)| *l == label)
+            .unwrap_or_else(|| panic!("no log `{label}`"))
+    };
+    for v in section(&doc, "succession_equivocation") {
+        let w = text(v, "label");
+        let (_, a, inception) = find(text(v, "a"));
+        let (_, b, _) = find(text(v, "b"));
+        let got = detect_equivocation(inception, a, b);
+        match text(v, "expected") {
+            "invalid" => assert_eq!(
+                got.expect_err("one log is invalid").reason(),
+                text(v, "reason"),
+                "{w}"
+            ),
+            "none" => assert_eq!(got, Ok(None), "{w}"),
+            "equivocation" => {
+                let proof = got.unwrap().expect("a fork");
+                assert_eq!(Some(proof.index()), v["index"].as_u64(), "{w}: index");
+                assert_eq!(proof.verify(inception), Ok(()), "{w}: proof");
+            }
+            other => panic!("{w}: unknown expectation {other}"),
+        }
+    }
+}
+
+#[test]
+fn records_are_authorised_by_the_log_position() {
+    let doc = load();
+    let mut states = std::collections::BTreeMap::new();
+    for v in section(&doc, "succession_logs") {
+        let state = load_log(v).verify(&inception_of(&doc, v)).unwrap();
+        states.insert(text(v, "label").to_string(), state);
+    }
+    for v in section(&doc, "succession_records") {
+        let w = text(v, "label");
+        let record: NameRecord = serde_json::from_value(v["json"].clone())
+            .unwrap_or_else(|e| panic!("{w}: json does not deserialize: {e}"));
+        assert_eq!(
+            hex(&record.signing_bytes()),
+            text(v, "signing_bytes"),
+            "{w}: signing_bytes"
+        );
+        assert_eq!(
+            hex(&record.signature),
+            text(v, "signature"),
+            "{w}: signature"
+        );
+        let signer =
+            SigningKey::from_bytes(&unhex32(text(any_key(&doc, text(v, "signer")), "seed")));
+        let resigned: Signature = signer.sign(&record.signing_bytes());
+        assert_eq!(
+            hex(&resigned.to_bytes()),
+            text(v, "signature"),
+            "{w}: re-signed signature"
+        );
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            v["json"],
+            "{w}: serde output"
+        );
+
+        let state = &states[text(v, "log")];
+        let got = record_authorised(&record, Some(state));
+        match (text(v, "expected"), got) {
+            ("authorised", RecordAuthority::Authorised) => {}
+            ("need_log", RecordAuthority::NeedLog { claimed, held }) => {
+                assert_eq!(claimed.index, v["claimed_index"].as_u64().unwrap(), "{w}");
+                assert_eq!(held, v["held_index"].as_u64().unwrap(), "{w}");
+            }
+            ("refused", RecordAuthority::Refused(refusal)) => {
+                assert_eq!(refusal.reason(), text(v, "reason"), "{w}");
+            }
+            (want, got) => panic!("{w}: expected {want}, got {got:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_name_without_a_log_is_authorised_exactly_when_verify_passes() {
+    let doc = load();
+    for v in section(&doc, "records")
+        .iter()
+        .chain(section(&doc, "invalid_records").iter())
+    {
+        let w = text(v, "label");
+        let record: NameRecord = serde_json::from_value(v["json"].clone()).unwrap();
+        assert_eq!(
+            record_authorised(&record, None) == RecordAuthority::Authorised,
+            record.verify().is_ok(),
+            "{w}"
+        );
     }
 }

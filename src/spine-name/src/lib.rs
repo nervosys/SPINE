@@ -74,6 +74,7 @@ pub mod record;
 pub mod resolver;
 pub mod routing;
 pub mod store;
+pub mod succession;
 pub mod uri;
 
 pub use cache::{CacheLookup, CacheStats, ResolverCache};
@@ -87,6 +88,11 @@ pub use record::{
 pub use resolver::{LocalResolver, Provenance, Resolution, Resolver};
 pub use routing::{NodeInfo, RoutingTable, DEFAULT_K};
 pub use store::{PutOutcome, RecordStore, DEFAULT_CAPACITY};
+pub use succession::{
+    detect_equivocation, key_commitment, record_authorised, record_head_claim, Current,
+    Equivocation, HeadClaim, RecordAuthority, Refusal, State as SuccessionState, Succession,
+    SuccessionError, SuccessionKind, SuccessionLog, MAX_SUCCESSION_ENTRIES, SUCCESSION_META_KEY,
+};
 pub use uri::{Authority, SpineUri, SCHEME};
 
 use sha2::{Digest, Sha256};

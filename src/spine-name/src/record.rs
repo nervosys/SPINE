@@ -367,10 +367,23 @@ impl NameRecord {
             .name
             .public_key()
             .ok_or_else(|| NameError::NotSignable(self.name.to_string()))?;
+        self.verify_with(pk_bytes)
+    }
+
+    /// Verify the signature against `key` instead of the key in the name, then
+    /// apply the lifetime rules, exactly as [`NameRecord::verify`] does (which
+    /// is `verify_with` the name's own key). The name must still be a `did:`
+    /// name. The caller is responsible for knowing that `key` may sign for the
+    /// name: the key succession log of the name says so
+    /// (`crate::succession::record_authorised`).
+    pub fn verify_with(&self, key: &[u8; 32]) -> Result<(), NameError> {
+        if self.name.public_key().is_none() {
+            return Err(NameError::NotSignable(self.name.to_string()));
+        }
         if self.signature.len() != 64 {
             return Err(NameError::BadSignature);
         }
-        let vk = VerifyingKey::from_bytes(pk_bytes).map_err(|_| NameError::BadSignature)?;
+        let vk = VerifyingKey::from_bytes(key).map_err(|_| NameError::BadSignature)?;
         let mut sig = [0u8; 64];
         sig.copy_from_slice(&self.signature);
         vk.verify_strict(&self.signing_bytes(), &Signature::from_bytes(&sig))

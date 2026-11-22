@@ -22,6 +22,8 @@ What it implements:
 * Names: canonical `spine://` string form and the DHT routing key.
 * Name records: the v2 signed byte layout, signing and strict verification.
 * Resource ids.
+* Key succession: entries, logs, equivocation and record authorisation
+  (spec section 10).
 
 `generate` is deterministic: fixed seeds, sorted keys, LF line ends, no times.
 `check` re-derives every value in a vector file and exits non-zero on any
@@ -981,6 +983,499 @@ def make_admission(records, invalid_records):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Key succession (spec section 10)
+# ---------------------------------------------------------------------------
+
+SUCC_DOMAIN = b"spine-name-succession-v1\x00"
+SUCC_ENTRY_DOMAIN = b"spine-name-succession-entry-v1\x00"
+SUCC_COMMIT_DOMAIN = b"spine-name-succession-next-v1\x00"
+MAX_SUCC_ENTRIES = 64
+SUCC_META_KEY = "spine.succession"
+SUCC_BASE_TIME = 1700000000
+
+# Seeds of the keys that become current in the succession logs, and of two
+# keys that fork them.
+SUCC_SEEDS = {
+    "n1": bytes([0x11]) * 32, "n2": bytes([0x12]) * 32, "n3": bytes([0x13]) * 32,
+    "n4": bytes([0x14]) * 32, "n5": bytes([0x15]) * 32,
+    "m1": bytes([0x21]) * 32, "m2": bytes([0x22]) * 32,
+    "x1": bytes([0x31]) * 32,
+}
+
+
+def commitment_of(public):
+    return hashlib.sha256(SUCC_COMMIT_DOMAIN + public).digest()
+
+
+def _opt32(value):
+    return b"\x00" if value is None else b"\x01" + value
+
+
+def _b32opt(value):
+    return None if value is None else b32_encode(value)
+
+
+def succ_signing_bytes(e):
+    """Signed bytes of an entry given in its JSON form (keys and hashes base32)."""
+    out = bytearray(SUCC_DOMAIN)
+    out += b32_decode(e["inception_key"])
+    out += e["index"].to_bytes(8, "big")
+    out += _opt32(None if e["prev"] is None else b32_decode(e["prev"]))
+    out += bytes([{"rotate": 0, "retire": 1}[e["kind"]]])
+    out += b32_decode(e["key"])
+    out += _opt32(None if e["commitment"] is None else b32_decode(e["commitment"]))
+    out += e["effective_at"].to_bytes(8, "big")
+    return bytes(out)
+
+
+def succ_hash(e):
+    sig = b32_decode(e["signature"]) or b""
+    return hashlib.sha256(SUCC_ENTRY_DOMAIN + succ_signing_bytes(e) + sig).digest()
+
+
+def succ_entry(inception, index, prev, kind, key, commitment, at, signer_seed,
+               signature=None):
+    """Build the JSON form of an entry. `inception`, `prev`, `key` and
+    `commitment` are raw bytes or None; the signature is made with `signer_seed`
+    unless one is given."""
+    e = {
+        "inception_key": b32_encode(inception),
+        "index": index,
+        "prev": _b32opt(prev),
+        "kind": kind,
+        "key": b32_encode(key),
+        "commitment": _b32opt(commitment),
+        "effective_at": at,
+        "signature": "",
+    }
+    if signature is None:
+        signature = ed25519_sign(signer_seed, succ_signing_bytes(e))
+    e["signature"] = b32_encode(signature)
+    return e
+
+
+def succ_vec(e):
+    """The vector form of an entry: JSON, signed bytes and hash."""
+    return {"json": e, "signing_bytes": succ_signing_bytes(e).hex(),
+            "hash": succ_hash(e).hex()}
+
+
+class SuccFail(Exception):
+    """A log, entry or claim is refused; the message is the reason."""
+
+
+def succ_initial(inception):
+    return {"inception": inception, "index": 0, "head": None, "current": inception.hex(),
+            "commitment": None, "effective_at": 0, "previous": []}
+
+
+def succ_apply(state, e):
+    if state["current"] == "retired":
+        raise SuccFail("after_retire")
+    expected = state["index"] + 1
+    if e["index"] != expected:
+        raise SuccFail("index_gap")
+    if b32_decode(e["inception_key"]) != state["inception"]:
+        raise SuccFail("inception_mismatch")
+    prev = None if e["prev"] is None else b32_decode(e["prev"]).hex()
+    if prev != state["head"]:
+        raise SuccFail("prev_mismatch")
+    if (e["kind"] == "rotate") == (e["commitment"] is None):
+        raise SuccFail("malformed")
+    key = b32_decode(e["key"])
+    if e["index"] == 1 and e["kind"] == "retire" and key != state["inception"]:
+        raise SuccFail("malformed")
+    if e["effective_at"] < state["effective_at"]:
+        raise SuccFail("time_regression")
+    signer = bytes.fromhex(state["current"])
+    sig = b32_decode(e["signature"])
+    if sig is None or len(sig) != 64 or not ed25519_verify(
+            signer, succ_signing_bytes(e), sig, strict=True):
+        raise SuccFail("bad_signature")
+    if state["commitment"] is not None:
+        if commitment_of(key).hex() != state["commitment"]:
+            raise SuccFail("commitment_mismatch")
+    if e["kind"] == "rotate" and (key == signer or key.hex() in state["previous"]):
+        raise SuccFail("key_reuse")
+    retire = e["kind"] == "retire"
+    return {
+        "inception": state["inception"],
+        "index": e["index"],
+        "head": succ_hash(e).hex(),
+        "current": "retired" if retire else key.hex(),
+        "commitment": None if retire else b32_decode(e["commitment"]).hex(),
+        "effective_at": e["effective_at"],
+        "previous": state["previous"] + [signer.hex()],
+    }
+
+
+def succ_verify(inception, entries):
+    """Replay a list of JSON entries; returns the state or raises SuccFail."""
+    if len(entries) > MAX_SUCC_ENTRIES:
+        raise SuccFail("too_many_entries")
+    state = succ_initial(inception)
+    for e in entries:
+        state = succ_apply(state, e)
+    return state
+
+
+def succ_state_json(state):
+    return {"index": state["index"], "head": state["head"], "current": state["current"],
+            "commitment": state["commitment"], "superseded": list(state["previous"])}
+
+
+def succ_equivocation(inception, a, b):
+    """('none', None), ('equivocation', index); raises SuccFail if a log is invalid."""
+    succ_verify(inception, a)
+    succ_verify(inception, b)
+    for i, (x, y) in enumerate(zip(a, b)):
+        if x != y:
+            return "equivocation", i + 1
+    return "none", None
+
+
+def claim_value(index, head_hex):
+    return "%d:%s" % (index, head_hex)
+
+
+def parse_claim(value):
+    """(index, head hex) or raises SuccFail('malformed_claim')."""
+    if ":" not in value:
+        raise SuccFail("malformed_claim")
+    idx, head = value.split(":", 1)
+    if (not idx or not all(c in "0123456789" for c in idx) or idx[0] == "0"
+            or int(idx) > MAX_SUCC_ENTRIES):
+        raise SuccFail("malformed_claim")
+    if len(head) != 64 or not all(c in "0123456789abcdef" for c in head):
+        raise SuccFail("malformed_claim")
+    return int(idx), head
+
+
+def record_authorisation(rec, signature, state):
+    """('authorised',), ('need_log', claimed, held) or ('refused', reason)."""
+    parts = parse_name(rec["name"])
+    if parts["kind"] != "did":
+        return ("refused", "record_invalid")
+    name_key = bytes.fromhex(parts["detail"]["key"])
+    if name_key != state["inception"]:
+        return ("refused", "wrong_name")
+    claims = [v for k, v in rec["meta"] if k == SUCC_META_KEY]
+    if claims:
+        try:
+            index, head = parse_claim(claims[0])
+        except SuccFail:
+            return ("refused", "malformed_claim")
+        if index > state["index"]:
+            return ("need_log", index, state["index"])
+        if index < state["index"]:
+            return ("refused", "stale_claim")
+        if state["head"] != head:
+            return ("refused", "head_conflict")
+    if state["current"] == "retired":
+        return ("refused", "retired")
+
+    def verifies(public):
+        return (ed25519_verify(public, signing_bytes(rec), signature, strict=True)
+                and lifetime_error(rec) is None)
+
+    current = bytes.fromhex(state["current"])
+    if ed25519_verify(current, signing_bytes(rec), signature, strict=True):
+        if lifetime_error(rec) is None:
+            return ("authorised",)
+        return ("refused", "record_invalid")
+    if any(verifies(bytes.fromhex(old)) for old in state["previous"]):
+        return ("refused", "superseded_key")
+    return ("refused", "bad_signature")
+
+
+def succ_public(label, keys):
+    if label in SUCC_SEEDS:
+        return ed25519_public(SUCC_SEEDS[label])
+    return bytes.fromhex(keys[label]["public"])
+
+
+def make_succession_keys():
+    return [{"label": label, "seed": seed.hex(), "public": ed25519_public(seed).hex()}
+            for label, seed in sorted(SUCC_SEEDS.items())]
+
+
+def seed_of(label, keys):
+    if label in SUCC_SEEDS:
+        return SUCC_SEEDS[label]
+    return bytes.fromhex(keys[label]["seed"])
+
+
+def build_chain(inception_seed, seeds, count, retire_last=False):
+    """Entries `start`.. of a chain: entry i (1-based) is signed by key i-1
+    (key 0 is the inception key), reveals key i and commits to key i+1. With
+    `retire_last` the final entry is a retire revealing key `count`."""
+    pubs = [ed25519_public(inception_seed)] + [ed25519_public(s) for s in seeds]
+    inception = pubs[0]
+    signers = [inception_seed] + list(seeds)
+    entries = []
+    for i in range(1 + len(entries), count + 1):
+        prev = succ_hash(entries[-1]) if entries else None
+        last = retire_last and i == count
+        entries.append(succ_entry(
+            inception, i, prev, "retire" if last else "rotate", pubs[i],
+            None if last else commitment_of(pubs[i + 1]),
+            SUCC_BASE_TIME + 100 * i, signers[i - 1]))
+    return entries
+
+
+def bound_seeds(n):
+    return [hashlib.sha256(b"spine-name-succession-bound-%d" % i).digest()
+            for i in range(1, n + 1)]
+
+
+def make_succession(keys):
+    """Returns (succession_keys, logs, invalid_logs, equivocation, records)."""
+    k0 = SEEDS[0]
+    inception = ed25519_public(k0)
+    n = [None] + [SUCC_SEEDS["n%d" % i] for i in range(1, 6)]
+    logs = []
+    entries_of = {}
+
+    def add_log(label, entries, inception_label="k0"):
+        entries_of[label] = entries
+        state = succ_verify(inception, entries)
+        logs.append({"label": label, "inception": inception_label,
+                     "entries": [succ_vec(e) for e in entries],
+                     "state": succ_state_json(state)})
+
+    add_log("inception only", [])
+    add_log("one rotation", build_chain(k0, n[1:], 1))
+    add_log("two rotations", build_chain(k0, n[1:], 2))
+    three = build_chain(k0, n[1:], 3)
+    add_log("three rotations", three)
+    add_log("rotate then retire", build_chain(k0, n[1:], 2, retire_last=True))
+    add_log("retire at once", [succ_entry(
+        inception, 1, None, "retire", inception, None, SUCC_BASE_TIME + 100, k0)])
+    add_log("at the bound", build_chain(k0, bound_seeds(MAX_SUCC_ENTRIES + 1),
+                                        MAX_SUCC_ENTRIES))
+    m = [SUCC_SEEDS["m1"], SUCC_SEEDS["m2"]]
+    add_log("fork at index 1", build_chain(k0, m, 1))
+    fork2 = [three[0]] + [succ_entry(
+        inception, 2, succ_hash(three[0]), "rotate",
+        ed25519_public(n[2]), commitment_of(ed25519_public(n[3])),
+        SUCC_BASE_TIME + 207, n[1])]
+    add_log("fork at index 2", fork2)
+
+    invalid = []
+
+    def add_bad(label, entries, reason, inception_label="k0", inception_pub=None):
+        try:
+            succ_verify(inception_pub or inception, entries)
+        except SuccFail as e:
+            assert str(e) == reason, "%s: expected %s, got %s" % (label, reason, e)
+        else:
+            raise AssertionError(label + ": accepted")
+        invalid.append({"label": label, "inception": inception_label,
+                        "entries": [succ_vec(e) for e in entries], "reason": reason})
+
+    def entry(index, prev_entries, kind, key_seed, next_seed, at, signer_seed, inc=None,
+              prev="auto"):
+        if prev == "auto":
+            prev = (succ_hash(prev_entries[-1])
+                    if prev_entries else None)
+        return succ_entry(
+            inc or inception, index, prev, kind, ed25519_public(key_seed),
+            None if next_seed is None else commitment_of(ed25519_public(next_seed)),
+            at, signer_seed)
+
+    one = build_chain(k0, n[1:], 1)
+    add_bad("entry 1 signed by the revealed key",
+            [entry(1, [], "rotate", n[1], n[2], SUCC_BASE_TIME + 100, n[1])],
+            "bad_signature")
+    add_bad("entry 2 signed by the inception key",
+            one + [entry(2, one, "rotate", n[2], n[3], SUCC_BASE_TIME + 200, k0)],
+            "bad_signature")
+    add_bad("entry 2 reveals an uncommitted key",
+            one + [entry(2, one, "rotate", n[4], n[3], SUCC_BASE_TIME + 200, n[1])],
+            "commitment_mismatch")
+    add_bad("retire reveals an uncommitted key",
+            one + [entry(2, one, "retire", SUCC_SEEDS["x1"], None, SUCC_BASE_TIME + 200,
+                         n[1])],
+            "commitment_mismatch")
+    add_bad("first entry has index 2",
+            [entry(2, [], "rotate", n[1], n[2], SUCC_BASE_TIME + 100, k0)], "index_gap")
+    add_bad("index gap from 1 to 3",
+            one + [entry(3, one, "rotate", n[2], n[3], SUCC_BASE_TIME + 200, n[1])],
+            "index_gap")
+    add_bad("first entry carries a prev",
+            [entry(1, [], "rotate", n[1], n[2], SUCC_BASE_TIME + 100, k0,
+                   prev=bytes(32))], "prev_mismatch")
+    add_bad("entry 2 carries the wrong prev",
+            one + [entry(2, one, "rotate", n[2], n[3], SUCC_BASE_TIME + 200, n[1],
+                         prev=hashlib.sha256(b"x").digest())], "prev_mismatch")
+    add_bad("entry 2 has a null prev",
+            one + [entry(2, one, "rotate", n[2], n[3], SUCC_BASE_TIME + 200, n[1],
+                         prev=None)], "prev_mismatch")
+    retired = build_chain(k0, n[1:], 2, retire_last=True)
+    add_bad("entry after a retire",
+            retired + [entry(3, retired, "rotate", n[3], n[4], SUCC_BASE_TIME + 300, n[2])],
+            "after_retire")
+    over = build_chain(k0, bound_seeds(MAX_SUCC_ENTRIES + 2), MAX_SUCC_ENTRIES + 1)
+    add_bad("one entry over the bound", over, "too_many_entries")
+    add_bad("entry 2 names another inception key",
+            one + [entry(2, one, "rotate", n[2], n[3], SUCC_BASE_TIME + 200, n[1],
+                         inc=ed25519_public(SEEDS[1]))], "inception_mismatch")
+    add_bad("effective time goes backwards",
+            one + [entry(2, one, "rotate", n[2], n[3], SUCC_BASE_TIME + 99, n[1])],
+            "time_regression")
+    reuse1 = [entry(1, [], "rotate", n[1], k0, SUCC_BASE_TIME + 100, k0)]
+    add_bad("rotation back to the inception key",
+            reuse1 + [entry(2, reuse1, "rotate", k0, n[2], SUCC_BASE_TIME + 200, n[1])],
+            "key_reuse")
+    add_bad("rotate without a commitment",
+            [entry(1, [], "rotate", n[1], None, SUCC_BASE_TIME + 100, k0)], "malformed")
+    add_bad("retire with a commitment",
+            one + [entry(2, one, "retire", n[2], n[3], SUCC_BASE_TIME + 200, n[1])],
+            "malformed")
+    add_bad("first retire reveals another key",
+            [entry(1, [], "retire", n[1], None, SUCC_BASE_TIME + 100, k0)], "malformed")
+
+    def tampered(label, field, change, reason):
+        entries = json.loads(json.dumps(three))
+        change(entries[1])
+        add_bad(label, entries, reason)
+
+    def flip(b32):
+        raw = bytearray(b32_decode(b32))
+        raw[0] ^= 1
+        return b32_encode(bytes(raw))
+
+    def setf(field, value):
+        def f(e):
+            e[field] = value
+        return f
+
+    tampered("tampered inception_key", "inception_key",
+             lambda e: e.__setitem__("inception_key", flip(e["inception_key"])),
+             "inception_mismatch")
+    tampered("tampered index", "index", setf("index", 3), "index_gap")
+    tampered("tampered prev", "prev", setf("prev", b32_encode(bytes([1]) * 32)),
+             "prev_mismatch")
+    tampered("tampered kind", "kind", setf("kind", "retire"), "malformed")
+    tampered("tampered key", "key", lambda e: e.__setitem__("key", flip(e["key"])),
+             "bad_signature")
+    tampered("tampered commitment", "commitment",
+             setf("commitment", b32_encode(bytes([2]) * 32)), "bad_signature")
+    tampered("tampered effective_at", "effective_at",
+             lambda e: e.__setitem__("effective_at", e["effective_at"] + 1),
+             "bad_signature")
+    tampered("tampered signature", "signature",
+             lambda e: e.__setitem__("signature", flip(e["signature"])), "bad_signature")
+    tampered("truncated signature", "signature",
+             lambda e: e.__setitem__(
+                 "signature", b32_encode(b32_decode(e["signature"])[:63])),
+             "bad_signature")
+
+    # Equivocation cases.
+    all_logs = dict(entries_of)
+    for v in invalid:
+        all_logs[v["label"]] = [e["json"] for e in v["entries"]]
+    equivocation = []
+
+    def add_eq(label, a, b):
+        try:
+            result, index = succ_equivocation(inception, all_logs[a], all_logs[b])
+            reason = None
+        except SuccFail as e:
+            result, index, reason = "invalid", None, str(e)
+        equivocation.append({"label": label, "a": a, "b": b, "expected": result,
+                             "index": index, "reason": reason})
+
+    add_eq("identical logs", "three rotations", "three rotations")
+    add_eq("a prefix of the other", "two rotations", "three rotations")
+    add_eq("the other way round", "three rotations", "two rotations")
+    add_eq("empty against longer", "inception only", "three rotations")
+    add_eq("fork at index 1", "one rotation", "fork at index 1")
+    add_eq("fork at index 2", "three rotations", "fork at index 2")
+    add_eq("fork at index 2, reversed", "fork at index 2", "three rotations")
+    add_eq("second log invalid", "three rotations", "entry 2 reveals an uncommitted key")
+    add_eq("first log invalid", "entry 1 signed by the revealed key", "one rotation")
+
+    # Record authorisation.
+    states = {label: succ_verify(inception, e) for label, e in entries_of.items()}
+    name0 = "spine://did:%s/" % keys[0]["base32"]
+    name1 = "spine://did:%s/" % keys[1]["base32"]
+    records = []
+
+    def claim_of(label):
+        s = states[label]
+        return claim_value(s["index"], s["head"])
+
+    def add_rec(label, log, signer, claim=None, name=name0, ttl=3600, tombstone=False):
+        meta = []
+        if tombstone:
+            meta.append([REVOKED_KEY, "1"])
+            ttl = MAX_TTL_SECS
+        if claim is not None:
+            meta.append([SUCC_META_KEY, claim])
+        r = rec(name, 5, ttl, SUCC_BASE_TIME + 1000, meta=meta)
+        sig = ed25519_sign(seed_of(signer, keys_by_label), signing_bytes(r))
+        got = record_authorisation(r, sig, states[log])
+        if got[0] == "authorised":
+            expected, reason, extra = "authorised", None, {}
+        elif got[0] == "need_log":
+            expected, reason, extra = "need_log", None, {
+                "claimed_index": got[1], "held_index": got[2]}
+        else:
+            expected, reason, extra = "refused", got[1], {}
+        item = {"label": label, "log": log, "record": r, "signer": signer,
+                "signing_bytes": signing_bytes(r).hex(), "signature": sig.hex(),
+                "json": record_json(r, sig), "expected": expected, "reason": reason}
+        item.update(extra)
+        records.append(item)
+        return got
+
+    keys_by_label = {k["label"]: k for k in keys}
+    def case(label, log, signer, expect_, **kw):
+        got = add_rec(label, log, signer, **kw)
+        assert got == expect_, "%s: expected %r, got %r" % (label, expect_, got)
+
+    case("inception key, empty log", "inception only", "k0", ("authorised",))
+    case("claim of a position the verifier lacks", "inception only", "k0",
+         ("need_log", 1, 0), claim=claim_of("one rotation"))
+    case("malformed claim", "inception only", "k0", ("refused", "malformed_claim"),
+         claim="garbage")
+    case("current key after one rotation", "one rotation", "n1", ("authorised",))
+    case("current key with the matching claim", "one rotation", "n1", ("authorised",),
+         claim=claim_of("one rotation"))
+    case("superseded inception key, full lifetime", "one rotation", "k0",
+         ("refused", "superseded_key"), ttl=MAX_TTL_SECS)
+    case("claim beyond the held log", "one rotation", "n1", ("need_log", 3, 1),
+         claim=claim_of("three rotations"))
+    case("wrong head at the held index", "one rotation", "n1",
+         ("refused", "head_conflict"), claim=claim_value(1, "07" * 32))
+    case("key that never was current", "one rotation", "x1", ("refused", "bad_signature"))
+    case("committed key not yet revealed", "one rotation", "n2",
+         ("refused", "bad_signature"))
+    case("claim older than the held log", "three rotations", "n3",
+         ("refused", "stale_claim"), claim=claim_of("one rotation"))
+    case("current key after three rotations", "three rotations", "n3", ("authorised",),
+         claim=claim_of("three rotations"))
+    case("superseded key after three rotations", "three rotations", "n2",
+         ("refused", "superseded_key"))
+    case("current key of a retired name", "rotate then retire", "n1",
+         ("refused", "retired"))
+    case("revealed key of a retired name", "rotate then retire", "n2",
+         ("refused", "retired"))
+    case("inception key of a name retired at once", "retire at once", "k0",
+         ("refused", "retired"))
+    case("record of another name", "one rotation", "k1", ("refused", "wrong_name"),
+         name=name1)
+    case("tombstone by a superseded key", "one rotation", "k0",
+         ("refused", "superseded_key"), tombstone=True)
+    case("tombstone by the current key", "one rotation", "n1", ("authorised",),
+         tombstone=True)
+    case("ttl over the maximum by the current key", "one rotation", "n1",
+         ("refused", "record_invalid"), ttl=MAX_TTL_SECS + 1)
+    return logs, invalid, equivocation, records
+
+
 CONVENTIONS = [
     "spine-name v1 conformance vectors. Generated by scripts/names_v1.py from docs/spec/02-names.md; do not edit by hand.",
     "Regenerate: python scripts/names_v1.py generate > docs/spec/02-names.vectors.json. Check: python scripts/names_v1.py check docs/spec/02-names.vectors.json.",
@@ -994,6 +1489,11 @@ CONVENTIONS = [
     "invalid_records: each 'json' must deserialize (it is well formed) and then be refused. 'reason' says why: 'signature' (verification fails, under the strict profile: RFC 8032 plus rejecting a small-order public key or R), 'ttl' (ttl_secs above the maximum record lifetime, 604800), or 'tombstone' (carries the spine.revoked marker but is not a well-formed tombstone). The 'ttl' and 'tombstone' records are correctly signed.",
     "lifetime: a record is admitted only if its signature verifies, ttl_secs <= 604800, and, if it carries the 'spine.revoked' meta key, it is a well-formed tombstone: meta is exactly {spine.revoked: '1'}, no endpoints, capabilities, content hash or links, and ttl_secs == 604800. A signer MUST refuse to sign anything else. 'records[].is_tombstone' says whether the marker is present.",
     "admission: 'record' names an entry of records or invalid_records; 'now' is the verifier's clock (Unix seconds). 'admit' means the lifetime rules hold and published_at <= now + 300 (saturating at the u64 maximum); 'reject' gives the reason ('postdated', 'ttl', 'tombstone').",
+    "succession_keys: seeds and public keys of the keys that become current in the succession logs (n1..n5), of the keys that fork them (m1, m2) and of a key that is never current (x1). Logs also use k0 as inception key.",
+    "succession_logs: 'entries' is the ordered log; each has 'json' (the entry as serde emits it: keys, hashes and signature unpadded base32, 'prev' and 'commitment' null when absent), 'signing_bytes' and 'hash' (hex). Replaying it from the 'inception' key MUST succeed and give 'state': entry count, head hash (null for an empty log), current key (hex) or 'retired', the commitment the next entry must match, and the superseded keys, oldest first.",
+    "invalid_succession_logs: replaying MUST fail, with the 'reason' given. Checks run in this order: more than 64 entries (too_many_entries); then per entry after_retire, index_gap, inception_mismatch, prev_mismatch, malformed (a rotate has a commitment, a retire has none, a retire at index 1 reveals the inception key), time_regression, bad_signature (strict Ed25519 under the key current before the entry), commitment_mismatch (SHA-256 of the 'spine-name-succession-next-v1' 00 domain and the revealed key against the previous commitment), key_reuse.",
+    "succession_equivocation: 'a' and 'b' name logs of succession_logs or invalid_succession_logs. 'invalid': one does not verify (with 'reason'); 'none': equal, or one is a prefix of the other; 'equivocation': both verify and first differ at 'index', which they share a prefix before.",
+    "succession_records: a record for a name, judged against the state of the log named by 'log'. 'authorised': signed by the key that log allows (a record with the 'spine.succession' meta key states '<index>:<head hex>'); 'need_log': the record claims a position beyond the log's (claimed_index, held_index); 'refused' with 'reason'. A name with an empty log accepts its inception key. The records are structured as in 'records'.",
 ]
 
 
@@ -1002,6 +1502,7 @@ def generate():
     keys = make_keys()
     records = make_records(keys)
     invalid_records = make_invalid_records(keys, records)
+    s_logs, s_invalid, s_equivocation, s_records = make_succession(keys)
     doc = {
         "conventions": CONVENTIONS,
         "keys": keys,
@@ -1015,6 +1516,11 @@ def generate():
         "records": records,
         "invalid_records": invalid_records,
         "admission": make_admission(records, invalid_records),
+        "succession_keys": make_succession_keys(),
+        "succession_logs": s_logs,
+        "invalid_succession_logs": s_invalid,
+        "succession_equivocation": s_equivocation,
+        "succession_records": s_records,
     }
     return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True) + "\n"
 
@@ -1143,6 +1649,78 @@ def check_doc(doc):
             expect(v["expected"] == "reject" and got == v["reason"],
                    w + ": must be refused for %s, got %s" % (v["reason"], got))
     counts["admission"] = len(doc["admission"])
+
+    # Key succession (spec section 10).
+    skeys = {k["label"]: k for k in doc["succession_keys"]}
+    for k in doc["succession_keys"]:
+        w = "succession_keys/" + k["label"]
+        expect(k["public"] == ed25519_public(bytes.fromhex(k["seed"])).hex(), w + ": public key")
+    counts["succession_keys"] = len(doc["succession_keys"])
+    all_keys = dict(keys)
+    all_keys.update(skeys)
+
+    def check_entries(w, v):
+        for x in v["entries"]:
+            expect(succ_signing_bytes(x["json"]).hex() == x["signing_bytes"], w + ": signing_bytes")
+            expect(succ_hash(x["json"]).hex() == x["hash"], w + ": hash")
+        return [x["json"] for x in v["entries"]]
+
+    states = {}
+    all_logs = {}
+    for v in doc["succession_logs"]:
+        w = "succession_logs/" + v["label"]
+        inception = bytes.fromhex(all_keys[v["inception"]]["public"])
+        entries = check_entries(w, v)
+        try:
+            state = succ_verify(inception, entries)
+        except SuccFail as e:
+            raise Failure(w + ": must be accepted, refused as %s" % e)
+        expect(succ_state_json(state) == v["state"], w + ": state")
+        states[v["label"]] = state
+        all_logs[v["label"]] = entries
+    counts["succession_logs"] = len(doc["succession_logs"])
+
+    for v in doc["invalid_succession_logs"]:
+        w = "invalid_succession_logs/" + v["label"]
+        inception = bytes.fromhex(all_keys[v["inception"]]["public"])
+        entries = check_entries(w, v)
+        try:
+            succ_verify(inception, entries)
+        except SuccFail as e:
+            expect(str(e) == v["reason"], w + ": reason %s != %s" % (e, v["reason"]))
+        else:
+            raise Failure(w + ": accepted but must be refused")
+        all_logs[v["label"]] = entries
+    counts["invalid_succession_logs"] = len(doc["invalid_succession_logs"])
+
+    inception0 = bytes.fromhex(keys["k0"]["public"])
+    for v in doc["succession_equivocation"]:
+        w = "succession_equivocation/" + v["label"]
+        try:
+            result, index = succ_equivocation(inception0, all_logs[v["a"]], all_logs[v["b"]])
+            reason = None
+        except SuccFail as e:
+            result, index, reason = "invalid", None, str(e)
+        expect((result, index, reason) == (v["expected"], v["index"], v["reason"]),
+               w + ": got %r" % ((result, index, reason),))
+    counts["succession_equivocation"] = len(doc["succession_equivocation"])
+
+    for v in doc["succession_records"]:
+        w = "succession_records/" + v["label"]
+        r = v["record"]
+        sig = bytes.fromhex(v["signature"])
+        expect(signing_bytes(r).hex() == v["signing_bytes"], w + ": signing_bytes")
+        expect(ed25519_sign(bytes.fromhex(all_keys[v["signer"]]["seed"]), signing_bytes(r)) == sig,
+               w + ": re-signing differs")
+        expect(record_json(r, sig) == v["json"], w + ": json form")
+        got = record_authorisation(r, sig, states[v["log"]])
+        if v["expected"] == "authorised":
+            expect(got == ("authorised",), w + ": got %r" % (got,))
+        elif v["expected"] == "need_log":
+            expect(got == ("need_log", v["claimed_index"], v["held_index"]), w + ": got %r" % (got,))
+        else:
+            expect(got == ("refused", v["reason"]), w + ": got %r" % (got,))
+    counts["succession_records"] = len(doc["succession_records"])
     return n, counts
 
 

@@ -1,6 +1,6 @@
 # Layer 2: Names (as built)
 
-Status: sections 2.5, 2.6, 2.8, 2.9, 3 (except 3.2), 6 and 9 are normative and match the code of branch `completion/agent-web` after the changes that accompany `docs/spec/02-names.vectors.json`. They cite `file: function` and are checked by the vectors (section 6). The other sections (2.1 to 2.4, 2.7, 4, 5, 7, 8) are the earlier read-through description of the code, unchanged except where noted; their `file:line` citations may have drifted and the paths under `research/spine-agentic` have since moved into `src/spine-mesh`. Where a claim there disagrees with a normative section, the normative section wins. Section 9 is the list of known open issues.
+Status: sections 2.5, 2.6, 2.8, 2.9, 3 (except 3.2), 6, 9 and 10 are normative and match the code of branch `completion/agent-web` after the changes that accompany `docs/spec/02-names.vectors.json`. They cite `file: function` and are checked by the vectors (section 6). The other sections (2.1 to 2.4, 2.7, 4, 5, 7, 8) are the earlier read-through description of the code, unchanged except where noted; their `file:line` citations may have drifted and the paths under `research/spine-agentic` have since moved into `src/spine-mesh`. Where a claim there disagrees with a normative section, the normative section wins. Section 10 (key succession) is normative and describes code that is not yet wired into resolution. Section 9 is the list of known open issues.
 
 Primary sources: `src/spine-name/src/` (uri.rs, base32.rs, key.rs, record.rs, link.rs, lib.rs, store.rs, cache.rs, resolver.rs, routing.rs, frontier.rs), the naming code in `src/spine-mesh`, and the node glue in `src/spine-core`. Key words MUST and MUST NOT in the normative sections describe what a conforming implementation does; they restate the code, they do not change it.
 
@@ -183,7 +183,7 @@ A tombstone withdraws a name. It is not a new signed object type: it is an ordin
 - Holders. A store, resolver or replica that holds a fresh tombstone for a name MUST NOT accept a record for that name of the same or lower `seq` (it does not supersede, 3.6: `RecordStore::put` answers `Superseded`, `LocalResolver::publish` answers `StalePublication`) and MUST answer a resolution of the name with the distinct outcome revoked, not "not found": `LocalResolver::resolve` returns `NameError::Revoked`, from cache or store. `find_providers` never returns a tombstone (it has no capabilities). A higher `seq` re-publishes the name.
 - Replication. A tombstone is announced, stored, replicated, re-offered by maintenance and answered in a lookup exactly like a record; nothing on those paths needs an endpoint or a capability. A lookup returns it as the highest-`seq` record (`MeshNameResolver::resolve` returns the signed tombstone, which the caller maps to revoked); the daemon reports it as `NameResolution::Invalid` with a reason naming the revocation, as it does for a locally held tombstone.
 - Renewal. `NameRecord::renewed` refuses a tombstone (`Revoked`), and owner renewal (5.3) skips a tombstone and any name this node holds a fresh tombstone for.
-- Lifetime and the limit of revocation. A tombstone has the same maximum lifetime as any record and is required to have exactly that: `ttl_secs == MAX_RECORD_TTL_SECS`. After it expires the name is simply unknown again unless it is re-published with a higher `seq`. Revocation by tombstone is therefore not permanent: permanence needs the succession log planned for a later stage (open issue 9.10).
+- Lifetime and the limit of revocation. A tombstone has the same maximum lifetime as any record and is required to have exactly that: `ttl_secs == MAX_RECORD_TTL_SECS`. After it expires the name is simply unknown again unless it is re-published with a higher `seq`. Revocation by tombstone is therefore not permanent: permanence needs the succession log (section 10: a `retire` entry, for verifiers that hold the log; open issue 9.10).
 
 Replay argument. Let T be a tombstone and R a record it withdraws, signed by an owner who assigns `seq` in publication order, so `published_at(R) <= published_at(T)`; since `ttl(R) <= MAX_RECORD_TTL_SECS = ttl(T)`, `expires_at(R) <= expires_at(T)`, so R is already expired when T lapses and an attacker replaying R afterwards gets a record that `is_expired` and that no replica serves. The bound on `ttl_secs` is what makes `ttl(T) = MAX` enough, and the bound on `published_at` is what stops R from having been post-dated beyond what its signer's own clock allowed when T was signed; a key holder who signs a lower-`seq` record dated after T is acting with the key, which no tombstone defends against.
 
@@ -343,6 +343,7 @@ The script carries its own Ed25519 (RFC 8032 section 6 reference algorithm) and 
 | `rel_aliases` | `Rel` JSON forms, including `{"other": "<built-in>"}` |
 | `records` | structured record, signing bytes, signature, `is_tombstone` and serde JSON: minimal, every optional field, every relation, multi-byte UTF-8, empty strings, numeric extremes (with the maximum ttl), case, a record at the maximum lifetime, and a tombstone. All MUST verify |
 | `invalid_records` | each with a `reason`. `signature`: one field changed after signing (per field), signature damaged in several ways, a signature by another key, and a weak-key signature. `ttl`: correctly signed, `ttl_secs` one over the maximum and at the `u32` maximum. `tombstone`: correctly signed, carrying the marker but with a ttl other than the maximum, an endpoint, a capability, a content hash, extra metadata, another marker value, or on an ordinary record. All MUST fail `verify` (with `BadSignature`, `TtlTooLong`, `MalformedTombstone` respectively) and `sign` MUST refuse the last two groups |
+| `succession_keys`, `succession_logs`, `invalid_succession_logs`, `succession_equivocation`, `succession_records` | key succession (section 10): the keys; valid logs with their replayed state (empty, one, two and three rotations, rotate then retire, retire at once, 64 entries, two forks); refused logs with a reason (every check of 10.3, every field tampered, a truncated signature, 65 entries); equivocation verdicts; record authorisation outcomes against a log (authorised, need_log, refused with a reason) |
 | `admission` | a record from the two sections above, the verifier's clock `now`, and whether it is admitted (3.5): published exactly the skew ahead (admit), one second past it (reject), in the past, at the `u64` maximum with the clock at the maximum (admit) and at 1.7e9 (reject), the maximum lifetime, a tombstone, and over-long or malformed ones |
 
 The Rust test pins the layout two ways: it compares `signing_bytes()` byte for byte with the vector, and, because Ed25519 is deterministic, re-signs the deserialised record with the vector's seed and compares the signature. It also compares `serde_json::to_value(&record)` with `records[].json`.
@@ -361,6 +362,7 @@ Target design reference: docs/FIRST_PRINCIPLES.md layer 2 and layer 6. Each item
 
 - A `did:` authority is the raw Ed25519 public key (uri.rs:39, 84). The name is the key; there is no inception key, no succession record, and no field in `NameRecord` that names a successor or a prior key (record.rs:53-85).
 - Verification checks the signature against the key in the name only (record.rs:269-282). A new key means a new name, and nothing links the two.
+- Update: section 10 defines the inception key, the succession log and what rotation means for records; it is not wired into resolution yet. What follows describes the code as it resolves today.
 - A lost or compromised key therefore ends the name or hands it to the attacker permanently. The node key is a file written once (`spine-node.key`, namespace.rs:289-328) and doubles as the node's DHT position, so a node identity change also relocates the node.
 
 ### 8.2 Revocation: names yes, keys no
@@ -433,8 +435,182 @@ Each item was checked against the source when this section was written.
 7. One Ed25519 key signs name records, mesh envelopes (spine-mesh mesh.rs: `ENVELOPE_SIG_DOMAIN`, `spine-mesh-envelope-v2\0`) and the session handshake (spine-session handshake.rs: `LABEL_INITIATOR`, `spine-mesh-hs-v1/initiator`), separated only by those prefixes. Record and envelope prefixes both end in a NUL after a version; the handshake label has no NUL. The domains are distinct, but a single key compromise breaks all three and the prefixes are the only separation.
 8. A `cap:` term is not validated beyond non-empty, no whitespace, no `/`; a `host:` is not validated as a host; an IPv6 literal without brackets mis-parses (8.6 l).
 9. Names that differ only in query or fragment share a routing key and a store slot, so a tombstone for one revokes the others in the store, while the persisted publisher rows (one per full canonical name) are separate; owner renewal consults the store (`LocalResolver::is_revoked`) so it does not renew the others past the tombstone, but the rows remain on disk.
-10. Revocation is not permanent. A tombstone lapses after at most 7 days (3.7) and the name is then unknown again, available to anyone who can sign for it. A permanent revocation needs a succession log (key rotation, 8.1), planned for a later stage. Until then an owner who wants a name to stay dead must renew the tombstone (publish a new one with a higher `seq`) at least every 7 days; the tombstone is the only record `renewed` refuses, so this means signing a fresh one with `spine name revoke`.
+10. Revocation is not permanent. A tombstone lapses after at most 7 days (3.7) and the name is then unknown again, available to anyone who can sign for it. Section 10 defines a permanent revocation (a `retire` entry in a succession log) and key rotation, but they take effect only once the log is wired into resolution (10.11); until then this issue stands. Until then an owner who wants a name to stay dead must renew the tombstone (publish a new one with a higher `seq`) at least every 7 days; the tombstone is the only record `renewed` refuses, so this means signing a fresh one with `spine name revoke`.
 11. A tombstone is an ordinary record to the store's capacity rule: under pressure it can be evicted before it expires, after which a replica no longer blocks an older unexpired record, for at most that record's remaining lifetime.
 12. `NameResolution` has no revoked variant: the daemon reports a revoked name as `Invalid` with a reason (3.8, decision 6).
 13. A key holder can sign a lower-`seq` record dated after a tombstone; the replay argument in 3.7 assumes `seq` follows publication order.
+14. Succession: until entry 1 exists, the inception key alone can take the name (10.4). A name owner who cares should publish a first rotation soon after creating the name; an optional inception commitment record would close the window (decision 12).
+15. Succession: the loss of the current key without a copy leaves the name unable to rotate, retire or publish (10.9, decision 13).
+16. Succession: a log is at most 64 entries (decision 16); a name that rotates more often than that over its life has no way to compact the log.
+17. Succession: a holder of a superseded key can mint fresh records for any verifier that lacks the superseding entry, for as long as it lacks it; the 7-day bound covers only records signed before the rotation (10.8). Until logs are gossiped (10.11, step 5) nothing makes a verifier find out.
+18. Succession: equivocation at index 1 needs only the inception key and costs the owner the name at every verifier that sees both logs (10.5); this is a denial of service, accepted as the price of failing closed.
+19. Succession: `NameRecord::sign` still accepts only the name's own key, so no code path signs a record with a rotated key yet (10.11, step 4).
 
+## 10. Key succession (normative; not yet wired into resolution)
+
+Code: `src/spine-name/src/succession.rs` (`Succession`, `SuccessionLog`, `State`, `Equivocation`, `HeadClaim`, `record_authorised`) and `NameRecord::verify_with` (record.rs). Vectors: section 6 (`succession_*`), checked by `src/spine-name/tests/vectors.rs`. Nothing in the store, the resolver, the mesh or the daemon calls this code yet; 10.11 lists the wiring. Until it is wired, every behaviour in sections 2 to 5 is unchanged.
+
+Problem. A `did:` name is its key (2.2). A lost key ends the name, a stolen key hands it over for good, rotation is impossible, and revocation by tombstone lapses after 7 days (3.7). A name needs identity that survives a key change.
+
+Design in one paragraph. The name's authority stays its inception key for ever. A succession log, an ordered list of signed entries, says which key may sign the name's records now. A name with an empty log behaves exactly as in sections 3 to 5: the inception key signs. Each `rotate` entry reveals the key that becomes current and commits to the key that will follow it (pre-rotation); each entry is signed by the key that was current before it. A `retire` entry ends the name permanently.
+
+### 10.1 Objects
+
+- `Succession`: one signed entry (fields below).
+- `SuccessionLog`: a list of entries, at most `MAX_SUCCESSION_ENTRIES` = 64 (code: `MAX_SUCCESSION_ENTRIES`). Order is the whole structure: a log cannot represent a fork.
+- `State` (code: `State`, exported as `SuccessionState`): what replaying a log yields: the inception key, the entry count `index` (0 for an empty log), the head (hash of the last entry, none for an empty log), the current key or `Retired`, the commitment the next entry must match (none for an empty log and after a retire), the time of the last entry, and the superseded keys, oldest first.
+- `HeadClaim`: `(index, head)`, the log position a record's signer says it holds (10.7).
+- `Equivocation`: proof that one key signed two different entries at one index (10.5).
+
+Entry fields:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `inception_key` | 32 bytes | The key in the name's `did:` authority. |
+| `index` | `u64` | Position, starting at 1. |
+| `prev` | 32 bytes or null | Hash of the entry at `index - 1`; null exactly when `index` is 1. No all-zero sentinel is used. |
+| `kind` | `rotate` or `retire` | |
+| `key` | 32 bytes | The revealed key. Rotate: it becomes current. Retire at index 1: the inception key. Retire at a later index: the key the previous entry committed to, revealed to show that more than the current signing key authorised the retirement. |
+| `commitment` | 32 bytes or null | Rotate: commitment to the key after `key`. Retire: null. |
+| `effective_at` | `u64` | Unix seconds the entry says it takes effect. Signed; must not decrease along a log; authorisation never depends on it (decision 18). |
+| `signature` | 64 bytes | Ed25519 over the signed bytes (10.2), by the key current before the entry: the inception key for index 1. |
+
+Commitment: `key_commitment(k)` = SHA-256 over `"spine-name-succession-next-v1"` + `0x00` + the 32-byte public key `k`. Revealing `k` later is checked against it; the commitment reveals nothing about `k`.
+
+JSON form (serde): an object with those names; keys, hashes and the signature as unpadded lower-case base32 (as in 2.5), `prev` and `commitment` `null` when absent, `kind` the lower-case word. A log is the JSON array of its entries. Not canonical and not what is signed.
+
+### 10.2 Layouts
+
+All integers big-endian. Signed bytes of an entry (code: `Succession::signing_bytes`), in order:
+
+| # | Bytes |
+| --- | --- |
+| 1 | `spine-name-succession-v1` followed by `0x00` (25 bytes) |
+| 2 | `inception_key` (32 bytes) |
+| 3 | `index` (8 bytes) |
+| 4 | `0x00` when `prev` is null; else `0x01` followed by the 32 bytes of `prev` |
+| 5 | `kind`: `0x00` rotate, `0x01` retire |
+| 6 | `key` (32 bytes) |
+| 7 | `0x00` when `commitment` is null; else `0x01` followed by its 32 bytes |
+| 8 | `effective_at` (8 bytes) |
+
+Every field is fixed-size apart from the two presence flags, so no length prefixes are needed and the encoding is injective. Lengths: 140 bytes for a rotate at index 1 (no `prev`), 172 for a rotate with `prev`, 108 and 140 for a retire.
+
+Entry hash (code: `Succession::hash`): SHA-256 over `"spine-name-succession-entry-v1"` + `0x00`, the signed bytes, and the 64 signature bytes. The next entry's `prev` is this hash, so a chain commits to signatures as well as to content.
+
+The three domains (`...-v1\0`, `...-entry-v1\0`, `...-next-v1\0`) and the record domain `spine-name-record-v2\0` are pairwise distinct and none is a prefix of another, so a signature or hash made for one object cannot be read as another. The same key signs records and entries, separated by these prefixes only (open issue 7 applies).
+
+### 10.3 Verification (code: `SuccessionLog::verify`, `State::apply`)
+
+`verify(inception_key)` replays the log from the empty state. More than 64 entries is refused first, before any entry is examined (`too_many_entries`). Each entry is then applied to the state left by the previous one; the first failing check, in this order, refuses the whole log:
+
+1. The state is `Retired`: `after_retire`.
+2. `index` is not the state's index plus one: `index_gap`.
+3. `inception_key` differs from the name's: `inception_mismatch`.
+4. `prev` differs from the state's head (null for an empty log): `prev_mismatch`.
+5. Shape: a rotate without a commitment, or a retire with one, or a retire at index 1 whose `key` is not the inception key: `malformed`.
+6. `effective_at` is below the previous entry's: `time_regression`.
+7. The signature is not exactly 64 bytes or does not verify, with strict Ed25519 (the profile of 3.4: RFC 8032 plus rejecting S >= L and a small-order key or R), under the current key: `bad_signature`.
+8. The state holds a commitment and SHA-256 of `key` under the commitment domain differs from it: `commitment_mismatch`. (Not applicable at index 1.)
+9. A rotate whose `key` is the current key or any superseded key: `key_reuse`.
+
+The new state: index and head updated; for a rotate the current key is `key`, the commitment is the entry's, and the old current key joins the superseded keys; for a retire the state is `Retired` with no commitment. The vectors give the reason string of every refusal (`invalid_succession_logs`) and the state of every valid log (`succession_logs`).
+
+Replaying is deterministic and needs no clock. A verifier that holds a longer valid log of the same name that extends the one it has (the shorter is a prefix) replaces it. Two valid logs of which neither is a prefix of the other are equivocation (10.5).
+
+### 10.4 The inception problem and its security consequence
+
+Pre-rotation needs a commitment made before the rotation. A name is only a key, so at inception no commitment exists. Entry 1 therefore has no commitment to match; it is authorised by the inception key alone, and it is the first commitment (it commits to the key after its own). From entry 2 on, an entry needs the current key's signature and a revealed key that matches the previous commitment. The alternative, an optional commitment record published at inception, is decision 12.
+
+Consequence, precisely. Let I be the inception key.
+
+- Before entry 1 exists, whoever holds I can append entry 1: rotate to a key of their own with their own commitment (taking the name for any verifier that accepts that log, permanently) or retire the name. The legitimate owner holds I too, so it is a race to publish entry 1. If both are published, the logs diverge at index 1 and a verifier that sees both fails closed (10.5). A verifier that only ever sees the attacker's entry 1 is deceived.
+- After entry 1 exists and a verifier holds it, I alone can do nothing for that verifier: it cannot sign accepted records (refused as `superseded_key`), it cannot append (the signature must be by the current key), and it cannot retire. The only thing I can still do is sign a rival entry 1, which makes an equivocation: denial of service, not takeover, for any verifier that holds both.
+- So the weak window is a name's life from creation until its first rotation is published and spread. A name whose owner is concerned about I should rotate soon after creating it.
+
+### 10.5 Equivocation (code: `detect_equivocation`, `Equivocation`)
+
+Two logs of one name that both verify and neither is a prefix of the other diverge at some first index `i`. Their entries before `i` are identical, so both entries at `i` were signed by the same key, the key current after entry `i - 1` (I when `i` is 1): that key signed two different entries at one index. That is equivocation.
+
+`detect_equivocation(inception_key, a, b)` first verifies both logs (an invalid log is an error, not a verdict), then returns none if one is a prefix of the other or they are equal, else the `Equivocation { prefix, first, second }` for the first differing index. `Equivocation::verify(inception_key)` checks a proof alone: the prefix verifies, `first` differs from `second`, and each is a valid next entry after the prefix. Two entries that differ only in the signature (a signer using another nonce) count: the entry hashes differ.
+
+Policy (specified, not wired; decision 21): a verifier that holds or is shown a valid proof for a name MUST treat the name as compromised and fail closed. It authorises no record for the name, answers its resolution with a distinct outcome (not `NotFound`), and keeps and forwards the proof. The state is not cleared by later entries. A holder of a proof is not obliged to prefer either log.
+
+What can force equivocation: at index 1, the holder of I alone. At index `i >= 2`, each of the two entries needs the signature of the current key and a revealed `key` that matches the commitment, which means knowing the committed public key, and that key has never been published: only an attacker with the current key and the next key. A holder of the current key alone cannot produce even one valid next entry (10.9).
+
+### 10.6 What rotation means for records (code: `record_authorised`)
+
+A record's layout has no signer field and does not change (3.3). The verifier tries the current key from the log it holds. `record_authorised(record, log_state)` is a pure function of the record and the state of the verifier's best verified log for the name (or none, which is the empty log: the key in the name is current). Rules, in order:
+
+1. The record's name is a `did:` name whose key is the state's inception key: else refused `wrong_name`.
+2. The head claim (10.7), if present: malformed is refused `malformed_claim`; an index above the state's returns the distinct outcome `NeedLog` (carrying the claim and the held index); an index below the state's is refused `stale_claim`; at the state's index the heads must be equal, else `head_conflict`.
+3. If the state is `Retired`: refused `retired`. A retired name authorises nothing.
+4. The signature (and the lifetime rules of 3.5, as in `verify`) verifies under the current key (`NameRecord::verify_with`): `Authorised`. If it does not, and it verifies under a superseded key: refused `superseded_key`. Otherwise `bad_signature`; a record that verifies but breaks the lifetime or tombstone rules is `record_invalid`.
+
+A record signed by a superseded key is refused as soon as the verifier holds the entry that superseded it, whatever its remaining lifetime: that is the point of rotation. A name with an empty log is authorised exactly when `NameRecord::verify` passes (vectors: `records` and `invalid_records` under no log). A tombstone is a record: it is authorised by the current key and refused from a superseded one.
+
+`NameRecord::verify_with(key)` verifies the signature against `key` instead of the name's key and applies the same lifetime rules; it still requires a `did:` name. `verify` is `verify_with` the name's own key and its behaviour is unchanged.
+
+### 10.7 The head claim (code: `HeadClaim`, `SUCCESSION_META_KEY`, `record_head_claim`)
+
+A record may state the log position its signer holds in the reserved `meta` key `spine.succession` (signed with the record, row 8 of 3.3), value `<index>:<head>` where `index` is canonical decimal from 1 to 64 (no sign, no leading zero) and `head` is the entry hash as exactly 64 lower-case hexadecimal digits. Anything else carrying the key is malformed. A record of a name with an empty log carries no claim. The claim is optional: absent means no assertion, and the record is judged on its signature alone.
+
+Use: a fresh record signed by the current key proves the log position its signer had, so a verifier that holds an older log learns it is behind. When the claim names an index above the verifier's, the verifier MUST fetch the log (to at least that index) before accepting the record: `NeedLog`. It is returned before the signature is examined because the signer is not knowable without the log; an implementation should bound the work an unsigned or forged claim can cause (it costs the verifier a fetch). A claim equal to the held index with another head, or below it, is refused.
+
+### 10.8 Freshness and withholding
+
+A verifier that has not seen the newest entry still accepts records signed by the key it believes current, including a key that has been superseded. The exposure has two parts, and the bound differs:
+
+- Records the owner signed before rotating stay acceptable at such a verifier until they expire, at most 7 days after their `published_at` (3.5).
+- A holder of a superseded key can sign fresh records after the rotation, with a new `published_at`; a verifier that lacks the entry accepts them for as long as it lacks the entry. The 7-day bound does not cover this. What limits it is the verifier learning of the newer log: from a `NeedLog` claim in any current-key record, from a log offered with a record, or from an independent fetch. A verifier that holds the entry is not exposed.
+- A name retired by its owner is retired only for verifiers that hold the retire entry. The permanence tombstones lack holds for them; a verifier without the log still sees whatever the old key signs.
+
+### 10.9 Threat analysis
+
+Holdings are of one name with at least one entry published and held by the verifier: I the inception key, C the current key, N the key committed to by the head and not yet revealed (it has never been published; holding N means knowing its public key and, for control later, its private key).
+
+| Attacker holds | Can do | Cannot do |
+| --- | --- | --- |
+| I only (after entry 1) | Sign records, accepted only by verifiers that lack entry 1. Sign a rival entry 1: an equivocation, which makes the name fail closed at verifiers that see both. Before entry 1 exists, I alone takes the name (10.4). | Sign records for a verifier that holds entry 1. Append any entry (the signature must be by C). Retire. |
+| C only | Sign records that verify until the owner rotates and the verifier holds the entry. | Rotate: a new `key` must match the commitment to N, and C holder cannot produce a preimage. Retire: a retire reveals the committed key too. Produce even one valid next entry, so not equivocate either. |
+| N only | Nothing: N is unpublished until used; an entry must be signed by C. | Sign records (N is not current), append entries, rotate or retire. |
+| C and N (at least the public key of N) | Everything the owner can short of signing as N later: retire the name, rotate to N or equivocate at the next index, and sign records. With N's private key too, control of the name from then on. | |
+
+If the owner holds C and N and C leaks, the owner rotates (signs with C, reveals N): the attacker holding only C is superseded as soon as verifiers hold the entry (10.8). If C is lost without being copied, the owner cannot rotate, since an entry must be signed by C: the name cannot change key or be retired, and cannot publish records either. That is no worse than a name today, but it is not recoverable (decision 13 gives the alternative that recovers it and what it costs).
+
+### 10.10 Provisional decisions (continuing 3.8)
+
+Each is open to revision, with the alternative not taken.
+
+10. A name's authority stays its inception key for ever; the log only says which key signs. Alternative: a name that is a hash of an inception event (self-addressing), which changes every name, record and vector.
+11. Pre-rotation: each rotate commits to the next key by SHA-256 under a domain string. Alternative: no commitment (each entry just names the next key), which lets a thief of the current key choose the next one.
+12. Entry 1 is authorised by the inception key alone, because no commitment exists at inception (10.4). Alternative: an optional commitment record published with the name, so that entry 1 is protected too; it needs a new signed object and a place to carry it, and leaves names without one in the weak state.
+13. Each entry is signed by the key current before it (what the previous state authorises). Alternative A: signed by the revealed key N (KERI style), which recovers a lost C but lets N alone take the name. Alternative B: signed by both, which is strictest and loses the name if either key is lost.
+14. A retire reveals the committed key (and at index 1 the inception key), so a retire is as protected as a rotate. Alternative: a retire with no revealed key, which lets C alone destroy the name permanently.
+15. A fixed binary layout with presence flags, like `NameRecord::signing_bytes`, and no new dependency in `spine-name`. `spine-cbor` has no `spine` dependencies and would add no cycle, but it would make this layout different in style from the record's and add a dependency for fixed-size fields. Alternative: deterministic CBOR via `spine-cbor`.
+16. At most 64 entries; a longer log is refused whole. Alternative: unbounded, or checkpoints that compact old entries (open issue 16).
+17. The entry hash covers the signature (second domain, signed bytes, signature). Alternative: hash the signed bytes only, which lets a re-signature of one entry pass as the same entry.
+18. `effective_at` must not decrease but is never used to authorise. Alternative: judge records by `published_at` against `effective_at`, which makes authorisation depend on clocks the signers control.
+19. Authorisation is by log position, the verifier tries the current key, and a record has no signer field. Alternative: a v3 record layout with a signer field, which invalidates every signed record and the vectors.
+20. The head claim is optional meta `spine.succession`; `NeedLog` is decided before the signature. Alternative: required for any name with a non-empty log (a missing claim is refused), which makes every current-key record prove freshness but refuses records from signers that do not know the convention.
+21. Equivocation fails the name closed at every verifier that holds a proof, for good. Alternative: first-seen wins, which lets whoever reaches a verifier first decide.
+22. A rotate to a key the name has used is refused (`key_reuse`). Alternative: allow it, which makes superseded-key records valid again.
+23. A claim index above 64 is malformed rather than `NeedLog`, since no log can reach it.
+24. `State` keeps the superseded keys (at most 64) so the refusal can say `superseded_key` rather than `bad_signature`. This is diagnostic and costs one extra verification per superseded key on a failing record only.
+25. `NameRecord::verify_with` is added and `verify` delegates to it. Alternative: a parallel function, which duplicates the checks.
+
+### 10.11 Wiring that remains
+
+Out of scope here: how logs are stored and move. Follow-up work, in order:
+
+1. A routing key and a message for fetching a name's log (a lookup answer carrying the log, and an announce), and a size and rate bound on it.
+2. Store a verified log per name: persistence (the `storage` feature), replacement by a longer log that extends it, and bounded memory for equivocation proofs.
+3. `NameService` and `LocalResolver`: obtain the log with the record; call `record_authorised` at every admission point of 3.5; on `NeedLog` fetch and retry; map refusals to resolution outcomes, including a distinct revoked-for-ever outcome for `retired` and a compromised outcome for equivocation.
+4. Signing: a way for the current key to sign a record for the name (`NameRecord::sign` only accepts the name's own key), adding the head claim; owner renewal with the current key; the CLI and daemon commands to rotate and to retire.
+5. Gossip of entries and proofs, so a verifier that lacks an entry is found out quickly (10.8).
+6. A wire revision for the daemon: `NameResolution` has a revoked variant (3.8, decision 6) and no compromised variant.
+7. Node identity: the node key is also a DHT position (8.1). Rotating the key of a name does not change the node identity of an agent; that link is separate work.
+
+### 10.12 Vectors
+
+Section 6 lists the `succession_*` sections of `02-names.vectors.json`: `succession_keys`, `succession_logs` (empty log, one, two and three rotations, rotate then retire, retire at once, a log of exactly 64 entries, and two forks), `invalid_succession_logs` (every refusal of 10.3 with its reason, each field tampered after signing, and a truncated signature), `succession_equivocation` and `succession_records` (every outcome of 10.6, including a record by a superseded key with a full lifetime, a claim beyond the held log and a retired name). Python builds them from this section; the Rust test pins the layout (signed bytes and hash of each entry) and the outcome of every case.
