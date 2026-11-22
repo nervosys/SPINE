@@ -1,0 +1,22 @@
+[package]
+name = "spine-authority"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "SPINE authority layer, part one: signed capability grants, delegation chains with attenuation, and the eleven-step verification of docs/spec/03-authority.md (a pure library: no I/O, no clock)"
+
+[dependencies]
+spine-name = { path = "../spine-name", version = "2.0.2" }
+spine-cbor = { path = "../spine-cbor", version = "2.0.2" }
+serde.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

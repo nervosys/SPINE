@@ -21,6 +21,7 @@ members = [
     "src/spine-cache",
     "src/spine-ffi",
     "src/spine-name",
+    "src/spine-authority",
     "src/spine-web",
 ]
 exclude = ["src/spine-python", "src/spine-js", "research"]

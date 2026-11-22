@@ -4210,6 +4210,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spine-authority"
+version = "2.0.2"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spine-cbor",
+ "spine-name",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "spine-cache"
 version = "2.0.2"
 dependencies = [

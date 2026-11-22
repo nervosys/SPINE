@@ -1,10 +1,10 @@
 # Crate Map
 
 The repository has two Cargo workspaces. The root workspace (`src/*`) holds the
-19 crates that make up the stack. The `research/` workspace holds experimental
+20 crates that make up the stack. The `research/` workspace holds experimental
 crates that are not built with the root workspace and are not on the native wire.
 
-## Root Workspace (19 crates)
+## Root Workspace (20 crates)
 
 ### Interfaces
 
@@ -32,6 +32,7 @@ crates that are not built with the root workspace and are not on the native wire
 | `spine-compiler`  | Library    | HLS (SPINE Scripting) to SpineBinary compiler                                   |
 | `spine-wasm`      | Library    | WebAssembly runtime (wasmtime) for HLS execution                                |
 | `spine-name`      | Library    | `spine://` URIs, self-certifying names, signed name records, DHT keyspace, resolver |
+| `spine-authority` | Library    | Capability grants (layer 3, part one): signed grants, delegation chains with attenuation, the eleven-step verification; pure, no I/O, no clock; not yet wired in |
 | `spine-mesh`      | Library    | Agent mesh: Ed25519 identities, signed envelopes, name-record RPC, TCP/WebSocket/QUIC transports |
 | `spine-session`   | Library    | Authenticated, forward-secret mesh session handshake (ML-KEM-768, Ed25519, AES-256-GCM). Custom cryptography without external review |
 
@@ -85,4 +86,6 @@ spine-core -- spine-protocol, spine-parser, spine-wasm, spine-name,
               spine-mesh, spine-storage, spine-transport, spine-agent
 
 spine-mesh -- spine-session, spine-name, spine-transport, spine-protocol
+
+spine-authority -- spine-name, spine-cbor   (nothing depends on it yet)
 ```

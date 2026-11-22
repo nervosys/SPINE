@@ -1,6 +1,6 @@
 # Architecture Overview
 
-SPINE is a headless semantic browser and agent web stack. The root Cargo workspace has 19 crates, each with a focused responsibility; experimental crates live in a separate `research/` workspace (see [Crate Map](./crates.md)).
+SPINE is a headless semantic browser and agent web stack. The root Cargo workspace has 20 crates, each with a focused responsibility; experimental crates live in a separate `research/` workspace (see [Crate Map](./crates.md)).
 
 ## Design Principles
 

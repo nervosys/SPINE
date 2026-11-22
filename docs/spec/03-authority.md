@@ -1,6 +1,6 @@
 # Layer 3: Authority
 
-Status: **draft design, 2026-11-20. Nothing in this document is implemented.** It needs review before any code is written; the open questions at the end are real.
+Status: **draft design, 2026-11-20. Part one is implemented as a pure library (`src/spine-authority`: grants, chains, attenuation, the eleven verification steps, vectors); nothing is wired into the node, mesh, SDK or CLI.** The choices the code had to make are under "Provisional decisions" and need review; the open questions at the end are real and none is resolved.
 
 Layers 1, 2, 4 and 5 are described as built in the neighbouring files. This layer does not exist yet, so this file is a proposal.
 
@@ -138,6 +138,33 @@ Grants and invocations are a distinct message class at layer 1. Layer-4 objects 
 ## Prior art considered
 
 This is closest to authorization capabilities as in UCAN and ZCAP-LD. Macaroons were rejected because verification needs the root secret, so a third party cannot audit a chain. Biscuit's logic language is more expressive than this fixed field set; it was set aside for now because a fixed set is easier to specify, review and implement on constrained devices. These are references for reviewers, not dependencies.
+
+## Provisional decisions
+
+The pure core of this layer is implemented in `src/spine-authority` (grant and invocation types, one canonical encoding, attenuation, the eleven verification steps, independent vectors in `03-authority.vectors.json`). The draft above left several points open or ambiguous. The code decided each one in the most conservative direction so that it could be written. **None of these is settled**; each row states the alternative and what would change. The crate README lists the encoding, the bounds and the scope rule in full.
+
+| # | Decision | Alternative, and what changes |
+| --- | --- | --- |
+| P1 | A party (`iss`, `aud`, resource owner, invoker, recipient) is a 32-byte Ed25519 public key, the key of a `did:` authority, not a full name. | Full names allow a grant to follow a rotated key but need layer-2 key succession (see P9) and change the types of `iss`, `aud` and `owner`. |
+| P2 | A resource is `(owner key, path segments)`. Names with a query, a fragment or a trailing slash are refused as resources, as are segments that are empty, `.`, `..`, contain `/` or a control character; `blob:`, `cap:` and `host:` names cannot be resources. | Accepting them needs a rule for whether `/a/` and `/a` are one resource (layer 2 keys them differently) and whether a query narrows a pattern. |
+| P3 | A prefix pattern contains its own base path as well as everything below it, compared segment by segment: `/data` contains `/data` and `/data/x`, never `/database`. | Strictly-below needs a second pattern form to name the base; the attenuation tables change. |
+| P4 | `role` is a closed set of four labels (`principal`, `operator`, `agent`, `service`); `nbf` is mandatory; `res` and `act` are non-empty; `act` is a strictly ascending set. | Open roles, an optional `nbf` or unordered sets give several encodings of one meaning, so the canonical-form check would need to normalise. |
+| P5 | Step 3 also requires the root's issuer to be in a list of trusted roots the verifier supplies (empty trusts none), in addition to owning the resources. | For `did:` names ownership is derivable from the name, so trusted roots could become an optional narrowing. |
+| P6 (Q6) | The caveat registry is empty. Any caveat fails step 2 (`UnknownCaveat`) and the builders refuse to issue one. The rule that a child repeats every parent caveat is implemented and tested. | Registering caveats (for example a fresh co-signature from the principal for irreversible actions) adds names with defined arguments and a check at step 10 or 11. Approval by short-lived per-action grants needs no caveat. |
+| P7 (Q7) | Time is Unix seconds (`u64`) passed in by the caller. Skew defaults to 0, is clamped to 300 seconds, and softens only the start of a validity window and the future bound of an invocation, never an expiry. | Symmetric skew accepts a grant just after it expired when the verifier's clock runs slow. Behaviour for devices with no clock is not defined. |
+| P8 (Q1) | Revocation staleness bounds default to 0 for every effect class (only data as of now is accepted; no data refuses). A verifier raises a bound per class. Revocation distribution and record format are not implemented. | The draft defaults only irreversible effects to current data. Looser defaults for read and reversible make offline use easier. The bounds are already per class, so only defaults change. |
+| P9 | Step 5 verifies against `iss` itself; layer 2 has no key succession. | When it exists, a fail-closed key-view parameter is added to `verify`. |
+| P10 | An invocation cites the id of the last grant (`leaf`) and the full chain is supplied. The draft's "ids of grants the recipient already holds" is not modelled. | A confirmed-grant cache keyed by id saves bytes and bears on the privacy question (Q3); it adds a lookup before step 2 and a rule for cached expiry. |
+| P11 | An invocation is accepted only if its `time` is at most 60 seconds in the past (configurable) and not beyond now plus skew. Nonces are 16 bytes supplied by the caller (the crate has no RNG) and unique per invoker. | The window bounds how long a ledger must remember nonces. A different window changes only the context. |
+| P12 (Q5) | `calls` counts one per invocation; `cost` and `bytes` are the amounts the invocation declares; `rate` is calls per rolling 60 seconds. All are charged against every grant of the chain. `Some(0)` is a real limit. A grant without limits does not consult the ledger. | `cost` has no unit until layer 5 defines declared cost. Charging only the leaf would let a delegate exceed its delegator by splitting. |
+| P13 | Verification is read-only. The caller records the nonce and charges (`Decision`) in the same atomic step that performs the operation. | A ledger that charges inside `verify` hides the atomicity requirement but forces a mutable, I/O-capable parameter into a pure function. |
+| P14 | The invocation's `effect` is the class the invoker declares; the verifier does not know the true class of an operation. | A layer-5 registry from operation to effect class would let step 10 compare a computed class. |
+| P15 | A grant id is SHA-256 over a domain and the whole signed encoding including the signature. | The draft says "hash of its signed bytes" without saying whether the signature is included. With deterministic Ed25519 the two coincide in practice. |
+| P16 | `session` is an opaque 32-byte value supplied by the verifier and signed in the invocation. | Layer 1 may define a handshake hash or channel id; the field type may change. |
+| P17 | A refusal is one of several variants per step (`Denial::step` gives the step number alone, as the draft says). | Reporting only the step follows the draft sentence literally and loses information a caller may want. |
+| P18 | `delegable` is a `u32`, strictly lower per link; a chain has at most 8 grants and an encoded grant at most 4096 bytes. | Different caps change constants only. Larger post-quantum signatures (Q4) would not fit the grant bound. |
+
+Open questions touched (none is resolved): 1 (P8), 4 (P18, bounds assume 64-byte signatures), 5 (P12), 6 (P6), 7 (P7). Question 3 (privacy) is touched by P10. Question 2 (confused deputy) is not touched.
 
 ## Open questions
 
