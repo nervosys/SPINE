@@ -691,10 +691,11 @@ mod tests {
     async fn a_write_that_times_out_abandons_the_connection_without_a_close() {
         // A 64-byte pipe that nobody reads: a large frame cannot be written.
         let (c, s) = duplex(64);
+        let config = local_config();
         let (client, server) = tokio::time::timeout(LONG, async {
             tokio::join!(
                 client_connect(c),
-                Connection::server_handshake(s, &local_config(), DEFAULT_HELLO_DEADLINE)
+                Connection::server_handshake(s, &config, DEFAULT_HELLO_DEADLINE)
             )
         })
         .await
