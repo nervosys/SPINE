@@ -1054,7 +1054,7 @@ impl MeshNameResolver {
                         .lock()
                         .map(|mut guard| {
                             guard.admit(
-                                envelope.from,
+                                message.public_key,
                                 envelope.id,
                                 envelope.timestamp.timestamp(),
                                 chrono::Utc::now().timestamp(),

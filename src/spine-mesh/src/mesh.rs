@@ -430,6 +430,11 @@ pub const APPLICATION_FRESHNESS_SECS: i64 = 120;
 /// Most (sender, envelope id) pairs [`ReplayGuard`] remembers at once.
 pub const REPLAY_GUARD_CAPACITY: usize = 4096;
 
+/// Most live entries one sender key may hold in a [`ReplayGuard`], so that a
+/// single key cannot exhaust the shared table. A fraction of
+/// [`REPLAY_GUARD_CAPACITY`]; filling the table takes many distinct keys.
+pub const REPLAY_GUARD_PER_SENDER: usize = 256;
+
 /// Why [`ReplayGuard::admit`] refused an envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayRefusal {
@@ -438,7 +443,8 @@ pub enum ReplayRefusal {
     Stale,
     /// This sender and envelope id were already admitted inside the window.
     Duplicate,
-    /// The table is full of entries that can still be replayed.
+    /// The table is full of entries that can still be replayed, or this
+    /// sender already holds its share of it.
     Full,
 }
 
@@ -450,28 +456,56 @@ pub enum ReplayRefusal {
 /// At most `capacity` entries are held. When full, expired entries are evicted
 /// first; if every entry is still replayable the new envelope is refused
 /// (`Full`) rather than forgetting an entry that could be replayed.
+///
+/// Entries are keyed by the sender's *signing key*, which the caller has
+/// already verified against the envelope signature, never by the unauthenticated
+/// `from` label (anyone can write any label, so keying on it let one peer mint
+/// unlimited senders). Each key may hold at most `per_sender` live entries, so
+/// one key cannot fill the table and starve the others; live entries are never
+/// evicted to make room, since forgetting one would allow it to be replayed.
 #[derive(Debug)]
 pub struct ReplayGuard {
-    /// (sender, envelope id) -> last second at which a replay would still pass
-    /// the freshness check.
-    seen: HashMap<(AgentId, Uuid), i64>,
+    /// (sender key, envelope id) -> last second at which a replay would still
+    /// pass the freshness check.
+    seen: HashMap<([u8; 32], Uuid), i64>,
+    /// Live entries per sender key.
+    per_key: HashMap<[u8; 32], usize>,
     capacity: usize,
+    per_sender: usize,
 }
 
 impl ReplayGuard {
-    /// Create a guard remembering at most `capacity` envelopes.
+    /// Create a guard remembering at most `capacity` envelopes, of which one
+    /// sender may hold at most [`REPLAY_GUARD_PER_SENDER`].
     pub fn new(capacity: usize) -> Self {
+        Self::with_per_sender(capacity, REPLAY_GUARD_PER_SENDER)
+    }
+
+    /// As [`ReplayGuard::new`], with an explicit per-sender bound.
+    pub fn with_per_sender(capacity: usize, per_sender: usize) -> Self {
         Self {
             seen: HashMap::new(),
+            per_key: HashMap::new(),
             capacity,
+            per_sender,
+        }
+    }
+
+    fn purge(&mut self, now: i64) {
+        self.seen.retain(|_, expires| *expires >= now);
+        self.per_key.clear();
+        for (sender, _) in self.seen.keys() {
+            *self.per_key.entry(*sender).or_insert(0) += 1;
         }
     }
 
     /// Check freshness and uniqueness of an envelope signed at `timestamp`
     /// (Unix seconds) against `now` (Unix seconds), recording it if admitted.
+    ///
+    /// `sender` is the signing key the envelope was verified under.
     pub fn admit(
         &mut self,
-        sender: AgentId,
+        sender: [u8; 32],
         id: Uuid,
         timestamp: i64,
         now: i64,
@@ -483,14 +517,16 @@ impl ReplayGuard {
         if self.seen.contains_key(&key) {
             return Err(ReplayRefusal::Duplicate);
         }
-        if self.seen.len() >= self.capacity {
-            self.seen.retain(|_, expires| *expires >= now);
-            if self.seen.len() >= self.capacity {
+        let held = |guard: &Self| guard.per_key.get(&sender).copied().unwrap_or(0);
+        if self.seen.len() >= self.capacity || held(self) >= self.per_sender {
+            self.purge(now);
+            if self.seen.len() >= self.capacity || held(self) >= self.per_sender {
                 return Err(ReplayRefusal::Full);
             }
         }
         self.seen
             .insert(key, timestamp.saturating_add(APPLICATION_FRESHNESS_SECS));
+        *self.per_key.entry(sender).or_insert(0) += 1;
         Ok(())
     }
 
@@ -1043,7 +1079,7 @@ mod tests {
     #[test]
     fn the_replay_guard_admits_once_and_refuses_stale_envelopes() {
         let mut guard = ReplayGuard::new(8);
-        let sender = AgentId::new();
+        let sender = [1u8; 32];
         let id = Uuid::new_v4();
         let now = 1_000_000;
 
@@ -1053,7 +1089,7 @@ mod tests {
             Err(ReplayRefusal::Duplicate)
         );
         // The same id from a different sender is a different envelope.
-        assert_eq!(guard.admit(AgentId::new(), id, now, now), Ok(()));
+        assert_eq!(guard.admit([2u8; 32], id, now, now), Ok(()));
 
         let window = APPLICATION_FRESHNESS_SECS;
         for skew in [window + 1, -(window + 1)] {
@@ -1070,7 +1106,7 @@ mod tests {
     #[test]
     fn a_full_replay_guard_refuses_rather_than_forgetting_live_entries() {
         let mut guard = ReplayGuard::new(2);
-        let sender = AgentId::new();
+        let sender = [1u8; 32];
         let now = 1_000_000;
         assert_eq!(guard.admit(sender, Uuid::new_v4(), now, now), Ok(()));
         assert_eq!(guard.admit(sender, Uuid::new_v4(), now, now), Ok(()));
@@ -1086,6 +1122,37 @@ mod tests {
         assert_eq!(guard.admit(sender, Uuid::new_v4(), later, later), Ok(()));
         assert_eq!(guard.len(), 1);
         assert!(!guard.is_empty());
+    }
+
+    #[test]
+    fn one_sender_cannot_fill_the_replay_guard_for_the_others() {
+        // The table is large, the per-sender share small: a peer that sprays
+        // envelopes (under any `from` label it likes, which is not the key)
+        // exhausts only its own share.
+        let mut guard = ReplayGuard::with_per_sender(64, 4);
+        let spammer = [9u8; 32];
+        let victim = [7u8; 32];
+        let now = 1_000_000;
+
+        let remembered = Uuid::new_v4();
+        assert_eq!(guard.admit(victim, remembered, now, now), Ok(()));
+
+        let mut refused = 0;
+        for _ in 0..40 {
+            if guard.admit(spammer, Uuid::new_v4(), now, now) == Err(ReplayRefusal::Full) {
+                refused += 1;
+            }
+        }
+        assert_eq!(refused, 36, "the spammer holds at most its own share");
+
+        // The victim's entry survived and can still not be replayed, and the
+        // victim still has room for new envelopes.
+        assert_eq!(
+            guard.admit(victim, remembered, now, now),
+            Err(ReplayRefusal::Duplicate)
+        );
+        assert_eq!(guard.admit(victim, Uuid::new_v4(), now, now), Ok(()));
+        assert_eq!(guard.len(), 6);
     }
 
     fn test_identity(name: &str) -> SigningIdentity {
