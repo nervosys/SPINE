@@ -2819,4 +2819,316 @@ mod secure_tests {
         }
         assert_eq!(receiver.resolver.record_count().await, 1);
     }
+
+    // ───────── forged senders over real encrypted connections ─────────
+
+    const RAW_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// One end of an established, encrypted connection that a test drives by
+    /// hand, so that it can send envelopes no honest node would build.
+    struct RawPeer {
+        stream: TcpStream,
+        session: Session,
+    }
+
+    impl RawPeer {
+        /// Connect to `target` as an ordinary peer whose session key is `key`.
+        async fn dial(target: &SecureNode, key: &SigningKey) -> RawPeer {
+            let mut stream = tokio::time::timeout(RAW_TIMEOUT, TcpStream::connect(target.addr))
+                .await
+                .expect("connect timed out")
+                .unwrap();
+            let session = tokio::time::timeout(
+                RAW_TIMEOUT,
+                client_handshake(
+                    &mut stream,
+                    key,
+                    Some(&target.signing.verifying_key().to_bytes()),
+                ),
+            )
+            .await
+            .expect("handshake timed out")
+            .unwrap();
+            RawPeer { stream, session }
+        }
+
+        /// Seal `envelope` under the session and write it as one frame.
+        async fn inject(&mut self, envelope: &MeshEnvelope) {
+            let sealed = self
+                .session
+                .seal(&serde_json::to_vec(envelope).unwrap())
+                .unwrap();
+            tokio::time::timeout(RAW_TIMEOUT, write_frame(&mut self.stream, &sealed))
+                .await
+                .expect("write timed out")
+                .unwrap();
+        }
+
+        /// Read and open the next envelope the other side sent.
+        async fn next_envelope(&mut self) -> MeshEnvelope {
+            let frame = tokio::time::timeout(
+                RAW_TIMEOUT,
+                read_frame(&mut self.stream, MAX_FRAME_BYTES + 1024),
+            )
+            .await
+            .expect("read timed out")
+            .unwrap()
+            .expect("the peer closed the connection");
+            serde_json::from_slice(&self.session.open(&frame).unwrap()).unwrap()
+        }
+    }
+
+    /// An envelope claiming to come from `from`, validly signed by some other
+    /// key: `from` is covered by the signature, so this is the best a forger
+    /// can do without the victim's key.
+    fn envelope_claiming(
+        from: AgentId,
+        to: AgentId,
+        payload: crate::mesh::MeshPayload,
+    ) -> MeshEnvelope {
+        MeshNode::new(
+            SigningIdentity::from_agent_id(from, "impostor"),
+            MeshConfig::default(),
+        )
+        .create_envelope(crate::mesh::MeshTarget::Agent(to), payload)
+        .unwrap()
+    }
+
+    /// Wait (bounded) until the node's metrics satisfy `ready`.
+    async fn wait_for_metrics(
+        node: &SecureNode,
+        what: &str,
+        ready: impl Fn(&crate::naming_mesh::ResolverMetrics) -> bool,
+    ) {
+        for _ in 0..200 {
+            let metrics = node.resolver.metrics().await;
+            if ready(&metrics) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the metrics never showed: {what}");
+    }
+
+    /// `closer` referrals are unsigned and steer the walk, so a response only
+    /// counts when it verifiably comes from the peer that was asked, on that
+    /// peer's own connection. Node B is played by hand so its answer can be
+    /// held back until the forgeries have been tried.
+    #[tokio::test]
+    async fn a_response_forged_by_a_connected_peer_does_not_answer_a_lookup() {
+        use crate::mesh::MeshPayload;
+        use crate::naming::ResolveResponse;
+
+        let a = spawn_secure(40).await;
+        // `b` supplies B's identity; its own listener is never dialled.
+        let b = spawn_secure(41).await;
+        let c = spawn_secure(42).await;
+        let rec = record(1, &[]);
+        let a_id = *a.mesh.agent_id();
+        let b_id = *b.mesh.agent_id();
+
+        // A is told to reach B at the hand-played listener.
+        let stub = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stub_addr = stub.local_addr().unwrap();
+        a.transport.set_address(b_id, stub_addr);
+        a.transport
+            .set_identity(b_id, b.signing.verifying_key().to_bytes());
+        a.resolver
+            .register_peer(&b.mesh.public_identity(), vec![stub_addr.to_string()], NOW)
+            .await;
+
+        let seeker = a.resolver.clone();
+        let name = rec.name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve(&name).await });
+
+        // B accepts A's connection and reads the question.
+        let (mut b_stream, _) = tokio::time::timeout(RAW_TIMEOUT, stub.accept())
+            .await
+            .expect("A never dialled B")
+            .unwrap();
+        let b_session =
+            tokio::time::timeout(RAW_TIMEOUT, server_handshake(&mut b_stream, &b.signing))
+                .await
+                .expect("handshake timed out")
+                .unwrap();
+        let mut b_peer = RawPeer {
+            stream: b_stream,
+            session: b_session,
+        };
+        let mut asked = None;
+        for _ in 0..8 {
+            if let MeshPayload::NameResolveRequest(request) = b_peer.next_envelope().await.payload {
+                asked = Some(request.request_id);
+                break;
+            }
+        }
+        let request_id = asked.expect("A never asked B");
+        let genuine = b
+            .mesh
+            .name_resolve_response(
+                a_id,
+                ResolveResponse {
+                    record: Some(rec.clone()),
+                    ..ResolveResponse::empty(request_id)
+                },
+            )
+            .unwrap();
+
+        // C is a legitimate peer of A, and sends what B should have sent.
+        let mut c_peer = RawPeer::dial(&a, &c.signing).await;
+        let empty = MeshPayload::NameResolveResponse(Box::new(ResolveResponse::empty(request_id)));
+
+        // 1. Claims B's id, signed by a key that is not B's.
+        c_peer.inject(&envelope_claiming(b_id, a_id, empty)).await;
+        wait_for_metrics(&a, "the impostor response counted", |m| {
+            m.envelopes_unauthenticated >= 1
+        })
+        .await;
+
+        // 2. B's id on B's own envelope, with the signature damaged.
+        let mut damaged = genuine.clone();
+        damaged.signature[0] ^= 1;
+        c_peer.inject(&damaged).await;
+        wait_for_metrics(&a, "the damaged response counted", |m| {
+            m.envelopes_unauthenticated >= 2
+        })
+        .await;
+
+        // 3. B's genuine envelope, relayed on C's connection.
+        c_peer.inject(&genuine).await;
+        wait_for_metrics(&a, "the relayed response counted", |m| {
+            m.envelopes_unauthenticated >= 3
+        })
+        .await;
+
+        // 4. The damaged envelope on B's own connection: only the signature
+        //    can refuse it there.
+        b_peer.inject(&damaged).await;
+        wait_for_metrics(&a, "the damaged response on B's connection counted", |m| {
+            m.envelopes_unauthenticated >= 4
+        })
+        .await;
+
+        // Absence: give anything wrongly accepted time to complete the lookup.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!lookup.is_finished(), "a forgery answered the lookup");
+        assert_eq!(a.resolver.pending_lookups(), 1);
+        assert_eq!(a.resolver.metrics().await.envelopes_unauthenticated, 4);
+
+        // B's genuine answer, on B's connection, completes it.
+        b_peer.inject(&genuine).await;
+        let found = tokio::time::timeout(RAW_TIMEOUT, lookup)
+            .await
+            .expect("the lookup hung")
+            .unwrap()
+            .unwrap();
+        assert_eq!(found, rec);
+        assert_eq!(a.resolver.metrics().await.envelopes_unauthenticated, 4);
+    }
+
+    /// A hello or ack on an encrypted connection must carry the key the
+    /// connection was authenticated with.
+    #[tokio::test]
+    async fn a_hello_carrying_another_key_than_the_session_is_rejected_over_tcp() {
+        let a = spawn_secure(43).await;
+        let c = spawn_secure(44).await;
+        let other = MeshNode::new(
+            SigningIdentity::from_seed("other", [190; 32]),
+            MeshConfig::default(),
+        );
+        let mut c_peer = RawPeer::dial(&a, &c.signing).await;
+
+        // The session key is C's; the hello carries the other node's key.
+        let hello = other.name_hello(vec!["10.9.9.9:9440".into()]).unwrap();
+        c_peer.inject(&hello).await;
+        wait_for_metrics(&a, "the foreign hello counted", |m| {
+            m.greetings_rejected >= 1
+        })
+        .await;
+        let ack = other
+            .name_hello_ack(*a.mesh.agent_id(), Vec::new(), Vec::new())
+            .unwrap();
+        c_peer.inject(&ack).await;
+        wait_for_metrics(&a, "the foreign ack counted", |m| m.greetings_rejected >= 2).await;
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(a.resolver.peer_count().await, 0, "no contact was recorded");
+        let metrics = a.resolver.metrics().await;
+        assert_eq!(metrics.greetings_rejected, 2);
+        assert_eq!(metrics.greetings_answered, 0);
+
+        // The same connection's own hello is accepted, so the connection was
+        // alive and the refusals above were about the key.
+        let own = c.mesh.name_hello(vec!["10.9.9.8:9440".into()]).unwrap();
+        c_peer.inject(&own).await;
+        wait_for_metrics(&a, "the matching hello answered", |m| {
+            m.greetings_answered >= 1
+        })
+        .await;
+        assert_eq!(a.resolver.peer_count().await, 1);
+        assert_eq!(a.resolver.metrics().await.greetings_rejected, 2);
+    }
+
+    /// An envelope whose `from` is not the id derived from its key is dropped
+    /// and counted, though the connection and the carried key are genuine.
+    #[tokio::test]
+    async fn an_envelope_whose_from_is_not_derived_from_its_key_is_dropped_over_tcp() {
+        use crate::mesh::{ApplicationMessage, MeshPayload, MeshTarget};
+
+        let a = spawn_secure(45).await;
+        let c = spawn_secure(46).await;
+        let a_id = *a.mesh.agent_id();
+        let a_key = a.signing.verifying_key().to_bytes();
+        let c_key = c.signing.verifying_key().to_bytes();
+        let mut c_peer = RawPeer::dial(&a, &c.signing).await;
+        let request = |request_id: uuid::Uuid| {
+            MeshPayload::Application(Box::new(ApplicationMessage {
+                public_key: c_key,
+                recipient: a_id,
+                recipient_key: a_key,
+                request_id,
+                response: false,
+                data: serde_json::json!({"operation":"capabilities"}),
+            }))
+        };
+
+        // The message names the session key; the envelope's label is an id
+        // that no key derives to.
+        let liar = AgentId::new();
+        assert!(!liar.is_derived_from(&c_key));
+        c_peer
+            .inject(&envelope_claiming(
+                liar,
+                a_id,
+                request(uuid::Uuid::new_v4()),
+            ))
+            .await;
+        wait_for_metrics(&a, "the mislabelled envelope counted", |m| {
+            m.agent_id_mismatches >= 1
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let metrics = a.resolver.metrics().await;
+        assert_eq!(metrics.agent_id_mismatches, 1);
+        assert_eq!(metrics.envelopes_unauthenticated, 1);
+
+        // A well-formed request on the same connection is answered, so the
+        // silence above was the drop and not a dead connection.
+        let request_id = uuid::Uuid::new_v4();
+        let genuine = c
+            .mesh
+            .create_envelope(MeshTarget::Agent(a_id), request(request_id))
+            .unwrap();
+        c_peer.inject(&genuine).await;
+        match c_peer.next_envelope().await.payload {
+            MeshPayload::Application(answer) => {
+                assert!(answer.response);
+                assert_eq!(answer.request_id, request_id);
+            }
+            other => panic!("expected an application answer, got {other:?}"),
+        }
+        let metrics = a.resolver.metrics().await;
+        assert_eq!(metrics.agent_id_mismatches, 1);
+        assert_eq!(metrics.envelopes_unauthenticated, 1);
+    }
 }
