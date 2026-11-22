@@ -5,9 +5,11 @@
 //! stream and a small amount of state (the negotiated limits, the accepted
 //! extensions and the table of requests in flight) and does work only inside
 //! the calls the caller makes. [`Connection::recv`] and [`Connection::send`]
-//! take `&mut self`, so one task drives a connection. A caller that wants to
-//! read and write at the same time splits its own work, for example with a
-//! queue in front of the connection.
+//! take `&mut self`, so one task drives a connection. A caller that must read
+//! and write at the same time (the daemon: it keeps reading while a command
+//! runs) calls [`Connection::split`], which turns the established connection
+//! into a [`ConnectionReader`] and a [`ConnectionWriter`] that share the same
+//! state and apply the same rules.
 //!
 //! What this layer checks, using only its own state:
 //!
@@ -37,14 +39,17 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::Serialize;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 
 use crate::cbor::{self, CborError};
 use crate::frame::{
-    read_frame, write_frame, CloseCode, Frame, FrameError, FrameType, PRE_HELLO_MAX_FRAME, VERSION,
+    encode_frame, read_frame, write_frame, CloseCode, Frame, FrameError, FrameType,
+    PRE_HELLO_MAX_FRAME, VERSION,
 };
 use crate::hello::{negotiate, Close, Hello, HelloAck, LocalConfig};
 
@@ -262,19 +267,249 @@ fn eof_before_handshake(what: &str) -> ConnectionError {
     ))
 }
 
+/// What a received frame turned out to be, once the state rules have been
+/// applied to it. Shared by [`Connection`] and [`ConnectionReader`].
+enum Admit {
+    /// Hand it to the caller.
+    Deliver(Frame),
+    /// A frame this side must send back (a `PONG` for a `PING`).
+    Pong(Frame),
+    /// A request that arrived at `max_inflight`: answer it with `overloaded`.
+    Overloaded(u64),
+    /// Drop it silently.
+    Ignore,
+    /// The peer's `CLOSE`.
+    Closed(Close),
+}
+
+/// A received frame that broke a rule.
+enum Fault {
+    /// Send `CLOSE` with this code and message.
+    Violation(CloseCode, String),
+    /// Send this `CLOSE` body (it came from a body check).
+    Reject(Close),
+}
+
+/// The protocol state of one connection: the negotiated limits, the accepted
+/// extensions and the table of requests in flight, with the rules that read and
+/// change them. It does no I/O, so [`Connection`] (one owner) and the halves
+/// of [`Connection::split`] (a shared copy behind a mutex) apply the same
+/// rules.
+#[derive(Debug)]
+struct Tracker {
+    role: Role,
+    max_inflight: u32,
+    extensions: Vec<String>,
+    in_flight: HashMap<u64, Exchange>,
+    overloaded: u64,
+}
+
+impl Tracker {
+    /// Checks an `EXT` body against the accepted extensions.
+    fn check_ext(&self, body: &[u8]) -> Result<(), String> {
+        match ext_index(body) {
+            None => Err("EXT body is not an array of index, kind and payload".to_string()),
+            Some(index) if index >= self.extensions.len() as u64 => Err(format!(
+                "EXT index {} is out of range ({} extensions accepted)",
+                index,
+                self.extensions.len()
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// State checks for a frame about to be sent.
+    fn check_outgoing(&self, frame: &Frame) -> Result<Transition, String> {
+        let id = frame.request_id;
+        let state = self.in_flight.get(&id).copied();
+        match (self.role, frame.frame_type) {
+            (_, FrameType::Ping) | (_, FrameType::Pong) => Ok(Transition::None),
+            (_, FrameType::Close) => Ok(Transition::Finish),
+            (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Transition::None),
+            (Role::Client, FrameType::Request) => {
+                if state.is_some() {
+                    Err(format!("request id {id} is already in flight"))
+                } else {
+                    Ok(Transition::Track)
+                }
+            }
+            (Role::Client, FrameType::StreamCancel) => Ok(Transition::None),
+            (Role::Server, FrameType::Response) => match state {
+                Some(Exchange::Pending) => Ok(Transition::Release),
+                Some(Exchange::Streaming) => {
+                    Err(format!("request {id} is streaming and gets no RESPONSE"))
+                }
+                None => Err(format!("RESPONSE for request {id}, which is not in flight")),
+            },
+            (Role::Server, FrameType::StreamStart) => match state {
+                Some(Exchange::Pending) => Ok(Transition::Stream),
+                Some(Exchange::Streaming) => Err(format!("request {id} is already streaming")),
+                None => Err(format!(
+                    "STREAM_START for request {id}, which is not in flight"
+                )),
+            },
+            (Role::Server, FrameType::StreamToken) => match state {
+                Some(Exchange::Streaming) => Ok(Transition::None),
+                _ => Err(format!(
+                    "STREAM_TOKEN for request {id}, which is not streaming"
+                )),
+            },
+            (Role::Server, FrameType::StreamEnd) => match state {
+                Some(Exchange::Streaming) => Ok(Transition::Release),
+                _ => Err(format!(
+                    "STREAM_END for request {id}, which is not streaming"
+                )),
+            },
+            (role, frame_type) => Err(format!("a {role:?} may not send {frame_type:?}")),
+        }
+    }
+
+    /// Applies what a successfully checked outgoing frame does to the table.
+    fn apply(&mut self, id: u64, transition: &Transition) {
+        match transition {
+            Transition::None | Transition::Finish => {}
+            Transition::Track => {
+                self.in_flight.insert(id, Exchange::Pending);
+            }
+            Transition::Stream => {
+                self.in_flight.insert(id, Exchange::Streaming);
+            }
+            Transition::Release => {
+                self.in_flight.remove(&id);
+            }
+        }
+    }
+
+    /// State checks for a received frame of a kind that is neither `CLOSE`,
+    /// `PING`, `PONG`, `HELLO` nor `HELLO_ACK`. The `Err` text is the message
+    /// of a `protocol_violation`.
+    fn check_incoming(&mut self, frame: &Frame) -> Result<Verdict, String> {
+        let id = frame.request_id;
+        let state = self.in_flight.get(&id).copied();
+        match (self.role, frame.frame_type) {
+            (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Verdict::Deliver),
+            (Role::Server, FrameType::Request) => {
+                if state.is_some() {
+                    return Err(format!("request id {id} is already in flight"));
+                }
+                if self.in_flight.len() as u64 >= u64::from(self.max_inflight) {
+                    return Ok(Verdict::Overloaded);
+                }
+                self.in_flight.insert(id, Exchange::Pending);
+                Ok(Verdict::Deliver)
+            }
+            (Role::Server, FrameType::StreamCancel) => {
+                if state.is_some() {
+                    Ok(Verdict::Deliver)
+                } else {
+                    Ok(Verdict::Ignore)
+                }
+            }
+            (Role::Client, FrameType::Response) => match state {
+                Some(Exchange::Pending) => {
+                    self.in_flight.remove(&id);
+                    Ok(Verdict::Deliver)
+                }
+                Some(Exchange::Streaming) => {
+                    Err(format!("RESPONSE for request {id}, which is streaming"))
+                }
+                None => Err(format!("RESPONSE for request {id}, which is not in flight")),
+            },
+            (Role::Client, FrameType::StreamStart) => match state {
+                Some(Exchange::Pending) => {
+                    self.in_flight.insert(id, Exchange::Streaming);
+                    Ok(Verdict::Deliver)
+                }
+                Some(Exchange::Streaming) => Err(format!("request {id} is already streaming")),
+                None => Err(format!(
+                    "STREAM_START for request {id}, which is not in flight"
+                )),
+            },
+            (Role::Client, FrameType::StreamToken) => match state {
+                Some(Exchange::Streaming) => Ok(Verdict::Deliver),
+                _ => Err(format!(
+                    "STREAM_TOKEN for request {id}, which is not streaming"
+                )),
+            },
+            (Role::Client, FrameType::StreamEnd) => match state {
+                Some(Exchange::Streaming) => {
+                    self.in_flight.remove(&id);
+                    Ok(Verdict::Deliver)
+                }
+                _ => Err(format!(
+                    "STREAM_END for request {id}, which is not streaming"
+                )),
+            },
+            (role, frame_type) => Err(format!("a {role:?} may not receive {frame_type:?}")),
+        }
+    }
+
+    /// Applies the post-handshake rules to one received frame, without any
+    /// I/O: the caller does what the result says.
+    fn admit(&mut self, frame: Frame) -> Result<Admit, Fault> {
+        if let Err(e) = cbor::check_deterministic(&frame.body) {
+            return Err(Fault::Violation(
+                CloseCode::MalformedFrame,
+                format!("body is not deterministic CBOR: {e}"),
+            ));
+        }
+        match frame.frame_type {
+            FrameType::Close => match Close::from_frame(&frame) {
+                Ok(close) => Ok(Admit::Closed(close)),
+                Err(close) => Err(Fault::Reject(close)),
+            },
+            FrameType::Ping | FrameType::Pong => {
+                if cbor::from_slice::<u64>(&frame.body).is_err() {
+                    return Err(Fault::Violation(
+                        CloseCode::ProtocolViolation,
+                        "PING and PONG carry an unsigned integer token".to_string(),
+                    ));
+                }
+                if frame.frame_type == FrameType::Ping {
+                    Ok(Admit::Pong(Frame {
+                        frame_type: FrameType::Pong,
+                        request_id: frame.request_id,
+                        body: frame.body,
+                    }))
+                } else {
+                    Ok(Admit::Deliver(frame))
+                }
+            }
+            FrameType::Hello | FrameType::HelloAck => Err(Fault::Violation(
+                CloseCode::ProtocolViolation,
+                "HELLO and HELLO_ACK are only valid as first frames".to_string(),
+            )),
+            _ => match self.check_incoming(&frame) {
+                Err(message) => Err(Fault::Violation(CloseCode::ProtocolViolation, message)),
+                Ok(Verdict::Deliver) => Ok(Admit::Deliver(frame)),
+                Ok(Verdict::Ignore) => Ok(Admit::Ignore),
+                Ok(Verdict::Overloaded) => {
+                    self.overloaded += 1;
+                    Ok(Admit::Overloaded(frame.request_id))
+                }
+            },
+        }
+    }
+}
+
+/// The `overloaded` `RESPONSE` for request `id`.
+fn overloaded_frame(id: u64) -> Result<Frame, CborError> {
+    Ok(Frame {
+        frame_type: FrameType::Response,
+        request_id: id,
+        body: response_err_body(ERR_OVERLOADED, "too many requests in flight")?,
+    })
+}
+
 /// An established spine-wire v1 connection. See the module documentation.
 #[derive(Debug)]
 pub struct Connection<S> {
     stream: S,
-    role: Role,
     version: u64,
     max_frame: u32,
-    max_inflight: u32,
-    extensions: Vec<String>,
     compress: bool,
-    in_flight: HashMap<u64, Exchange>,
+    tracker: Tracker,
     next_id: u64,
-    overloaded: u64,
     finished: bool,
 }
 
@@ -283,15 +518,17 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     fn established(stream: S, role: Role, ack: &HelloAck) -> Connection<S> {
         Connection {
             stream,
-            role,
             version: ack.version,
             max_frame: ack.max_frame,
-            max_inflight: ack.max_inflight,
-            extensions: ack.extensions.clone(),
             compress: false,
-            in_flight: HashMap::new(),
+            tracker: Tracker {
+                role,
+                max_inflight: ack.max_inflight,
+                extensions: ack.extensions.clone(),
+                in_flight: HashMap::new(),
+                overloaded: 0,
+            },
             next_id: 1,
-            overloaded: 0,
             finished: false,
         }
     }
@@ -430,7 +667,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
 
     /// Which end this is.
     pub fn role(&self) -> Role {
-        self.role
+        self.tracker.role
     }
 
     /// The negotiated frame version.
@@ -445,23 +682,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
 
     /// The negotiated `max_inflight`.
     pub fn max_inflight(&self) -> u32 {
-        self.max_inflight
+        self.tracker.max_inflight
     }
 
     /// The accepted extensions; the position is the extension index.
     pub fn extensions(&self) -> &[String] {
-        &self.extensions
+        &self.tracker.extensions
     }
 
     /// The number of requests currently in flight, as this side tracks them.
     pub fn in_flight_len(&self) -> usize {
-        self.in_flight.len()
+        self.tracker.in_flight.len()
     }
 
     /// How many received requests this (server) side has answered with
     /// `overloaded` without delivering them.
     pub fn overloaded_count(&self) -> u64 {
-        self.overloaded
+        self.tracker.overloaded
     }
 
     /// True once the connection refuses further use.
@@ -529,65 +766,6 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         self.finished = true;
     }
 
-    /// Checks an `EXT` body against the accepted extensions.
-    fn check_ext(&self, body: &[u8]) -> Result<(), String> {
-        match ext_index(body) {
-            None => Err("EXT body is not an array of index, kind and payload".to_string()),
-            Some(index) if index >= self.extensions.len() as u64 => Err(format!(
-                "EXT index {} is out of range ({} extensions accepted)",
-                index,
-                self.extensions.len()
-            )),
-            Some(_) => Ok(()),
-        }
-    }
-
-    /// State checks for a frame about to be sent.
-    fn check_outgoing(&self, frame: &Frame) -> Result<Transition, String> {
-        let id = frame.request_id;
-        let state = self.in_flight.get(&id).copied();
-        match (self.role, frame.frame_type) {
-            (_, FrameType::Ping) | (_, FrameType::Pong) => Ok(Transition::None),
-            (_, FrameType::Close) => Ok(Transition::Finish),
-            (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Transition::None),
-            (Role::Client, FrameType::Request) => {
-                if state.is_some() {
-                    Err(format!("request id {id} is already in flight"))
-                } else {
-                    Ok(Transition::Track)
-                }
-            }
-            (Role::Client, FrameType::StreamCancel) => Ok(Transition::None),
-            (Role::Server, FrameType::Response) => match state {
-                Some(Exchange::Pending) => Ok(Transition::Release),
-                Some(Exchange::Streaming) => {
-                    Err(format!("request {id} is streaming and gets no RESPONSE"))
-                }
-                None => Err(format!("RESPONSE for request {id}, which is not in flight")),
-            },
-            (Role::Server, FrameType::StreamStart) => match state {
-                Some(Exchange::Pending) => Ok(Transition::Stream),
-                Some(Exchange::Streaming) => Err(format!("request {id} is already streaming")),
-                None => Err(format!(
-                    "STREAM_START for request {id}, which is not in flight"
-                )),
-            },
-            (Role::Server, FrameType::StreamToken) => match state {
-                Some(Exchange::Streaming) => Ok(Transition::None),
-                _ => Err(format!(
-                    "STREAM_TOKEN for request {id}, which is not streaming"
-                )),
-            },
-            (Role::Server, FrameType::StreamEnd) => match state {
-                Some(Exchange::Streaming) => Ok(Transition::Release),
-                _ => Err(format!(
-                    "STREAM_END for request {id}, which is not streaming"
-                )),
-            },
-            (role, frame_type) => Err(format!("a {role:?} may not send {frame_type:?}")),
-        }
-    }
-
     /// Sends one frame after checking it against this side's state.
     ///
     /// The body must be deterministic CBOR ([`ConnectionError::Cbor`]), the
@@ -601,25 +779,14 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         self.ensure_open()?;
         cbor::check_deterministic(&frame.body)?;
         let transition = self
+            .tracker
             .check_outgoing(&frame)
             .map_err(ConnectionError::Usage)?;
         self.write(&frame).await?;
-        let id = frame.request_id;
-        match transition {
-            Transition::None => {}
-            Transition::Track => {
-                self.in_flight.insert(id, Exchange::Pending);
-            }
-            Transition::Stream => {
-                self.in_flight.insert(id, Exchange::Streaming);
-            }
-            Transition::Release => {
-                self.in_flight.remove(&id);
-            }
-            Transition::Finish => {
-                self.finished = true;
-                let _ = self.stream.shutdown().await;
-            }
+        self.tracker.apply(frame.request_id, &transition);
+        if matches!(transition, Transition::Finish) {
+            self.finished = true;
+            let _ = self.stream.shutdown().await;
         }
         Ok(())
     }
@@ -629,7 +796,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// requests in flight is not capped here: a server at `max_inflight`
     /// answers the extra request with `overloaded`.
     pub async fn request(&mut self, body: Vec<u8>) -> Result<u64, ConnectionError> {
-        if self.role != Role::Client {
+        if self.tracker.role != Role::Client {
             return Err(ConnectionError::Usage(
                 "only a client sends requests".to_string(),
             ));
@@ -639,7 +806,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             if id == 0 {
                 id = 1;
             }
-            if !self.in_flight.contains_key(&id) {
+            if !self.tracker.in_flight.contains_key(&id) {
                 break;
             }
             id = id.wrapping_add(1);
@@ -685,133 +852,28 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
         .await
     }
 
-    /// State checks for a received frame of a kind that is neither `CLOSE`,
-    /// `PING`, `PONG`, `HELLO` nor `HELLO_ACK`. The `Err` text is the message
-    /// of a `protocol_violation`.
-    fn check_incoming(&mut self, frame: &Frame) -> Result<Verdict, String> {
-        let id = frame.request_id;
-        let state = self.in_flight.get(&id).copied();
-        match (self.role, frame.frame_type) {
-            (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Verdict::Deliver),
-            (Role::Server, FrameType::Request) => {
-                if state.is_some() {
-                    return Err(format!("request id {id} is already in flight"));
-                }
-                if self.in_flight.len() as u64 >= u64::from(self.max_inflight) {
-                    return Ok(Verdict::Overloaded);
-                }
-                self.in_flight.insert(id, Exchange::Pending);
-                Ok(Verdict::Deliver)
-            }
-            (Role::Server, FrameType::StreamCancel) => {
-                if state.is_some() {
-                    Ok(Verdict::Deliver)
-                } else {
-                    Ok(Verdict::Ignore)
-                }
-            }
-            (Role::Client, FrameType::Response) => match state {
-                Some(Exchange::Pending) => {
-                    self.in_flight.remove(&id);
-                    Ok(Verdict::Deliver)
-                }
-                Some(Exchange::Streaming) => {
-                    Err(format!("RESPONSE for request {id}, which is streaming"))
-                }
-                None => Err(format!("RESPONSE for request {id}, which is not in flight")),
-            },
-            (Role::Client, FrameType::StreamStart) => match state {
-                Some(Exchange::Pending) => {
-                    self.in_flight.insert(id, Exchange::Streaming);
-                    Ok(Verdict::Deliver)
-                }
-                Some(Exchange::Streaming) => Err(format!("request {id} is already streaming")),
-                None => Err(format!(
-                    "STREAM_START for request {id}, which is not in flight"
-                )),
-            },
-            (Role::Client, FrameType::StreamToken) => match state {
-                Some(Exchange::Streaming) => Ok(Verdict::Deliver),
-                _ => Err(format!(
-                    "STREAM_TOKEN for request {id}, which is not streaming"
-                )),
-            },
-            (Role::Client, FrameType::StreamEnd) => match state {
-                Some(Exchange::Streaming) => {
-                    self.in_flight.remove(&id);
-                    Ok(Verdict::Deliver)
-                }
-                _ => Err(format!(
-                    "STREAM_END for request {id}, which is not streaming"
-                )),
-            },
-            (role, frame_type) => Err(format!("a {role:?} may not receive {frame_type:?}")),
-        }
-    }
-
     /// Applies the post-handshake rules to one received frame. `Ok(None)`
     /// means the frame was handled here (a `PING`, an ignored cancel, an
     /// overloaded request) and the caller should read on.
     async fn accept(&mut self, frame: Frame) -> Result<Option<Frame>, ConnectionError> {
-        if let Err(e) = cbor::check_deterministic(&frame.body) {
-            return Err(self
-                .violation(
-                    CloseCode::MalformedFrame,
-                    format!("body is not deterministic CBOR: {e}"),
-                )
-                .await);
-        }
-        match frame.frame_type {
-            FrameType::Close => match Close::from_frame(&frame) {
-                Ok(close) => {
-                    self.finished = true;
-                    Err(ConnectionError::Closed(close))
-                }
-                Err(close) => Err(self.reject(close).await),
-            },
-            FrameType::Ping | FrameType::Pong => {
-                if cbor::from_slice::<u64>(&frame.body).is_err() {
-                    return Err(self
-                        .violation(
-                            CloseCode::ProtocolViolation,
-                            "PING and PONG carry an unsigned integer token".to_string(),
-                        )
-                        .await);
-                }
-                if frame.frame_type == FrameType::Ping {
-                    let pong = Frame {
-                        frame_type: FrameType::Pong,
-                        request_id: frame.request_id,
-                        body: frame.body,
-                    };
-                    self.write(&pong).await?;
-                    Ok(None)
-                } else {
-                    Ok(Some(frame))
-                }
+        match self.tracker.admit(frame) {
+            Ok(Admit::Deliver(frame)) => Ok(Some(frame)),
+            Ok(Admit::Ignore) => Ok(None),
+            Ok(Admit::Pong(pong)) => {
+                self.write(&pong).await?;
+                Ok(None)
             }
-            FrameType::Hello | FrameType::HelloAck => Err(self
-                .violation(
-                    CloseCode::ProtocolViolation,
-                    "HELLO and HELLO_ACK are only valid as first frames".to_string(),
-                )
-                .await),
-            _ => match self.check_incoming(&frame) {
-                Err(message) => Err(self.violation(CloseCode::ProtocolViolation, message).await),
-                Ok(Verdict::Deliver) => Ok(Some(frame)),
-                Ok(Verdict::Ignore) => Ok(None),
-                Ok(Verdict::Overloaded) => {
-                    let body = response_err_body(ERR_OVERLOADED, "too many requests in flight")?;
-                    let answer = Frame {
-                        frame_type: FrameType::Response,
-                        request_id: frame.request_id,
-                        body,
-                    };
-                    self.overloaded += 1;
-                    self.write(&answer).await?;
-                    Ok(None)
-                }
-            },
+            Ok(Admit::Overloaded(id)) => {
+                let answer = overloaded_frame(id)?;
+                self.write(&answer).await?;
+                Ok(None)
+            }
+            Ok(Admit::Closed(close)) => {
+                self.finished = true;
+                Err(ConnectionError::Closed(close))
+            }
+            Err(Fault::Violation(code, message)) => Err(self.violation(code, message).await),
+            Err(Fault::Reject(close)) => Err(self.reject(close).await),
         }
     }
 
@@ -892,6 +954,336 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 return Ok(Some(delivered));
             }
         }
+    }
+}
+
+impl ConnectionError {
+    /// The `CLOSE` a caller of the split halves should send for this error.
+    ///
+    /// [`ConnectionReader`] cannot write, so unlike [`Connection::recv`] it
+    /// does not answer a violation with `CLOSE` itself. This gives the body the
+    /// caller hands to [`ConnectionWriter::close`]: the violation or frame
+    /// error's code, or `timeout` for [`ConnectionError::Timeout`]. `None` for
+    /// errors that need no `CLOSE` (a peer `CLOSE`, a failed transport).
+    pub fn close_to_send(&self) -> Option<Close> {
+        match self {
+            ConnectionError::Violation(code, message) => Some(Close::new(*code, message.as_str())),
+            ConnectionError::Frame(e) => e.close_code().map(|code| Close::new(code, e.to_string())),
+            ConnectionError::Timeout => Some(Close::new(CloseCode::Timeout, "idle timeout")),
+            _ => None,
+        }
+    }
+}
+
+/// What the two halves of a split connection share: the protocol state, behind
+/// a mutex that is never held across an await, and the finished flag.
+#[derive(Debug)]
+struct Shared {
+    tracker: Mutex<Tracker>,
+    finished: AtomicBool,
+}
+
+impl Shared {
+    /// The protocol state. A panic while it was held cannot leave it half
+    /// updated (every update is one table operation), so poison is ignored.
+    fn lock(&self) -> MutexGuard<'_, Tracker> {
+        self.tracker.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn finish(&self) {
+        self.finished.store(true, Ordering::SeqCst);
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
+    }
+
+    fn ensure_open(&self) -> Result<(), ConnectionError> {
+        if self.is_finished() {
+            Err(ConnectionError::Unusable)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// What [`ConnectionReader::recv_timeout`] returns.
+#[derive(Debug)]
+pub enum Incoming {
+    /// A frame for the caller, as [`Connection::recv`] would return it:
+    /// `PONG`, `EXT`, and per role `REQUEST` and `STREAM_CANCEL` (server) or
+    /// `RESPONSE` and `STREAM_*` (client).
+    Frame(Frame),
+    /// A frame the reader produced for the peer and the caller must write, in
+    /// order, with [`ConnectionWriter::answer`]: the `PONG` for a `PING`, or
+    /// the `overloaded` `RESPONSE` for a request that arrived at
+    /// `max_inflight` (which is not delivered and not tracked).
+    Reply(Frame),
+}
+
+/// The read half of a connection made by [`Connection::split`].
+///
+/// It owns the read side of the stream and applies the same rules to received
+/// frames as [`Connection::recv`] (it calls the same checks). It never writes:
+/// what [`Connection::recv`] would have written itself comes back as
+/// [`Incoming::Reply`], and an error that wants a `CLOSE` is turned into one by
+/// [`ConnectionError::close_to_send`].
+#[derive(Debug)]
+pub struct ConnectionReader<S> {
+    read: ReadHalf<S>,
+    shared: Arc<Shared>,
+    max_frame: u32,
+}
+
+/// The write half of a connection made by [`Connection::split`]. It owns the
+/// write side of the stream, so frames are written one at a time, in the order
+/// of the calls. It shares the in-flight table with the reader.
+#[derive(Debug)]
+pub struct ConnectionWriter<S> {
+    write: WriteHalf<S>,
+    shared: Arc<Shared>,
+    max_frame: u32,
+    compress: bool,
+    /// A `CLOSE` has been written, or the write side was shut down.
+    closed: bool,
+    /// A write failed or was cut off: nothing more can be written.
+    dead: bool,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
+    /// Splits the connection into a reader and a writer that can run in
+    /// different tasks, so that a server keeps reading (answering `PING`,
+    /// refusing requests over `max_inflight`, seeing a cancel) while it works
+    /// on a request and writes the answer.
+    ///
+    /// Both halves keep the state the connection had: the in-flight table, the
+    /// negotiated limits, the compression setting and the finished flag. The
+    /// table is shared behind a mutex that is held only for one check or
+    /// update, never across an await. The sequential API of [`Connection`]
+    /// stays as it is; use `split` only when reading and writing must overlap.
+    pub fn split(self) -> (ConnectionReader<S>, ConnectionWriter<S>) {
+        let (read, write) = tokio::io::split(self.stream);
+        let shared = Arc::new(Shared {
+            tracker: Mutex::new(self.tracker),
+            finished: AtomicBool::new(self.finished),
+        });
+        (
+            ConnectionReader {
+                read,
+                shared: Arc::clone(&shared),
+                max_frame: self.max_frame,
+            },
+            ConnectionWriter {
+                write,
+                shared,
+                max_frame: self.max_frame,
+                compress: self.compress,
+                closed: false,
+                dead: false,
+            },
+        )
+    }
+}
+
+impl<S: AsyncRead + Unpin> ConnectionReader<S> {
+    /// The negotiated `max_inflight`.
+    pub fn max_inflight(&self) -> u32 {
+        self.shared.lock().max_inflight
+    }
+
+    /// The number of requests currently in flight, as the shared table has them.
+    pub fn in_flight_len(&self) -> usize {
+        self.shared.lock().in_flight.len()
+    }
+
+    /// How many requests have been answered with `overloaded` instead of
+    /// being delivered.
+    pub fn overloaded_count(&self) -> u64 {
+        self.shared.lock().overloaded
+    }
+
+    /// True once the connection refuses further use (either half finished it).
+    pub fn is_finished(&self) -> bool {
+        self.shared.is_finished()
+    }
+
+    /// Reads the next frame the caller must see.
+    ///
+    /// Like [`Connection::recv_timeout`], except that it never writes (see
+    /// [`Incoming::Reply`]), and that the idle deadline is suspended while any
+    /// request is in flight: a client that is waiting for a slow answer is not
+    /// idle. When the deadline fires with nothing in flight the result is
+    /// [`ConnectionError::Timeout`] and the connection is finished; the caller
+    /// sends `CLOSE(timeout)` (see [`ConnectionError::close_to_send`]). With a
+    /// request in flight the wait simply continues, so the effective idle time
+    /// after the last answer is between one and two `idle` periods.
+    ///
+    /// A clean end of stream is `Ok(None)`, a peer `CLOSE` is
+    /// [`ConnectionError::Closed`], and a violation is
+    /// [`ConnectionError::Violation`] or [`ConnectionError::Frame`]; each
+    /// finishes the connection.
+    ///
+    /// This call is not cancel safe: dropping the future can lose part of a
+    /// frame, so stop using the connection if you do.
+    pub async fn recv_timeout(
+        &mut self,
+        idle: Duration,
+    ) -> Result<Option<Incoming>, ConnectionError> {
+        loop {
+            self.shared.ensure_open()?;
+            let read = read_frame(&mut self.read, self.max_frame);
+            tokio::pin!(read);
+            let result = loop {
+                match tokio::time::timeout(idle, &mut read).await {
+                    Ok(result) => break result,
+                    Err(_) => {
+                        let busy = !self.shared.lock().in_flight.is_empty();
+                        if !busy {
+                            self.shared.finish();
+                            return Err(ConnectionError::Timeout);
+                        }
+                    }
+                }
+            };
+            let frame = match result {
+                Ok(Some(frame)) => frame,
+                Ok(None) => {
+                    self.shared.finish();
+                    return Ok(None);
+                }
+                Err(e) => {
+                    self.shared.finish();
+                    return Err(map_frame_error(e));
+                }
+            };
+            let admitted = self.shared.lock().admit(frame);
+            match admitted {
+                Ok(Admit::Deliver(frame)) => return Ok(Some(Incoming::Frame(frame))),
+                Ok(Admit::Pong(pong)) => return Ok(Some(Incoming::Reply(pong))),
+                Ok(Admit::Overloaded(id)) => {
+                    return Ok(Some(Incoming::Reply(overloaded_frame(id)?)));
+                }
+                Ok(Admit::Ignore) => {}
+                Ok(Admit::Closed(close)) => {
+                    self.shared.finish();
+                    return Err(ConnectionError::Closed(close));
+                }
+                Err(Fault::Violation(code, message)) => {
+                    self.shared.finish();
+                    return Err(ConnectionError::Violation(code, message));
+                }
+                Err(Fault::Reject(close)) => {
+                    self.shared.finish();
+                    return Err(violation_of(&close));
+                }
+            }
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> ConnectionWriter<S> {
+    /// The number of requests currently in flight, as the shared table has them.
+    pub fn in_flight_len(&self) -> usize {
+        self.shared.lock().in_flight.len()
+    }
+
+    /// True once the connection refuses further use (either half finished it).
+    pub fn is_finished(&self) -> bool {
+        self.shared.is_finished()
+    }
+
+    /// True after a write failed or was cut off ([`ConnectionWriter::abandon`]):
+    /// nothing more can be written, not even a `CLOSE`. Unlike
+    /// [`ConnectionWriter::is_finished`] it is not set by the reader.
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+
+    /// Finishes the connection without writing anything, for a write that was
+    /// cut off by a deadline: the stream may hold a partial frame, so no
+    /// `CLOSE` can be read by the peer and the caller drops the halves.
+    pub fn abandon(&mut self) {
+        self.dead = true;
+        self.shared.finish();
+    }
+
+    async fn put(&mut self, bytes: &[u8]) -> Result<(), ConnectionError> {
+        let written = async {
+            self.write.write_all(bytes).await?;
+            self.write.flush().await
+        }
+        .await;
+        match written {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.dead = true;
+                self.shared.finish();
+                Err(ConnectionError::Io(e))
+            }
+        }
+    }
+
+    /// Sends one frame after checking it against the shared state, exactly as
+    /// [`Connection::send`] does, with one difference in ordering: the in-flight
+    /// table is updated before the bytes are written, not after. A client can
+    /// read a `RESPONSE` the moment its last byte is out and reuse the id at
+    /// once, and the reader must find the id released by then. The frame is
+    /// encoded first, so a frame that cannot be encoded (over `max_frame`)
+    /// leaves the table and the connection as they were; a failed write
+    /// finishes the connection, so the early update cannot be observed.
+    ///
+    /// Not cancel safe once writing has begun: the caller bounds the call with
+    /// a deadline and then calls [`ConnectionWriter::abandon`].
+    pub async fn send(&mut self, frame: Frame) -> Result<(), ConnectionError> {
+        self.shared.ensure_open()?;
+        cbor::check_deterministic(&frame.body)?;
+        let (bytes, finishes) = {
+            let mut tracker = self.shared.lock();
+            let transition = tracker
+                .check_outgoing(&frame)
+                .map_err(ConnectionError::Usage)?;
+            let bytes = encode_frame(&frame, self.max_frame, self.compress)
+                .map_err(ConnectionError::Frame)?;
+            tracker.apply(frame.request_id, &transition);
+            let finishes = matches!(transition, Transition::Finish);
+            if finishes {
+                self.shared.finish();
+            }
+            (bytes, finishes)
+        };
+        self.put(&bytes).await?;
+        if finishes {
+            self.closed = true;
+            let _ = self.write.shutdown().await;
+        }
+        Ok(())
+    }
+
+    /// Writes a frame the reader returned as [`Incoming::Reply`] (a `PONG` or
+    /// an `overloaded` `RESPONSE`). The in-flight table is not consulted or
+    /// changed: the refused request was never tracked.
+    pub async fn answer(&mut self, frame: Frame) -> Result<(), ConnectionError> {
+        self.shared.ensure_open()?;
+        let bytes =
+            encode_frame(&frame, self.max_frame, self.compress).map_err(ConnectionError::Frame)?;
+        self.put(&bytes).await
+    }
+
+    /// Sends a `CLOSE` with `code` and `message` (best effort, bounded by one
+    /// second), shuts the write side down and finishes the connection. Unlike
+    /// [`Connection::close`] it still writes when the reader has finished the
+    /// connection first (a violation, an idle timeout): the reader cannot send
+    /// the `CLOSE` it asks for, so this half does. It does nothing after an
+    /// earlier `close`, a sent `CLOSE`, a failed write or [`abandon`].
+    ///
+    /// [`abandon`]: ConnectionWriter::abandon
+    pub async fn close(&mut self, code: CloseCode, message: &str) {
+        if self.closed || self.dead {
+            return;
+        }
+        self.closed = true;
+        self.shared.finish();
+        best_effort_close(&mut self.write, &Close::new(code, message)).await;
     }
 }
 
@@ -1047,6 +1439,8 @@ mod tests {
     fn connection_is_send_and_static() {
         fn assert_send<T: Send + 'static>() {}
         assert_send::<Connection<DuplexStream>>();
+        assert_send::<ConnectionReader<DuplexStream>>();
+        assert_send::<ConnectionWriter<DuplexStream>>();
     }
 
     #[test]
@@ -1843,5 +2237,264 @@ mod tests {
             assert_eq!(s.in_flight_len(), 0, "server, iteration {i}");
         }
         assert_eq!(s.overloaded_count(), 0);
+    }
+    // ---- the split halves ----
+
+    /// The next thing the reader hands over, under a deadline.
+    async fn read_one(reader: &mut ConnectionReader<DuplexStream>) -> Incoming {
+        tokio::time::timeout(LONG, reader.recv_timeout(LONG))
+            .await
+            .expect("reader deadline")
+            .expect("reader error")
+            .expect("end of stream")
+    }
+
+    /// The next frame a sequential connection receives, under a deadline.
+    async fn recv_one(conn: &mut Connection<DuplexStream>) -> Frame {
+        tokio::time::timeout(LONG, conn.recv())
+            .await
+            .expect("recv deadline")
+            .expect("recv error")
+            .expect("end of stream")
+    }
+
+    fn delivered(incoming: Incoming) -> Frame {
+        match incoming {
+            Incoming::Frame(frame) => frame,
+            Incoming::Reply(frame) => panic!("expected a delivered frame, got reply {frame:?}"),
+        }
+    }
+
+    fn reply_of(incoming: Incoming) -> Frame {
+        match incoming {
+            Incoming::Reply(frame) => frame,
+            Incoming::Frame(frame) => panic!("expected a reply, got delivered {frame:?}"),
+        }
+    }
+
+    fn ok_response(id: u64, value: u32) -> Frame {
+        Frame {
+            frame_type: FrameType::Response,
+            request_id: id,
+            body: response_ok_body(&value).unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn split_keeps_the_state_the_connection_had() {
+        let (mut c, mut s) = connected(local_cfg(3, &[]), hello_of(&[])).await;
+        let id = c.request(NULL.to_vec()).await.unwrap();
+        let got = recv_one(&mut s).await;
+        assert_eq!(got.request_id, id);
+        let (reader, mut writer) = s.split();
+        assert_eq!(reader.max_inflight(), 3);
+        assert_eq!(reader.in_flight_len(), 1);
+        assert_eq!(writer.in_flight_len(), 1);
+        writer.send(ok_response(id, 7)).await.unwrap();
+        assert_eq!(reader.in_flight_len(), 0);
+        let answer = recv_one(&mut c).await;
+        assert_eq!(answer.frame_type, FrameType::Response);
+        assert_eq!(answer.request_id, id);
+    }
+
+    #[tokio::test]
+    async fn a_ping_is_answered_through_the_writer_while_a_request_is_pending() {
+        let (mut c, s) = connected(local_cfg(2, &[]), hello_of(&[])).await;
+        let (mut reader, mut writer) = s.split();
+        let id = c.request(NULL.to_vec()).await.unwrap();
+        let request = delivered(read_one(&mut reader).await);
+        assert_eq!(request.frame_type, FrameType::Request);
+        assert_eq!(request.request_id, id);
+
+        // The request has no answer yet, as if its command were still running.
+        c.send(fr(FrameType::Ping, 77, &[0x05])).await.unwrap();
+        let pong = reply_of(read_one(&mut reader).await);
+        assert_eq!(pong.frame_type, FrameType::Pong);
+        assert_eq!(pong.request_id, 77);
+        assert_eq!(pong.body, vec![0x05]);
+        writer.answer(pong).await.unwrap();
+        let first = recv_one(&mut c).await;
+        assert_eq!(first.frame_type, FrameType::Pong);
+        assert_eq!(first.request_id, 77);
+
+        writer.send(ok_response(id, 1)).await.unwrap();
+        let second = recv_one(&mut c).await;
+        assert_eq!(second.frame_type, FrameType::Response);
+        assert_eq!(second.request_id, id);
+    }
+
+    #[tokio::test]
+    async fn a_request_over_max_inflight_is_refused_while_another_is_pending() {
+        let (mut c, s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut reader, mut writer) = s.split();
+        let a = c.request(NULL.to_vec()).await.unwrap();
+        let b = c.request(NULL.to_vec()).await.unwrap();
+        assert_eq!(delivered(read_one(&mut reader).await).request_id, a);
+        let refusal = reply_of(read_one(&mut reader).await);
+        assert_eq!(refusal.frame_type, FrameType::Response);
+        assert_eq!(refusal.request_id, b);
+        assert_eq!(reader.overloaded_count(), 1);
+        assert_eq!(reader.in_flight_len(), 1);
+        writer.answer(refusal).await.unwrap();
+
+        let over = recv_one(&mut c).await;
+        assert_eq!(over.request_id, b);
+        let probe: ErrProbe = cbor::from_slice(&over.body).unwrap();
+        assert_eq!(probe.err.code, ERR_OVERLOADED);
+
+        // The refused id was never tracked, so the writer will not send for it.
+        assert!(matches!(
+            writer.send(ok_response(b, 0)).await,
+            Err(ConnectionError::Usage(_))
+        ));
+        writer.send(ok_response(a, 1)).await.unwrap();
+        assert_eq!(recv_one(&mut c).await.request_id, a);
+        assert_eq!(reader.in_flight_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_id_is_free_again_as_soon_as_its_response_is_readable() {
+        let (mut c, s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut reader, mut writer) = s.split();
+        for round in 0..50u32 {
+            c.send(fr(FrameType::Request, 1, &NULL)).await.unwrap();
+            assert_eq!(delivered(read_one(&mut reader).await).request_id, 1);
+            writer.send(ok_response(1, round)).await.unwrap();
+            let answer = recv_one(&mut c).await;
+            assert_eq!(answer.request_id, 1);
+            // The client reuses id 1 at once in the next round; the reader
+            // must not see it as still in flight.
+        }
+        assert_eq!(reader.in_flight_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_idle_deadline_waits_while_a_request_is_in_flight() {
+        let (mut c, s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut reader, mut writer) = s.split();
+        let id = c.request(NULL.to_vec()).await.unwrap();
+        assert_eq!(delivered(read_one(&mut reader).await).request_id, id);
+
+        // With a request in flight the short idle period never ends the
+        // connection: the outer deadline is what ends this wait.
+        let waited = tokio::time::timeout(
+            Duration::from_millis(400),
+            reader.recv_timeout(Duration::from_millis(50)),
+        )
+        .await;
+        assert!(waited.is_err(), "the reader must keep waiting while busy");
+        assert!(!reader.is_finished());
+
+        // Once the answer is out nothing is in flight and the deadline applies.
+        writer.send(ok_response(id, 1)).await.unwrap();
+        let idle = tokio::time::timeout(LONG, reader.recv_timeout(Duration::from_millis(50)))
+            .await
+            .expect("the idle deadline must fire when nothing is in flight");
+        let error = idle.unwrap_err();
+        assert!(matches!(error, ConnectionError::Timeout));
+        assert_eq!(error.close_to_send().unwrap().code, "timeout");
+        assert!(reader.is_finished());
+        assert!(writer.is_finished());
+    }
+
+    #[tokio::test]
+    async fn a_violation_is_reported_for_the_writer_to_answer() {
+        let (server, mut peer) = server_pair(local_cfg(4, &[]), hello_of(&[])).await;
+        let (mut reader, mut writer) = server.split();
+        peer.write_all(&enc(FrameType::Request, 1, &NULL))
+            .await
+            .unwrap();
+        peer.write_all(&enc(FrameType::Request, 1, &NULL))
+            .await
+            .unwrap();
+        assert_eq!(delivered(read_one(&mut reader).await).request_id, 1);
+        let error = tokio::time::timeout(LONG, reader.recv_timeout(LONG))
+            .await
+            .expect("reader deadline")
+            .unwrap_err();
+        assert_eq!(error.close_code(), Some(CloseCode::ProtocolViolation));
+        assert!(reader.is_finished());
+        assert!(matches!(
+            reader.recv_timeout(LONG).await,
+            Err(ConnectionError::Unusable)
+        ));
+        // The reader cannot write, so the CLOSE it asks for goes through the
+        // writer even though the connection is already finished.
+        let close = error.close_to_send().unwrap();
+        writer
+            .close(close.close_code().unwrap(), close.message.as_str())
+            .await;
+        let frame = tokio::time::timeout(LONG, read_frame(&mut peer, MAX_FRAME))
+            .await
+            .expect("peer deadline")
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame.frame_type, FrameType::Close);
+        assert_eq!(
+            Close::from_frame(&frame).unwrap().code,
+            "protocol_violation"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_close_sent_through_the_writer_ends_the_peer() {
+        let (mut c, s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (_reader, mut writer) = s.split();
+        writer
+            .close(CloseCode::ShuttingDown, "the server is shutting down")
+            .await;
+        match tokio::time::timeout(LONG, c.recv())
+            .await
+            .expect("deadline")
+        {
+            Err(ConnectionError::Closed(close)) => assert_eq!(close.code, "shutting_down"),
+            other => panic!("expected CLOSE(shutting_down), got {other:?}"),
+        }
+        assert!(matches!(
+            writer.send(ok_response(1, 0)).await,
+            Err(ConnectionError::Unusable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_response_over_max_frame_leaves_the_request_in_flight() {
+        let small = Hello {
+            versions: vec![1],
+            max_frame: 1024,
+            extensions: Vec::new(),
+            agent: None,
+        };
+        let (mut c, s) = connected(local_cfg(1, &[]), small).await;
+        let (mut reader, mut writer) = s.split();
+        let id = c.request(NULL.to_vec()).await.unwrap();
+        assert_eq!(delivered(read_one(&mut reader).await).request_id, id);
+        let big = "x".repeat(4096);
+        let too_large = Frame {
+            frame_type: FrameType::Response,
+            request_id: id,
+            body: response_ok_body(&big).unwrap(),
+        };
+        assert!(matches!(
+            writer.send(too_large).await,
+            Err(ConnectionError::Frame(_))
+        ));
+        assert!(!writer.is_finished());
+        assert_eq!(writer.in_flight_len(), 1);
+        writer.send(ok_response(id, 1)).await.unwrap();
+        assert_eq!(recv_one(&mut c).await.request_id, id);
+    }
+
+    #[tokio::test]
+    async fn end_of_stream_finishes_both_halves() {
+        let (c, s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut reader, writer) = s.split();
+        drop(c);
+        let end = tokio::time::timeout(LONG, reader.recv_timeout(LONG))
+            .await
+            .expect("reader deadline")
+            .unwrap();
+        assert!(end.is_none());
+        assert!(reader.is_finished());
+        assert!(writer.is_finished());
     }
 }
