@@ -407,7 +407,7 @@ The `ok` value, by command (`spine-core` `main.rs` `handle_command`, `handle_ses
 | `tool_call` | the tool's content, JSON |
 | `capability_query` | a `CapabilityAdvertisement` (typed); `agent_id` is the node's DID when a namespace is configured, else `"spine-core:local-unattested"`; a `semantic` selector matches nothing |
 
-`NameResolution` is externally tagged: `{"resolved": {record, provenance}}`, `{"unchanged": {ttl_secs}}`, `{"not_found": {name}}`, `{"invalid": {name, reason}}` or `{"unavailable": {name, reason}}`, with `provenance` one of `cache`, `stale_cache`, `local`, `network`, `address`. `resolve_name` always answers `ok`; a bad or missing name is a variant, not an `err`.
+`NameResolution` is externally tagged: `{"resolved": {record, provenance}}`, `{"unchanged": {ttl_secs}}`, `{"not_found": {name}}`, `{"invalid": {name, reason}}` or `{"unavailable": {name, reason}}`, with `provenance` one of `cache`, `stale_cache`, `local`, `network`, `address`. `resolve_name` always answers `ok`; a bad or missing name is a variant, not an `err`. A name whose record is a revocation (tombstone) is reported as `invalid` with a reason (`NameError::Revoked`'s text); there is no separate wire variant for it.
 
 The daemon's tools (`tool_call`) are `spine.html/parse` and `spine.content/hash`, each taking `{text}` of at most 1 MiB.
 
@@ -437,7 +437,7 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with
 | `record_expired` | `publish_name` or `publish_resource`: the record is past its expiry | `main.rs` `handle_command` |
 | `malformed_record` | `publish_name` or `publish_resource`: `record` does not decode as a name record | `main.rs` `handle_command` |
 | `record_rejected` | `publish_name`: the store refused the record (signature or policy); `publish_resource`: the same after the bytes were stored (a blob this request added is removed) | `main.rs` `handle_command` |
-| `publish_failed` | `publish_resource`: `put_tracked` failed (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, store quota) | `main.rs`; `resources.rs` `put_tracked` |
+| `publish_failed` | `publish_resource`: the store refused the blob (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, no room under the accounted-byte quota after eviction; storage rules in 04-objects.md section 4.4) | `main.rs`; `resources.rs` `put_tracked`, which stores for the fixed local owner |
 | `resource_not_found` | `read_resource`: no blob for the hash | `main.rs` `handle_command` |
 | `invalid_seed` | `crawl_names`: `seed` does not parse as a name | `main.rs` `handle_command` |
 | `invalid_args` | `tool_call` of a known tool: `args.text` is not text or exceeds 1 MiB (the tool name is checked first) | `tools.rs` `invoke` |
@@ -495,7 +495,7 @@ Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environme
 | `resolve_names` batch | 256 names | `main.rs`; fixed | `batch_too_large` |
 | Resource upload | 8 MiB (`MAX_RESOURCE_BYTES`) | `resource.rs`; fixed | `publish_failed` |
 | Resource read chunk | 1 to 65,536 bytes | `resource.rs` `MAX_RESOURCE_CHUNK`; fixed | `invalid_request` |
-| Resource store | 256 MiB serialised | `resources.rs` `MAX_STORED_BYTES`; fixed | `publish_failed` |
+| Resource store | 256 MiB of accounted bytes (row length plus 1,024 per blob), 64 MiB fair share per publisher; see 04-objects.md section 4.4 | `resources.rs` `MAX_STORED_BYTES`; fixed | `publish_failed` |
 | Tool text | 1 MiB | `tools.rs`; fixed | `invalid_args` |
 | Navigation | `[outbound]`: `enabled` true, `internal_origins` [] (at most 64), `max_response_bytes` 2 MiB (1 to 8 MiB), `timeout_secs` 30 (1 to 300), `max_concurrent` 16 (1 to 256); URL at most 8,192 bytes | `outbound.rs` `FetchConfig` | `outbound_*` |
 | SDK TCP connect, TLS handshake | 10 s each | `spine-agent` `AgentClient::connect`, `connect_tls` | error |
@@ -583,7 +583,7 @@ Behaviour the implementation has that the specification author would change. Eac
 6. **The QUIC listener is untested and unreachable from the SDK.** `spine-core`'s `quic` feature is off by default and no CI job builds `spine-core` with it; no test and no client in the workspace connects over QUIC; the listener's certificate is self-signed with no client authentication, and the library's client builder skips server certificate verification (`spine-protocol` `lib.rs` `SkipServerVerification`). Startup is refused when `tls.enabled`. Right: either test and document it, or remove the listener.
 7. **Fixed: one null-rejecting helper.** `hello.rs` uses `wirefmt.rs` `reject_null`; its private copy is gone.
 8. **A schema failure in a `RESPONSE` or a `STREAM_*` body does not close the connection.** The original design closed with `protocol_violation`. `Connection` delivers any deterministic body; the client library's `native.rs` `decode_reply` and `decode_stream_body` report `NativeError::Body` to the caller, the in-flight id has already been released, and the connection stays open. Only `HELLO_ACK`, `CLOSE`, `PING` and `PONG` bodies are checked inside `Connection`. Right: the connection layer closes with `protocol_violation`, or the specification says the failure is local (as 7.4 now does); the two should not both be true.
-9. **The daemon does not read while it executes a command.** `main.rs` `handle_session` awaits each command inline, so during a slow `navigate` or `execute_binary`: a `PING` is answered only afterwards, a `STREAM_CANCEL` could not be acted on, and a client's second request waits in the socket buffer (which is why `overloaded` never occurs). The idle timer is unaffected because it measures time between reads. Right: split reading from execution so liveness frames and cancels are handled during a command.
+9. **The daemon does not read while it executes a command.** `main.rs` `handle_session` awaits each command inline, so during a slow `navigate` or `execute_binary`: a `PING` is answered only afterwards, a `STREAM_CANCEL` could not be acted on, and a client's second request waits in the socket buffer (which is why `overloaded` never occurs). The idle timer is unaffected because it measures time between reads. `Connection::split` (`connection.rs`) exists and yields a reader and a writer half, but the daemon does not use it yet. Right: use it to split reading from execution so liveness frames and cancels are handled during a command.
 10. **Fixed: `get_ur` on an unparseable page.** `main.rs` `handle_command` reports the parse failure as `parse_error`; `no_page_loaded` now means only that no page is loaded.
 11. **Fixed: `tool_call` checks the name first.** `tools.rs` `invoke` answers `unsupported_tool` for an unknown name whatever `args` holds; `invalid_args` applies only to the two known tools.
 12. **Stream `seq` is not enforced.** Neither `Connection` nor any helper checks that `STREAM_TOKEN.seq` starts at 0 and increments by one, and no producer exists, so the rule of section 10 is unexercised. Right: the receiver closes with `protocol_violation` on a gap or repeat, once a producer exists.
