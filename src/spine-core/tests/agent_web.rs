@@ -1,7 +1,10 @@
 //! Acceptance test over separate core processes and real encrypted mesh sockets.
 use ed25519_dalek::SigningKey;
 use spine_agent::AgentClient;
-use spine_name::{content_hash, resource_id, Endpoint, NameRecord, SpineUri};
+use spine_name::{
+    content_hash, publication_value, resource_id, Endpoint, NameRecord, SpineUri, SuccessionLog,
+    SUCCESSION_META_KEY,
+};
 use spine_protocol::native::remote_code;
 use spine_protocol::ToolOutcome;
 use std::{
@@ -1181,4 +1184,301 @@ async fn shutdown_during_a_command_answers_it_then_closes() {
     })
     .await
     .expect("shutdown during a command acceptance deadline exceeded");
+}
+
+// ---- key succession through a running daemon (spec 02, section 10.11) ----
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// A name whose inception key has been rotated once: `log` holds the one
+/// `rotate` entry, signed by `inception`, that makes `current` the signing key.
+struct RotatedName {
+    name: SpineUri,
+    inception: SigningKey,
+    current: SigningKey,
+    log: SuccessionLog,
+}
+
+impl RotatedName {
+    /// Keys are derived from `seed`, `seed + 1` (current) and `seed + 2` (the
+    /// key the rotation commits to).
+    fn new(seed: u8, now: u64) -> Self {
+        let inception = SigningKey::from_bytes(&[seed; 32]);
+        let current = SigningKey::from_bytes(&[seed + 1; 32]);
+        let next = SigningKey::from_bytes(&[seed + 2; 32]);
+        let inception_key = inception.verifying_key().to_bytes();
+        let log = SuccessionLog::default()
+            .rotated(
+                &inception_key,
+                &inception,
+                &current.verifying_key().to_bytes(),
+                &next.verifying_key().to_bytes(),
+                now.saturating_sub(60),
+            )
+            .unwrap();
+        Self {
+            name: SpineUri::did(inception_key),
+            inception,
+            current,
+            log,
+        }
+    }
+
+    fn unsigned(&self, seq: u64, now: u64) -> NameRecord {
+        NameRecord::new(self.name.clone(), seq, now)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"))
+    }
+
+    /// A record signed by the current key, carrying the log's head claim.
+    fn by_current_key(&self, seq: u64, now: u64) -> NameRecord {
+        let state = self
+            .log
+            .verify(&self.inception.verifying_key().to_bytes())
+            .unwrap();
+        let mut record = self.unsigned(seq, now);
+        record.sign_current(&self.current, &state).unwrap();
+        assert!(record.meta.contains_key(SUCCESSION_META_KEY));
+        record
+    }
+
+    /// A record signed by the inception key, which the log has superseded.
+    fn by_superseded_key(&self, seq: u64, now: u64) -> NameRecord {
+        let mut record = self.unsigned(seq, now);
+        record.sign(&self.inception).unwrap();
+        record
+    }
+}
+
+/// The `err.code` and message of a refused call.
+fn refusal(error: &anyhow::Error) -> (&str, &str) {
+    spine_protocol::native::remote_error(error)
+        .unwrap_or_else(|| panic!("not a remote error: {error:#}"))
+}
+
+/// Resolve `name`, which must resolve, into its record and provenance.
+async fn resolved(
+    client: &mut AgentClient<TcpStream>,
+    name: &SpineUri,
+) -> (NameRecord, spine_protocol::NameProvenance) {
+    match client.resolve_name(&name.to_string(), None).await.unwrap() {
+        spine_protocol::NameResolution::Resolved { record, provenance } => {
+            (serde_json::from_value(record).unwrap(), provenance)
+        }
+        other => panic!("{name} did not resolve: {other:?}"),
+    }
+}
+
+/// A rotated name through one daemon: its current-key record is refused
+/// without the succession log and admitted with it, the superseded key can no
+/// longer publish, and all of that still holds after a restart.
+#[tokio::test]
+async fn rotated_name_publishes_with_its_log_and_survives_a_restart() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin_port, mesh_port) = (origin_port(), port());
+        let mut node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let now = unix_now();
+        let rotated = RotatedName::new(111, now);
+        let record = rotated.by_current_key(2, now);
+
+        // Without the log the daemon cannot judge the record's head claim.
+        let error = client
+            .publish_name(serde_json::to_value(&record).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(
+            message.contains("succession"),
+            "the refusal must say the succession log is needed: {message}"
+        );
+        let unpublished = client
+            .resolve_name(&rotated.name.to_string(), None)
+            .await
+            .unwrap();
+        assert!(
+            !matches!(unpublished, spine_protocol::NameResolution::Resolved { .. }),
+            "a refused record must not resolve: {unpublished:?}"
+        );
+
+        // With the log beside it the same record is admitted, by the local
+        // resolver and by the mesh store.
+        let report = client
+            .publish_name(publication_value(&record, &rotated.log).unwrap())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "publication with the log failed: {error:#}\n{}",
+                    std::fs::read_to_string(dir.path().join("server.log")).unwrap()
+                )
+            });
+        assert_eq!(report["stored"], true);
+        assert_eq!(report["name"], rotated.name.to_string());
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store refused the record: {report}"
+        );
+        let (held, provenance) = resolved(&mut client, &rotated.name).await;
+        assert_eq!(held, record);
+        assert!(held.meta.contains_key(SUCCESSION_META_KEY));
+        held.verify_with(&rotated.current.verifying_key().to_bytes())
+            .unwrap();
+        assert!(
+            matches!(
+                provenance,
+                spine_protocol::NameProvenance::Local | spine_protocol::NameProvenance::Cache
+            ),
+            "a name this node publishes is answered from {provenance:?}"
+        );
+
+        // The log is held now: the superseded key cannot publish, whatever seq.
+        let stale = rotated.by_superseded_key(9, now);
+        let error = client
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        // Sending the log again does not help it.
+        let error = client
+            .publish_name(publication_value(&stale, &rotated.log).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, record);
+
+        // Restart: the log and the record come back from the records file, and
+        // the mesh store is given the log before the record.
+        drop(client);
+        drop(node);
+        node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let (held, _) = resolved(&mut client, &rotated.name).await;
+        assert_eq!(held, record);
+        let error = client
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        // The restored log admits the current key's next record with no log
+        // sent, in the local resolver and in the mesh store.
+        let next = rotated.by_current_key(3, now);
+        let report = client
+            .publish_name(serde_json::to_value(&next).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store lost the log over the restart: {report}"
+        );
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, next);
+    })
+    .await
+    .expect("rotated name acceptance deadline exceeded");
+}
+
+/// A rotated name published on one node resolves on another with its
+/// current-key record, and the succession log reaches the second node's own
+/// resolver: the record is cached there and the superseded key is refused.
+#[tokio::test]
+async fn rotated_name_resolves_on_another_node_with_its_log() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let (first_port, first_mesh, second_port, second_mesh) =
+            (origin_port(), port(), origin_port(), port());
+        let mut first = start(first_dir.path(), first_port, first_mesh, &[]);
+        let mut origin = connect(&mut first, first_dir.path(), first_port).await;
+        let mut second = start(
+            second_dir.path(),
+            second_port,
+            second_mesh,
+            &[format!("127.0.0.1:{first_mesh}")],
+        );
+        let mut agent = connect(&mut second, second_dir.path(), second_port).await;
+        let logs = || {
+            format!(
+                "first: {}\nsecond: {}",
+                std::fs::read_to_string(first_dir.path().join("server.log")).unwrap(),
+                std::fs::read_to_string(second_dir.path().join("server.log")).unwrap()
+            )
+        };
+
+        let now = unix_now();
+        let rotated = RotatedName::new(121, now);
+        let record = rotated.by_current_key(2, now);
+        let report = origin
+            .publish_name(publication_value(&record, &rotated.log).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            report["replication_error"].is_null(),
+            "{report}\n{}",
+            logs()
+        );
+
+        // The second node does not hold the name: the answer comes over the
+        // mesh. A node that has not yet met its seed says so and is asked again.
+        let name = rotated.name.to_string();
+        let mut answer = agent.resolve_name(&name, None).await.unwrap();
+        for _ in 0..100 {
+            if !matches!(answer, spine_protocol::NameResolution::Unavailable { .. }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            answer = agent.resolve_name(&name, None).await.unwrap();
+        }
+        let (remote, provenance) = match answer {
+            spine_protocol::NameResolution::Resolved { record, provenance } => {
+                (record, provenance)
+            }
+            other => panic!(
+                "{name} did not resolve over the mesh: {other:?}\n{}",
+                logs()
+            ),
+        };
+        let remote: NameRecord = serde_json::from_value(remote).unwrap();
+        assert_eq!(remote, record);
+        remote
+            .verify_with(&rotated.current.verifying_key().to_bytes())
+            .unwrap();
+        assert_eq!(provenance, spine_protocol::NameProvenance::Network);
+
+        // The second node's own resolver admits the record only against the
+        // log, so an answer from its cache says the log arrived with it.
+        let (cached, provenance) = resolved(&mut agent, &rotated.name).await;
+        assert_eq!(cached, record);
+        assert!(
+            matches!(
+                provenance,
+                spine_protocol::NameProvenance::Cache | spine_protocol::NameProvenance::Local
+            ),
+            "the second resolve was answered from {provenance:?}: the log did not reach the local resolver\n{}",
+            logs()
+        );
+
+        // And with the log held there, the superseded key cannot publish there.
+        let stale = rotated.by_superseded_key(9, now);
+        let error = agent
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+    })
+    .await
+    .expect("rotated name mesh acceptance deadline exceeded");
 }
