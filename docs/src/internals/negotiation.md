@@ -32,8 +32,9 @@ closed. Frames in the handshake are read under the 64 KiB pre-`HELLO` limit.
 - **Frame size.** `max_frame` in the acknowledgement is the smaller of the
   client's and the server's limit, and applies to both directions from then on.
 - **In-flight requests.** `max_inflight` is the number of requests the client may
-  have outstanding. The current daemon offers 1, so a client sends one `REQUEST`
-  at a time; a second concurrent request is answered `overloaded`.
+  have outstanding. The current daemon offers 8: it runs a connection's requests
+  one at a time, in order, and answers a request beyond eight with `overloaded`.
+  The SDK sends one `REQUEST` at a time.
 - **Extensions.** `extensions` in the acknowledgement are the offered extensions
   the server supports, in the order the client offered them; the position is the
   extension index used by `EXT` frames. The current daemon supports none, and the
@@ -46,7 +47,7 @@ closed. Frames in the handshake are read under the 64 KiB pre-`HELLO` limit.
   ten seconds for `HELLO_ACK`.
 
 The daemon's offer is `spine_protocol::native::local_config()`: version 1, 16 MiB
-`max_frame`, `max_inflight` 1, no extensions. The SDK's `HELLO` is
+`max_frame`, `max_inflight` 8, no extensions. The SDK's `HELLO` is
 `native::client_hello()`: version 1, 16 MiB `max_frame`, no extensions, and an
 `agent` string of the form `spine-protocol/<version>`.
 

@@ -118,13 +118,21 @@ impl RequestError {
     }
 }
 
+/// The `max_inflight` the daemon advertises: how many requests one connection
+/// may have accepted (running or queued) at once. The daemon reads while a
+/// command runs and refuses the next request with `overloaded`, but it runs
+/// the commands of one connection one at a time, in arrival order, so this
+/// number is the depth of the queue behind the running command. The SDK sends
+/// one request at a time and never reaches it.
+pub const DAEMON_MAX_INFLIGHT: u32 = 8;
+
 /// The server's limits for the daemon: version 1, the 16 MiB maximum frame,
-/// one request at a time, no extensions.
+/// [`DAEMON_MAX_INFLIGHT`] requests in flight, no extensions.
 pub fn local_config() -> LocalConfig {
     LocalConfig {
         versions: vec![u64::from(VERSION)],
         max_frame: crate::frame::MAX_FRAME,
-        max_inflight: 1,
+        max_inflight: DAEMON_MAX_INFLIGHT,
         extensions: Vec::new(),
         agent: None,
     }
@@ -625,11 +633,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_version_one_sequential_and_without_extensions() {
+    fn defaults_are_version_one_with_a_small_queue_and_without_extensions() {
         let local = local_config();
         assert_eq!(local.versions, vec![1]);
         assert_eq!(local.max_frame, 16 * 1024 * 1024);
-        assert_eq!(local.max_inflight, 1);
+        assert_eq!(local.max_inflight, DAEMON_MAX_INFLIGHT);
+        assert_eq!(local.max_inflight, 8);
         assert!(local.extensions.is_empty());
         let hello = client_hello();
         assert!(hello.validate().is_ok());

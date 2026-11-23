@@ -17,8 +17,10 @@ use spine_protocol::body::{
     ERR_RECORD_REJECTED, ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY, ERR_SESSION_EXPIRED,
     ERR_SESSION_NOT_FOUND,
 };
-use spine_protocol::connection::{Connection, ConnectionError};
-use spine_protocol::frame::{CloseCode, FrameType};
+use spine_protocol::connection::{
+    response_ok_body, Connection, ConnectionError, ConnectionReader, ConnectionWriter, Incoming,
+};
+use spine_protocol::frame::{CloseCode, Frame, FrameType};
 use spine_protocol::native;
 use spine_protocol::{BrowserCommand, ToolOutcome, WireError};
 use spine_transport::WebSocketStream;
@@ -27,7 +29,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, instrument, span, warn, Level};
+use tracing::{debug, error, info, instrument, span, warn, Instrument, Level};
 use uuid::Uuid;
 
 mod config;
@@ -1949,7 +1951,7 @@ async fn main() -> Result<()> {
 
 async fn handle_websocket<S>(stream: S, state: Arc<BrowserState>)
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -1966,12 +1968,12 @@ where
 }
 
 /// Runs the spine-wire v1 handshake on `stream` and, if it succeeds, the
-/// session loop. The handshake deadline is `server.hello_timeout_secs`; a
+/// session. The handshake deadline is `server.hello_timeout_secs`; a
 /// client that does not complete it is sent `CLOSE(timeout)` and dropped, which
 /// releases its admission when the caller's task ends.
 async fn serve_native<S>(stream: S, state: Arc<BrowserState>)
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
     match Connection::server_handshake(stream, &native::local_config(), deadline).await {
@@ -1985,47 +1987,270 @@ where
                     .await;
                 return;
             }
-            handle_session(&mut conn, state).await
+            handle_session(conn, state).await
         }
         Err(e) => debug!("native handshake failed: {e}"),
     }
 }
 
-/// Sends `answer` as the `RESPONSE` to `request_id`. Returns false when the
-/// connection is gone. A reply that cannot be sent but leaves the connection
-/// usable (for example one over the frame limit) is replaced by an `internal`
-/// error, so the request id is released and the client is not left waiting.
-async fn reply<S>(conn: &mut Connection<S>, request_id: u64, answer: Answer) -> bool
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
-    let sent = match &answer {
-        Ok(output) => native::send_ok(conn, request_id, output).await,
-        Err(error) => native::send_err(conn, request_id, error).await,
+/// What a connection's reader and command loop queue for its writer.
+enum Outgoing {
+    /// A frame to send after the state checks, for example a `RESPONSE`.
+    Frame(Frame),
+    /// A frame the reader produced for the peer (a `PONG`, an `overloaded`
+    /// `RESPONSE`), written without consulting the in-flight table.
+    Answer(Frame),
+    /// A `CLOSE`; the writer sends it, shuts down, and ends the session.
+    Close(CloseCode, String),
+}
+
+/// One accepted request, waiting for its turn or running.
+struct Job {
+    request_id: u64,
+    body: Vec<u8>,
+}
+
+/// Returns when the connection has been declared over (or the signal's owner
+/// is gone, which also means over).
+async fn flagged(signal: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = signal.wait_for(|over| *over).await.map(|_| ());
+}
+
+/// The `RESPONSE` frame for `answer`. An answer that cannot be encoded becomes
+/// an `internal` error, so the request id is released and the client is not
+/// left waiting.
+fn response_frame(request_id: u64, answer: &Answer) -> Frame {
+    let encoded = match answer {
+        Ok(output) => response_ok_body(output).map_err(|e| e.to_string()),
+        Err(error) => native::error_body(error).map_err(|e| e.to_string()),
     };
-    match sent {
+    let body = match encoded {
+        Ok(body) => body,
+        Err(message) => {
+            warn!("Response could not be encoded: {message}");
+            native::error_body(&fail(
+                ERR_INTERNAL,
+                format!("response could not be encoded: {message}"),
+            ))
+            .unwrap_or_else(|_| vec![0xa0])
+        }
+    };
+    Frame {
+        frame_type: FrameType::Response,
+        request_id,
+        body,
+    }
+}
+
+/// Why a queued frame did not get written.
+enum WriteFailure {
+    /// The write deadline passed with the frame partly written.
+    Deadline,
+    /// The connection layer refused or failed the write.
+    Failed(ConnectionError),
+}
+
+/// Writes one queued frame under [`native::WRITE_DEADLINE`].
+async fn write_once<S>(
+    writer: &mut ConnectionWriter<S>,
+    frame: Frame,
+    checked: bool,
+) -> Result<(), WriteFailure>
+where
+    S: AsyncWrite + Unpin + Send,
+{
+    let written = tokio::time::timeout(native::WRITE_DEADLINE, async {
+        if checked {
+            writer.send(frame).await
+        } else {
+            writer.answer(frame).await
+        }
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(WriteFailure::Failed(e)),
+        Err(_) => Err(WriteFailure::Deadline),
+    }
+}
+
+/// Writes a queued frame. Returns false when the connection is over and
+/// nothing more should be written. A response that cannot be sent but leaves
+/// the connection usable (for example one over the frame limit) is replaced by
+/// an `internal` error, so the request id is released.
+async fn write_queued<S>(writer: &mut ConnectionWriter<S>, frame: Frame, checked: bool) -> bool
+where
+    S: AsyncWrite + Unpin + Send,
+{
+    let request_id = frame.request_id;
+    let is_response = frame.frame_type == FrameType::Response;
+    match write_once(writer, frame, checked).await {
         Ok(()) => true,
-        Err(e) => {
-            if conn.is_finished() {
-                debug!("Failed to send response: {e}");
+        Err(WriteFailure::Deadline) => {
+            // The stream may hold a partial frame: write nothing more.
+            warn!("Write deadline exceeded; abandoning the connection");
+            writer.abandon();
+            false
+        }
+        Err(WriteFailure::Failed(e)) => {
+            if writer.is_dead() {
+                debug!("Failed to send frame: {e}");
+                return false;
+            }
+            if matches!(e, ConnectionError::Unusable) {
+                // The reader finished the connection (a violation, the peer
+                // went away). A `CLOSE` it asked for may still be queued
+                // behind this frame, so keep draining.
+                debug!("Dropping a frame for a finished connection");
+                return true;
+            }
+            if !is_response || !checked {
+                debug!("Failed to send frame: {e}");
                 return false;
             }
             warn!("Response could not be sent: {e}");
-            native::send_err(
-                conn,
+            let body = match native::error_body(&fail(
+                ERR_INTERNAL,
+                format!("response could not be sent: {e}"),
+            )) {
+                Ok(body) => body,
+                Err(_) => return false,
+            };
+            let replacement = Frame {
+                frame_type: FrameType::Response,
                 request_id,
-                &fail(ERR_INTERNAL, format!("response could not be sent: {e}")),
-            )
-            .await
-            .is_ok()
+                body,
+            };
+            write_once(writer, replacement, true).await.is_ok()
         }
     }
 }
 
-async fn handle_session<S>(conn: &mut Connection<S>, state: Arc<BrowserState>)
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+/// The single owner of a connection's write half. Writes what the other two
+/// loops queue, in order. It ends after a `CLOSE`, a failed or timed-out
+/// write, or when every sender is gone and the queue is empty; whichever it
+/// is, the connection is then over and the other loops are told so.
+async fn write_responses<S>(
+    mut writer: ConnectionWriter<S>,
+    mut queue: tokio::sync::mpsc::Receiver<Outgoing>,
+    over: Arc<tokio::sync::watch::Sender<bool>>,
+) where
+    S: AsyncWrite + Unpin + Send,
 {
+    while let Some(item) = queue.recv().await {
+        let go_on = match item {
+            Outgoing::Frame(frame) => write_queued(&mut writer, frame, true).await,
+            Outgoing::Answer(frame) => write_queued(&mut writer, frame, false).await,
+            Outgoing::Close(code, message) => {
+                writer.close(code, &message).await;
+                false
+            }
+        };
+        if !go_on {
+            break;
+        }
+    }
+    over.send_replace(true);
+}
+
+/// The single owner of a connection's read half: reads frames for as long as
+/// the connection lives, whatever the command loop is doing.
+///
+/// - `PING` and the `overloaded` refusal come back from the reader as
+///   [`Incoming::Reply`] and are queued for the writer at once.
+/// - A `REQUEST` the reader accepted (the table has room) goes to the command
+///   loop. The queue has room for `max_inflight` jobs, and an id stays in the
+///   table until its `RESPONSE` is written, so the queue cannot be full here.
+/// - `STREAM_CANCEL` is delivered by the reader for an id in flight and
+///   ignored: v1 defines it only for a stream, and no command streams.
+/// - `PONG` answers a `PING` this daemon never sends and is ignored.
+/// - A peer `CLOSE`, end of stream, or an i/o error ends the loop; a
+///   violation or the idle deadline queues the `CLOSE` the reader wants first.
+///
+/// When the loop ends it declares the connection over, which stops the command
+/// loop (a running command is dropped) and, through the closed queues, the
+/// writer.
+async fn read_requests<S>(
+    mut reader: ConnectionReader<S>,
+    queue: tokio::sync::mpsc::Sender<Outgoing>,
+    jobs: tokio::sync::mpsc::Sender<Job>,
+    over: Arc<tokio::sync::watch::Sender<bool>>,
+    mut over_seen: tokio::sync::watch::Receiver<bool>,
+    idle: std::time::Duration,
+) where
+    S: AsyncRead + Unpin + Send,
+{
+    loop {
+        // `recv_timeout` suspends its deadline while a request is in flight.
+        // A read dropped part-way through a frame is fine: the connection is
+        // over when `over_seen` fires and is not read again.
+        let received = tokio::select! {
+            _ = flagged(&mut over_seen) => break,
+            received = reader.recv_timeout(idle) => received,
+        };
+        match received {
+            Ok(Some(Incoming::Frame(frame))) => match frame.frame_type {
+                FrameType::Request => {
+                    let job = Job {
+                        request_id: frame.request_id,
+                        body: frame.body,
+                    };
+                    if jobs.send(job).await.is_err() {
+                        break;
+                    }
+                }
+                FrameType::StreamCancel => {
+                    debug!(
+                        "Ignoring STREAM_CANCEL for request {}: nothing streams",
+                        frame.request_id
+                    );
+                }
+                _ => {}
+            },
+            Ok(Some(Incoming::Reply(frame))) => {
+                if queue.send(Outgoing::Answer(frame)).await.is_err() {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(ConnectionError::Closed(close)) => {
+                debug!("Client closed the connection: {}", close.code);
+                break;
+            }
+            Err(e) => {
+                if matches!(e, ConnectionError::Timeout) {
+                    debug!("Connection idle too long");
+                } else {
+                    error!("Connection error: {}", e);
+                }
+                if let Some(close) = e.close_to_send() {
+                    let code = close.close_code().unwrap_or(CloseCode::ProtocolViolation);
+                    let _ = queue.send(Outgoing::Close(code, close.message)).await;
+                }
+                break;
+            }
+        }
+    }
+    over.send_replace(true);
+}
+
+/// Runs the commands of one connection, one at a time in arrival order, and
+/// queues each answer for the writer. Per-connection state (the session, the
+/// rate buckets) lives here, so commands of one connection are never
+/// concurrent.
+///
+/// Ends when the connection is over (a command that is running is dropped at
+/// its next await point, and the session is detached as it is when the
+/// connection ends normally), when the reader has gone and the queue is empty,
+/// or on shutdown. On shutdown a command that is running finishes and is
+/// answered, requests still waiting get no answer, and `CLOSE(shutting_down)`
+/// goes out after the answers already queued.
+async fn run_commands(
+    state: Arc<BrowserState>,
+    mut jobs: tokio::sync::mpsc::Receiver<Job>,
+    queue: tokio::sync::mpsc::Sender<Outgoing>,
+    mut over_seen: tokio::sync::watch::Receiver<bool>,
+) {
     let mut session_lease: Option<SessionLease> = None;
     let tool_rate = RateLease {
         state: state.clone(),
@@ -2037,158 +2262,182 @@ where
         state: state.clone(),
         id: Uuid::new_v4().to_string(),
     };
-    let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
     let mut shutdown = state.shutdown.subscribe();
 
     loop {
-        // Between commands: on shutdown say so and end. Dropping a read that
-        // is part-way through a frame is fine, because the connection is not
-        // read again.
+        // Between commands: on shutdown say so and end.
         let draining = *shutdown.borrow();
         if draining {
-            conn.close(CloseCode::ShuttingDown, "the server is shutting down")
+            let _ = queue
+                .send(Outgoing::Close(
+                    CloseCode::ShuttingDown,
+                    "the server is shutting down".to_string(),
+                ))
                 .await;
             break;
         }
-        // `recv_timeout` restarts its deadline for every frame, including the
-        // PINGs it answers itself, so a keep-alive counts as activity. When the
-        // deadline fires the connection has already been closed with
-        // CLOSE(timeout); it is never read again.
-        let received = tokio::select! {
+        let job = tokio::select! {
+            _ = flagged(&mut over_seen) => break,
             _ = shutdown.changed() => continue,
-            received = conn.recv_timeout(idle) => received,
+            job = jobs.recv() => match job {
+                Some(job) => job,
+                None => break,
+            },
         };
-        let frame = match received {
-            Ok(Some(frame)) => frame,
-            Ok(None) => break,
-            Err(ConnectionError::Timeout) => break,
-            Err(ConnectionError::Closed(close)) => {
-                debug!("Client closed the connection: {}", close.code);
-                break;
-            }
-            Err(e) => {
-                error!("Connection error: {}", e);
-                // Cleanup session if needed, or keep it for reconnection
-                break;
-            }
+        let request_id = job.request_id;
+        let answer = tokio::select! {
+            _ = flagged(&mut over_seen) => break,
+            answer = answer_job(&state, &mut session_lease, &tool_rate, &command_rate, job) => answer,
         };
-        // Only REQUEST frames start work. Nothing here streams, so a
-        // STREAM_CANCEL is moot; a PONG answers a ping this loop never sends.
-        if frame.frame_type != FrameType::Request {
-            continue;
-        }
-        let request_id = frame.request_id;
-        let command = match native::decode_command(&frame.body) {
-            Ok(command) => command,
-            Err(e) => {
-                // C.7: a well-formed frame whose request cannot be served is an
-                // error response, not the end of the connection. The code says
-                // whether the command is unknown or its fields are wrong.
-                if !reply(conn, request_id, Err(e.to_wire())).await {
-                    break;
-                }
-                continue;
-            }
-        };
-        match command {
-            BrowserCommand::CapabilityQuery(query) => {
-                let capabilities = spine_core::tools::capabilities()
-                    .into_iter()
-                    .filter(|capability| match &query.selector {
-                        spine_protocol::CapabilitySelector::All => true,
-                        spine_protocol::CapabilitySelector::Exact(uri) => &capability.uri == uri,
-                        spine_protocol::CapabilitySelector::Prefix(prefix) => {
-                            capability.uri.starts_with(prefix)
-                        }
-                        spine_protocol::CapabilitySelector::Semantic { .. } => false,
-                    })
-                    .collect();
-                let agent_id = match &state.mesh_names {
-                    Some(mesh) => {
-                        spine_name::SpineUri::did(*mesh.local_key().as_bytes()).to_string()
-                    }
-                    None => "spine-core:local-unattested".into(),
-                };
-                let advertisement = spine_protocol::CapabilityAdvertisement {
-                    agent_id,
-                    capabilities,
-                };
-                if !reply(conn, request_id, Ok(Output::Capabilities(advertisement))).await {
-                    break;
-                }
-            }
-            BrowserCommand::ToolCall(call) => {
-                let outcome = if state.check_rate_limit(&tool_rate.id) {
-                    spine_core::tools::invoke(call)
-                } else {
-                    ToolOutcome::Err {
-                        code: ERR_RATE_LIMIT.into(),
-                        message: "tool request rate exceeded".into(),
-                        details: None,
-                    }
-                };
-                let answer = outcome.into_reply().into_result().map(Output::Json);
-                if !reply(conn, request_id, answer).await {
-                    break;
-                }
-            }
-            command => {
-                let req_span = span!(Level::INFO, "request", request_id = request_id);
-                let _enter = req_span.enter();
-                debug!("Received request");
-
-                // Rate limit first: a refused command creates no session.
-                if !state.check_rate_limit(&command_rate.id) {
-                    if !reply(
-                        conn,
-                        request_id,
-                        Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string())),
-                    )
-                    .await
-                    {
-                        break;
-                    }
-                    continue;
-                }
-
-                if session_lease.is_none() {
-                    session_lease = state.create_session();
-                    if let Some(lease) = &session_lease {
-                        #[cfg(feature = "research")]
-                        state
-                            .cluster
-                            .lock()
-                            .await
-                            .register_local_session(lease.id.clone());
-                        #[cfg(not(feature = "research"))]
-                        let _ = lease;
-                    } else {
-                        // No close code means "busy", so the connection stays
-                        // open: the client may retry, or hang up.
-                        if !reply(
-                            conn,
-                            request_id,
-                            Err(fail(
-                                ERR_SESSION_CAPACITY,
-                                "Server busy: maximum sessions reached".into(),
-                            )),
-                        )
-                        .await
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-                }
-                let id = session_lease.as_ref().unwrap().id.clone();
-
-                let answer = handle_command(&state, &id, command, request_id).await;
-
-                if !reply(conn, request_id, answer).await {
-                    error!("Failed to send response");
-                    break;
-                }
-            }
+        if queue
+            .send(Outgoing::Frame(response_frame(request_id, &answer)))
+            .await
+            .is_err()
+        {
+            break;
         }
     }
+}
+
+/// The answer to one request: decodes it, applies the connection's rate
+/// limits, creates the session on first use and runs the command.
+async fn answer_job(
+    state: &Arc<BrowserState>,
+    session_lease: &mut Option<SessionLease>,
+    tool_rate: &RateLease,
+    command_rate: &RateLease,
+    job: Job,
+) -> Answer {
+    let request_id = job.request_id;
+    let command = match native::decode_command(&job.body) {
+        Ok(command) => command,
+        // C.7: a well-formed frame whose request cannot be served is an
+        // error response, not the end of the connection. The code says
+        // whether the command is unknown or its fields are wrong.
+        Err(e) => return Err(e.to_wire()),
+    };
+    match command {
+        BrowserCommand::CapabilityQuery(query) => {
+            let capabilities = spine_core::tools::capabilities()
+                .into_iter()
+                .filter(|capability| match &query.selector {
+                    spine_protocol::CapabilitySelector::All => true,
+                    spine_protocol::CapabilitySelector::Exact(uri) => &capability.uri == uri,
+                    spine_protocol::CapabilitySelector::Prefix(prefix) => {
+                        capability.uri.starts_with(prefix)
+                    }
+                    spine_protocol::CapabilitySelector::Semantic { .. } => false,
+                })
+                .collect();
+            let agent_id = match &state.mesh_names {
+                Some(mesh) => spine_name::SpineUri::did(*mesh.local_key().as_bytes()).to_string(),
+                None => "spine-core:local-unattested".into(),
+            };
+            let advertisement = spine_protocol::CapabilityAdvertisement {
+                agent_id,
+                capabilities,
+            };
+            Ok(Output::Capabilities(advertisement))
+        }
+        BrowserCommand::ToolCall(call) => {
+            let outcome = if state.check_rate_limit(&tool_rate.id) {
+                spine_core::tools::invoke(call)
+            } else {
+                ToolOutcome::Err {
+                    code: ERR_RATE_LIMIT.into(),
+                    message: "tool request rate exceeded".into(),
+                    details: None,
+                }
+            };
+            outcome.into_reply().into_result().map(Output::Json)
+        }
+        command => {
+            let req_span = span!(Level::INFO, "request", request_id = request_id);
+            debug!("Received request {request_id}");
+
+            // Rate limit first: a refused command creates no session.
+            if !state.check_rate_limit(&command_rate.id) {
+                return Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string()));
+            }
+
+            if session_lease.is_none() {
+                *session_lease = state.create_session();
+                if let Some(lease) = session_lease.as_ref() {
+                    #[cfg(feature = "research")]
+                    state
+                        .cluster
+                        .lock()
+                        .await
+                        .register_local_session(lease.id.clone());
+                    #[cfg(not(feature = "research"))]
+                    let _ = lease;
+                } else {
+                    // No close code means "busy", so the connection stays
+                    // open: the client may retry, or hang up.
+                    return Err(fail(
+                        ERR_SESSION_CAPACITY,
+                        "Server busy: maximum sessions reached".into(),
+                    ));
+                }
+            }
+            let id = match session_lease.as_ref() {
+                Some(lease) => lease.id.clone(),
+                None => {
+                    return Err(fail(
+                        ERR_SESSION_CAPACITY,
+                        "Server busy: maximum sessions reached".into(),
+                    ))
+                }
+            };
+
+            handle_command(state, &id, command, request_id)
+                .instrument(req_span)
+                .await
+        }
+    }
+}
+
+/// Serves one established native connection, with reading, executing and
+/// writing as three independent loops:
+///
+/// - a reader task (`read_requests`) that never waits for a command, so a
+///   `PING` is answered, a request over `max_inflight` is refused with
+///   `overloaded`, and a closed connection is noticed while a command runs;
+/// - the command loop (`run_commands`), run inline, which executes the
+///   connection's commands one at a time in arrival order;
+/// - a writer task (`write_responses`) that owns the write half.
+///
+/// The channels between them are bounded: at most `max_inflight` requests are
+/// accepted at a time, and the writer's queue holds their answers plus a few
+/// control frames, with back-pressure on the reader beyond that. Both spawned
+/// tasks live in a `JoinSet` that is drained before this function returns, so
+/// no task outlives the connection, and dropping this future aborts them.
+async fn handle_session<S>(conn: Connection<S>, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
+    let (reader, writer) = conn.split();
+    let capacity = reader.max_inflight().max(1) as usize;
+    let (queue_tx, queue_rx) = tokio::sync::mpsc::channel::<Outgoing>(capacity + 16);
+    let (jobs_tx, jobs_rx) = tokio::sync::mpsc::channel::<Job>(capacity);
+    let (over_tx, over_rx) = tokio::sync::watch::channel(false);
+    let over: Arc<tokio::sync::watch::Sender<bool>> = Arc::new(over_tx);
+
+    let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    tasks.spawn(write_responses(writer, queue_rx, Arc::clone(&over)));
+    tasks.spawn(read_requests(
+        reader,
+        queue_tx.clone(),
+        jobs_tx,
+        Arc::clone(&over),
+        over.subscribe(),
+        idle,
+    ));
+
+    run_commands(state, jobs_rx, queue_tx, over_rx).await;
+    // The command loop ended (shutdown, or the connection is over): the reader
+    // stops, which closes the writer's queue after what is queued is written.
+    over.send_replace(true);
+    while tasks.join_next().await.is_some() {}
 }

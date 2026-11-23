@@ -853,3 +853,319 @@ async fn detached_session_retention_recovers_capacity_and_does_not_resurrect() {
         assert!(stored["knowledge"].get("cluster_shared").is_some());
     }).await.expect("session retention acceptance deadline exceeded");
 }
+
+// ---- the daemon reads while a command runs ----
+
+/// A loopback HTTP origin whose responses are held back. Each request it
+/// receives counts in `accepted` and then waits for a permit; a permit lets one
+/// held response go. Navigating to it is a deterministic slow command.
+async fn slow_origin() -> (
+    String,
+    std::sync::Arc<tokio::sync::Semaphore>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let (held, counted) = (Arc::clone(&permits), Arc::clone(&accepted));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let (held, counted) = (Arc::clone(&held), Arc::clone(&counted));
+            tokio::spawn(async move {
+                let mut request = [0u8; 4096];
+                let _ = socket.read(&mut request).await;
+                counted.fetch_add(1, Ordering::SeqCst);
+                if let Ok(permit) = held.acquire().await {
+                    permit.forget();
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n<h1>hello</h1>")
+                    .await;
+            });
+        }
+    });
+    (url, permits, accepted)
+}
+
+/// Waits, for at most 30 seconds, until `condition` holds.
+async fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+    for _ in 0..600 {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// The daemon's count of open native connections, from its metrics endpoint.
+async fn active_connections(metrics_port: u16) -> Option<u64> {
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let text = http
+        .get(format!("http://127.0.0.1:{metrics_port}/metrics"))
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("spine_native_connections_active "))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Waits until the daemon reports exactly `expected` open native connections.
+async fn wait_for_active_connections(metrics_port: u16, expected: u64) {
+    for _ in 0..600 {
+        if active_connections(metrics_port).await == Some(expected) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!(
+        "the daemon still reports {:?} open connections, expected {expected}",
+        active_connections(metrics_port).await
+    );
+}
+
+type RawConnection = spine_protocol::connection::Connection<TcpStream>;
+
+/// A spine-wire client that is driven frame by frame.
+async fn raw_connect(port: u16) -> RawConnection {
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        spine_protocol::native::client_connect(stream),
+    )
+    .await
+    .expect("handshake deadline")
+    .unwrap()
+}
+
+async fn send_navigate(conn: &mut RawConnection, url: &str) -> u64 {
+    let body = spine_protocol::native::encode_command(&spine_protocol::BrowserCommand::Navigate {
+        url: url.to_string(),
+    })
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), conn.request(body))
+        .await
+        .expect("send deadline")
+        .unwrap()
+}
+
+async fn next_frame(conn: &mut RawConnection) -> spine_protocol::frame::Frame {
+    tokio::time::timeout(std::time::Duration::from_secs(30), conn.recv())
+        .await
+        .expect("no frame within 30 seconds")
+        .unwrap()
+        .expect("end of stream")
+}
+
+fn reply_of(frame: &spine_protocol::frame::Frame) -> Result<serde_json::Value, String> {
+    assert_eq!(frame.frame_type, spine_protocol::frame::FrameType::Response);
+    spine_protocol::native::decode_reply::<serde_json::Value>(&frame.body)
+        .unwrap()
+        .into_result()
+        .map_err(|error| error.code)
+}
+
+fn slow_node_config(origin: u16, metrics_port: u16, internal_origin: &str) -> String {
+    let mut config = spine_core::SpineConfig::default();
+    config.server.host = "127.0.0.1".into();
+    config.server.port = origin;
+    config.server.metrics_port = metrics_port;
+    config.server.idle_timeout_secs = 120;
+    config.outbound.internal_origins = vec![internal_origin.to_string()];
+    toml::to_string(&config).unwrap()
+}
+
+/// While a command runs the daemon keeps reading: a `PING` is answered before
+/// the command's `RESPONSE`, requests beyond `max_inflight` are refused with
+/// `overloaded` at once, queued commands are answered in order with their own
+/// ids, and a connection that goes away mid-command leaves nothing behind.
+#[tokio::test]
+async fn daemon_reads_while_a_command_runs() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use spine_protocol::frame::{Frame, FrameType};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (origin_url, permits, accepted) = slow_origin().await;
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let metrics_port = port();
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            slow_node_config(origin, metrics_port, &origin_url),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        // Returns once the daemon accepts; the probe client is not needed.
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let mut conn = raw_connect(origin).await;
+        let max = spine_protocol::native::DAEMON_MAX_INFLIGHT;
+        assert_eq!(conn.max_inflight(), max);
+
+        // The first navigate is now running: the origin holds its response.
+        let first = send_navigate(&mut conn, &origin_url).await;
+        wait_until("the first navigate to reach the origin", || {
+            accepted.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        // A PING sent meanwhile is answered, and nothing else has arrived: the
+        // PONG is the first frame, not the response of the running command.
+        let token = spine_protocol::native::ping_body(5).unwrap();
+        conn.send(Frame {
+            frame_type: FrameType::Ping,
+            request_id: 77,
+            body: token.clone(),
+        })
+        .await
+        .unwrap();
+        let pong = next_frame(&mut conn).await;
+        assert_eq!(pong.frame_type, FrameType::Pong);
+        assert_eq!(pong.request_id, 77);
+        assert_eq!(pong.body, token);
+
+        // Fill the connection to max_inflight with further navigates, which
+        // queue behind the running one.
+        let mut ids = vec![first];
+        for _ in 1..max {
+            ids.push(send_navigate(&mut conn, &origin_url).await);
+        }
+        assert_eq!(ids.len(), max as usize);
+        // One more is refused at once, while the first is still running.
+        let refused = send_navigate(&mut conn, &origin_url).await;
+        let frame = next_frame(&mut conn).await;
+        assert_eq!(frame.request_id, refused);
+        assert_eq!(reply_of(&frame).unwrap_err(), "overloaded");
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            1,
+            "the queue must not run ahead"
+        );
+
+        // Let everything go: the answers come in arrival order with their ids.
+        permits.add_permits(max as usize);
+        for id in &ids {
+            let frame = next_frame(&mut conn).await;
+            assert_eq!(frame.request_id, *id, "responses must keep arrival order");
+            reply_of(&frame).unwrap();
+        }
+        assert_eq!(conn.in_flight_len(), 0);
+
+        // The sequential SDK flow is unchanged.
+        permits.add_permits(1);
+        let mut client = AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}"))
+            .await
+            .unwrap();
+        client.navigate(&origin_url).await.unwrap();
+        assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
+        client.ping().await.unwrap();
+        drop(client);
+        drop(conn);
+        wait_for_active_connections(metrics_port, 0).await;
+
+        // A peer that disconnects mid-command: the origin never answers this
+        // one, so the command is still running when the client leaves.
+        let before = accepted.load(Ordering::SeqCst);
+        let mut abandoned = raw_connect(origin).await;
+        send_navigate(&mut abandoned, &origin_url).await;
+        wait_until("the abandoned navigate to reach the origin", || {
+            accepted.load(Ordering::SeqCst) == before + 1
+        })
+        .await;
+        wait_for_active_connections(metrics_port, 1).await;
+        drop(abandoned);
+        // Admission is released only when the session has ended and its reader,
+        // writer and command loop have all stopped.
+        wait_for_active_connections(metrics_port, 0).await;
+    })
+    .await
+    .expect("concurrent connection acceptance deadline exceeded");
+}
+
+/// A shutdown that starts while a command runs lets the command finish and
+/// answers it, then sends `CLOSE(shutting_down)`.
+#[tokio::test]
+async fn shutdown_during_a_command_answers_it_then_closes() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (origin_url, permits, accepted) = slow_origin().await;
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let metrics_port = port();
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            slow_node_config(origin, metrics_port, &origin_url),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let mut conn = raw_connect(origin).await;
+        let running = send_navigate(&mut conn, &origin_url).await;
+        wait_until("the navigate to reach the origin", || {
+            accepted.load(std::sync::atomic::Ordering::SeqCst) == 1
+        })
+        .await;
+
+        // Ask the daemon to drain. A new connection is answered with
+        // CLOSE(shutting_down) once the drain has begun, which says it has;
+        // the running command keeps the daemon alive meanwhile.
+        {
+            use std::io::Write;
+            let mut control = node.0.stdin.take().unwrap();
+            control.write_all(&[1]).unwrap();
+        }
+        let mut draining = false;
+        for _ in 0..600 {
+            let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+            let attempt = tokio::time::timeout(
+                Duration::from_secs(30),
+                spine_protocol::native::client_connect(stream),
+            )
+            .await
+            .expect("probe handshake deadline");
+            if let Err(error) = attempt {
+                assert!(
+                    format!("{error:#}").contains("shutting_down"),
+                    "unexpected probe failure: {error:#}"
+                );
+                draining = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(draining, "the daemon never began draining");
+
+        // The command was running throughout. Release it: its answer arrives,
+        // then the CLOSE.
+        permits.add_permits(1);
+        let frame = next_frame(&mut conn).await;
+        assert_eq!(frame.request_id, running);
+        reply_of(&frame).unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(30), conn.recv())
+            .await
+            .expect("no CLOSE within 30 seconds")
+            .unwrap_err();
+        match closed {
+            spine_protocol::connection::ConnectionError::Closed(close) => {
+                assert_eq!(close.code, "shutting_down");
+            }
+            other => panic!("expected CLOSE(shutting_down), got {other}"),
+        }
+    })
+    .await
+    .expect("shutdown during a command acceptance deadline exceeded");
+}

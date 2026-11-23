@@ -61,7 +61,7 @@ already hold.
 ## Connection Lifecycle
 
 1. **Connect** — Establish the TCP/TLS/WS connection and complete `HELLO` / `HELLO_ACK`
-2. **Use** — Send commands, receive responses; the daemon answers one request at a time (`max_inflight = 1`)
+2. **Use** — Send commands, receive responses; the daemon runs one request at a time, in order, and accepts up to eight (`max_inflight = 8`)
 3. **Drop** — Connection closes when `AgentClient` is dropped
 
 The connection is stateful — the server maintains session state (the loaded page, cached UR, knowledge) per connection.

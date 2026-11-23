@@ -92,6 +92,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Add configurable detached-session retention, connection leases, serialized session admission/imports, bounded atomic session/knowledge snapshots and restart expiry. Stop fabricating scout sessions for unsupported legacy swarm search.
 
+- Make the daemon read while a command runs. Each native connection is split (`Connection::split`) into a reader, a command loop and a writer: a `PING` sent during a slow command is answered at once, a request beyond `max_inflight` is refused with `overloaded`, and a closed connection stops the running command. The daemon now advertises `max_inflight` 8; commands of one connection still run one at a time, in arrival order. Shutdown during a command answers it, then sends `CLOSE(shutting_down)`. `STREAM_CANCEL` is read and dropped, since v1 defines cancel only for streams and nothing streams.
+
 ### Compatibility notes
 
 - Core migrates legacy per-session JSON files once into `spine-sessions-v1.json`, then treats that manifest as authoritative. Detached sessions expire after one hour by default; connected sessions are protected. Corrupt or over-capacity state refuses startup. Back up the manifest and configure retention for the deployment.

@@ -51,7 +51,7 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 
 | Code | Raised when |
 | --- | --- |
-| `overloaded` | the connection already has `max_inflight` requests in flight (the daemon processes one request at a time and sends `max_inflight` 1, so it never produces this) |
+| `overloaded` | the connection already has `max_inflight` requests in flight (the daemon sends `max_inflight` 8, reads while a command runs, and refuses a ninth request at once with this code) |
 | `unknown_command` | the body names a command outside the set |
 | `invalid_request` | the body is a known command with a defect; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` past the end |
 | `internal` | the daemon failed in a way the client cannot fix |
@@ -102,8 +102,10 @@ not sent `HELLO` within `server.hello_timeout_secs` (default 10 seconds) with
 `CLOSE(timeout)`. A violation ends the connection with a `CLOSE` code
 (`malformed_frame`, `frame_too_large`, `protocol_violation`, ...).
 
-The current daemon runs one request per connection at a time
-(`max_inflight = 1`). A command travels as a `REQUEST`; the daemon's reply
+The daemon accepts up to eight requests per connection (`max_inflight = 8`) and
+runs them one at a time, in the order they arrived; it keeps reading while a
+command runs, so a `PING` is answered at once and a ninth request is refused
+with `overloaded`. A command travels as a `REQUEST`; the daemon's reply
 travels as the `RESPONSE` with the same request id. `Ping` and `Pong` are the
 `PING` and `PONG` frames, whose body is an unsigned integer token.
 

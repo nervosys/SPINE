@@ -266,7 +266,7 @@ async fn chaos_rapid_reconnection() {
 async fn chaos_many_small_messages() {
     let (mut client, mut server) = pair(1024 * 1024).await;
 
-    // One request at a time (the daemon's max_inflight is 1): 1000 tiny
+    // One request at a time (the SDK's pattern, below max_inflight): 1000 tiny
     // exchanges, each checked.
     for i in 0..1000u64 {
         let (reply, (_, command)) = within(async {
