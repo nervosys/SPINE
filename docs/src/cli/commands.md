@@ -112,10 +112,11 @@ spine cert info certs/ca.crt   # Show a PEM certificate
 
 ## `spine name --addr <addr> <action>`
 
-Actions: `status`, `create`, `revoke <record>`, `resolve <name>`,
-`providers <capability>`, `publish <record>`, `renew <record>`,
-`upload <record> <resource>` and `fetch <name> --output <file>`. Run
-`spine name --help` for each action's options.
+Actions: `status`, `create`, `revoke <record>`, `rotate`, `retire`,
+`verify <log>`, `resolve <name>`, `providers <capability>`,
+`publish <record>`, `renew <record>`, `upload <record> <resource>` and
+`fetch <name> --output <file>`. Run `spine name --help` for each action's
+options.
 
 A record's `--ttl` is at most 604800 seconds (7 days); `create` and `renew`
 refuse more, and every node refuses a record with a longer lifetime or one
@@ -128,6 +129,52 @@ a 7-day lifetime, which supersedes every lower-sequence record for the name. Lik
 tombstone resolves as revoked, not as missing. The tombstone lapses after at most
 7 days, after which the name is unknown again unless re-published with a higher
 sequence, so keep re-signing it if the name must stay withdrawn.
+
+### Changing a name's key
+
+A name is its first key (the inception key) for ever; a succession log says
+which key signs its records now. `rotate`, `retire` and `verify` work offline
+on files, like `create` and `revoke`.
+
+```bash
+# First rotation: owner.key signs; k1.key becomes current; k2.key is committed
+# to for the next rotation. k1.key and k2.key are created if they do not exist.
+spine name rotate --key owner.key --reveal-key k1.key --next-key k2.key \
+    --output log1.json
+
+# Records of the name are now signed by the current key, with the log.
+spine name create --key k1.key --log log1.json --output record.json \
+    --endpoint 127.0.0.1:8080
+spine name publish record.json --log log1.json
+
+# A later rotation reveals the key committed to before and commits to a new one.
+spine name rotate --log log1.json --key k1.key --reveal-key k2.key \
+    --next-key k3.key --output log2.json
+
+# Check a log, and a record against it.
+spine name verify log2.json --record record.json
+
+# Retire the name for good: no key signs for it afterwards.
+spine name retire --log log2.json --key k2.key --reveal-key k3.key \
+    --output retired.json
+```
+
+- `rotate` writes a new log file and never changes the old one. Keep the
+  `--next-key` file: without it the name can be neither rotated again nor
+  retired. The key files are written before the log.
+- `--log <file>` on `create`, `renew` and `revoke` signs as the log's current
+  key (`--key` must be that key) for the name of the log; the record carries
+  the log position it was signed at. `publish --log` sends the log with the
+  record. Without `--log` these commands behave as they always did.
+- `retire` with no `--log` retires a name that never rotated, with its own
+  key. With a log it needs `--reveal-key`, the key the last entry committed to.
+- A node that holds the log refuses every record signed by an older key, and
+  refuses everything for a retired name. A node that has seen two different
+  logs for one name treats the name as compromised and refuses all of it.
+- Not yet connected: the daemon does not read the log that `publish --log`
+  sends, so it refuses a rotated name's record; and a node that renews its own
+  names (`renew_owned_records`) skips a rotated name and logs a warning, since
+  it holds only the first key. See `docs/spec/02-names.md` section 10.11.
 
 ## `spine task --addr <addr> --peer <id> --peer-key <hex> <action>`
 
