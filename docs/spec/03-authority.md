@@ -1,6 +1,6 @@
 # Layer 3: Authority
 
-Status: **draft design, 2026-11-20. Parts one and two are implemented as a pure library (`src/spine-authority`: grants, chains, attenuation, the eleven verification steps, signed revocation records and feed heads, signed receipts, an atomic in-memory usage ledger, vectors); nothing is wired into the node, mesh, SDK or CLI, and no revocation or receipt is distributed over any network.** The choices the code had to make are under "Provisional decisions" and need review; the open questions at the end are real and none is resolved.
+Status: **draft design, 2026-11-20. Parts one and two are implemented as a pure library (`src/spine-authority`: grants, chains, attenuation, the eleven verification steps, signed revocation records and feed heads, signed receipts, an atomic in-memory usage ledger, vectors). A node-side enforcement component (`spine_core::authority`: a classification of the 19 commands, a gate that verifies, binds the invocation to the command and charges, and the single-user root grant) is implemented and unit-tested as a library module and is not connected: spine-wire v1 cannot carry a grant chain, so the daemon checks no grant and `authority.mode = "required"` is refused at startup. Nothing is wired into the mesh, SDK or CLI, and no revocation or receipt is distributed over any network.** The choices the code had to make are under "Provisional decisions" and need review; the open questions at the end are real and none is resolved.
 
 Layers 1, 2, 4 and 5 are described as built in the neighbouring files. This layer does not exist yet, so this file is a proposal.
 
@@ -204,6 +204,95 @@ Charging is one operation on the performing party's ledger. The `Decision` that 
 
 Steps 1 to 5 change nothing visible, so a refused charge changes nothing: either every grant is charged and the nonce is recorded, or none. A nonce is forgotten only after its horizon, so forgetting can never let through a replay that step 9 would have accepted; when the table is full of nonces still inside the window the ledger refuses (fail closed) rather than evict one. A grant's usage record may be dropped once the grant has expired, since step 7 refuses it from then on. The in-memory ledger bounds nonces (default 65536), grants with records (default 16384) and, per grant, one counter per second of the rate window. The ledger trusts the clock it is given and assumes it does not run backwards.
 
+## Node enforcement (not yet on the wire)
+
+This section describes a component that exists as a library module and is not connected to anything: `spine_core::authority` (`src/spine-core/src/authority.rs`). It is what a node will run on every command once a request can carry a grant chain. Today no request can. spine-wire v1 has no field for a chain or an invocation and states that adding one is a new version (`00-wire.md`, G8), and layer 1 defines no session value an invocation could be bound to. The daemon therefore checks no grant, and every connected client still has full control of the node, exactly as before.
+
+### Resource model
+
+Every command is an operation on the node's own resource tree. The owner is the node's public key; the path is `["node", <area>]`, with nine areas: `session`, `outbound`, `binaries`, `knowledge`, `names`, `resources`, `status`, `mesh`, `tools`. A grant with the prefix pattern `["node"]` covers the whole node; a grant on `["node", "names"]` covers the name service only. Because step 3 requires the root's issuer to own every resource, only a chain rooted at the node's key can authorise a command.
+
+A grant on `["node", "names"]` is the node saying who may use its name service. It says nothing about who owns a name: `publish_name` and `publish_resource` carry a record signed by the name's own key, and layer 2 checks that signature as it does today.
+
+### Command classification
+
+`classify` is a total function from a command to an action, an effect class and a node resource. Its match has no wildcard arm, so a command cannot be added without being classified. The rule for the effect class:
+
+- `read`: nothing leaves the node and nothing on it changes.
+- `reversible`: only the node's own state changes, in a way a later command or an expiry undoes, or the node sends namespace lookups whose form the caller does not control.
+- `irreversible`: something leaves the node that the caller shaped and the node cannot recall (an HTTP request to a URL the caller chose, a call or a publication signed with the node's key), or code runs whose effect the node cannot bound.
+
+Anything that makes the node send traffic, sign, execute or store is not the action `read`. No command needs `admin` yet.
+
+| Command | Action | Effect | Resource | Reason |
+| --- | --- | --- | --- | --- |
+| `navigate` | `invoke` | `irreversible` | `node/outbound` | The node sends an HTTP request to a URL the caller chose; a request that has been sent cannot be recalled. |
+| `get_ur` | `read` | `read` | `node/session` | Returns the page already loaded in the session. |
+| `get_raw_html` | `read` | `read` | `node/session` | Returns the HTML already loaded in the session. |
+| `execute_binary` | `invoke` | `irreversible` | `node/binaries` | Runs a caller-supplied program that may navigate, search and store; the node does not bound its effect. |
+| `store_knowledge` | `invoke` | `reversible` (`irreversible` in a `research` build) | `node/knowledge` | Writes an entry to the node's store; a `research` build also broadcasts it to the cluster. |
+| `query_knowledge` | `read` | `read` | `node/knowledge` | Reads the node's store. |
+| `get_binary_capabilities` | `read` | `read` | `node/session` | Returns the capability list of the session's binary. |
+| `resolve_name` | `invoke` | `reversible` | `node/names` | May send a mesh lookup and caches the record; the cache entry expires. |
+| `resolve_names` | `invoke` | `reversible` | `node/names` | As `resolve_name`, for up to 256 names. |
+| `find_providers` | `invoke` | `reversible` | `node/names` | Sends a capability lookup to the mesh and caches what comes back. |
+| `publish_name` | `publish` | `irreversible` | `node/names` | The node stores a signed record and announces it; peers keep it until it expires. |
+| `fetch_name` | `invoke` | `reversible` | `node/names` | Resolves the name and returns its endpoints; it dials nothing. |
+| `crawl_names` | `invoke` | `reversible` | `node/names` | Resolves a bounded set of linked names. |
+| `publish_resource` | `publish` | `irreversible` | `node/resources` | The node stores bytes and announces their signed binding. |
+| `read_resource` | `read` | `read` | `node/resources` | Reads bytes from the node's own store. |
+| `namespace_status` | `read` | `read` | `node/status` | Returns the node's identity and its peer list. |
+| `mesh_call` | `invoke` | `irreversible` | `node/mesh` | The node signs a call with its own key and sends it to a peer, which may do anything with it. |
+| `tool_call` | `invoke` | `irreversible` | `node/tools` | Runs a tool. The two tools that exist are pure, but the class must hold for any tool registered later. |
+| `capability_query` | `read` | `read` | `node/tools` | Lists what the node offers. |
+
+### The gate
+
+`AuthorityGate` holds the node's public key (the recipient), the trusted roots, the verification settings (skew, maximum invocation age, revocation staleness bounds), one usage ledger shared by all callers and one revocation set. `authorize` takes the encoded chain, the encoded invocation, the command about to run, the hash of the command body, the session value and the time. It refuses unless all of these hold, in this order:
+
+1. The eleven verification steps pass (`verify_encoded`) against this node's key, the session value, the trusted roots, the revocation set and the ledger.
+2. The invocation's `act` equals the command's action.
+3. The invocation's declared `effect` is the command's class or a higher one, under the order `read` < `reversible` < `irreversible`. An invoker may declare more than the command needs, never less.
+4. The invocation's `res` is exactly one resource, the command's node resource on this node. A wider resource, a deeper one, or an extra one is refused.
+5. The invocation's `op` equals the hash of the command body.
+6. The ledger records the nonce and charges every limited grant of the chain.
+
+Checks 2 to 5 are the part of step 10 that the library cannot do, because it does not know what the operation is (P14). The ledger is locked from before check 1 until after check 6, so of two concurrent requests with one nonce, or two that would together pass a limit, exactly as many are accepted as the grants allow. A refusal at any point records no nonce and charges nothing.
+
+The operation hash is the SHA-256 of the exact bytes of the command body as they were on the wire. The node computes it from what it received; it is never taken from the caller. How the bytes reach the gate is the carrier's business.
+
+A refusal gives the caller a step number (as a stable name, `authority_step_1` to `authority_step_11`) and nothing else. A failure of checks 2 to 5 is reported as step 10; a replayed nonce as step 9; a full ledger as step 11. The full reason is kept for the node's own log.
+
+`receipt` signs a receipt for an authorised invocation once the command has run. The gate issues no receipt for a refusal.
+
+### Single-user mode
+
+`issue_self_root` is a pure function: the node's key grants an audience key the whole node tree, all four actions, the effect ceiling `irreversible`, no limits, the role `principal`, a validity window and a nonce the caller supplies, and delegation through as many links as a chain allows (7). A gate in single-user mode trusts the node's own key as the only root. The holder of that grant delegates narrower grants to agents.
+
+### Configuration
+
+The `[authority]` section of the node's configuration is parsed and validated and has no effect:
+
+| Key | Default | Rule |
+| --- | --- | --- |
+| `mode` | `"off"` | `"off"` or `"required"`. `"required"` is refused at startup in this build, with a message that the carrier does not exist, so that no operator believes enforcement is on when it is not. |
+| `trusted_roots` | `[]` | Ed25519 public keys, 64 hex characters each, no key twice. Accepted as roots in addition to the node's own key. Under the resource model above they cannot authorise any command. |
+| `skew_secs` | `0` | At most 300 (P7). |
+| `max_invocation_age_secs` | `60` | 1 to 3600 (P11). |
+
+An unknown key in the section is refused.
+
+### What is not done
+
+- **Carrier.** No frame, header or command carries a chain or an invocation. The daemon does not call the gate.
+- **Session binding.** Layer 1 defines no session value. The gate takes 32 bytes as a parameter.
+- **`did:`-rooted resources named by commands.** `publish_name` and `publish_resource` name a resource owned by the record's key. The gate does not extract it, so it cannot check a delegated `publish` grant from a name's owner. The record's own signature is still checked by layer 2.
+- **Durable ledger.** The ledger is in memory. A restart forgets every nonce and every count, so a limit can be passed again and an invocation replayed inside its freshness window.
+- **Revocation feeds.** The gate's revocation set is a local list of ids the operator vouches for, complete as of a time the caller states. It starts with no data and refuses everything until told otherwise. No signed record is checked and no feed is fetched.
+- **Receipt distribution.** A receipt can be signed; nothing returns it to the caller or stores it.
+- **`mode = "required"`.** Refused at startup.
+- **Per-argument resources.** The resource does not depend on the command's arguments: a grant cannot say which URLs, which tools or which names.
+
 ## Data cannot grant
 
 Grants and invocations are a distinct message class at layer 1. Layer-4 objects have no field that can hold one. Content fetched by an agent can describe a grant, but nothing the stack does treats content as an invocation. This is the structural half of the defence against instruction injection; the other half is provenance labels in layer 4.
@@ -254,8 +343,17 @@ The pure core of this layer is implemented in `src/spine-authority` (grant and i
 | P25 | A receipt may record a denial (the step number only, zero amounts, zero result), not only an invocation that had an effect. Whether to issue one is the performing party's choice. | The draft has receipts only for invocations that had an effect. A signed refusal lets a requester prove it was refused; but anyone able to send an invocation can then demand a signature, so a performer under load may choose not to issue them. |
 | P26 (Q5, Q7) | The ledger charges every limited grant of the chain and records the nonce atomically; a grant with no limit is not tracked; a nonce is kept until `now + skew + maximum invocation age` and is dropped only after that; a full table refuses to charge instead of evicting a live record; usage records go when the grant expires; `charge` returns an error and `Decision` carries the chain's limits, expiries and the nonce horizon. | Evicting the oldest nonce when full is simpler and bounds memory without refusing, but admits a replay inside the freshness window. A persistent or shared ledger needs the same atomicity from its store, which this crate cannot provide. |
 | P27 | Size bounds: revocation, feed head and receipt at most 512 bytes each, a feed at most 16384 records, the in-memory ledger 65536 nonces and 16384 grant records by default. | Changing them changes constants only. A larger signature (Q4) would need larger object bounds. |
+| P28 | A command is an operation on the node's own resource tree: owner the node's key, path `["node", <area>]`, nine areas, one resource per command, independent of the command's arguments. Only the node's key can root a chain that authorises a command. | One resource per command name gives finer grants but puts 19 names into grants and changes what a grant means whenever a command is added. Resources derived from arguments (the host of a `navigate` URL, the tool of a `tool_call`, the name being resolved or published) are finer still and need a canonical map from arguments to path segments; for `publish_name` and `publish_resource` that map is the `did:` name itself and brings in roots other than the node. |
+| P29 | Classification is conservative: a command that makes the node send traffic, sign, execute or store is never the action `read`, so resolution is `invoke`; a request to a caller-chosen URL, a signed call, a publication and the running of a program or a tool are `irreversible`; `tool_call` has one class whatever the tool; `store_knowledge` is `irreversible` only in a `research` build. | HTTP defines `GET` as safe, so `navigate` could be `reversible`. A lookup could be `read`, since it changes nothing a caller can observe later. `tool_call` could take its class from the tool registry, where the two existing tools are pure. Each changes rows of the table, and with them which grants and which revocation staleness bound a command needs. |
+| P30 | The gate requires the invocation's action to equal the command's, its declared effect to be the command's class or higher, its resources to be exactly the command's one resource, and its `op` to equal the hash of the command body. | Requiring the effect to be equal refuses an invoker that over-declares; over-declaring only costs the invoker a higher ceiling and a stricter staleness bound. Allowing a superset of resources accepts an invocation that claims to touch more than the command does. |
+| P31 | A failure of the command binding is reported as step 10, a charge refused for a replayed nonce as step 9, any other charge failure as step 11. The caller is given `authority_step_N` and nothing else. | A twelfth step or a separate error for "this invocation is for another command" tells an honest client that its grant is wide enough and its request was built wrongly. That is more than "names the failed step and nothing else" allows. |
+| P32 | `op` is the SHA-256 of the exact command body bytes as received, with no domain string, computed by the node. | A hash of a canonical re-encoding gives the same value for deterministic CBOR and is one more thing to get wrong. A domain-separated hash that also covers the request id binds the invocation to one request, not to one body; the nonce already makes an invocation single-use. |
+| P33 | One lock is held across verification, the command binding and the charge, so all authorisations on a node run one at a time, signature checks included. | Verifying outside the lock and relying on the charge to re-check the nonce and the limits (it does both) runs verifications in parallel and gives the same outcomes and step numbers. Only throughput changes. |
+| P34 | The single-user root grant is from the node's key to an audience key over the whole node tree: four actions, ceiling `irreversible`, no limits, delegable through 7 links, window and nonce supplied by the caller. It is not written to disk by this layer. | A narrower default (no `admin`, ceiling `reversible`) is safer and makes the first delegation of an irreversible command impossible without a second root. Issuing the grant to the node's own key keeps one key but needs the node's key online to sign every delegation. |
+| P35 | The gate's revocation data is a local set of grant ids the operator vouches for, with a completeness time the caller states and that only moves forward. A new gate has no data and refuses everything at step 8. | Holding a signed feed (P21) needs something to fetch it. Treating a single-user node's own set as always current removes the need to state a time, but an intermediate issuer may revoke (P19) and the node would not learn of it. |
+| P36 | Configuration: `[authority]` with `mode` `off` (default) or `required`; `required` is refused at startup until a carrier exists; unknown keys in the section are refused; `skew_secs` at most 300; `max_invocation_age_secs` 1 to 3600. | Accepting `required` and refusing every command fails closed and gives an operator a way to lock a node, but looks like working enforcement. A log-only mode needs the carrier as well. |
 
-Open questions touched (none is resolved): 1 (P8, P19 to P23), 4 (P18 and P27, bounds assume 64-byte signatures), 5 (P12, P26), 6 (P6), 7 (P7, P22, P26). Question 3 (privacy) is touched by P10 and P24. Question 2 (confused deputy) is not touched.
+Open questions touched (none is resolved): 1 (P8, P19 to P23, P35), 4 (P18 and P27, bounds assume 64-byte signatures), 5 (P12, P26), 6 (P6), 7 (P7, P22, P26, P36). Question 3 (privacy) is touched by P10 and P24. Question 2 (confused deputy) is not touched. P28 to P36 are the choices of the node enforcement component and are no more settled than the rest.
 
 ## Open questions
 

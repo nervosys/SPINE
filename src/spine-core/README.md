@@ -25,8 +25,22 @@ API documentation: <https://docs.rs/spine-core>
   Build with `cargo build -p spine-core --features research`.
 - `quic`: QUIC listener support.
 
+## Modules
+
+The library half exports `config`, `connections`, `operations`, `outbound`,
+`resources`, `session_store`, `tasks`, `tls`, `tools` and `authority`.
+
+`authority` is the node-side enforcement of layer 3
+(`docs/spec/03-authority.md`, "Node enforcement"): a classification of every
+command, a gate that verifies a grant chain and an invocation against the
+command being run and charges a usage ledger, and the single-user root
+grant. It is unit-tested and not connected: spine-wire v1 cannot carry a
+grant chain, the daemon does not call the gate, and
+`authority.mode = "required"` is refused at startup.
+
 ## Workspace dependencies
 
+- `spine-authority`
 - `spine-cluster` (with `research`)
 - `spine-human` (with `research`)
 - `spine-mesh`
