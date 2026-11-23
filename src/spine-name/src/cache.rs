@@ -204,6 +204,18 @@ impl ResolverCache {
         self.entries.remove(&uri.key()).map(|e| e.record)
     }
 
+    /// Drop every cached record of the name whose inception key is `key`, at
+    /// any path, and its negative entries. Used when a succession log changes
+    /// what the name's records are allowed to be signed by; the next resolution
+    /// fetches again. Returns how many positive entries went.
+    pub fn remove_authority(&mut self, key: &[u8; 32]) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|_, e| e.record.name.public_key() != Some(key));
+        self.negative.clear();
+        before - self.entries.len()
+    }
+
     /// Drop expired positive and negative entries, returning how many went.
     pub fn sweep(&mut self, now: u64) -> usize {
         let before = self.entries.len() + self.negative.len();

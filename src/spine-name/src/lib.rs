@@ -70,6 +70,7 @@ pub mod cache;
 pub mod frontier;
 pub mod key;
 pub mod link;
+pub mod logbook;
 pub mod record;
 pub mod resolver;
 pub mod routing;
@@ -81,6 +82,11 @@ pub use cache::{CacheLookup, CacheStats, ResolverCache};
 pub use frontier::{CrawlBudget, CrawlFrontier, Skipped, Visit};
 pub use key::{Distance, NameKey};
 pub use link::{Link, Rel};
+pub use logbook::{
+    authorise_record, log_inception_key, log_within_bounds, publication_log, publication_value,
+    LogBook, LogChange, LogOffer, MAX_EQUIVOCATION_PROOFS, MAX_SUCCESSION_LOGS,
+    PUBLICATION_LOG_FIELD,
+};
 pub use record::{
     Endpoint, NameRecord, DEFAULT_TTL_SECS, MAX_CLOCK_SKEW_SECS, MAX_RECORD_TTL_SECS,
     REVOKED_META_KEY,
@@ -231,6 +237,50 @@ pub enum NameError {
     /// tombstone is held, and a resolver must not go looking for another answer.
     #[error("name revoked: {0}")]
     Revoked(String),
+
+    /// The name was retired for good by a `retire` entry of its succession log
+    /// (spec 02, section 10). Distinct from [`NameError::Revoked`], which a
+    /// tombstone's lifetime bounds: nothing re-publishes a retired name.
+    #[error("name retired: {0}")]
+    Retired(String),
+
+    /// The record is signed by a key that a held succession entry has
+    /// superseded.
+    #[error("record for {0} is signed by a superseded key")]
+    SupersededKey(String),
+
+    /// Two valid, conflicting succession logs of the name are held: one key
+    /// signed two entries at one position. The name fails closed at this
+    /// verifier and authorises no record (spec 02, 10.5).
+    #[error("name {0} is compromised: its succession log equivocates")]
+    Equivocated(String),
+
+    /// The record's head claim names a log position beyond the log held, so the
+    /// log must be obtained before the record can be judged.
+    #[error(
+        "record for {name} claims succession position {claimed} but only {held} entries are held"
+    )]
+    NeedSuccessionLog {
+        name: String,
+        claimed: u64,
+        held: u64,
+    },
+
+    /// A succession rule other than the ones above refused the record: a
+    /// malformed, stale or conflicting head claim, or a name that is not the
+    /// log's.
+    #[error("record for {name} refused by key succession: {reason}")]
+    SuccessionRefused { name: String, reason: String },
+
+    /// A succession log or equivocation proof does not verify, or is not for
+    /// this name.
+    #[error("invalid succession log: {0}")]
+    InvalidSuccessionLog(String),
+
+    /// The store holds as many succession logs, or equivocation proofs, as it
+    /// is allowed to and cannot take another.
+    #[error("succession log table is full")]
+    SuccessionCapacity,
 }
 
 #[cfg(test)]

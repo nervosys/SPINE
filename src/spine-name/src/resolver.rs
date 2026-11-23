@@ -17,8 +17,10 @@ use async_trait::async_trait;
 use std::sync::Mutex;
 
 use crate::cache::{CacheLookup, CacheStats, ResolverCache};
+use crate::logbook::{LogChange, LogOffer};
 use crate::record::NameRecord;
 use crate::store::RecordStore;
+use crate::succession::{Equivocation, State as SuccessionState, SuccessionLog};
 use crate::uri::{Authority, SpineUri};
 use crate::NameError;
 
@@ -93,6 +95,18 @@ pub trait Resolver: Send + Sync {
     async fn find_providers(&self, term: &str) -> Result<Vec<NameRecord>, NameError>;
 }
 
+/// Storage namespace of the persisted succession logs: key is the 32-byte
+/// inception key, value the log as serde JSON. Validated at load: a row whose
+/// log does not verify from its key is dropped.
+#[cfg(feature = "storage")]
+pub const SUCCESSIONS_NAMESPACE: &str = "spine-name-successions-v1";
+
+/// Storage namespace of the persisted equivocation proofs: key is the 32-byte
+/// inception key, value the proof as serde JSON. Validated at load: a row whose
+/// proof does not verify is dropped.
+#[cfg(feature = "storage")]
+pub const EQUIVOCATIONS_NAMESPACE: &str = "spine-name-equivocations-v1";
+
 /// A resolver backed by a local [`RecordStore`], fronted by a [`ResolverCache`].
 ///
 /// This is the whole resolution path for a node serving its own names, and the
@@ -143,6 +157,34 @@ impl LocalResolver {
         backend: std::sync::Arc<dyn spine_storage::StorageBackend>,
     ) -> Result<Self, NameError> {
         let mut resolver = Self::new(clock);
+        // Proofs and logs first, so that records of a rotated name are admitted
+        // against the log they were signed under. A row that does not verify,
+        // or that does not fit the bounds, is dropped.
+        {
+            let book = resolver.store.get_mut().unwrap();
+            let proofs = backend
+                .scan(EQUIVOCATIONS_NAMESPACE, None)
+                .map_err(|e| NameError::Storage(e.to_string()))?;
+            for (key, data) in proofs {
+                if let (Ok(key), Ok(proof)) = (
+                    <[u8; 32]>::try_from(key.as_slice()),
+                    serde_json::from_slice::<Equivocation>(&data),
+                ) {
+                    book.restore_proof(key, proof);
+                }
+            }
+            let logs = backend
+                .scan(SUCCESSIONS_NAMESPACE, None)
+                .map_err(|e| NameError::Storage(e.to_string()))?;
+            for (key, data) in logs {
+                if let (Ok(key), Ok(log)) = (
+                    <[u8; 32]>::try_from(key.as_slice()),
+                    serde_json::from_slice::<SuccessionLog>(&data),
+                ) {
+                    book.restore_log(key, log);
+                }
+            }
+        }
         let records = backend
             .scan("spine-name-publishers-v1", None)
             .map_err(|e| NameError::Storage(e.to_string()))?;
@@ -163,7 +205,8 @@ impl LocalResolver {
             // next publication. The same goes for a record that breaks the
             // lifetime rules (a `ttl_secs` over the maximum, written before the
             // bound existed) or is post-dated against this node's clock.
-            if record.validate(resolver.now()).is_err() || record.verify().is_err() {
+            let admitted = resolver.store.get_mut().unwrap().logs().authorise(&record);
+            if record.validate(resolver.now()).is_err() || admitted.is_err() {
                 continue;
             }
             if !record.is_expired(resolver.now()) {
@@ -180,6 +223,7 @@ impl LocalResolver {
         let Some(backend) = &self.persistence else {
             return Ok(Vec::new());
         };
+        let store = self.store.lock().unwrap();
         backend
             .scan("spine-name-publishers-v1", None)
             .map_err(|e| NameError::Storage(e.to_string()))?
@@ -189,7 +233,7 @@ impl LocalResolver {
                     .map_err(|e| NameError::Storage(e.to_string()))
             })
             .filter(|parsed| match parsed {
-                Ok(record) => record.verify().is_ok(),
+                Ok(record) => store.logs().authorise(record).is_ok(),
                 Err(_) => true,
             })
             .collect()
@@ -209,8 +253,10 @@ impl LocalResolver {
     /// the same or lower `seq` is refused with `StalePublication`.
     pub fn publish(&self, record: NameRecord) -> Result<(), NameError> {
         record.validate(self.now())?;
-        record.verify()?;
         let mut store = self.store.lock().unwrap();
+        // The admission check: exactly `verify` for a name with no succession
+        // log (see `LogBook::authorise`).
+        store.logs().authorise(&record)?;
         if let Some(previous) = store.get(&record.name) {
             if record != *previous && !record.supersedes(previous) {
                 return Err(NameError::StalePublication);
@@ -218,7 +264,6 @@ impl LocalResolver {
         }
         #[cfg(feature = "storage")]
         if let Some(backend) = &self.persistence {
-            record.verify()?;
             let name = record.name.to_string();
             if let Some(bytes) = backend
                 .get("spine-name-publishers-v1", name.as_bytes())
@@ -228,7 +273,7 @@ impl LocalResolver {
                     .map_err(|e| NameError::Storage(e.to_string()))?;
                 // A stored predecessor that no longer verifies cannot hold the
                 // sequence number against a valid record.
-                if previous.verify().is_ok() && !record.supersedes(&previous) {
+                if store.logs().authorise(&previous).is_ok() && !record.supersedes(&previous) {
                     return if record == previous {
                         Ok(())
                     } else {
@@ -271,9 +316,135 @@ impl LocalResolver {
     /// cached too, so a revoked name stays revoked here.
     pub fn cache_record(&self, record: NameRecord) -> Result<(), NameError> {
         record.validate(self.now())?;
-        record.verify()?;
+        let admitted = self.store.lock().unwrap().logs().authorise(&record);
+        admitted?;
         self.cache.lock().unwrap().put(record);
         Ok(())
+    }
+
+    /// Offer a succession log of a name (spec 02, section 10): learned from a
+    /// publisher, a peer or a file. The log is verified from its inception key;
+    /// the resolver keeps the best one per name, replaced only by a valid strict
+    /// extension, and a valid conflicting log is kept as an equivocation proof,
+    /// after which the name fails closed (`resolve` answers
+    /// [`NameError::Equivocated`]). A retired name resolves as
+    /// [`NameError::Retired`]. Stored and cached records the new log no longer
+    /// authorises are dropped. With a backend the log (or proof) is written to
+    /// the `spine-name-successions-v1` (or `-equivocations-v1`) namespace before
+    /// it takes effect. An empty log, one the resolver already holds or a prefix
+    /// of it changes nothing and does no signature work.
+    ///
+    /// Errors: [`NameError::InvalidSuccessionLog`] for a log that does not
+    /// verify, [`NameError::SuccessionCapacity`] when the table is full and
+    /// every held log has records held (or the proof table is full).
+    pub fn offer_log(&self, log: SuccessionLog) -> Result<LogChange, NameError> {
+        let mut store = self.store.lock().unwrap();
+        let offer = store.plan_log(log)?;
+        if matches!(offer, LogOffer::Full | LogOffer::ProofsFull) {
+            return Err(NameError::SuccessionCapacity);
+        }
+        #[cfg(feature = "storage")]
+        self.persist_offer(&offer)?;
+        let (change, _) = store.apply_log(offer);
+        drop(store);
+        if let LogChange::Adopted { inception_key } | LogChange::Compromised { inception_key } =
+            change
+        {
+            self.cache.lock().unwrap().remove_authority(&inception_key);
+        }
+        Ok(change)
+    }
+
+    /// Publish a record that arrived with its name's succession log (what
+    /// `spine name publish --log` sends): the log is offered first
+    /// ([`LocalResolver::offer_log`]), then the record is published against the
+    /// best log held. A log for another name than the record's is refused with
+    /// [`NameError::InvalidSuccessionLog`] and nothing changes. A valid log is
+    /// kept even when the record is then refused: it is true on its own.
+    pub fn publish_with_log(
+        &self,
+        record: NameRecord,
+        log: SuccessionLog,
+    ) -> Result<(), NameError> {
+        if let Some(key) = crate::logbook::log_inception_key(&log) {
+            if record.name.public_key() != Some(&key) {
+                return Err(NameError::InvalidSuccessionLog(
+                    "log is for another name".to_string(),
+                ));
+            }
+        }
+        self.offer_log(log)?;
+        self.publish(record)
+    }
+
+    #[cfg(feature = "storage")]
+    fn persist_offer(&self, offer: &LogOffer) -> Result<(), NameError> {
+        let Some(backend) = &self.persistence else {
+            return Ok(());
+        };
+        let storage = |e: &dyn std::fmt::Display| NameError::Storage(e.to_string());
+        match offer {
+            LogOffer::Adopt {
+                inception_key,
+                log,
+                evict,
+                ..
+            } => {
+                let bytes = serde_json::to_vec(log).map_err(|e| storage(&e))?;
+                backend
+                    .put(SUCCESSIONS_NAMESPACE, inception_key, &bytes)
+                    .map_err(|e| storage(&e))?;
+                if let Some(old) = evict {
+                    backend
+                        .delete(SUCCESSIONS_NAMESPACE, old)
+                        .map_err(|e| storage(&e))?;
+                }
+            }
+            LogOffer::Conflict(proof) => {
+                let key = proof.first.inception_key;
+                let bytes = serde_json::to_vec(proof.as_ref()).map_err(|e| storage(&e))?;
+                backend
+                    .put(EQUIVOCATIONS_NAMESPACE, &key, &bytes)
+                    .map_err(|e| storage(&e))?;
+                backend
+                    .delete(SUCCESSIONS_NAMESPACE, &key)
+                    .map_err(|e| storage(&e))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The state of the best succession log held for the name whose inception
+    /// key is `inception_key`, if any (none: the inception key signs).
+    pub fn succession_state(&self, inception_key: &[u8; 32]) -> Option<SuccessionState> {
+        self.store
+            .lock()
+            .unwrap()
+            .logs()
+            .state(inception_key)
+            .cloned()
+    }
+
+    /// The best succession log held for a name, if any: what a publisher sends
+    /// with the name's records.
+    pub fn succession_log(&self, inception_key: &[u8; 32]) -> Option<SuccessionLog> {
+        self.store
+            .lock()
+            .unwrap()
+            .logs()
+            .log(inception_key)
+            .cloned()
+    }
+
+    /// The equivocation proof held for a name, if any.
+    pub fn equivocation(&self, inception_key: &[u8; 32]) -> Option<Equivocation> {
+        self.store
+            .lock()
+            .unwrap()
+            .logs()
+            .proof(inception_key)
+            .cloned()
     }
 
     /// Whether this node holds a fresh tombstone for `uri` in its store.
@@ -346,6 +517,14 @@ impl Resolver for LocalResolver {
         if matches!(uri.authority(), Authority::Host { .. }) {
             let record = NameRecord::for_host(uri.clone(), now, crate::DEFAULT_TTL_SECS)?;
             return Ok(Resolution::new(record, Provenance::Address));
+        }
+
+        // A name whose succession log retires it, or two of whose logs conflict,
+        // answers with that, whatever the cache or store holds. For a name with
+        // no log the book is empty and this is one comparison.
+        let status = self.store.lock().unwrap().logs().status_error(uri);
+        if let Some(error) = status {
+            return Err(error);
         }
 
         // A fresh tombstone, cached or stored, is a distinct answer: the name was

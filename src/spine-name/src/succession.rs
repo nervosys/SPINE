@@ -19,10 +19,11 @@
 //! because the name is only a key. It is authorised by the inception key alone.
 //! See `docs/spec/02-names.md` section 10 for the threat analysis.
 //!
-//! Nothing here is wired into resolution. This module defines the objects, their
-//! verification, equivocation detection, and the pure function
-//! [`record_authorised`] that says whether a record is signed by the key a log
-//! allows.
+//! This module defines the objects, their verification, equivocation detection,
+//! the pure function [`record_authorised`] that says whether a record is signed
+//! by the key a log allows, and the signing side (building entries, signing a
+//! record with the current key). Holding logs and admitting records against
+//! them is [`crate::logbook`]; the stores, the resolver and the mesh call it.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -290,6 +291,11 @@ impl State {
         &self.previous_keys
     }
 
+    /// The `effective_at` of the last entry; 0 for an empty log.
+    pub fn effective_at(&self) -> u64 {
+        self.effective_at
+    }
+
     /// Whether the name is permanently retired.
     pub fn is_retired(&self) -> bool {
         self.current == Current::Retired
@@ -409,6 +415,88 @@ impl SuccessionLog {
         self.entries
             .iter()
             .try_fold(State::inception(*inception_key), |state, e| state.apply(e))
+    }
+
+    /// This log with a `rotate` entry appended, built and signed here.
+    ///
+    /// `signer` is the key current after the log (the inception key for an empty
+    /// log), `reveal` the public key that becomes current (after the first
+    /// entry it must be the key the last entry committed to), and `next` the
+    /// public key that the new entry commits to. `effective_at` is raised to the
+    /// last entry's if lower, since it must not decrease. The result is checked
+    /// by replaying the new entry, so a wrong signer, a `reveal` that does not
+    /// match the commitment, a reused key, or a 65th entry is an error and no log
+    /// is produced.
+    pub fn rotated(
+        &self,
+        inception_key: &[u8; 32],
+        signer: &SigningKey,
+        reveal: &[u8; 32],
+        next: &[u8; 32],
+        effective_at: u64,
+    ) -> Result<SuccessionLog, SuccessionError> {
+        self.extended(
+            inception_key,
+            signer,
+            SuccessionKind::Rotate,
+            reveal,
+            Some(key_commitment(next)),
+            effective_at,
+        )
+    }
+
+    /// This log with a `retire` entry appended, built and signed here.
+    ///
+    /// `signer` is the current key. `reveal` is the inception key for an empty
+    /// log, and otherwise the key the last entry committed to. After this the
+    /// name is retired for every verifier that holds the entry.
+    pub fn retired(
+        &self,
+        inception_key: &[u8; 32],
+        signer: &SigningKey,
+        reveal: &[u8; 32],
+        effective_at: u64,
+    ) -> Result<SuccessionLog, SuccessionError> {
+        self.extended(
+            inception_key,
+            signer,
+            SuccessionKind::Retire,
+            reveal,
+            None,
+            effective_at,
+        )
+    }
+
+    fn extended(
+        &self,
+        inception_key: &[u8; 32],
+        signer: &SigningKey,
+        kind: SuccessionKind,
+        reveal: &[u8; 32],
+        commitment: Option<[u8; 32]>,
+        effective_at: u64,
+    ) -> Result<SuccessionLog, SuccessionError> {
+        let state = self.verify(inception_key)?;
+        if self.entries.len() >= MAX_SUCCESSION_ENTRIES {
+            return Err(SuccessionError::TooManyEntries {
+                len: self.entries.len() + 1,
+            });
+        }
+        let mut entry = Succession {
+            inception_key: *inception_key,
+            index: state.index() + 1,
+            prev: state.head().copied(),
+            kind,
+            key: *reveal,
+            commitment,
+            effective_at: effective_at.max(state.effective_at()),
+            signature: Vec::new(),
+        };
+        entry.sign(signer);
+        state.apply(&entry)?;
+        let mut log = self.clone();
+        log.entries.push(entry);
+        Ok(log)
     }
 }
 
@@ -666,6 +754,83 @@ pub fn record_authorised(record: &NameRecord, log: Option<&State>) -> RecordAuth
             }
         }
         Err(other) => RecordAuthority::Refused(Refusal::Record(other)),
+    }
+}
+
+impl NameRecord {
+    /// Sign with the key a succession `state` says is current, and stamp the
+    /// record with the head claim of that state.
+    ///
+    /// For a name with an empty log (`state` is [`State::inception`]) this is
+    /// [`NameRecord::sign`]: the inception key signs and no claim is added. For
+    /// a rotated name the signer must be the current key
+    /// ([`NameError::KeyMismatch`] otherwise, which includes a superseded key
+    /// and the inception key), the name must be the state's
+    /// ([`NameError::SuccessionRefused`]), a retired name cannot be signed
+    /// ([`NameError::Retired`]), and the record's `spine.succession` meta is set
+    /// to the state's head claim, replacing any older one. A tombstone cannot
+    /// carry the claim (its shape is exact, 3.7), so it is signed without one: a
+    /// verifier that lacks the log refuses it until the log arrives with it.
+    /// The lifetime rules apply as in `sign`.
+    pub fn sign_current(&mut self, key: &SigningKey, state: &State) -> Result<(), NameError> {
+        let name = self.name.to_string();
+        let name_key = *self
+            .name
+            .public_key()
+            .ok_or_else(|| NameError::NotSignable(name.clone()))?;
+        if &name_key != state.inception_key() {
+            return Err(NameError::SuccessionRefused {
+                name,
+                reason: "wrong_name".to_string(),
+            });
+        }
+        let Current::Key(current) = state.current() else {
+            return Err(NameError::Retired(name));
+        };
+        if key.verifying_key().to_bytes() != current {
+            return Err(NameError::KeyMismatch);
+        }
+        match (state.head_claim(), self.is_tombstone()) {
+            (Some(claim), false) => {
+                self.meta
+                    .insert(SUCCESSION_META_KEY.to_string(), claim.to_meta_value());
+            }
+            _ => {
+                self.meta.remove(SUCCESSION_META_KEY);
+            }
+        }
+        self.validate_lifetime()?;
+        let sig: Signature = key.sign(&self.signing_bytes());
+        self.signature = sig.to_bytes().to_vec();
+        Ok(())
+    }
+
+    /// [`NameRecord::renewed`] for a name with a succession log: the same
+    /// record at `seq + 1` with a new `published_at` and `ttl_secs`, signed by
+    /// the current key of `state` with its head claim ([`NameRecord::sign_current`]).
+    ///
+    /// The old record is not verified here (it may carry an older claim or have
+    /// been signed by a key since superseded); a caller admits it first. A
+    /// tombstone is refused ([`NameError::Revoked`]), as in `renewed`.
+    pub fn renewed_current(
+        &self,
+        key: &SigningKey,
+        state: &State,
+        now: u64,
+        ttl_secs: u32,
+    ) -> Result<Self, NameError> {
+        if self.is_tombstone() {
+            return Err(NameError::Revoked(self.name.to_string()));
+        }
+        let mut record = self.clone();
+        record.seq = record
+            .seq
+            .checked_add(1)
+            .ok_or(NameError::SequenceExhausted)?;
+        record.published_at = now;
+        record.ttl_secs = ttl_secs;
+        record.sign_current(key, state)?;
+        Ok(record)
     }
 }
 

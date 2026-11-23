@@ -10,7 +10,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::key::NameKey;
+use crate::logbook::{log_inception_key, LogBook, LogChange, LogOffer};
 use crate::record::NameRecord;
+use crate::succession::SuccessionLog;
 use crate::uri::SpineUri;
 use crate::NameError;
 
@@ -54,6 +56,10 @@ pub struct RecordStore {
     /// such ordering, so eviction falls back to dropping whatever expires
     /// soonest.
     home: Option<NameKey>,
+    /// The succession logs and equivocation proofs of the names held here. Empty
+    /// for a store that has never been offered a log, in which case admission is
+    /// exactly [`NameRecord::verify`].
+    logs: LogBook,
 }
 
 impl Default for RecordStore {
@@ -63,6 +69,7 @@ impl Default for RecordStore {
             by_capability: BTreeMap::new(),
             capacity: DEFAULT_CAPACITY,
             home: None,
+            logs: LogBook::new(),
         }
     }
 }
@@ -105,14 +112,97 @@ impl RecordStore {
             .max_by(|a, b| a.1.cmp(&b.1))
     }
 
+    /// The succession logs and equivocation proofs this store holds.
+    pub fn logs(&self) -> &LogBook {
+        &self.logs
+    }
+
+    /// Plan what offering `log` would do (see [`LogBook::plan`]), without
+    /// changing anything: a caller with a durable backend writes the result
+    /// first and then calls [`RecordStore::apply_log`]. The names this store
+    /// holds records of are protected from eviction.
+    pub fn plan_log(&self, log: SuccessionLog) -> Result<LogOffer, NameError> {
+        let Some(key) = log_inception_key(&log) else {
+            return Ok(LogOffer::Unchanged);
+        };
+        let protected: HashSet<[u8; 32]> = if self.logs.is_full() {
+            self.by_key
+                .values()
+                .filter_map(|r| r.name.public_key().copied())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        self.logs
+            .plan(&key, log, &protected)
+            .map_err(|e| NameError::InvalidSuccessionLog(e.reason().to_string()))
+    }
+
+    /// Carry out a plan from [`RecordStore::plan_log`]. Records of the name that
+    /// the new state no longer authorises (signed by a superseded key, with a
+    /// stale claim, of a retired or compromised name) are dropped; the number is
+    /// returned with the change.
+    pub fn apply_log(&mut self, offer: LogOffer) -> (LogChange, usize) {
+        let change = self.logs.apply(offer);
+        let key = match change {
+            LogChange::Unchanged => return (change, 0),
+            LogChange::Adopted { inception_key } | LogChange::Compromised { inception_key } => {
+                inception_key
+            }
+        };
+        let dead: Vec<NameKey> = self
+            .by_key
+            .iter()
+            .filter(|(_, r)| r.name.public_key() == Some(&key) && self.logs.authorise(r).is_err())
+            .map(|(k, _)| *k)
+            .collect();
+        for k in &dead {
+            if let Some(removed) = self.by_key.remove(k) {
+                self.deindex(k, removed.capabilities);
+            }
+        }
+        (change, dead.len())
+    }
+
+    /// Offer a succession log: [`RecordStore::plan_log`] then
+    /// [`RecordStore::apply_log`], for a store with no backend of its own.
+    /// A log that cannot be taken because a table is full is
+    /// [`NameError::SuccessionCapacity`].
+    pub fn offer_log(&mut self, log: SuccessionLog) -> Result<LogChange, NameError> {
+        let offer = self.plan_log(log)?;
+        if matches!(offer, LogOffer::Full | LogOffer::ProofsFull) {
+            return Err(NameError::SuccessionCapacity);
+        }
+        Ok(self.apply_log(offer).0)
+    }
+
+    /// Restore a persisted log or proof before any record is put, so that
+    /// records of rotated names are admitted against it.
+    pub fn restore_log(&mut self, inception_key: [u8; 32], log: SuccessionLog) -> bool {
+        self.logs.restore_log(inception_key, log)
+    }
+
+    /// See [`RecordStore::restore_log`].
+    pub fn restore_proof(
+        &mut self,
+        inception_key: [u8; 32],
+        proof: crate::succession::Equivocation,
+    ) -> bool {
+        self.logs.restore_proof(inception_key, proof)
+    }
+
     /// Offer a record to the store at time `now` (the caller's clock, Unix
     /// seconds).
     ///
     /// The signature is verified here rather than at a call site, so there is no
-    /// path that admits an unverified record. Records whose name is not
-    /// self-certifying are rejected outright. The lifetime bound
-    /// ([`NameRecord::verify`]) and the bound on `published_at` against `now`
-    /// ([`NameRecord::validate_not_postdated`]) are enforced here too.
+    /// path that admits an unverified record: [`LogBook::authorise`], which for
+    /// a name with no succession log is exactly [`NameRecord::verify`] and for a
+    /// name with one is the check of spec 02, 10.6 against the log held (a record
+    /// of a name that needs a log not held is [`NameError::NeedSuccessionLog`]).
+    /// Records whose name is not self-certifying are rejected outright. The
+    /// lifetime bound ([`NameRecord::verify`]) and the bound on `published_at`
+    /// against `now` ([`NameRecord::validate_not_postdated`]) are enforced here
+    /// too.
     ///
     /// A held tombstone keeps its name revoked: a record of the same or lower
     /// `seq` does not supersede it ([`NameRecord::supersedes`]) and is answered
@@ -120,7 +210,7 @@ impl RecordStore {
     /// pressure like any record.
     pub fn put(&mut self, record: NameRecord, now: u64) -> Result<PutOutcome, NameError> {
         record.validate_not_postdated(now)?;
-        record.verify()?;
+        self.logs.authorise(&record)?;
         let key = record.name.key();
 
         if let Some(existing) = self.by_key.get(&key) {
