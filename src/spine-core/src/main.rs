@@ -401,13 +401,19 @@ fn unix_now() -> u64 {
 async fn publication_report(
     state: &BrowserState,
     record: spine_name::NameRecord,
+    log: Option<spine_name::SuccessionLog>,
 ) -> serde_json::Value {
     let mut sent = 0;
     let mut failed = 0;
     let mut broadcast = false;
     let mut replication_error = None;
     if let Some(mesh) = &state.mesh_names {
-        match mesh.publish(record.clone()).await {
+        // A rotated name's record is admitted and replicated with its log.
+        let outcome = match log {
+            Some(log) => mesh.publish_with_log(record.clone(), log).await,
+            None => mesh.publish(record.clone()).await,
+        };
+        match outcome {
             Ok(report) => {
                 sent = report.sent;
                 failed = report.failed;
@@ -543,8 +549,17 @@ async fn resolve_over_mesh(
     if mesh.peer_count().await == 0 {
         return Err("namespace has no reachable peers; only local names are available".into());
     }
-    match mesh.resolve(uri).await {
-        Ok(record) => Ok(Some(record)),
+    match mesh.resolve_with_log(uri).await {
+        Ok((record, log)) => {
+            // The local resolver needs the log to admit, and so cache, a
+            // rotated name's record. A refusal only costs the cache entry.
+            if let Some(log) = log {
+                if let Err(error) = state.names.offer_log(log) {
+                    debug!(%error, "succession log from the mesh was not kept");
+                }
+            }
+            Ok(Some(record))
+        }
         Err(spine_mesh::naming_mesh::NameMeshError::NotFound(_)) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
@@ -692,7 +707,7 @@ async fn handle_command(
             })();
             match result {
                 Ok(record) => {
-                    let publication = publication_report(state, record.clone()).await;
+                    let publication = publication_report(state, record.clone(), None).await;
                     Ok(Output::Json(publication))
                 }
                 Err(e) => Err(e),
@@ -797,6 +812,18 @@ async fn handle_command(
         }
 
         BrowserCommand::PublishName { record } => {
+            // `spine name publish --log` sends the name's succession log beside
+            // the record's fields; without it a rotated name's record is refused.
+            let log = match spine_name::publication_log(&record) {
+                Some(Ok(log)) => Some(log),
+                Some(Err(e)) => {
+                    return Err(fail(
+                        ERR_MALFORMED_RECORD,
+                        format!("malformed succession log: {e}"),
+                    ))
+                }
+                None => None,
+            };
             match serde_json::from_value::<spine_name::NameRecord>(record) {
                 // publish() verifies the signature, so an unsigned or forged
                 // record is rejected here rather than becoming servable state.
@@ -804,9 +831,13 @@ async fn handle_command(
                     if record.is_expired(unix_now()) {
                         return Err(fail(ERR_RECORD_EXPIRED, "record is expired".into()));
                     }
-                    match state.names.publish(record.clone()) {
+                    let published = match log.clone() {
+                        Some(log) => state.names.publish_with_log(record.clone(), log),
+                        None => state.names.publish(record.clone()),
+                    };
+                    match published {
                         Ok(()) => {
-                            let publication = publication_report(state, record).await;
+                            let publication = publication_report(state, record, log).await;
                             Ok(Output::Json(publication))
                         }
                         Err(e) => Err(fail(ERR_RECORD_REJECTED, format!("record rejected: {e}"))),
@@ -1260,6 +1291,15 @@ async fn main() -> Result<()> {
     if let Some(mesh) = &mesh_names {
         for record in names.published_records()? {
             if !record.is_expired(unix_now()) {
+                // The mesh store keeps its own log book, in memory: give it the
+                // persisted log first, or a rotated name's record is refused.
+                let log = record
+                    .name
+                    .public_key()
+                    .and_then(|key| names.succession_log(key));
+                if let Some(log) = log {
+                    mesh.offer_log(log).await?;
+                }
                 mesh.publish_local(record).await?;
             }
         }
