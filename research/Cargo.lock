@@ -3637,28 +3637,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "metrics"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fde3af1a009ed76a778cb84fdef9e7dbbdf5775ae3e4cc1f434a6a307f6f76c5"
-dependencies = [
- "ahash",
- "metrics-macros",
- "portable-atomic",
-]
-
-[[package]]
-name = "metrics-macros"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b4faf00617defe497754acde3024865bc143d44a86799b24e191ecff91354f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5820,8 +5798,6 @@ name = "spine-agent"
 version = "2.0.2"
 dependencies = [
  "anyhow",
- "env_logger",
- "log",
  "rustls",
  "rustls-native-certs 0.6.3",
  "rustls-pemfile 2.2.0",
@@ -5837,7 +5813,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -5923,15 +5898,11 @@ dependencies = [
 name = "spine-compiler"
 version = "2.0.2"
 dependencies = [
- "aes-gcm",
  "anyhow",
- "log",
  "nom",
  "serde",
  "serde_json",
  "spine-protocol",
- "thiserror 1.0.69",
- "zstd",
 ]
 
 [[package]]
@@ -6123,7 +6094,6 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "serde",
- "serde_bytes",
  "serde_json",
  "spine-cbor",
  "thiserror 1.0.69",
@@ -6210,23 +6180,15 @@ dependencies = [
 name = "spine-transport"
 version = "2.0.2"
 dependencies = [
- "bincode",
  "bitflags 2.13.1",
  "bytes",
  "crossbeam-queue",
  "futures",
- "log",
  "lz4_flex",
  "memmap2",
- "metrics",
  "parking_lot",
  "quinn",
- "rand 0.8.8",
- "rcgen",
- "rustls",
- "rustls-pki-types",
  "serde",
- "serde_json",
  "socket2 0.5.10",
  "thiserror 1.0.69",
  "tokio",

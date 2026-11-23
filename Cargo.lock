@@ -2447,28 +2447,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "metrics"
-version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fde3af1a009ed76a778cb84fdef9e7dbbdf5775ae3e4cc1f434a6a307f6f76c5"
-dependencies = [
- "ahash",
- "metrics-macros",
- "portable-atomic",
-]
-
-[[package]]
-name = "metrics-macros"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38b4faf00617defe497754acde3024865bc143d44a86799b24e191ecff91354f"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4123,16 +4101,6 @@ dependencies = [
 
 [[package]]
 name = "socket2"
-version = "0.4.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f7916fc008ca5542385b89a3d3ce689953c143e9304a9bf8beec1de48994c0d"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
-name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
@@ -4157,7 +4125,6 @@ version = "2.0.2"
 dependencies = [
  "anyhow",
  "env_logger",
- "log",
  "rustls",
  "rustls-native-certs 0.6.3",
  "rustls-pemfile 2.2.0",
@@ -4292,15 +4259,11 @@ dependencies = [
 name = "spine-compiler"
 version = "2.0.2"
 dependencies = [
- "aes-gcm",
  "anyhow",
- "log",
  "nom 8.0.0",
  "serde",
  "serde_json",
  "spine-protocol",
- "thiserror 1.0.69",
- "zstd",
 ]
 
 [[package]]
@@ -4313,7 +4276,6 @@ dependencies = [
  "base64 0.22.1",
  "dashmap",
  "ed25519-dalek",
- "env_logger",
  "futures",
  "lazy_static",
  "log",
@@ -4600,7 +4562,6 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "serde",
- "serde_bytes",
  "serde_json",
  "spine-cbor",
  "thiserror 1.0.69",
@@ -4681,13 +4642,11 @@ dependencies = [
 name = "spine-stream"
 version = "2.0.2"
 dependencies = [
- "bincode",
  "bytes",
  "crc32fast",
  "criterion",
  "dashmap",
  "futures",
- "lz4_flex",
  "parking_lot",
  "pin-project-lite",
  "serde",
@@ -4695,9 +4654,7 @@ dependencies = [
  "spine-transport",
  "thiserror 2.0.20",
  "tokio",
- "tokio-stream",
  "tokio-test",
- "tracing",
  "uuid",
  "zstd",
 ]
@@ -4716,17 +4673,12 @@ dependencies = [
  "h2",
  "http",
  "io-uring",
- "log",
  "lz4_flex",
  "memmap2",
- "metrics",
  "parking_lot",
  "proptest",
  "quinn",
  "rand 0.8.8",
- "rcgen 0.12.1",
- "rustls",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "socket2 0.5.10",
@@ -4734,7 +4686,6 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tokio-tungstenite",
- "tokio-uring",
  "tracing",
  "zstd",
 ]
@@ -5118,7 +5069,6 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -5144,20 +5094,6 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tungstenite",
-]
-
-[[package]]
-name = "tokio-uring"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "748482e3e13584a34664a710168ad5068e8cb1d968aa4ffa887e83ca6dd27967"
-dependencies = [
- "futures-util",
- "io-uring",
- "libc",
- "slab",
- "socket2 0.4.10",
- "tokio",
 ]
 
 [[package]]

@@ -29,18 +29,17 @@ spine-transport = { path = "../spine-transport", version = "2.0.2" }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-log.workspace = true
-env_logger.workspace = true
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
 rustls-native-certs = "0.6"
 tracing = "0.1"
-uuid = { version = "1", features = ["v4", "serde"] }
 
 
 [dev-dependencies]
+env_logger.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
 spine-nostd = { path = "../../research/spine-nostd" }
 spine-embedded = { path = "../../research/spine-embedded" }
 

@@ -15,11 +15,7 @@ spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-featur
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-thiserror.workspace = true
-log.workspace = true
 nom = "8.0"                                     # For parsing HLS
-zstd = "0.13"                                   # For compression
-aes-gcm = "0.10"                                # For encryption
 
 
 
