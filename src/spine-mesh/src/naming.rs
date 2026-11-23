@@ -23,7 +23,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-use spine_name::{NameKey, NameRecord, NodeInfo, RoutingTable, SpineUri};
+use spine_name::{
+    log_inception_key, log_within_bounds, LogBook, LogChange, NameError, NameKey, NameRecord,
+    NodeInfo, RoutingTable, SpineUri, SuccessionLog,
+};
 
 use crate::AgentId;
 
@@ -51,6 +54,13 @@ pub const MAX_PEERS: usize = 1024;
 /// final. The effective target is `min(QUORUM, peers that can still answer)`, so
 /// a small mesh settles as soon as everyone reachable has been heard.
 pub const QUORUM: usize = 3;
+
+/// Most succession logs a lookup response carries or a receiver keeps from one:
+/// the record's (or the queried name's) plus one per provider, at most
+/// `K + 1`. A response with more has the rest dropped and counted. Each log is
+/// itself bounded by `spine_name::MAX_SUCCESSION_ENTRIES`, checked before the
+/// log is verified.
+pub const MAX_RESPONSE_LOGS: usize = K + 1;
 
 /// Most endpoints kept per referred or announced node; the rest are dropped.
 pub const MAX_NODE_ENDPOINTS: usize = 8;
@@ -93,11 +103,26 @@ pub fn bound_referrals(closer: &[KeyspacePeer]) -> Vec<KeyspacePeer> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnnouncedRecord {
     pub record: NameRecord,
+    /// The record name's succession log (spec 02, section 10), when it has a
+    /// non-empty one. Absent for every name without a log: the field is then
+    /// not serialised at all, so the encoding, and the envelope signature over
+    /// it, are exactly what they were before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<SuccessionLog>,
 }
 
 impl AnnouncedRecord {
     pub fn new(record: NameRecord) -> Self {
-        Self { record }
+        Self { record, log: None }
+    }
+
+    /// A record announced with its name's succession log. An empty log is not
+    /// carried.
+    pub fn with_log(record: NameRecord, log: Option<SuccessionLog>) -> Self {
+        Self {
+            record,
+            log: log.filter(|l| !l.entries.is_empty()),
+        }
     }
 }
 
@@ -217,6 +242,13 @@ pub struct ResolveResponse {
     /// positions, so the asker can actually dial what it is referred to.
     #[serde(default)]
     pub closer: Vec<KeyspacePeer>,
+    /// Succession logs of the names in this answer: the queried name's, and one
+    /// per provider that has one (at most [`MAX_RESPONSE_LOGS`]). Each log names
+    /// its inception key in its first entry. Empty, and not serialised, when no
+    /// name involved has a log. A name's log may be sent without its record
+    /// (a retired name has none), which is how an asker learns of a retirement.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<SuccessionLog>,
 }
 
 impl ResolveResponse {
@@ -226,6 +258,7 @@ impl ResolveResponse {
             record: None,
             providers: Vec::new(),
             closer: Vec::new(),
+            logs: Vec::new(),
         }
     }
 
@@ -321,6 +354,12 @@ pub struct Lookup {
     /// Queried peers that have neither answered nor timed out. Lets an
     /// identity-checked response count once, and only if it was asked.
     awaiting: HashSet<NameKey>,
+    /// Records dropped because their head claim is beyond the log held and no
+    /// log came with them (`NeedLog`).
+    need_log: u64,
+    /// Records dropped because key succession refused them: a superseded key, a
+    /// retired or compromised name, or a stale or conflicting claim.
+    succession_refused: u64,
 }
 
 impl Lookup {
@@ -340,6 +379,8 @@ impl Lookup {
             exhausted: false,
             now: 0,
             awaiting: HashSet::new(),
+            need_log: 0,
+            succession_refused: 0,
         };
         lookup.absorb_nodes(seeds);
         lookup
@@ -451,9 +492,15 @@ impl Lookup {
     /// deliver each peer's response once. Anything reading responses off the
     /// wire should use [`Lookup::on_response_from`].
     pub fn on_response(&mut self, response: &ResolveResponse) {
+        self.on_response_with(response, &LogBook::new());
+    }
+
+    /// [`Lookup::on_response`], judging records against the succession logs in
+    /// `book` (the holder's). With an empty book that is `NameRecord::verify`.
+    pub fn on_response_with(&mut self, response: &ResolveResponse, book: &LogBook) {
         self.in_flight = self.in_flight.saturating_sub(1);
         self.answered += 1;
-        self.absorb(response);
+        self.absorb(response, book);
     }
 
     /// Absorb a response from a known sender. `from` are the keyspace positions
@@ -463,17 +510,83 @@ impl Lookup {
     /// peer cannot meet the quorum by answering repeatedly, and an unsolicited
     /// response cannot count at all.
     pub fn on_response_from(&mut self, from: &[NameKey], response: &ResolveResponse) -> bool {
+        self.on_response_from_with(from, response, &LogBook::new())
+    }
+
+    /// [`Lookup::on_response_from`], judging records against the succession
+    /// logs in `book`.
+    pub fn on_response_from_with(
+        &mut self,
+        from: &[NameKey],
+        response: &ResolveResponse,
+        book: &LogBook,
+    ) -> bool {
         let Some(key) = from.iter().find(|k| self.awaiting.contains(*k)).copied() else {
             return false;
         };
         self.awaiting.remove(&key);
         self.in_flight = self.in_flight.saturating_sub(1);
         self.answered += 1;
-        self.absorb(response);
+        self.absorb(response, book);
         true
     }
 
-    fn absorb(&mut self, response: &ResolveResponse) {
+    /// Whether a response from one of `from` would be counted: one was asked and
+    /// has not answered. Lets the service do work for a response only if it will
+    /// be used.
+    fn would_accept(&self, from: &[NameKey]) -> bool {
+        from.iter().any(|k| self.awaiting.contains(k))
+    }
+
+    /// Records dropped so far for want of a log (`NeedLog`) and because key
+    /// succession refused them, in that order.
+    pub fn succession_refusals(&self) -> (u64, u64) {
+        (self.need_log, self.succession_refused)
+    }
+
+    /// The admission check of one record from a peer: the holder's
+    /// [`LogBook::authorise`], counting the succession outcomes.
+    fn admits(&mut self, record: &NameRecord, book: &LogBook) -> bool {
+        match book.authorise(record) {
+            Ok(()) => true,
+            Err(NameError::NeedSuccessionLog { .. }) => {
+                self.need_log += 1;
+                false
+            }
+            Err(
+                NameError::SupersededKey(_)
+                | NameError::Retired(_)
+                | NameError::Equivocated(_)
+                | NameError::SuccessionRefused { .. },
+            ) => {
+                self.succession_refused += 1;
+                false
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn absorb(&mut self, response: &ResolveResponse, book: &LogBook) {
+        // What an earlier response gave was judged against the logs held then.
+        // A log learned since (this response's own logs are taken before this
+        // is called) may have superseded the key that signed it, or retired the
+        // name: judge it again, so a superseded-key record from one peer cannot
+        // outlive the rotation another peer reports. Nothing to do, and no
+        // signature work, while no log is held at all.
+        if !book.is_empty() {
+            if self
+                .record
+                .as_ref()
+                .is_some_and(|held| book.authorise(held).is_err())
+            {
+                self.record = None;
+                self.succession_refused += 1;
+            }
+            let before = self.providers.len();
+            self.providers.retain(|p| book.authorise(p).is_ok());
+            self.succession_refused += (before - self.providers.len()) as u64;
+        }
+
         // A record only counts if it verifies, actually answers *this* query and
         // is not already expired. A peer that returns someone else's record, a
         // forgery or a lapsed one must not be able to redirect the lookup; the
@@ -481,7 +594,7 @@ impl Lookup {
         if let Some(record) = &response.record {
             if self.admissible(record)
                 && !self.is_stale(record)
-                && record.verify().is_ok()
+                && self.admits(record, book)
                 && self.matches_query(record)
             {
                 let better = match &self.record {
@@ -499,7 +612,7 @@ impl Lookup {
         for provider in response.providers.iter().take(K) {
             if self.admissible(provider)
                 && !self.is_stale(provider)
-                && provider.verify().is_ok()
+                && self.admits(provider, book)
                 && self.wants_capability(provider)
                 && !self.providers.iter().any(|p| p.name == provider.name)
             {
@@ -612,6 +725,29 @@ struct PeerSlot {
     touched: u64,
 }
 
+/// What a [`NameService`] has done with succession logs and the records they
+/// refused. Counters only grow; the mesh resolver reports them as metrics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SuccessionStats {
+    /// Logs adopted: a name's first, or a strict extension of the one held.
+    pub logs_adopted: u64,
+    /// Logs dropped before verification for being over the bounds: more than
+    /// `MAX_SUCCESSION_ENTRIES` entries, a signature that is not 64 bytes, or
+    /// more logs in one response than [`MAX_RESPONSE_LOGS`].
+    pub logs_oversize: u64,
+    /// Logs refused: they do not verify, are for a name the message was not
+    /// about, or did not fit a full table.
+    pub logs_rejected: u64,
+    /// Equivocation proofs recorded: names that now fail closed.
+    pub equivocations_found: u64,
+    /// Records refused for a head claim beyond the log held, with no log
+    /// carried.
+    pub records_need_log: u64,
+    /// Records refused by key succession: a superseded key, a retired or
+    /// compromised name, or a stale or conflicting claim.
+    pub records_refused: u64,
+}
+
 /// A node's naming service: the records it serves, the keyspace peers it knows,
 /// and the lookups it has in flight.
 #[derive(Debug)]
@@ -634,6 +770,8 @@ pub struct NameService {
     /// In-flight lookups by request id.
     lookups: HashMap<u64, Lookup>,
     next_request_id: u64,
+    /// Counters for succession logs received and records they refused.
+    succession: SuccessionStats,
 }
 
 impl NameService {
@@ -649,6 +787,7 @@ impl NameService {
             peer_clock: 0,
             lookups: HashMap::new(),
             next_request_id: 1,
+            succession: SuccessionStats::default(),
         }
     }
 
@@ -694,6 +833,23 @@ impl NameService {
         record: NameRecord,
         now: u64,
     ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
+        self.accept_announcement_with_log(record, None, now)
+    }
+
+    /// [`NameService::accept_announcement`] for an announcement that carries its
+    /// name's succession log. The log is used only if this node is responsible
+    /// for the record (so a declined announcement costs no signature work), is
+    /// bounded and checked against the record's name before it is verified, and
+    /// is then offered to the store (a log that does not verify, or conflicts,
+    /// is counted and handled there). The record is then admitted against the
+    /// best log held: a record for a name whose log is behind the record's head
+    /// claim and carried none is refused ([`NameError::NeedSuccessionLog`]).
+    pub fn accept_announcement_with_log(
+        &mut self,
+        record: NameRecord,
+        log: Option<SuccessionLog>,
+        now: u64,
+    ) -> Result<spine_name::PutOutcome, spine_name::NameError> {
         // Cheapest checks first: refuse a record whose size, lifetime or
         // publication time alone disqualifies it. Tombstones travel this path
         // like any record: they have no endpoints and no capabilities, and
@@ -710,7 +866,148 @@ impl NameService {
         if !responsible {
             return Ok(spine_name::PutOutcome::Rejected);
         }
-        self.store.put(record, now)
+        if let Some(log) = log {
+            let wanted: HashSet<[u8; 32]> = record.name.public_key().copied().into_iter().collect();
+            let _ = Self::take_log(&mut self.store, &mut self.succession, log, Some(&wanted));
+        }
+        let outcome = self.store.put(record, now);
+        Self::count_refusal(&mut self.succession, &outcome);
+        outcome
+    }
+
+    /// Offer a succession log this node learned out of band (its operator's, or
+    /// one it fetched). Bounded and verified like a log from a peer; see
+    /// [`spine_name::RecordStore::offer_log`] for the rules.
+    pub fn offer_log(&mut self, log: SuccessionLog) -> Result<LogChange, NameError> {
+        Self::take_log(&mut self.store, &mut self.succession, log, None)
+    }
+
+    /// The counters of succession logs received and records refused.
+    pub fn succession_stats(&self) -> SuccessionStats {
+        self.succession
+    }
+
+    /// The succession logs held, with the equivocation proofs.
+    pub fn logs(&self) -> &LogBook {
+        self.store.logs()
+    }
+
+    /// The error a resolution of `uri` must answer with instead of a record: the
+    /// name is retired or compromised here. `None` for every other name.
+    pub fn status_error(&self, uri: &SpineUri) -> Option<NameError> {
+        self.store.logs().status_error(uri)
+    }
+
+    /// The best succession log held for the name of `record`, if non-empty: what
+    /// goes out with the record. Nothing is looked up when no log is held at all.
+    pub fn log_for_record(&self, record: &NameRecord) -> Option<SuccessionLog> {
+        self.log_of(record.name.public_key()?)
+    }
+
+    fn log_of(&self, key: &[u8; 32]) -> Option<SuccessionLog> {
+        let book = self.store.logs();
+        if book.is_empty() {
+            return None;
+        }
+        book.log(key).cloned()
+    }
+
+    /// Bound, check against the names `wanted` (when given), and offer one log
+    /// received from outside, counting the result.
+    fn take_log(
+        store: &mut spine_name::RecordStore,
+        stats: &mut SuccessionStats,
+        log: SuccessionLog,
+        wanted: Option<&HashSet<[u8; 32]>>,
+    ) -> Result<LogChange, NameError> {
+        if !log_within_bounds(&log) {
+            stats.logs_oversize += 1;
+            return Err(NameError::InvalidSuccessionLog(
+                "log is over the bounds".into(),
+            ));
+        }
+        let Some(key) = log_inception_key(&log) else {
+            return Ok(LogChange::Unchanged);
+        };
+        if wanted.is_some_and(|w| !w.contains(&key)) {
+            stats.logs_rejected += 1;
+            return Err(NameError::InvalidSuccessionLog(
+                "log is for another name".into(),
+            ));
+        }
+        let result = store.offer_log(log);
+        match &result {
+            Ok(LogChange::Adopted { .. }) => stats.logs_adopted += 1,
+            Ok(LogChange::Compromised { .. }) => stats.equivocations_found += 1,
+            Ok(LogChange::Unchanged) => {}
+            Err(_) => stats.logs_rejected += 1,
+        }
+        result
+    }
+
+    fn count_refusal(
+        stats: &mut SuccessionStats,
+        outcome: &Result<spine_name::PutOutcome, NameError>,
+    ) {
+        match outcome {
+            Err(NameError::NeedSuccessionLog { .. }) => stats.records_need_log += 1,
+            Err(
+                NameError::SupersededKey(_)
+                | NameError::Retired(_)
+                | NameError::Equivocated(_)
+                | NameError::SuccessionRefused { .. },
+            ) => stats.records_refused += 1,
+            _ => {}
+        }
+    }
+
+    /// The authority a name lookup is about, for matching the logs a response
+    /// carries.
+    fn name_target(query: &ResolveQuery) -> Option<[u8; 32]> {
+        match query {
+            ResolveQuery::Name(uri) => uri.public_key().copied(),
+            _ => None,
+        }
+    }
+
+    /// Take the succession logs a response carries, before its records are
+    /// judged: at most [`MAX_RESPONSE_LOGS`], each bounded, each for a name the
+    /// response is about (the queried name, its record, or a provider), then
+    /// offered to the store. Only called for a response that will be counted.
+    fn absorb_response_logs(
+        store: &mut spine_name::RecordStore,
+        stats: &mut SuccessionStats,
+        target: Option<[u8; 32]>,
+        response: &ResolveResponse,
+    ) {
+        if response.logs.is_empty() {
+            return;
+        }
+        let mut wanted: HashSet<[u8; 32]> = target.into_iter().collect();
+        wanted.extend(
+            response
+                .record
+                .iter()
+                .filter_map(|r| r.name.public_key().copied()),
+        );
+        wanted.extend(
+            response
+                .providers
+                .iter()
+                .take(K)
+                .filter_map(|p| p.name.public_key().copied()),
+        );
+        if response.logs.len() > MAX_RESPONSE_LOGS {
+            stats.logs_oversize += (response.logs.len() - MAX_RESPONSE_LOGS) as u64;
+        }
+        for log in response.logs.iter().take(MAX_RESPONSE_LOGS) {
+            let _ = Self::take_log(store, stats, log.clone(), Some(&wanted));
+        }
+    }
+
+    fn count_lookup_refusals(stats: &mut SuccessionStats, before: (u64, u64), after: (u64, u64)) {
+        stats.records_need_log += after.0 - before.0;
+        stats.records_refused += after.1 - before.1;
     }
 
     /// Learn about a keyspace peer whose mesh identity is not known.
@@ -800,6 +1097,14 @@ impl NameService {
         match &request.query {
             ResolveQuery::Name(uri) => {
                 response.record = self.store.get_fresh(uri, now).cloned();
+                // The log goes with the answer, and alone when the name has no
+                // record (a retired name keeps none): none at all, and no
+                // lookup, for a name without one.
+                response.logs = uri
+                    .public_key()
+                    .and_then(|key| self.log_of(key))
+                    .into_iter()
+                    .collect();
             }
             ResolveQuery::Capability(term) => {
                 response.providers = self
@@ -809,6 +1114,7 @@ impl NameService {
                     .take(K)
                     .cloned()
                     .collect();
+                response.logs = self.logs_of_providers(&response.providers);
             }
             // Nothing to look up: the closer peers appended below are the whole
             // answer to a node query.
@@ -824,6 +1130,31 @@ impl NameService {
         response.closer = self.as_keyspace_peers(closer);
 
         response
+    }
+
+    /// The succession logs of the providers in an answer, one per name that has
+    /// one, at most [`MAX_RESPONSE_LOGS`]. Empty without looking at a provider
+    /// when this node holds no log at all.
+    fn logs_of_providers(&self, providers: &[NameRecord]) -> Vec<SuccessionLog> {
+        if self.store.logs().is_empty() {
+            return Vec::new();
+        }
+        let mut seen: HashSet<[u8; 32]> = HashSet::new();
+        let mut out = Vec::new();
+        for provider in providers {
+            let Some(key) = provider.name.public_key() else {
+                continue;
+            };
+            if seen.insert(*key) {
+                if let Some(log) = self.store.logs().log(key) {
+                    out.push(log.clone());
+                }
+            }
+            if out.len() >= MAX_RESPONSE_LOGS {
+                break;
+            }
+        }
+        out
     }
 
     /// Peers to offer a newcomer, nearest to its own keyspace position.
@@ -971,7 +1302,11 @@ impl NameService {
         let Some(lookup) = self.lookups.get_mut(&response.request_id) else {
             return Vec::new();
         };
-        lookup.on_response(response);
+        let target = Self::name_target(lookup.query());
+        Self::absorb_response_logs(&mut self.store, &mut self.succession, target, response);
+        let before = lookup.succession_refusals();
+        lookup.on_response_with(response, self.store.logs());
+        Self::count_lookup_refusals(&mut self.succession, before, lookup.succession_refusals());
         lookup.next_wave()
     }
 
@@ -1017,9 +1352,16 @@ impl NameService {
         response: &ResolveResponse,
     ) -> Option<Vec<NodeInfo>> {
         let lookup = self.lookups.get_mut(&response.request_id)?;
-        if !lookup.on_response_from(keys, response) {
+        if !lookup.would_accept(keys) {
             return None;
         }
+        let target = Self::name_target(lookup.query());
+        Self::absorb_response_logs(&mut self.store, &mut self.succession, target, response);
+        let before = lookup.succession_refusals();
+        if !lookup.on_response_from_with(keys, response, self.store.logs()) {
+            return None;
+        }
+        Self::count_lookup_refusals(&mut self.succession, before, lookup.succession_refusals());
         self.learn_referrals(&response.closer);
         Some(
             self.lookups
@@ -1303,6 +1645,7 @@ mod tests {
             record: Some(rec.clone()),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         };
         for _ in 0..(QUORUM - 1) {
             svc.on_response(&answer);
@@ -1334,6 +1677,7 @@ mod tests {
             record: Some(forged),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         });
         assert_ne!(
             svc.lookup_outcome(id),
@@ -1358,6 +1702,7 @@ mod tests {
             record: Some(other),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         });
         if let Some(outcome) = svc.lookup_outcome(id) {
             assert_eq!(
@@ -1380,12 +1725,14 @@ mod tests {
             record: Some(record(1, 1, 1_000, &[])),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         });
         lookup.on_response(&ResolveResponse {
             request_id: 1,
             record: Some(record(1, 5, 1_000, &[])),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         });
         match lookup.outcome().unwrap() {
             LookupOutcome::Found(r) => assert_eq!(r.seq, 5),
@@ -1408,6 +1755,7 @@ mod tests {
             record: None,
             providers: vec![a.clone(), b.clone()],
             closer: vec![],
+            logs: vec![],
         });
         // The same providers arriving from a second peer must not double-count.
         lookup.on_response(&ResolveResponse {
@@ -1415,6 +1763,7 @@ mod tests {
             record: None,
             providers: vec![a, b],
             closer: vec![],
+            logs: vec![],
         });
         assert_eq!(lookup.providers.len(), 2);
     }
@@ -1428,6 +1777,7 @@ mod tests {
             record: None,
             providers: vec![record(1, 1, 1_000, &["data.analyze"])],
             closer: vec![],
+            logs: vec![],
         });
         assert!(lookup.providers.is_empty());
     }
@@ -1444,6 +1794,7 @@ mod tests {
             record: None,
             providers: vec![],
             closer: vec![peer(1)],
+            logs: vec![],
         });
         assert!(
             lookup.next_wave().is_empty(),
@@ -1486,6 +1837,7 @@ mod tests {
                     record: None,
                     providers: vec![],
                     closer: fresh,
+                    logs: vec![],
                 });
             }
         }
@@ -1518,6 +1870,7 @@ mod tests {
             record: None,
             providers: vec![record(1, 1, 1_000, &["web.search"])],
             closer: vec![],
+            logs: vec![],
         });
         assert!(lookup.next_wave().is_empty());
         assert_eq!(lookup.in_flight(), 1);
@@ -1532,6 +1885,7 @@ mod tests {
             record: None,
             providers: vec![record(2, 1, 1_000, &["web.search"])],
             closer: vec![],
+            logs: vec![],
         });
         assert!(lookup.next_wave().is_empty());
         assert!(lookup.is_done());
@@ -1563,6 +1917,7 @@ mod tests {
             record: None,
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         });
         assert_eq!(
             svc.finish_lookup_counted(id),
@@ -1630,6 +1985,7 @@ mod tests {
             record: None,
             providers: vec![],
             closer: vec![peer(2), peer(3)],
+            logs: vec![],
         });
         assert_eq!(svc.node_count(), 3, "the mesh learns from every exchange");
         assert_eq!(
@@ -2051,6 +2407,7 @@ mod tests {
             record: rec,
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         }
     }
 
@@ -2137,6 +2494,7 @@ mod tests {
             record: Some(rec),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         };
         assert!(svc.on_response_from(agent(9), &answer).is_none());
         assert!(svc.on_response_from(agent(1), &answer).is_some());
@@ -2202,6 +2560,7 @@ mod tests {
             record: Some(rec),
             providers: vec![],
             closer: vec![],
+            logs: vec![],
         });
         assert_eq!(
             svc.finish_lookup_counted(id),
@@ -2290,6 +2649,7 @@ mod tests {
             record: None,
             providers: vec![],
             closer: referred,
+            logs: vec![],
         });
         assert!(svc.node_count() <= K + 1, "at most K referrals are kept");
         assert!(svc.addressable_peers() <= K);
@@ -2313,5 +2673,209 @@ mod tests {
             service.publish(rec, 1_000).unwrap(),
             spine_name::PutOutcome::Superseded
         );
+    }
+
+    // ---- key succession (spec 02, section 10) ------------------------------
+
+    fn pk_of(seed: u8) -> [u8; 32] {
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes()
+    }
+
+    /// Entry 1 of the log of the name `[seed; 32]`: reveals `[seed + 100; 32]`.
+    fn rotation(seed: u8) -> SuccessionLog {
+        SuccessionLog::default()
+            .rotated(
+                &pk_of(seed),
+                &SigningKey::from_bytes(&[seed; 32]),
+                &pk_of(seed + 100),
+                &pk_of(seed + 101),
+                1_000,
+            )
+            .unwrap()
+    }
+
+    /// A record of `[seed; 32]` signed by its current key under `log`.
+    fn rotated_record(seed: u8, log: &SuccessionLog, caps: &[&str]) -> NameRecord {
+        let state = log.verify(&pk_of(seed)).unwrap();
+        let mut rec = NameRecord::new(SpineUri::did(pk_of(seed)), 2, 1_000)
+            .unwrap()
+            .with_ttl(3600)
+            .with_endpoint(Endpoint::new("tcp", "10.0.0.1:9440"));
+        for c in caps {
+            rec = rec.with_capability(*c);
+        }
+        rec.sign_current(&SigningKey::from_bytes(&[seed + 100; 32]), &state)
+            .unwrap();
+        rec
+    }
+
+    #[test]
+    fn a_name_without_a_log_answers_without_one() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        let rec = record(1, 1, 1_000, &["web.search"]);
+        svc.publish(rec.clone(), 1_000).unwrap();
+
+        let by_name = ResolveRequest {
+            request_id: 1,
+            query: ResolveQuery::Name(rec.name.clone()),
+        };
+        let answer = svc.handle_request(&by_name, 1_000);
+        assert_eq!(answer.record, Some(rec));
+        assert!(answer.logs.is_empty());
+        let by_capability = ResolveRequest {
+            request_id: 2,
+            query: ResolveQuery::Capability("web.search".into()),
+        };
+        let answer = svc.handle_request(&by_capability, 1_000);
+        assert_eq!(answer.providers.len(), 1);
+        assert!(answer.logs.is_empty());
+
+        // No log was held, looked up or counted anywhere.
+        assert!(svc.logs().is_empty());
+        assert_eq!(svc.succession_stats(), SuccessionStats::default());
+        assert!(svc.log_for_record(&answer.providers[0]).is_none());
+    }
+
+    #[test]
+    fn a_response_carries_the_log_with_the_record_and_alone_for_a_retired_name() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        let log = rotation(1);
+        svc.offer_log(log.clone()).unwrap();
+        let fresh = rotated_record(1, &log, &["web.search"]);
+        svc.publish(fresh.clone(), 1_000).unwrap();
+
+        let by_name = ResolveRequest {
+            request_id: 1,
+            query: ResolveQuery::Name(fresh.name.clone()),
+        };
+        let answer = svc.handle_request(&by_name, 1_000);
+        assert_eq!(answer.record, Some(fresh.clone()));
+        assert_eq!(answer.logs, vec![log.clone()]);
+        let by_capability = ResolveRequest {
+            request_id: 2,
+            query: ResolveQuery::Capability("web.search".into()),
+        };
+        assert_eq!(
+            svc.handle_request(&by_capability, 1_000).logs,
+            vec![log.clone()]
+        );
+
+        // Retired: no record is held, and the log still goes out.
+        let retired = log
+            .retired(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[101; 32]),
+                &pk_of(102),
+                1_000,
+            )
+            .unwrap();
+        svc.offer_log(retired.clone()).unwrap();
+        let answer = svc.handle_request(&by_name, 1_000);
+        assert!(answer.record.is_none());
+        assert_eq!(answer.logs, vec![retired]);
+        assert!(!answer.is_answer(), "a log alone is not an answer");
+        assert!(matches!(
+            svc.status_error(&fresh.name),
+            Some(NameError::Retired(_))
+        ));
+    }
+
+    #[test]
+    fn a_response_that_carries_the_log_lets_a_rotated_record_count() {
+        let log = rotation(1);
+        let fresh = rotated_record(1, &log, &[]);
+        let mut with = NameService::new(NameKey::of(b"local"));
+        let mut without = NameService::new(NameKey::of(b"local"));
+        for svc in [&mut with, &mut without] {
+            for seed in 1..=10u8 {
+                svc.add_node(node(seed));
+            }
+        }
+        let (id_with, _) = with.start_lookup_at(ResolveQuery::Name(fresh.name.clone()), 1_000);
+        let (id_without, _) =
+            without.start_lookup_at(ResolveQuery::Name(fresh.name.clone()), 1_000);
+        let mut answer = ResolveResponse::empty(id_with);
+        answer.record = Some(fresh.clone());
+        answer.logs = vec![log.clone()];
+        for _ in 0..QUORUM {
+            with.on_response(&answer);
+        }
+        assert_eq!(
+            with.finish_lookup(id_with),
+            Some(LookupOutcome::Found(Box::new(fresh.clone())))
+        );
+        assert_eq!(with.succession_stats().logs_adopted, 1);
+
+        // The same answer without the log: the claim is beyond what is held, so
+        // the record does not count, and the refusal is counted.
+        answer.request_id = id_without;
+        answer.logs = Vec::new();
+        without.on_response(&answer);
+        assert!(without.logs().is_empty());
+        assert_eq!(without.succession_stats().records_need_log, 1);
+        assert_ne!(
+            without.lookup_outcome(id_without),
+            Some(LookupOutcome::Found(Box::new(fresh)))
+        );
+    }
+
+    /// One peer still serves the record the old key signed (at a higher `seq`,
+    /// which would otherwise win); another reports the rotation. The log learned
+    /// in the same lookup removes the old key's record from the answer.
+    #[test]
+    fn a_superseded_key_record_does_not_survive_a_log_learned_later_in_the_lookup() {
+        let log = rotation(1);
+        let fresh = rotated_record(1, &log, &[]);
+        let by_old_key = record(1, 9, 1_000, &[]);
+        assert_eq!(by_old_key.name, fresh.name);
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        for seed in 1..=10u8 {
+            svc.add_node(node(seed));
+        }
+        let (id, _) = svc.start_lookup_at(ResolveQuery::Name(fresh.name.clone()), 1_000);
+
+        let mut stale = ResolveResponse::empty(id);
+        stale.record = Some(by_old_key);
+        svc.on_response(&stale);
+        assert_eq!(svc.succession_stats().records_refused, 0);
+
+        let mut answer = ResolveResponse::empty(id);
+        answer.record = Some(fresh.clone());
+        answer.logs = vec![log];
+        for _ in 0..QUORUM {
+            svc.on_response(&answer);
+        }
+        assert_eq!(svc.succession_stats().records_refused, 1);
+        assert_eq!(
+            svc.finish_lookup(id),
+            Some(LookupOutcome::Found(Box::new(fresh)))
+        );
+    }
+
+    #[test]
+    fn a_response_with_too_many_or_foreign_logs_has_them_dropped_and_counted() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        for seed in 1..=10u8 {
+            svc.add_node(node(seed));
+        }
+        let log = rotation(1);
+        let name = SpineUri::did(pk_of(1));
+        let (id, _) = svc.start_lookup_at(ResolveQuery::Name(name), 1_000);
+
+        let mut answer = ResolveResponse::empty(id);
+        answer.logs = vec![log.clone(); MAX_RESPONSE_LOGS + 3];
+        svc.on_response(&answer);
+        let stats = svc.succession_stats();
+        assert_eq!(stats.logs_oversize, 3);
+        assert_eq!(stats.logs_adopted, 1);
+
+        // A log of a name the response is not about is not taken.
+        answer.logs = vec![rotation(2)];
+        svc.on_response(&answer);
+        let stats = svc.succession_stats();
+        assert_eq!(stats.logs_rejected, 1);
+        assert!(svc.logs().state(&pk_of(2)).is_none());
     }
 }

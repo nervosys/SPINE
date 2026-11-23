@@ -754,10 +754,28 @@ impl MeshNode {
         &self,
         record: spine_name::NameRecord,
     ) -> Result<MeshEnvelope, spine_name::NameError> {
-        record.verify()?;
+        self.announce_name_with_log(record, None)
+    }
+
+    /// [`MeshNode::announce_name`] with the record's succession log.
+    ///
+    /// With no log (or an empty one) the record must verify against the key in
+    /// its name, as before, and the payload is byte for byte what it always was.
+    /// With a log, the log is verified from the name's inception key and the
+    /// record must be authorised by it (spec 02, 10.6), so a record that no
+    /// verifier holding that log would accept is not put on the wire; the log is
+    /// carried in the payload for receivers to verify again.
+    pub fn announce_name_with_log(
+        &self,
+        record: spine_name::NameRecord,
+        log: Option<spine_name::SuccessionLog>,
+    ) -> Result<MeshEnvelope, spine_name::NameError> {
+        check_announcement(&record, log.as_ref())?;
         self.create_envelope(
             MeshTarget::Broadcast,
-            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(record))),
+            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::with_log(
+                record, log,
+            ))),
         )
         .map_err(|e| spine_name::NameError::Transport(e.to_string()))
     }
@@ -773,10 +791,23 @@ impl MeshNode {
         peer: AgentId,
         record: spine_name::NameRecord,
     ) -> Result<MeshEnvelope, spine_name::NameError> {
-        record.verify()?;
+        self.announce_name_to_with_log(peer, record, None)
+    }
+
+    /// [`MeshNode::announce_name_to`] with the record's succession log; see
+    /// [`MeshNode::announce_name_with_log`].
+    pub fn announce_name_to_with_log(
+        &self,
+        peer: AgentId,
+        record: spine_name::NameRecord,
+        log: Option<spine_name::SuccessionLog>,
+    ) -> Result<MeshEnvelope, spine_name::NameError> {
+        check_announcement(&record, log.as_ref())?;
         self.create_envelope(
             MeshTarget::Agent(peer),
-            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(record))),
+            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::with_log(
+                record, log,
+            ))),
         )
         .map_err(|e| spine_name::NameError::Transport(e.to_string()))
     }
@@ -1070,6 +1101,26 @@ impl MeshNode {
     pub fn set_running(&self, running: bool) {
         self.running.store(running, Ordering::Relaxed);
     }
+}
+
+/// The sender-side check of an announcement: with no log the record must verify
+/// against its name's key; with a non-empty log, the log must verify from that
+/// key and authorise the record.
+fn check_announcement(
+    record: &spine_name::NameRecord,
+    log: Option<&spine_name::SuccessionLog>,
+) -> Result<(), spine_name::NameError> {
+    let Some(log) = log.filter(|l| !l.entries.is_empty()) else {
+        return record.verify();
+    };
+    let key = record
+        .name
+        .public_key()
+        .ok_or_else(|| spine_name::NameError::NotSignable(record.name.to_string()))?;
+    let state = log
+        .verify(key)
+        .map_err(|e| spine_name::NameError::InvalidSuccessionLog(e.reason().to_string()))?;
+    spine_name::authorise_record(record, Some(&state))
 }
 
 #[cfg(test)]
@@ -1553,7 +1604,25 @@ mod tests {
         }
     }
 
-    /// One value of every `MeshPayload` variant.
+    /// A succession log for the name of [`name_record`]: its inception key
+    /// rotates once.
+    fn name_log() -> spine_name::SuccessionLog {
+        let inception = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let reveal = ed25519_dalek::SigningKey::from_bytes(&[10u8; 32]);
+        let next = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
+        spine_name::SuccessionLog::default()
+            .rotated(
+                &inception.verifying_key().to_bytes(),
+                &inception,
+                &reveal.verifying_key().to_bytes(),
+                &next.verifying_key().to_bytes(),
+                1_700_000_000,
+            )
+            .unwrap()
+    }
+
+    /// One value of every `MeshPayload` variant. The name payloads carry a
+    /// succession log, so the signature test covers the optional fields too.
     fn every_payload() -> Vec<MeshPayload> {
         let rec = name_record();
         vec![
@@ -1607,7 +1676,10 @@ mod tests {
                 accepted: false,
                 reason: Some("busy".into()),
             },
-            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(rec.clone()))),
+            MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::with_log(
+                rec.clone(),
+                Some(name_log()),
+            ))),
             MeshPayload::NameResolveRequest(crate::naming::ResolveRequest {
                 request_id: 11,
                 query: crate::naming::ResolveQuery::Capability("search".into()),
@@ -1617,6 +1689,7 @@ mod tests {
                 record: Some(rec.clone()),
                 providers: vec![rec],
                 closer: vec![keyspace_peer()],
+                logs: vec![name_log()],
             })),
             MeshPayload::NameHello(crate::naming::NameHello {
                 public_key: [3u8; 32],
@@ -1882,6 +1955,92 @@ mod tests {
             &envelope,
             sender.public_key()
         ));
+    }
+
+    /// A name without a succession log encodes exactly as it did before the
+    /// log fields existed: the fields are not serialised when empty, so the
+    /// payload (JSON on the wire, the deterministic CBOR that is signed) has no
+    /// key for them, and the envelope signature over it is unchanged.
+    #[test]
+    fn name_payloads_without_a_log_have_no_log_fields() {
+        let rec = name_record();
+        let plain = serde_json::to_value(crate::naming::AnnouncedRecord::new(rec.clone())).unwrap();
+        assert_eq!(
+            plain.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["record"]
+        );
+        // An empty log is not carried either.
+        let empty = crate::naming::AnnouncedRecord::with_log(
+            rec.clone(),
+            Some(spine_name::SuccessionLog::default()),
+        );
+        assert_eq!(serde_json::to_value(&empty).unwrap(), plain);
+
+        let response = serde_json::to_value(crate::naming::ResolveResponse::empty(1)).unwrap();
+        assert!(response.get("logs").is_none());
+        let with_log = crate::naming::AnnouncedRecord::with_log(rec, Some(name_log()));
+        let value = serde_json::to_value(&with_log).unwrap();
+        assert!(value.get("log").is_some());
+
+        // An old sender's JSON (no `log`, no `logs`) still parses.
+        let parsed: crate::naming::AnnouncedRecord = serde_json::from_value(plain).unwrap();
+        assert!(parsed.log.is_none());
+        let old: crate::naming::ResolveResponse = serde_json::from_value(
+            serde_json::json!({"request_id": 1, "record": null, "providers": [], "closer": []}),
+        )
+        .unwrap();
+        assert!(old.logs.is_empty());
+    }
+
+    /// The signature covers the log: dropping it from a signed announcement
+    /// breaks the envelope, so a relay cannot strip or swap a log undetected.
+    #[test]
+    fn the_envelope_signature_covers_the_succession_log() {
+        let node = MeshNode::new(test_identity("v3-log"), test_config());
+        let key = *node.identity.public_key();
+        let rec = name_record();
+        let mut envelope = node
+            .create_envelope(
+                MeshTarget::Broadcast,
+                MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::with_log(
+                    rec,
+                    Some(name_log()),
+                ))),
+            )
+            .unwrap();
+        assert!(MeshNode::verify_carried_key(&envelope, &key));
+        if let MeshPayload::NameAnnounce(announced) = &mut envelope.payload {
+            announced.log = None;
+        }
+        assert!(!MeshNode::verify_carried_key(&envelope, &key));
+    }
+
+    /// The builders put only what a holder of the log would accept on the wire.
+    #[test]
+    fn announcing_a_rotated_record_needs_its_log() {
+        let node = MeshNode::new(test_identity("v3-ann"), test_config());
+        let inception = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let reveal = ed25519_dalek::SigningKey::from_bytes(&[10u8; 32]);
+        let log = name_log();
+        let state = log.verify(&inception.verifying_key().to_bytes()).unwrap();
+        let mut rec = spine_name::NameRecord::new(
+            spine_name::SpineUri::did(inception.verifying_key().to_bytes()),
+            1,
+            1_700_000_000,
+        )
+        .unwrap()
+        .with_ttl(60);
+        rec.sign_current(&reveal, &state).unwrap();
+
+        assert!(node
+            .announce_name_with_log(rec.clone(), Some(log.clone()))
+            .is_ok());
+        assert!(node
+            .announce_name_to_with_log(AgentId::new(), rec.clone(), Some(log))
+            .is_ok());
+        // Without the log the record is signed by a key the name does not name.
+        assert!(node.announce_name(rec.clone()).is_err());
+        assert!(node.announce_name_to(AgentId::new(), rec).is_err());
     }
 
     /// GOLDEN VECTORS. The expected hex below was derived BY HAND from the

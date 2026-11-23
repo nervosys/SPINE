@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, Mutex};
 
-use spine_name::{NameKey, NameRecord, NodeInfo, SpineUri};
+use spine_name::{LogChange, NameKey, NameRecord, NodeInfo, SpineUri, SuccessionLog};
 
 use crate::identity::PublicIdentity;
 use crate::mesh::{ApplicationMessage, MeshTarget};
@@ -212,6 +212,24 @@ pub struct ResolverMetrics {
     /// key under an id it does not derive, or a registration with such a pair.
     /// A hello or ack is counted here as well as in `greetings_rejected`.
     pub agent_id_mismatches: u64,
+    /// Succession logs adopted from announcements, lookup responses or the
+    /// operator: a name's first log, or a strict extension of the one held.
+    pub succession_logs_adopted: u64,
+    /// Succession logs dropped before verification for being over the bounds
+    /// (too many entries, a signature of the wrong length, too many logs in one
+    /// response).
+    pub succession_logs_oversize: u64,
+    /// Succession logs refused: not verifying, for another name than the
+    /// message was about, or not fitting a full table.
+    pub succession_logs_rejected: u64,
+    /// Equivocation proofs recorded: names that now fail closed here.
+    pub equivocations_found: u64,
+    /// Records refused because their head claim is beyond the log held and no
+    /// log came with them.
+    pub records_need_log: u64,
+    /// Records refused by key succession (a superseded key, a retired or
+    /// compromised name, a stale or conflicting claim).
+    pub records_refused_by_succession: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -705,6 +723,33 @@ impl MeshNameResolver {
         Ok(self.replicate(&record).await)
     }
 
+    /// Publish a record of a name that has a succession log: the log is offered
+    /// to this node first (so the record is admitted against it), then the
+    /// record is published and replicated with the log attached. See
+    /// [`MeshNameResolver::offer_log`] for what is refused.
+    pub async fn publish_with_log(
+        &self,
+        record: NameRecord,
+        log: SuccessionLog,
+    ) -> Result<ReplicationReport, NameMeshError> {
+        self.offer_log(log).await?;
+        self.publish(record).await
+    }
+
+    /// Offer a succession log of a name to this node's store (spec 02, section
+    /// 10): bounded, verified from its inception key, kept if it is the name's
+    /// first or a strict extension of the one held, and kept as an equivocation
+    /// proof if it conflicts with it (the name then fails closed here).
+    pub async fn offer_log(&self, log: SuccessionLog) -> Result<LogChange, NameMeshError> {
+        Ok(self.service.lock().await.offer_log(log)?)
+    }
+
+    /// The succession log this node holds for the name whose inception key is
+    /// `inception_key`, if any.
+    pub async fn succession_log(&self, inception_key: &[u8; 32]) -> Option<SuccessionLog> {
+        self.service.lock().await.logs().log(inception_key).cloned()
+    }
+
     /// Publish locally without announcing — for names that should be resolvable
     /// but not advertised.
     pub async fn publish_local(&self, record: NameRecord) -> Result<(), NameMeshError> {
@@ -721,6 +766,9 @@ impl MeshNameResolver {
     /// for the record.
     pub async fn replicate(&self, record: &NameRecord) -> ReplicationReport {
         let key = record.name.key();
+        // The log travels with the record when the name has one, so a receiver
+        // never has to ask for it. None, and no lookup, for a name without one.
+        let log = self.service.lock().await.log_for_record(record);
         let targets = self.find_node(key).await;
 
         let mut report = ReplicationReport::default();
@@ -730,14 +778,19 @@ impl MeshNameResolver {
             // it is what a node with a mesh connection and no routing table can
             // still do, and it warms whatever caches are listening. The report
             // says plainly that nothing durable happened.
-            if let Ok(envelope) = self.node.announce_name(record.clone()) {
+            if let Ok(envelope) = self
+                .node
+                .announce_name_with_log(record.clone(), log.clone())
+            {
                 report.broadcast = self.transport.send(envelope).await.is_ok();
             }
             return report;
         }
 
         let mut offered: HashSet<AgentId> = HashSet::new();
-        let (sent, failed) = self.send_copies(record, &targets, &mut offered).await;
+        let (sent, failed) = self
+            .send_copies(record, log.as_ref(), &targets, &mut offered)
+            .await;
         report.sent = sent;
         report.failed = failed;
 
@@ -751,7 +804,9 @@ impl MeshNameResolver {
         // never an acknowledgement.
         for cap_key in capability_placement_keys(record) {
             let cap_targets = self.find_node(cap_key).await;
-            let (sent, failed) = self.send_copies(record, &cap_targets, &mut offered).await;
+            let (sent, failed) = self
+                .send_copies(record, log.as_ref(), &cap_targets, &mut offered)
+                .await;
             report.capability_sent += sent;
             report.capability_failed += failed;
         }
@@ -767,6 +822,7 @@ impl MeshNameResolver {
     async fn send_copies(
         &self,
         record: &NameRecord,
+        log: Option<&SuccessionLog>,
         targets: &[KeyspacePeer],
         offered: &mut HashSet<AgentId>,
     ) -> (usize, usize) {
@@ -777,7 +833,10 @@ impl MeshNameResolver {
             }
             // announce_name_to re-verifies, so an invalid record never reaches
             // the wire even if it somehow entered the store.
-            let Ok(envelope) = self.node.announce_name_to(peer.agent_id, record.clone()) else {
+            let Ok(envelope) =
+                self.node
+                    .announce_name_to_with_log(peer.agent_id, record.clone(), log.cloned())
+            else {
                 continue;
             };
             let transport = self.transport.clone();
@@ -877,11 +936,37 @@ impl MeshNameResolver {
     /// been revoked that is the signed tombstone, returned as an ordinary record:
     /// check [`NameRecord::is_tombstone`] before using its endpoints (it has
     /// none) and treat the name as revoked, not as missing.
+    ///
+    /// A name this node knows to be retired by its succession log, or whose logs
+    /// conflict, is answered at once with [`spine_name::NameError::Retired`] or
+    /// [`spine_name::NameError::Equivocated`] (as [`NameMeshError::Name`]), and
+    /// so is a name a lookup taught it was retired or compromised: that is not
+    /// "not found". A record signed by a key the name's log has superseded is
+    /// never an answer.
     pub async fn resolve(&self, uri: &SpineUri) -> Result<NameRecord, NameMeshError> {
+        if let Some(error) = self.service.lock().await.status_error(uri) {
+            return Err(NameMeshError::Name(error));
+        }
         match self.run_lookup(ResolveQuery::Name(uri.clone())).await? {
             LookupOutcome::Found(record) => Ok(*record),
-            _ => Err(NameMeshError::NotFound(uri.to_string())),
+            _ => match self.service.lock().await.status_error(uri) {
+                Some(error) => Err(NameMeshError::Name(error)),
+                None => Err(NameMeshError::NotFound(uri.to_string())),
+            },
         }
+    }
+
+    /// [`MeshNameResolver::resolve`], also returning the succession log this node
+    /// holds for the name (learned from the lookup, or already held): what a
+    /// caller that keeps records of its own needs to admit a record of a rotated
+    /// name. `None` for a name with no log.
+    pub async fn resolve_with_log(
+        &self,
+        uri: &SpineUri,
+    ) -> Result<(NameRecord, Option<SuccessionLog>), NameMeshError> {
+        let record = self.resolve(uri).await?;
+        let log = self.service.lock().await.log_for_record(&record);
+        Ok((record, log))
     }
 
     /// Whether a finished lookup learned anything. A name lookup that ends
@@ -1215,11 +1300,14 @@ impl MeshNameResolver {
                 // a forgery is counted and dropped rather than becoming servable
                 // state, and a record for a key this node has no business
                 // holding is declined rather than stored.
-                let outcome = self
-                    .service
-                    .lock()
-                    .await
-                    .accept_announcement(announced.record.clone(), now);
+                // The announcement carries the name's succession log when it has
+                // one; it is bounded, checked and verified inside, and only for
+                // an announcement this node is responsible for.
+                let outcome = self.service.lock().await.accept_announcement_with_log(
+                    announced.record.clone(),
+                    announced.log.clone(),
+                    now,
+                );
                 let mut m = self.metrics.lock().await;
                 match outcome {
                     Ok(spine_name::PutOutcome::Rejected) => m.announcements_declined += 1,
@@ -1448,7 +1536,15 @@ impl MeshNameResolver {
 
     /// Current metrics.
     pub async fn metrics(&self) -> ResolverMetrics {
-        *self.metrics.lock().await
+        let mut metrics = *self.metrics.lock().await;
+        let stats = self.service.lock().await.succession_stats();
+        metrics.succession_logs_adopted = stats.logs_adopted;
+        metrics.succession_logs_oversize = stats.logs_oversize;
+        metrics.succession_logs_rejected = stats.logs_rejected;
+        metrics.equivocations_found = stats.equivocations_found;
+        metrics.records_need_log = stats.records_need_log;
+        metrics.records_refused_by_succession = stats.records_refused;
+        metrics
     }
 
     /// Drop expired records.
@@ -2884,5 +2980,305 @@ mod tests {
         let metrics = h.nodes[1].metrics().await;
         assert_eq!(metrics.envelopes_unauthenticated, 1);
         assert_eq!(metrics.agent_id_mismatches, 1);
+    }
+
+    // ---- key succession (spec 02, section 10) ------------------------------
+
+    fn pk_of(seed: u8) -> [u8; 32] {
+        SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes()
+    }
+
+    /// The first entry of the log of the name whose inception key is `[seed; 32]`:
+    /// it reveals `[seed + 100; 32]` and commits to `[seed + 101; 32]`.
+    fn rotation_log(seed: u8) -> SuccessionLog {
+        SuccessionLog::default()
+            .rotated(
+                &pk_of(seed),
+                &SigningKey::from_bytes(&[seed; 32]),
+                &pk_of(seed + 100),
+                &pk_of(seed + 101),
+                NOW,
+            )
+            .unwrap()
+    }
+
+    /// A different first entry for the same name, signed by the same key.
+    fn forked_log(seed: u8) -> SuccessionLog {
+        SuccessionLog::default()
+            .rotated(
+                &pk_of(seed),
+                &SigningKey::from_bytes(&[seed; 32]),
+                &pk_of(seed + 50),
+                &pk_of(seed + 51),
+                NOW,
+            )
+            .unwrap()
+    }
+
+    /// A record of the name `[seed; 32]` signed by its current key under `log`.
+    fn record_under(seed: u8, log: &SuccessionLog, current: u8, seq: u64) -> NameRecord {
+        let state = log.verify(&pk_of(seed)).unwrap();
+        let mut rec = NameRecord::new(SpineUri::did(pk_of(seed)), seq, NOW)
+            .unwrap()
+            .with_ttl(3600)
+            .with_endpoint(Endpoint::new("tcp", "10.0.0.1:9440"));
+        rec.sign_current(&SigningKey::from_bytes(&[current; 32]), &state)
+            .unwrap();
+        rec
+    }
+
+    async fn settle_lookup<T: Send + 'static>(h: &Harness, task: tokio::task::JoinHandle<T>) -> T {
+        for _ in 0..16 {
+            h.pump().await;
+            tokio::task::yield_now().await;
+        }
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the lookup settles")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_node_learns_a_rotation_from_an_announcement_and_refuses_the_old_key() {
+        let h = Harness::new(2);
+        let log = rotation_log(1);
+        let fresh = record_under(1, &log, 101, 2);
+
+        let envelope = h.nodes[0]
+            .node
+            .announce_name_with_log(fresh.clone(), Some(log.clone()))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert_eq!(h.nodes[1].record_count().await, 1);
+        assert_eq!(h.nodes[1].succession_log(&pk_of(1)).await, Some(log));
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (m.announcements_accepted, m.succession_logs_adopted),
+            (1, 1)
+        );
+
+        // The old key's record, at a higher seq, is refused and counted.
+        let old = h.nodes[0]
+            .node
+            .announce_name(record_versioned(1, 9))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&old, NOW).await);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(m.announcements_rejected, 1);
+        assert_eq!(m.records_refused_by_succession, 1);
+        assert_eq!(h.nodes[1].resolve(&fresh.name).await.unwrap(), fresh);
+    }
+
+    #[tokio::test]
+    async fn a_node_learns_a_rotation_from_a_lookup_response_and_refuses_the_old_key() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+        let log = rotation_log(1);
+        let fresh = record_under(1, &log, 101, 2);
+        h.nodes[1].offer_log(log.clone()).await.unwrap();
+        h.nodes[1].publish_local(fresh.clone()).await.unwrap();
+
+        let seeker = h.nodes[0].clone();
+        let name = fresh.name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve_with_log(&name).await });
+        let (found, learned) = settle_lookup(&h, lookup).await.unwrap();
+        assert_eq!(found, fresh);
+        assert_eq!(learned, Some(log.clone()));
+        assert_eq!(h.nodes[0].succession_log(&pk_of(1)).await, Some(log));
+        assert_eq!(h.nodes[0].metrics().await.succession_logs_adopted, 1);
+
+        // Having learned the rotation, the asker refuses the old key.
+        let old = h.nodes[1]
+            .node
+            .announce_name(record_versioned(1, 9))
+            .unwrap();
+        assert!(h.nodes[0].handle_envelope(&old, NOW).await);
+        assert_eq!(h.nodes[0].record_count().await, 0);
+        assert_eq!(h.nodes[0].metrics().await.records_refused_by_succession, 1);
+    }
+
+    #[tokio::test]
+    async fn a_retired_name_is_learned_from_a_response_that_has_no_record() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+        let retired = rotation_log(1)
+            .retired(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[101; 32]),
+                &pk_of(102),
+                NOW,
+            )
+            .unwrap();
+        h.nodes[1].offer_log(retired).await.unwrap();
+
+        let name = SpineUri::did(pk_of(1));
+        let seeker = h.nodes[0].clone();
+        let asked = name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve(&asked).await });
+        let result = settle_lookup(&h, lookup).await;
+        assert!(
+            matches!(
+                result,
+                Err(NameMeshError::Name(spine_name::NameError::Retired(_)))
+            ),
+            "{result:?}"
+        );
+        // Known now: the next resolution does not touch the wire.
+        assert!(matches!(
+            h.nodes[0].resolve(&name).await,
+            Err(NameMeshError::Name(spine_name::NameError::Retired(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_record_ahead_of_the_log_is_refused_until_its_log_arrives() {
+        let h = Harness::new(2);
+        let one = rotation_log(1);
+        let two = one
+            .rotated(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[101; 32]),
+                &pk_of(102),
+                &pk_of(103),
+                NOW,
+            )
+            .unwrap();
+        // Node 1 knows only the first entry.
+        let env = h.nodes[0]
+            .node
+            .announce_name_with_log(record_under(1, &one, 101, 2), Some(one))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&env, NOW).await);
+
+        // A record that claims the second entry, announced without the log.
+        let ahead = record_under(1, &two, 102, 3);
+        let envelope = h.nodes[0]
+            .node
+            .create_envelope(
+                crate::mesh::MeshTarget::Broadcast,
+                MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(
+                    ahead.clone(),
+                ))),
+            )
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!((m.records_need_log, m.announcements_rejected), (1, 1));
+
+        // With the log, it is accepted and the log is adopted.
+        let with_log = h.nodes[0]
+            .node
+            .announce_name_with_log(ahead.clone(), Some(two.clone()))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&with_log, NOW).await);
+        assert_eq!(h.nodes[1].resolve(&ahead.name).await.unwrap(), ahead);
+        assert_eq!(h.nodes[1].succession_log(&pk_of(1)).await, Some(two));
+    }
+
+    #[tokio::test]
+    async fn conflicting_logs_from_two_peers_fail_the_name_closed() {
+        let h = Harness::new(3);
+        let a = rotation_log(1);
+        let b = forked_log(1);
+        let first = h.nodes[0]
+            .node
+            .announce_name_with_log(record_under(1, &a, 101, 2), Some(a))
+            .unwrap();
+        let second = h.nodes[2]
+            .node
+            .announce_name_with_log(record_under(1, &b, 51, 2), Some(b))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&first, NOW).await);
+        assert!(h.nodes[1].handle_envelope(&second, NOW).await);
+
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(m.equivocations_found, 1);
+        assert_eq!(h.nodes[1].record_count().await, 0, "nothing is held for it");
+        let name = SpineUri::did(pk_of(1));
+        assert!(matches!(
+            h.nodes[1].resolve(&name).await,
+            Err(NameMeshError::Name(spine_name::NameError::Equivocated(_)))
+        ));
+        // It stays failed closed against anything either log's keys sign.
+        let again = h.nodes[0]
+            .node
+            .announce_name(record_versioned(1, 9))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&again, NOW).await);
+        assert_eq!(h.nodes[1].record_count().await, 0);
+        assert!(matches!(
+            h.nodes[1].resolve(&name).await,
+            Err(NameMeshError::Name(spine_name::NameError::Equivocated(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_oversize_log_is_dropped_and_counted_before_it_is_verified() {
+        let h = Harness::new(2);
+        let rec = record_versioned(1, 1);
+        let one = rotation_log(1);
+
+        let mut too_long = one.clone();
+        while too_long.entries.len() <= spine_name::MAX_SUCCESSION_ENTRIES {
+            too_long.entries.push(one.entries[0].clone());
+        }
+        let mut short_signature = one;
+        short_signature.entries[0].signature.truncate(63);
+
+        for log in [too_long, short_signature] {
+            let envelope = h.nodes[0]
+                .node
+                .create_envelope(
+                    crate::mesh::MeshTarget::Broadcast,
+                    MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord {
+                        record: rec.clone(),
+                        log: Some(log),
+                    })),
+                )
+                .unwrap();
+            assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        }
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(m.succession_logs_oversize, 2);
+        assert_eq!(m.succession_logs_adopted, 0);
+        assert!(h.nodes[1].succession_log(&pk_of(1)).await.is_none());
+        // The record itself is still judged on its own: it verifies under the
+        // inception key and the name has no log here.
+        assert_eq!(h.nodes[1].record_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_name_without_a_log_involves_no_log_at_all() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+        let rec = record(1, &["web.search"]);
+        h.nodes[1].publish_local(rec.clone()).await.unwrap();
+
+        let seeker = h.nodes[0].clone();
+        let name = rec.name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve_with_log(&name).await });
+        let (found, log) = settle_lookup(&h, lookup).await.unwrap();
+        assert_eq!(found, rec);
+        assert!(log.is_none());
+
+        let envelope = h.nodes[0].node.announce_name(rec).unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        for node in &h.nodes {
+            let m = node.metrics().await;
+            assert_eq!(
+                (
+                    m.succession_logs_adopted,
+                    m.succession_logs_oversize,
+                    m.succession_logs_rejected,
+                    m.equivocations_found,
+                    m.records_need_log,
+                    m.records_refused_by_succession,
+                ),
+                (0, 0, 0, 0, 0, 0)
+            );
+            assert!(node.succession_log(&pk_of(1)).await.is_none());
+        }
     }
 }
