@@ -2,7 +2,12 @@
 //!
 //! Provides `SpineConfig` and `serve()` for embedding the SPINE server
 //! in other binaries (e.g. `spine-cli deploy`).
+//!
+//! [`authority`] is the node-side enforcement of layer 3
+//! (`docs/spec/03-authority.md`). It is a library module only: the daemon does
+//! not call it, because spine-wire v1 cannot carry a grant chain.
 
+pub mod authority;
 pub mod config;
 pub mod connections;
 pub mod operations;

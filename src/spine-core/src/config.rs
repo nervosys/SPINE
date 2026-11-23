@@ -47,6 +47,14 @@
 //! # life of the process.
 //! [namespace.seed_keys]
 //! "10.0.0.7:9440" = "4f1c0a9e5d3b7a8c2e6f1d0b9a8c7e5d4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"
+//!
+//! # Layer-3 authority. Only "off" is accepted by this build: spine-wire v1
+//! # cannot carry a grant chain, so nothing would be enforced.
+//! [authority]
+//! mode = "off"
+//! trusted_roots = []
+//! skew_secs = 0
+//! max_invocation_age_secs = 60
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +70,109 @@ pub struct SpineConfig {
     pub logging: LoggingConfig,
     pub namespace: NamespaceConfig,
     pub outbound: crate::outbound::FetchConfig,
+    pub authority: AuthorityConfig,
+}
+
+/// Whether the node demands a grant chain for every command.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthorityMode {
+    /// No grant is asked for: every connected client has full control of the
+    /// node, as before layer 3 existed. The default.
+    #[default]
+    Off,
+    /// Every command needs a valid grant chain and invocation. Refused by
+    /// [`SpineConfig::validate`] in this build: spine-wire v1 has no field
+    /// that carries them, so the daemon could not enforce it.
+    Required,
+}
+
+/// The largest value `authority.max_invocation_age_secs` may take, in
+/// seconds. The ledger remembers every nonce for at least this long.
+pub const MAX_INVOCATION_AGE_SECS: u64 = 3600;
+
+/// Layer-3 authority (`docs/spec/03-authority.md`, "Node enforcement").
+///
+/// These settings are parsed and validated but not acted on: the daemon does
+/// not check grants yet. Unknown keys in this section are refused, so a
+/// misspelled key cannot be mistaken for a setting that took effect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthorityConfig {
+    /// `"off"` (default) or `"required"`. `"required"` is refused at startup
+    /// in this build.
+    pub mode: AuthorityMode,
+    /// Ed25519 public keys (64 hex characters each, as in
+    /// `namespace.seed_keys`) accepted as the root of a chain, in addition to
+    /// the node's own key. Commands are classified as operations on the
+    /// node's own resource tree, which only the node's key can root, so
+    /// these keys have no effect until commands carry resources owned by
+    /// other keys.
+    pub trusted_roots: Vec<String>,
+    /// Clock skew tolerated at the start of a validity window and for an
+    /// invocation dated in the future, at most
+    /// `spine_authority::MAX_CLOCK_SKEW_SECS` (300).
+    pub skew_secs: u64,
+    /// Oldest an invocation may be, 1 to [`MAX_INVOCATION_AGE_SECS`].
+    pub max_invocation_age_secs: u64,
+}
+
+impl Default for AuthorityConfig {
+    fn default() -> Self {
+        Self {
+            mode: AuthorityMode::Off,
+            trusted_roots: Vec::new(),
+            skew_secs: 0,
+            max_invocation_age_secs: 60,
+        }
+    }
+}
+
+impl AuthorityConfig {
+    /// The configured root keys, decoded.
+    ///
+    /// Fails if an entry is not exactly 64 hex characters or appears twice.
+    /// Error text does not echo the configured values.
+    pub fn trusted_root_keys(&self) -> anyhow::Result<Vec<[u8; 32]>> {
+        let mut keys: Vec<[u8; 32]> = Vec::with_capacity(self.trusted_roots.len());
+        for text in &self.trusted_roots {
+            let key = if text.bytes().all(|b| b.is_ascii_hexdigit()) {
+                parse_key_hex(text)
+            } else {
+                None
+            };
+            let key = key.ok_or_else(|| {
+                anyhow::anyhow!("authority.trusted_roots values must be 64 hex characters")
+            })?;
+            anyhow::ensure!(
+                !keys.contains(&key),
+                "authority.trusted_roots lists a key twice"
+            );
+            keys.push(key);
+        }
+        Ok(keys)
+    }
+
+    /// Checks the section. `mode = "required"` is refused: see
+    /// [`AuthorityMode::Required`].
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.mode != AuthorityMode::Required,
+            "authority.mode = \"required\" is not available in this build: spine-wire v1 has no \
+             field that carries a grant chain or an invocation, so the daemon cannot check one \
+             and would enforce nothing; set authority.mode = \"off\""
+        );
+        self.trusted_root_keys()?;
+        anyhow::ensure!(
+            self.skew_secs <= spine_authority::MAX_CLOCK_SKEW_SECS,
+            "authority.skew_secs must be at most 300"
+        );
+        anyhow::ensure!(
+            (1..=MAX_INVOCATION_AGE_SECS).contains(&self.max_invocation_age_secs),
+            "authority.max_invocation_age_secs must be 1..=3600"
+        );
+        Ok(())
+    }
 }
 
 /// How this node enters the `spine://` namespace.
@@ -441,6 +552,7 @@ impl SpineConfig {
 
     pub fn validate(&self) -> anyhow::Result<()> {
         self.outbound.validate()?;
+        self.authority.validate()?;
         self.namespace
             .connection_limits()
             .validate()
@@ -771,12 +883,110 @@ seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
     }
 
     #[test]
+    fn authority_defaults_to_off_and_an_absent_section_is_the_default() {
+        let config: SpineConfig = toml::from_str("[server]\nport = 3000\n").unwrap();
+        assert_eq!(config.authority.mode, AuthorityMode::Off);
+        assert!(config.authority.trusted_roots.is_empty());
+        assert_eq!(config.authority.skew_secs, 0);
+        assert_eq!(config.authority.max_invocation_age_secs, 60);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn an_authority_section_parses() {
+        let key = "ab".repeat(32);
+        let text = format!(
+            "[authority]\nmode = \"off\"\ntrusted_roots = [\"{key}\"]\nskew_secs = 30\n\
+             max_invocation_age_secs = 120\n"
+        );
+        let config: SpineConfig = toml::from_str(&text).unwrap();
+        assert_eq!(config.authority.mode, AuthorityMode::Off);
+        assert_eq!(config.authority.skew_secs, 30);
+        assert_eq!(config.authority.max_invocation_age_secs, 120);
+        assert_eq!(
+            config.authority.trusted_root_keys().unwrap(),
+            vec![[0xabu8; 32]]
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    /// Enforcement is not connected to the wire, so a configuration that asks
+    /// for it must stop the daemon instead of starting one that enforces
+    /// nothing.
+    #[test]
+    fn authority_mode_required_is_refused_in_this_build() {
+        let config: SpineConfig = toml::from_str("[authority]\nmode = \"required\"\n").unwrap();
+        assert_eq!(config.authority.mode, AuthorityMode::Required);
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("authority.mode"), "{error}");
+        assert!(error.contains("not available in this build"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_authority_mode_or_key_does_not_parse() {
+        assert!(toml::from_str::<SpineConfig>("[authority]\nmode = \"on\"\n").is_err());
+        assert!(toml::from_str::<SpineConfig>("[authority]\nmode = \"Required\"\n").is_err());
+        assert!(toml::from_str::<SpineConfig>("[authority]\nmod = \"off\"\n").is_err());
+    }
+
+    #[test]
+    fn authority_trusted_roots_must_be_distinct_hex_keys() {
+        let good = "0f".repeat(32);
+        for bad in [
+            "not-hex".to_string(),
+            "ab".repeat(31),
+            "ab".repeat(33),
+            format!("+f{}", "ab".repeat(31)),
+            format!("zz{}", "ab".repeat(31)),
+            String::new(),
+        ] {
+            let config = SpineConfig {
+                authority: AuthorityConfig {
+                    trusted_roots: vec![good.clone(), bad.clone()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("authority.trusted_roots"), "{error}");
+            assert!(bad.is_empty() || !error.contains(&bad), "{error}");
+        }
+        let twice = SpineConfig {
+            authority: AuthorityConfig {
+                trusted_roots: vec![good.clone(), good.to_uppercase()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(twice.validate().is_err());
+    }
+
+    #[test]
+    fn authority_skew_and_invocation_age_are_bounded() {
+        let with = |skew_secs: u64, max_invocation_age_secs: u64| SpineConfig {
+            authority: AuthorityConfig {
+                skew_secs,
+                max_invocation_age_secs,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let clamp = spine_authority::MAX_CLOCK_SKEW_SECS;
+        assert!(with(clamp, 60).validate().is_ok());
+        assert!(with(clamp + 1, 60).validate().is_err());
+        assert!(with(0, 0).validate().is_err());
+        assert!(with(0, MAX_INVOCATION_AGE_SECS).validate().is_ok());
+        assert!(with(0, MAX_INVOCATION_AGE_SECS + 1).validate().is_err());
+    }
+
+    #[test]
     fn test_toml_roundtrip() {
         let config = SpineConfig::default();
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: SpineConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.server.port, config.server.port);
         assert_eq!(deserialized.server.max_sessions, config.server.max_sessions);
+        assert_eq!(deserialized.authority.mode, AuthorityMode::Off);
     }
 
     #[test]

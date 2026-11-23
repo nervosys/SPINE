@@ -4292,6 +4292,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "spine-agent",
+ "spine-authority",
  "spine-cluster",
  "spine-human",
  "spine-mesh",
