@@ -244,7 +244,7 @@ Referenced. A blob is not evictable while a record stored with it has not expire
 
 Delete. `ResourceStore::delete(owner, hash)` removes a blob only for the publisher recorded when it was stored, even if a name still refers to it. It is not on the wire.
 
-Publisher identity. The daemon currently calls `put_tracked`, which stores for the fixed `LOCAL_OWNER`, so until its call sites pass a publisher all blobs share one share. Publisher keys are free to mint; the per-publisher share limits one key, not one client.
+Publisher identity. Since 2026-11-23 the daemon stores each blob for the key that signed its record (`publisher_of`), and lists the content hashes of its currently published, unexpired records as referenced, so a renewed record keeps its blob. Publisher keys are free to mint; the per-publisher share limits one key, not one client.
 
 ## 5. Typed links
 

@@ -437,7 +437,7 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with
 | `record_expired` | `publish_name` or `publish_resource`: the record is past its expiry | `main.rs` `handle_command` |
 | `malformed_record` | `publish_name` or `publish_resource`: `record` does not decode as a name record | `main.rs` `handle_command` |
 | `record_rejected` | `publish_name`: the store refused the record (signature or policy); `publish_resource`: the same after the bytes were stored (a blob this request added is removed) | `main.rs` `handle_command` |
-| `publish_failed` | `publish_resource`: the store refused the blob (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, no room under the accounted-byte quota after eviction; storage rules in 04-objects.md section 4.4) | `main.rs`; `resources.rs` `put_tracked`, which stores for the fixed local owner |
+| `publish_failed` | `publish_resource`: the store refused the blob (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, no room under the accounted-byte quota after eviction; storage rules in 04-objects.md section 4.4) | `main.rs`; `resources.rs` `put_as`, which stores for the key that signed the record |
 | `resource_not_found` | `read_resource`: no blob for the hash | `main.rs` `handle_command` |
 | `invalid_seed` | `crawl_names`: `seed` does not parse as a name | `main.rs` `handle_command` |
 | `invalid_args` | `tool_call` of a known tool: `args.text` is not text or exceeds 1 MiB (the tool name is checked first) | `tools.rs` `invoke` |

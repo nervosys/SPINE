@@ -673,7 +673,12 @@ async fn handle_command(
                 }
                 let (hash, created) = state
                     .resources
-                    .put_tracked(&record, &content_type, &data)
+                    .put_as(
+                        spine_core::resources::publisher_of(&record),
+                        &record,
+                        &content_type,
+                        &data,
+                    )
                     .map_err(|e| fail(ERR_PUBLISH_FAILED, e.to_string()))?;
                 if let Err(e) = state.names.publish(record.clone()) {
                     // Drop the blob only if this request added it; an earlier
@@ -1261,7 +1266,22 @@ async fn main() -> Result<()> {
     }
     namespace::spawn_owner_renewal(names.clone(), mesh_names.clone(), &config.namespace)?;
     let state = Arc::new(BrowserState {
-        resources: spine_core::resources::ResourceStore::new(name_backend),
+        // A blob named by a record this node currently publishes is never
+        // evicted, including after the record is renewed.
+        resources: spine_core::resources::ResourceStore::new(name_backend).with_reference_source({
+            let names = names.clone();
+            move || {
+                let now = unix_now();
+                let records = names
+                    .published_records()
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                Ok(records
+                    .into_iter()
+                    .filter(|record| !record.is_expired(now))
+                    .filter_map(|record| record.content_hash)
+                    .collect())
+            }
+        }),
         sessions: DashMap::new(),
         session_gate: Default::default(),
         snapshot_gate: Mutex::new(()),
