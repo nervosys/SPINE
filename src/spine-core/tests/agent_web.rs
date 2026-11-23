@@ -1137,11 +1137,24 @@ async fn shutdown_during_a_command_answers_it_then_closes() {
             )
             .await
             .expect("probe handshake deadline");
-            if let Err(error) = attempt {
-                assert!(
-                    format!("{error:#}").contains("shutting_down"),
-                    "unexpected probe failure: {error:#}"
-                );
+            // The daemon completes the handshake and then sends the CLOSE, so
+            // the probe reads one frame to see it. Before the drain begins the
+            // daemon simply waits for a request and the read times out.
+            let mut probe = match attempt {
+                Ok(probe) => probe,
+                Err(error) => {
+                    assert!(
+                        format!("{error:#}").contains("shutting_down"),
+                        "unexpected probe failure: {error:#}"
+                    );
+                    draining = true;
+                    break;
+                }
+            };
+            if let Ok(Err(spine_protocol::connection::ConnectionError::Closed(close))) =
+                tokio::time::timeout(Duration::from_millis(500), probe.recv()).await
+            {
+                assert_eq!(close.code, "shutting_down");
                 draining = true;
                 break;
             }
