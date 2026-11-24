@@ -244,7 +244,7 @@ mod tests {
     fn an_entry_costs_its_bytes_plus_the_overhead() {
         assert_eq!(entry_cost(0), KNOWLEDGE_ENTRY_OVERHEAD_BYTES);
         assert_eq!(entry_cost(10), 10 + KNOWLEDGE_ENTRY_OVERHEAD_BYTES);
-        assert!(MAX_KNOWLEDGE_BYTES <= crate::session_store::MAX_SNAPSHOT_BYTES / 2);
+        const { assert!(MAX_KNOWLEDGE_BYTES <= crate::session_store::MAX_SNAPSHOT_BYTES / 2) };
     }
 
     #[test]
