@@ -935,8 +935,8 @@ mod tests {
         (addr, certificate, rx)
     }
 
-    #[test]
-    fn invalid_limits_are_refused_by_the_builder() {
+    #[tokio::test]
+    async fn invalid_limits_are_refused_by_the_builder() {
         install_crypto_provider();
         let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
         let zero = ConnectionLimits {
