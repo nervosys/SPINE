@@ -454,6 +454,11 @@ where
         }
     }
 
+    /// The capabilities the session's current binary declared, as the
+    /// program listed them. This is what the program asked for, not a
+    /// grant: the daemon checks each action the program requests against
+    /// the list (`network` for a navigation, `search`, `storage`), and an
+    /// action without its capability is refused with `capability_denied`.
     pub async fn get_binary_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
         let value: serde_json::Value = self
             .send_request(BrowserCommand::GetBinaryCapabilities)

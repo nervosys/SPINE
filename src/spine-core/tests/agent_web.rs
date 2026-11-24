@@ -81,6 +81,138 @@ async fn native_navigation_enforces_outbound_policy() {
     }).await.expect("native outbound acceptance deadline exceeded");
 }
 
+/// `execute_binary` confinement: an action needs the capability it names, a
+/// program that exceeds the host budgets is refused and the daemon keeps
+/// serving, and a program's knowledge write lands under its own session.
+#[tokio::test]
+async fn execute_binary_is_confined() {
+    use spine_protocol::{Instruction, ProtocolBinOp, SpineBinary};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn program(instructions: Vec<Instruction>, capabilities: &[&str]) -> SpineBinary {
+        SpineBinary {
+            instructions,
+            data: Vec::new(),
+            render_start: 0,
+            exported_functions: std::collections::BTreeMap::new(),
+            capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+    let step = std::time::Duration::from_secs(30);
+
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        // A listener that counts the connections that reach it.
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let allowed = format!("http://{}", http.local_addr().unwrap());
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = http.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n<h1>hello</h1>")
+                    .await;
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.outbound.internal_origins = vec![allowed.clone()];
+        std::fs::write(dir.path().join("spine.toml"), toml::to_string(&config).unwrap()).unwrap();
+        let mut node = launch(dir.path());
+        let mut client = connect(&mut node, dir.path(), origin).await;
+
+        // A navigate action without the "network" capability is refused, and
+        // nothing is fetched.
+        let navigate = vec![
+            Instruction::Push(serde_json::json!(allowed)),
+            Instruction::NavigateFromStack,
+        ];
+        let denied = tokio::time::timeout(step, client.execute_binary(program(navigate.clone(), &["search"])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap_err();
+        assert_eq!(code_of(&denied), "capability_denied");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "a refused program reached the network");
+        // The same program with the capability declared does fetch.
+        tokio::time::timeout(step, client.execute_binary(program(navigate, &["network"])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap();
+        wait_until("the declared navigation to reach the listener", || {
+            hits.load(Ordering::SeqCst) >= 1
+        })
+        .await;
+
+        // A program whose strings double is refused with the execution
+        // failure code, quickly, and the daemon still answers.
+        let mut doubling = vec![
+            Instruction::Push(serde_json::json!("a")),
+            Instruction::Store("x".into()),
+        ];
+        for _ in 0..40 {
+            doubling.push(Instruction::Load("x".into()));
+            doubling.push(Instruction::Load("x".into()));
+            doubling.push(Instruction::BinOp(ProtocolBinOp::Concat));
+            doubling.push(Instruction::Store("x".into()));
+        }
+        let refused = tokio::time::timeout(step, client.execute_binary(program(doubling, &[])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap_err();
+        assert_eq!(code_of(&refused), "execution_failed");
+        let caps = tokio::time::timeout(step, client.get_binary_capabilities())
+            .await
+            .expect("get_binary_capabilities deadline")
+            .unwrap();
+        assert_eq!(
+            caps,
+            vec!["network".to_string()],
+            "a refused program must not replace the session's binary"
+        );
+
+        // A program's knowledge write lands under its own session: the other
+        // connection does not see it, whatever key the program chose.
+        let store = vec![
+            Instruction::Push(serde_json::json!("shared-key")),
+            Instruction::Push(serde_json::json!({"v": 1})),
+            Instruction::StoreKnowledgeFromStack { tags: vec!["t".into()] },
+        ];
+        tokio::time::timeout(step, client.execute_binary(program(store, &["storage"])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap();
+        let mine = tokio::time::timeout(step, client.query_knowledge("", vec![], 10))
+            .await
+            .expect("query_knowledge deadline")
+            .unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0]["key"], "shared-key");
+        let mut other = connect(&mut node, dir.path(), origin).await;
+        for query in ["", "shared-key"] {
+            let theirs = tokio::time::timeout(step, other.query_knowledge(query, vec![], 10))
+                .await
+                .expect("query_knowledge deadline")
+                .unwrap();
+            assert!(theirs.is_empty(), "another session saw the program's entry");
+        }
+        server.abort();
+    })
+    .await
+    .expect("execute_binary confinement deadline exceeded");
+}
+
 /// Shutdown is announced: an idle established connection receives
 /// `CLOSE(shutting_down)` instead of a bare end of stream.
 #[tokio::test]

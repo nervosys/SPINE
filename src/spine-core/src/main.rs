@@ -13,9 +13,9 @@ use spine_protocol::body::{
     ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_EXECUTION_FAILED, ERR_INTERNAL,
     ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED, ERR_LOOKUP_FAILED,
     ERR_LOOKUP_UNAVAILABLE, ERR_MALFORMED_RECORD, ERR_MESH_CALL_FAILED, ERR_NAMESPACE_UNAVAILABLE,
-    ERR_NO_PAGE, ERR_PARSE_ERROR, ERR_PUBLISH_FAILED, ERR_RATE_LIMIT, ERR_RECORD_EXPIRED,
-    ERR_RECORD_REJECTED, ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY, ERR_SESSION_EXPIRED,
-    ERR_SESSION_NOT_FOUND,
+    ERR_NO_PAGE, ERR_OVERLOADED, ERR_PARSE_ERROR, ERR_PUBLISH_FAILED, ERR_RATE_LIMIT,
+    ERR_RECORD_EXPIRED, ERR_RECORD_REJECTED, ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY,
+    ERR_SESSION_EXPIRED, ERR_SESSION_NOT_FOUND,
 };
 use spine_protocol::connection::{
     response_ok_body, Connection, ConnectionError, ConnectionReader, ConnectionWriter, Incoming,
@@ -156,8 +156,11 @@ struct BrowserState {
     cluster: Mutex<ClusterNode>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
-    /// Cached WasmRuntime (expensive to create, safe to reuse)
-    wasm_runtime: spine_wasm::WasmRuntime,
+    /// Cached WasmRuntime (expensive to create, safe to reuse). Shared
+    /// by `Arc` so a program can run on a blocking thread.
+    wasm_runtime: Arc<spine_wasm::WasmRuntime>,
+    /// Process-wide permits for programs compiling and running at once.
+    execute_permits: Arc<tokio::sync::Semaphore>,
     /// Shared native connection admission, including unfinished handshakes.
     connections: Arc<spine_core::connections::ConnectionBudget>,
     /// Server start time for uptime calculation
@@ -587,6 +590,23 @@ impl serde::Serialize for Output {
 /// A command's answer: the `ok` value, or the `err` to send. The frame
 /// header's request id correlates it; nothing here carries an id.
 type Answer = Result<Output, WireError>;
+
+/// Programs compiling and running at once, process-wide. Each runs on a
+/// blocking thread and can use a core for a while, so the pool is small.
+const EXECUTE_CONCURRENCY: usize = 4;
+
+/// How long `execute_binary` waits for an executor permit before it
+/// answers `overloaded`.
+const EXECUTE_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Reactive state variables one session may hold.
+const MAX_SESSION_STATE_ENTRIES: usize = 256;
+
+/// Knowledge entries one session may hold.
+const MAX_KNOWLEDGE_ENTRIES_PER_SESSION: usize = 1024;
+
+/// Navigations (fetches) one `execute_binary` may request.
+const MAX_NAVIGATIONS_PER_EXECUTE: usize = 4;
 
 /// An `err` with a code from `spine_protocol::body`.
 fn fail(code: &str, message: String) -> WireError {
@@ -1057,19 +1077,123 @@ async fn handle_command(
                 }
             }
 
+            // Compiling and running is CPU work that cannot be cancelled
+            // once started, so it runs on a blocking thread behind a
+            // process-wide permit, and a saturated executor answers
+            // `overloaded` instead of queueing. The bound on how long a
+            // run takes is the fuel plus the host budgets inside
+            // `spine_wasm` (see its `MAX_*` constants), not a timeout.
+            let permit = match tokio::time::timeout(
+                EXECUTE_PERMIT_WAIT,
+                state.execute_permits.clone().acquire_owned(),
+            )
+            .await
+            {
+                Ok(Ok(permit)) => permit,
+                _ => {
+                    return Err(fail(
+                        ERR_OVERLOADED,
+                        "the executor is busy; retry later".to_string(),
+                    ));
+                }
+            };
+            let runtime = state.wasm_runtime.clone();
+            let program = bin.clone();
+            let ran = tokio::task::spawn_blocking(move || {
+                // The permit is held until the work ends, even if the
+                // client has gone.
+                let _permit = permit;
+                runtime.execute(&program)
+            })
+            .await;
+
+            // A program that fails to compile, instantiate or run is the
+            // client's error, not the daemon's: answer it and keep serving.
+            let result = match ran {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
+                    return Err(fail(ERR_EXECUTION_FAILED, format!("execution failed: {e}")));
+                }
+                Err(_) => {
+                    return Err(fail(
+                        ERR_EXECUTION_FAILED,
+                        "execution failed: the executor stopped".to_string(),
+                    ));
+                }
+            };
+
+            // Everything the program asked for is checked here, before
+            // any of it is carried out: a refusal leaves no partial effect.
+            // The declared capabilities are what the action needs, not a
+            // list the daemon grants.
+            let declares = |cap: &str| bin.capabilities.iter().any(|c| c == cap);
+            let mut navigations = 0usize;
+            let mut stores = 0usize;
+            for action in &result.actions {
+                let needs = match action {
+                    spine_wasm::WasmAction::Navigate(_) => {
+                        navigations += 1;
+                        Some("network")
+                    }
+                    spine_wasm::WasmAction::Search(_) => Some("search"),
+                    spine_wasm::WasmAction::StoreKnowledge { .. } => {
+                        stores += 1;
+                        Some("storage")
+                    }
+                    spine_wasm::WasmAction::QueryKnowledge { .. }
+                    | spine_wasm::WasmAction::Reason(_) => None,
+                };
+                if let Some(cap) = needs {
+                    if !declares(cap) {
+                        return Err(fail(
+                            ERR_CAPABILITY_DENIED,
+                            format!("the program requested an action that needs the \"{cap}\" capability, which it did not declare"),
+                        ));
+                    }
+                }
+            }
+            if navigations > MAX_NAVIGATIONS_PER_EXECUTE {
+                return Err(fail(
+                    ERR_EXECUTION_FAILED,
+                    format!(
+                        "execution failed: {navigations} navigations requested, at most {MAX_NAVIGATIONS_PER_EXECUTE} allowed"
+                    ),
+                ));
+            }
+            if let Some(session) = state.sessions.get(session_id) {
+                let new_names: std::collections::HashSet<&str> = result
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e.name.as_str(), "state_declared" | "state_updated"))
+                    .filter_map(|e| e.payload.get("name").and_then(|v| v.as_str()))
+                    .filter(|n| !session.state.contains_key(*n))
+                    .collect();
+                if session.state.len() + new_names.len() > MAX_SESSION_STATE_ENTRIES {
+                    return Err(fail(
+                        ERR_EXECUTION_FAILED,
+                        format!(
+                            "execution failed: a session may hold at most {MAX_SESSION_STATE_ENTRIES} state variables"
+                        ),
+                    ));
+                }
+            }
+            let held = state
+                .knowledge_base
+                .get(session_id)
+                .map_or(0, |entries| entries.len());
+            if held + stores > MAX_KNOWLEDGE_ENTRIES_PER_SESSION {
+                return Err(fail(
+                    ERR_EXECUTION_FAILED,
+                    format!(
+                        "execution failed: a session may hold at most {MAX_KNOWLEDGE_ENTRIES_PER_SESSION} knowledge entries"
+                    ),
+                ));
+            }
+
             // Store binary in session for reactivity
             if let Some(mut session) = state.sessions.get_mut(session_id) {
                 session.current_binary = Some(bin.clone());
             }
-
-            // A program that fails to compile, instantiate or run is the
-            // client's error, not the daemon's: answer it and keep serving.
-            let result = match state.wasm_runtime.execute(&bin) {
-                Ok(result) => result,
-                Err(e) => {
-                    return Err(fail(ERR_EXECUTION_FAILED, format!("execution failed: {e}")));
-                }
-            };
 
             // Update session VDOM and compute patches
             let new_vdom = VirtualDom::from_wasm(&result);
@@ -1128,7 +1252,10 @@ async fn handle_command(
                     spine_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
                         info!("WASM requested knowledge storage");
                         if let Some(_session) = state.sessions.get_mut(session_id) {
-                            // Store in local KB
+                            // Store in local KB, under the session's own id
+                            // exactly as the `store_knowledge` command does.
+                            // The program's key stays in the entry; it does
+                            // not choose which entry list is written.
                             let entry = KnowledgeEntry {
                                 key: key.clone(),
                                 value: value.clone(),
@@ -1141,7 +1268,7 @@ async fn handle_command(
                             };
                             state
                                 .knowledge_base
-                                .entry(key.clone())
+                                .entry(session_id.to_string())
                                 .or_default()
                                 .push(entry);
 
@@ -1233,6 +1360,8 @@ async fn handle_command(
             Ok(Output::Json(serde_json::json!({ "results": results })))
         }
         BrowserCommand::GetBinaryCapabilities => {
+            // What the current binary declared; a declaration the daemon
+            // checks actions against, not a grant.
             let capabilities = state
                 .sessions
                 .get(session_id)
@@ -1372,7 +1501,8 @@ async fn main() -> Result<()> {
         #[cfg(feature = "research")]
         cluster: Mutex::new(cluster_node),
         rate_limits: DashMap::new(),
-        wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
+        wasm_runtime: Arc::new(WasmRuntime::new().expect("Failed to initialize WASM runtime")),
+        execute_permits: Arc::new(tokio::sync::Semaphore::new(EXECUTE_CONCURRENCY)),
         connections: spine_core::connections::ConnectionBudget::new(
             config.server.max_connections,
             config.server.max_connections_per_ip,
