@@ -1,386 +1,184 @@
-# SPINE v1.2.1 Security Audit
-
-> **Note, 2026-11-21:** On this date the native client to daemon wire became spine-wire v1 (`docs/spec/00-wire.md`, `CHANGELOG.md` Unreleased). Removed since this text was written: the speculative layer, protocol morphing and padding, the Chameleon key and latent AEAD on the native path (research code is in `research/spine-protocol-research`), the pre-shared-key AES-GCM layer, `ProtocolHandler`, the `SP` header, and many commands. Findings about the Chameleon encoder, the pre-shared-key AEAD layer or the old frame concern code that is no longer on the native path; the audit does not cover spine-wire v1.
-
-## Current checkout boundary — 2026-10-02
-
-The audit and closure statements below describe historical releases. They do not certify the current 30-crate checkout or its new development wire operations. Current dependency checks, implementation evidence, platform scope, and remaining gates are maintained in [the completion report](docs/COMPLETION_STATUS.md).
-
-The local continuation fixes missing-certificate fallback, payload/token logging, stale pooled mesh writers, and the new task service's transport identity binding. Signed task messages now require a handshake pinned to their recipient key; incoming application messages must match the authenticated connection's caller. Regressions cover wrong recipient pins, encrypted/plaintext connection closure, ownership, unauthorized peers, idempotence, cancellation, and restart recovery. Legacy timer-based task success and automatic confidence votes are removed.
-
-The continuation additionally bounds TCP mesh and native origin admission, idle/frame/queue/write waits, contact registries, and native decompression. Explicit mTLS and CRL policy applies to native TCP and WSS; auxiliary cluster and diagnostics listeners retain a trusted-network boundary. These are component bounds, and optional mesh transport admission and sustained resource measurements remain open.
-
-Independent handshake review, native multi-user session ownership, historical credential revocation, complete secret/history review, hardware verification, and cross-platform release acceptance remain open. No FIPS/CMMC certification, complete memory erasure, production availability, or general-purpose remote execution is established by these tests. The supported candidate uses trusted local single-user origins and explicitly authorized read-only task workers.
-
-| Field          | Value                                          |
-|----------------|------------------------------------------------|
-| Audit date     | 2026-06-04 (refreshed at v1.3.0)               |
-| Target version | v1.3.0                                         |
-| Frameworks     | CVE / RustSec, NIST FIPS 140-3 + SP 800-171, MITRE ATT&CK, CMMC 2.0 |
-| Auditor        | Internal review, pre-public-release sweep      |
-| Scope          | Entire `master` branch, all 28 workspace crates |
-
-v1.3.0 closes every BLOCKER and HIGH/MEDIUM residual from the v1.2.1
-audit. See `§ 6` for the closed-vs-open table.
-
-This document captures the audit that gated the v1.2.1 release.
-Findings are graded **BLOCKER / HIGH / MEDIUM / LOW / INFO**. Every
-BLOCKER was fixed before tagging; HIGH and below are tracked in
-`CHANGELOG.md` and `SECURITY.md § Known Hardening Boundaries`.
-
----
-
-## 1. CVE / RustSec dependency pass
-
-Tool: `cargo audit` against the RustSec advisory database (1,105
-advisories at the time of audit).
-
-### Findings
-
-| ID                | Severity | Status     | Notes                                  |
-|-------------------|----------|------------|----------------------------------------|
-| RUSTSEC-2024-0437 | HIGH     | **CLEARED** in v1.0.1 via `prometheus` 0.13→0.14 (protobuf 2.x→3.x) |
-| 15× wasmtime CVEs | HIGH     | **CLEARED** in v1.0.1 via `wasmtime` 27→36 |
-| RUSTSEC-2025-0012 (`backoff`) | INFO | accepted — unmaintained transitive under `kube-runtime`; no exploit |
-| RUSTSEC-2025-0141 (`bincode 1.x`) | INFO | accepted — `bincode 2.x` migration tracked separately |
-| RUSTSEC-2024-0388 (`derivative`) | INFO | accepted — transitive under `zbus`/`kube-runtime` |
-| RUSTSEC-2025-0057 (`fxhash`) | INFO | accepted — transitive under `selectors` + `wasmtime` |
-| RUSTSEC-2024-0384 (`instant`) | INFO | accepted — transitive under `fastrand 1.x` |
-| RUSTSEC-2025-0119 (`number_prefix`) | INFO | accepted — transitive under `indicatif` |
-| RUSTSEC-2024-0436 (`paste`) | INFO | accepted — transitive under `metal` / `wgpu-hal` |
-| RUSTSEC-2024-0370 (`proc-macro-error`) | INFO | accepted — transitive under `utoipa-gen` / `tabled_derive` |
-| RUSTSEC-2025-0134 (`rustls-pemfile`) | INFO | accepted — transitive under `kube-client` and direct `rustls-pemfile = "2"` |
-
-**Net status**: `cargo audit` returns **0 vulnerabilities**. All
-remaining entries are `unmaintained` warnings, not exploitable
-vulnerabilities. Each has no patched line available because the
-upstream crate has been EOL'd without a replacement that the broader
-Rust ecosystem agrees on. We track them and will bump when patched
-upstream lines exist.
-
----
-
-## 2. NIST FIPS 140-3 / SP 800-171 cryptographic surface
-
-For each primitive: which FIPS standard names it (if any), and whether
-the Rust crate we use is a **FIPS-validated cryptographic module**
-(very few are — validation is a per-binary certification process).
-
-| Primitive          | FIPS spec     | Approved? | Rust crate           | Module validated? |
-|--------------------|---------------|-----------|----------------------|-------------------|
-| AES-256-GCM        | FIPS 197 + SP 800-38D | ✅ Approved | `aes-gcm = "0.10"`   | ❌ Not validated  |
-| SHA-256 / SHA-512  | FIPS 180-4    | ✅ Approved | `sha2 = "0.10"`      | ❌ Not validated  |
-| HMAC-SHA-256       | FIPS 198-1    | ✅ Approved | `hmac = "0.12"`      | ❌ Not validated  |
-| HKDF-SHA-256       | SP 800-56C    | ✅ Approved | `hkdf = "0.12"`      | ❌ Not validated  |
-| Ed25519            | FIPS 186-5 (Feb 2023) | ✅ Approved | `ed25519-dalek = "2"` | ❌ Not validated  |
-| ECDSA P-256        | FIPS 186-5    | ✅ Approved | `rustls-webpki`      | ❌ Not validated (ring is, see below) |
-| ML-KEM-768 / 1024  | FIPS 203 (Aug 2024) | ✅ Approved | `ml-kem` (RustCrypto) | ❌ Not validated  |
-| TLS 1.3            | NIST SP 800-52 Rev. 2 | ✅ Approved | `rustls = "0.23"`    | ❌ rustls itself is not FIPS-validated; the underlying `ring` backend has separate FIPS submissions |
-| **X3DH**           | —             | ❌ Not a NIST spec (Signal protocol) | custom  | n/a |
-| **Custom RLWE lattice in `spine-crypto`** | — | ❌ Research-grade only | in-tree | n/a |
-| **Titans speculative decoding** | — | ❌ Not crypto at all (ML technique) | in-tree | n/a |
-| PRNG — message keys, nonces | SP 800-90A (HMAC_DRBG / CTR_DRBG / Hash_DRBG) | We use `rand::rngs::StdRng` (ChaCha12 — **not** SP 800-90A) | `rand = "0.8"` | ❌ Not validated |
-
-### Finding: the Chameleon layer keys itself with 64 bits — *fixed in Phases 47 and 48*
-
-`ChameleonKey::new(secret: &[u8; 32])` — the type `enable_chameleon` installs —
-reduces the 256-bit shared secret to a `u64` before using it:
-
-```rust
-let mut hasher = DefaultHasher::new();
-secret.hash(&mut hasher);
-let seed = hasher.finish();          // 64 bits, from a non-cryptographic hash
-```
-
-That `seed` is the entire keying material for the neural encoder and for the
-lattice key evolution beneath it. `DefaultHasher::new()` is SipHash with fixed
-keys, so the derivation is deterministic across processes and machines: the same
-secret always yields the same seed, and an attacker searching the seed space
-faces at most 2^64 — far below the 256-bit secret it came from, and below the
-strength of every other primitive in the table above.
-
-**Severity depends on which entry point is used.**
-
-- `enable_chameleon_aead` derives an AES-256-GCM key by HKDF-SHA-256 over the
-  full 32-byte secret, and that is where confidentiality actually rests. The
-  finding weakens a defense-in-depth layer without breaking the guarantee.
-- `enable_chameleon` alone has no AEAD beneath it. Whatever protection it offers
-  is the ≤64-bit-keyed encoding, which should be described as obfuscation and
-  not as encryption. Three of the shipped examples use this form.
-
-The same pattern appears in `ProtocolMorphology::new_keyed`, which takes
-`u64::from_le_bytes(secret[0..8])` — the first 64 bits of the secret — though it
-also receives the full secret alongside it.
-
-This is the same species of defect as the handshake's seeded RNG (see
-`HANDSHAKE-REVIEW.md` §6): the primitives are conventional and the arrangement is
-standard, and what is wrong is the entropy fed in. It is worth assuming there are
-more of these and looking for them specifically.
-
-**Phase 47 replaced `DefaultHasher` with HKDF-SHA-256**, under a distinct info
-string so this seed is separated from the AEAD key derived from the same secret.
-That removes the reliance on a HashMap hasher for key material — and removes a
-second problem found while fixing the first: the standard library does not
-specify which algorithm `DefaultHasher` uses and may change it between Rust
-releases, so two peers built with different compilers could have derived
-different seeds from the same shared secret and silently failed to interoperate.
-
-**Phase 48 lifted the 64-bit ceiling.** It was never in the derivation:
-`NeuralLatentEncoder::new` takes `seed: u64`, so 64 bits was all that could reach
-the weights however carefully the seed was computed. `new_keyed` seeds the
-generator from all 32 bytes, and `ChameleonKey` passes the secret straight
-through. The old constructor remains for reproducible model initialisation and
-fixtures, which is what a short seed is genuinely for.
-
-Per-message morph seeds are still `u64` and should stay that way. They are
-diversifiers derived from message hashes rather than key material, so widening
-them would imitate the fix rather than apply it.
-
-The lattice key evolution in `spine-crypto` also takes a `u64` seed, and its
-output feeds a `u64` morph seed regardless, so widening it would not raise the
-strength of anything downstream. That is a design limit of the moving-target
-layer, not a defect in this derivation.
-
-Note that Phase 47 is a breaking change to the Chameleon layer: the derived seed
-differs from the old one, so peers must be upgraded together.
-
-### Finding: the latent-AEAD path reuses one key across every session — *fixed in Phase 45*
-
-`enable_chameleon_aead` derives its AES-256-GCM key with
-
-```rust
-let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, &secret);   // salt = None
-hk.expand(b"spine-latent-aead-key", &mut aes_key)
-```
-
-There is no salt and no per-session input, so **the key is a pure function of the
-shared secret**: every session between the same pair, forever, uses the same
-AES-256-GCM key. That is sound on its own — provided nonces never repeat under
-it. The nonce is
-
-```
-nonce = counter (8 bytes, starts at 0) || session_nonce (4 bytes, random)
-```
-
-`session_nonce` is 32 bits from the OS CSPRNG, and the counter restarts at zero
-in every session. So the only thing preventing two sessions from issuing
-identical `(key, nonce)` pairs is a 32-bit random value.
-
-By the birthday bound, after *N* sessions the probability that two share a
-`session_nonce` is about `1 − exp(−N² / 2^33)`: roughly **39% after 65,536
-sessions**, and about 1% after 9,000. A colliding pair immediately produces
-repeated `(key, nonce)` for every message index they have in common.
-
-Nonce reuse is the failure mode AES-GCM does not survive. It leaks the XOR of
-the two plaintexts, and — because GCM's authentication is polynomial-based —
-also permits recovery of the authentication subkey, which turns confidentiality
-loss into the ability to forge. This is a genuine break for any deployment that
-reuses a shared secret across many connections, which is the deployment the API
-invites: `enable_chameleon_aead(secret)` takes a long-term secret and says
-nothing about rotation.
-
-**Fixed in Phase 45** by drawing the whole 96-bit nonce from the OS CSPRNG per
-message. The birthday bound is then over all messages under the key rather than
-over a 32-bit session value — about 2^-33 after 2^32 messages, the regime NIST
-SP 800-38D sanctions for random IVs — and the session dimension disappears,
-which is what matters given the key never rotates.
-
-An earlier draft of this document claimed the fix required a wire-format change.
-That was wrong, and worth correcting rather than quietly deleting, because it is
-the kind of error that leaves a serious defect unfixed behind a decision nobody
-needed to make. The full nonce has always been prepended to the ciphertext and
-the receiver has always read it from there, so how the sender chooses those
-twelve bytes was only ever a sender-side decision: old and new senders
-interoperate with any receiver.
-
-The alternative fix — giving HKDF a transmitted per-session salt, making the key
-itself per-session — would have changed the format, and remains the better
-long-term shape if a handshake is ever added to this path.
-
-**Note the contrast with the mesh handshake in `spine-crypto`**, which gets this
-right for the reason described in `HANDSHAKE-REVIEW.md` §3: keys are derived per
-connection from a transcript that includes a fresh ephemeral key, and each
-direction gets its own key so the two counters cannot collide. The defect is in
-the older `spine-protocol` AEAD path, not in the mesh channel.
-
-### Finding: the record store was unbounded and accepted anything signed — *fixed in Phase 44*
-
-`RecordStore` has no size limit and no eviction other than the TTL sweep, and
-`NameService::publish` admits any record whose signature verifies. Verification
-proves the publisher holds the key for the name — it does not prove the record
-is worth storing, and a `did:` name *is* a freshly generated Ed25519 key, so an
-attacker can mint unlimited valid names and announce a record under each. Every
-receiving node stores all of them until their TTLs run out, and the publisher
-chooses the TTL.
-
-There is also no admission control on *locality*. A node stores announcements
-for keys arbitrarily far from its own keyspace position, even though a lookup
-for such a key would never route to it — so the copies are pure cost.
-
-**Phase 40 amplified this.** Before replication, one announcement reached
-whatever peers the publisher happened to be connected to. Now a publish is
-deliberately pushed to the K closest nodes, so a single record costs K stores
-instead of one, and the attack gets a factor of K for free.
-
-**Fixed in Phase 44**, and it needed no wire-format change. `RecordStore` now
-holds at most `DEFAULT_CAPACITY` records and evicts the key furthest from this
-node's own position; a record further away than everything held is refused
-rather than swapped in, since otherwise a stream of distant names would evict
-exactly the records the node is responsible for. `NameService::accept_announcement`
-applies the responsibility check to records arriving from the network, while
-`publish` stays unconditional so a node can still serve the names it publishes
-itself. Both are the ordinary Kademlia discipline — a node keeps what it is
-near — rather than policy invented for this codebase.
-
-Note that the HTTP surface is not the exposure here: `/v1/names/publish` sits
-under the gateway's bearer-token layer, and the gateway refuses to start unless
-a token is configured or `SPINE_GATEWAY_ALLOW_UNAUTH=1` is set explicitly. The
-mesh `NameAnnounce` path is the open one, and it is open by design — a DHT that
-required authentication to accept a signed record would not be a DHT.
-
-### Posture
-
-- **Algorithm choices are FIPS-approved by spec.** Anyone reading the
-  list of crypto names will recognise them as approved primitives.
-- **No crate in our tree is a FIPS 140-3 validated cryptographic
-  module.** Federal deployments that require FIPS 140-3 must:
-  1. Swap `ring` for `aws-lc-rs` in FIPS mode (rustls supports both).
-  2. Replace `rand::StdRng` with a SP 800-90A-validated DRBG. Note that the
-     mesh handshake no longer uses it — ephemeral ML-KEM keys come from the OS
-     CSPRNG as of Phase 42 — but the lattice and Chameleon paths still do.
-  3. Disable / remove the in-tree lattice + X3DH paths; they are
-     research-grade and not approved for protection of CUI.
-
-### Recommendation for federal deployment
-
-Build the `spine-gateway` binary with `aws-lc-rs` as the rustls
-provider and set `AWS_LC_FIPS=1` at compile time. Document the
-unvalidated paths as "off in FIPS mode" in your SSP (System Security
-Plan). This is a deployment-mode decision, not a code change.
-
----
-
-## 3. MITRE ATT&CK v15 — attack-surface map
-
-Tactics × techniques most relevant to a gateway-fronted agent stack.
-
-| Technique                                            | Surface in SPINE                                            | Status                                                                 |
-|------------------------------------------------------|-------------------------------------------------------------|------------------------------------------------------------------------|
-| **T1190** Exploit Public-Facing App                  | All 17 gateway routes                                       | **MITIGATED (this release)**: optional bearer auth via `SPINE_GATEWAY_BEARER_TOKEN`. **HIGH residual**: auth is opt-in, not on by default — deployers must enable it. |
-| **T1499.002** Endpoint DoS — Service Exhaustion Flood | POST bodies on `/v1/embeddings`, `/v1/chat/completions`, `/api/parse`, `/api/compile`, `/api/sessions/{id}/execute` | **MITIGATED (this release)**: `DefaultBodyLimit::max(8 MiB)` on the router. |
-| **T1499.004** Endpoint DoS — Application Exhaustion  | HLS programs running inside the WASM runtime                | **MITIGATED (this release)**: wasmtime `consume_fuel(true)` + 1 B fuel/exec default. Tight `loop {}` inside HLS traps. |
-| **T1059.011** Command & Scripting — HLS via `/execute` | Untrusted HLS reaches the WASM sandbox via the gateway      | **MITIGATED (pre-existing)**: no WASI / network / filesystem host functions; only 21 allowlisted DOM/state/event imports. |
-| **T1565.002** Data Manipulation — In-Flight (cross-request leakage) | Stateful `TitansLatentCodec` in process-wide registry shipped in v1.2.0 | **MITIGATED in v1.2.1**: stateless codec by default + `reset_state` upstream + regression guard `titans_stateless_codec_does_not_leak_across_calls`. |
-| **T1518.001** Software Discovery — Capability listing | `/v1/agentic/capabilities` and `/v1/agentic/codecs`         | **By design**: these endpoints exist to advertise. Risk is reconnaissance only, not exploit. Documented in `SECURITY.md`. |
-| **T1119** Automated Collection                       | `EmbeddingRequest`s flowing through the gateway             | **No mitigation needed at protocol layer**: customers' privacy policies apply once requests leave SPINE. SPINE itself does not retain inputs. |
-| **T1040** Network Sniffing                           | TLS-encrypted SPINE protocol on the wire                    | **MITIGATED**: AES-256-GCM + rustls 0.23. Plain HTTP is opt-in for the gateway; HTTPS via reverse proxy is the documented production pattern. |
-| **T1098** Account Manipulation — Agent identity      | Ed25519 keypairs in `spine-agentic`                         | **PARTIAL**: keys are signed/verified correctly, but private-key memory is held in `Vec<u8>` without `zeroize`. **MEDIUM residual** — core-dump / swap risk. Tracked. |
-| **T1496** Resource Hijacking — CPU                   | Long-running WASM programs                                  | **MITIGATED (this release)**: same fuel budget as T1499.004. |
-| **T1036** Masquerading — protocol fingerprint        | Wire format                                                 | **MITIGATED (pre-existing)**: Chameleon Protocol moving-target keys + latent basis morph per message. |
-
-### Residual ATT&CK risk
-
-1. **HIGH — T1190 with auth off**: the gateway ships with bearer auth
-   **disabled by default** (env var unset). The startup log emits a
-   WARN. Production deployments **must** set
-   `SPINE_GATEWAY_BEARER_TOKEN` or run behind an authenticating proxy.
-2. **MEDIUM — T1098 via key memory disclosure**: private-key bytes
-   not zeroized on drop. Tracked for a future minor release; a
-   `zeroize`-shaped Drop impl can be added without breaking the API.
-
----
-
-## 4. CMMC 2.0 — practice-level gap analysis
-
-### Level 1 (Foundational, 17 practices, FCI safeguarding)
-
-| Practice         | Description                          | Status                                  |
-|------------------|--------------------------------------|-----------------------------------------|
-| AC.L1-3.1.1      | Limit system access to authorized users | **MET (opt-in)** via `SPINE_GATEWAY_BEARER_TOKEN`. **HIGH residual**: must be enabled at deploy time. |
-| AC.L1-3.1.2      | Limit transactions to authorized functions | **MET** — bearer middleware gates every authenticated path. |
-| AC.L1-3.1.20     | External information system control  | Documented in `SECURITY.md § Threat Model`. |
-| AC.L1-3.1.22     | Public information control           | `SECURITY.md` calls out what is and isn't publicly exposed. |
-| IA.L1-3.5.1      | Identify users / processes           | Ed25519 DID in `spine-agentic` + bearer at gateway. |
-| IA.L1-3.5.2      | Authenticate identity                | Same as above. Constant-time compare via `subtle::ConstantTimeEq`. |
-| MP.L1-3.8.3      | Sanitize media before reuse          | N/A for in-process. Documented for keys (see § FIPS). |
-| PE.L1            | Physical                             | N/A (software-only). |
-| SC.L1-3.13.1     | Boundary monitoring                  | **MET**: `DefaultBodyLimit` + body-shape validation enforce the protocol boundary. |
-| SC.L1-3.13.5     | Public-access systems                | Swagger UI and `/health` deliberately open. |
-| SI.L1-3.14.1     | Identify, report, correct flaws      | This document is the report. `SECURITY.md` is the channel. |
-| SI.L1-3.14.2     | Malicious-code protection            | HLS sandbox (no WASI, no network, no filesystem) + fuel cap. |
-| SI.L1-3.14.4     | Update protections                   | `cargo audit` in CI (recommended); upgrade path via SemVer minor bumps. |
-| SI.L1-3.14.5     | Periodic scan                        | `cargo audit` + this document. |
-
-**L1 verdict**: Met when deployed correctly (bearer enabled, behind
-TLS-terminating proxy or with direct `rustls` enabled). Documentation
-calls out the required deployer actions.
-
-### Level 2 (selected practices, NIST SP 800-171 Rev 2)
-
-Focused on the families where SPINE has a concrete posture.
-
-| Practice          | Status                                                    |
-|-------------------|-----------------------------------------------------------|
-| AC.L2-3.1.3       | **MET** — body-size limits + WASM fuel constrain control of CUI flow. |
-| AU.L2-3.3.1       | **PARTIAL** — `tracing` spans exist (`skip_all` on agentic handlers); no out-of-the-box audit-log retention. Deploy `tracing-subscriber` with a persistent sink. |
-| AU.L2-3.3.2       | **PARTIAL** — actions are traced; user identification ties only to bearer token (no per-user ID until SSO is wired). |
-| CM.L2-3.4.1/2     | **MET** — config defaults captured in `spine-core::config::TlsConfig`, CT policy disabled by default, codec registry stateless by default. |
-| CM.L2-3.4.6       | **MET** — workspace + `Cargo.lock` committed; reproducible builds. |
-| IA.L2-3.5.3       | **DEPLOYER ACTION** — MFA is an upstream-proxy concern; SPINE supplies a single bearer secret. |
-| IA.L2-3.5.7/8/9   | N/A — no password handling. |
-| SC.L2-3.13.8      | **MET** — TLS in transit via rustls (0.23). |
-| SC.L2-3.13.10     | **PARTIAL** — Ed25519 keys are signed correctly but not zeroized in memory. |
-| SC.L2-3.13.11     | **PARTIAL FIPS** — algorithms approved by spec, modules not validated. See § 2. |
-| SC.L2-3.13.16     | **MET** — `EncodedFrame.metadata.source_hash` (research crate, not on the native wire) lets the receiver verify content integrity end-to-end. |
-| SI.L2-3.14.6/7    | **MET** — anomaly signal via Titans surprise scores in `spine-neural`. |
-
-**L2 verdict**: Substantial coverage with two deployer-actionable
-gaps (audit-log sink, key zeroization) and one architectural choice
-(FIPS-validated modules). All documented.
-
-### Level 3
-
-Out of scope for a public OSS release. CMMC L3 (APT-grade) requires
-deployment-specific controls (SIEM integration, threat hunting, etc.)
-that are not protocol concerns.
-
----
-
-## 5. Fixes applied in v1.2.1
-
-The audit identified four BLOCKERS; all were closed in this release:
-
-1. **Cross-request data leak in `/v1/embeddings`** (T1565.002):
-   `TitansLatentCodec` now resets its `NeuralLatentEncoder` state via
-   the new `NeuralLatentEncoder::reset_state(seed)` upstream call
-   before every `encode()`. Regression guards:
-   `titans_stateless_codec_does_not_leak_across_calls`,
-   `titans_stateful_codec_is_context_aware`.
-2. **Unbounded POST bodies** (T1499.002): `DefaultBodyLimit::max(8
-   MiB)` on the gateway router.
-3. **No CPU bound on HLS execution** (T1499.004 / T1496): wasmtime
-   `consume_fuel(true)` + 1 B fuel/exec default. Regression guards:
-   `test_wasm_fuel_metering_is_active`,
-   `test_default_fuel_budget_completes_normal_programs`.
-4. **OpenAPI-declared bearer auth had no middleware** (T1190): added
-   `auth::require_bearer` with constant-time comparison via `subtle`,
-   gated on `SPINE_GATEWAY_BEARER_TOKEN`. Tests cover constant-time
-   match, length-mismatch rejection, env-var on/off, and path
-   allowlist.
-
-## 6. Known residuals — status after v1.3.0
-
-| Item                                   | Severity | Status                                                                 |
-|----------------------------------------|----------|------------------------------------------------------------------------|
-| Bearer auth opt-in by default          | HIGH     | **CLOSED in v1.3.0** — `AuthMode::resolve` makes the gateway refuse to start without an explicit choice; the previous silent-open mode is no longer reachable. |
-| Private-key memory not zeroized        | MEDIUM   | **CLOSED in v1.3.0** — `zeroize` derives or manual `Drop` on `RingElement`, `QuantumKeyPair`, `MlKemKeyPair`, `QuantumKeyEvolution`, `ProtocolMorphology`, `Ed25519Keypair`. Compile-time + runtime regression guards. |
-| FIPS-validated crypto module           | DEPLOYER | **WIRED in v1.3.0** — `cargo build -p spine-gateway --features fips` swaps rustls's CryptoProvider to `aws-lc-rs`. End-to-end FIPS 140-3 validation still requires the deployer to rebuild `aws-lc-rs` with `AWS_LC_FIPS=1`. |
-| `bincode 1.x` deprecation              | LOW      | Tracked. Migrate to `bincode 2.x` when ecosystem catches up. |
-| `rustls-pemfile` unmaintained          | LOW      | Tracked. Move to `rustls-pki-types::CertificateDer` parsing. |
+# SPINE Security Audit (internal review, refreshed 2026-11-23)
+
+**Status of this document.** Refreshed 2026-11-23 from the source at `a4efd03` (branch `completion/agent-web`), for the seven-layer design and the verified behaviour of the code. This is an internal review by the project, not an independent audit. It certifies nothing: no FIPS 140-3, CMMC, SOC or similar claim is made. The previous text carried the title "SPINE v1.2.1 Security Audit", a v1.3.0 "closes every BLOCKER" statement, a CMMC practice table and test counts of 1,072; those were written against code that has since changed (the native wire, the Chameleon layer, the gateway, the crate set) and are replaced or removed here. Findings about code that no longer exists are kept only as short history. Nothing in this document was run: figures marked "log" come from the dated verification log in `COMPLETION_PLAN.md`; everything else was read in the source. Companion document: `THREAT_MODEL.md`, which states the adversary model and the per-threat residuals in full.
+
+## 0. What is open, stated first
+
+1. **Nothing authorises a native command.** The authority gate (`src/spine-core/src/authority.rs`), its durable ledger (`authority_ledger.rs`) and the command classification are library code that the daemon does not call. spine-wire v1 has no carrier for a grant chain or invocation (`docs/spec/00-wire.md`, G8) and the handshake has no client key. `[authority] mode = "required"` is refused at start-up (`config.rs` `AuthorityConfig::validate`). **Any client that can connect has operator-level access to all 19 commands**, including `navigate`, `execute_binary` and `mesh_call`. No receipt is issued. Reachability and, optionally, a TLS client certificate are the only controls (`SpineConfig::validate`, `config.rs:562-598`).
+2. **No external cryptographic review of the handshake, and the session layer (Stage 8) is not built.** The mesh handshake (`spine-session` `handshake.rs`) is the only SPINE-level encrypted channel; the native client wire does not use it.
+3. **A resolve answer on the client wire carries no succession log** (`NameResolution::Resolved { record, provenance }`, `spine-protocol/src/lib.rs:498-506`), so a client cannot itself verify a rotated name through the daemon.
+4. **Publisher keys are free to mint**, so per-publisher quotas bound a key, not a party.
+5. **Replica records are in memory only; an evicted tombstone allows resurrection; equivocation proofs spread only when asked for.**
+6. **One host call in `execute_binary` is not interruptible, and compile time is outside the 2 s deadline.**
+7. **QUIC receive windows are library defaults, and the daemon does not use the mesh QUIC or WebSocket transports.**
+8. One `#[cfg]`-gated simulation (`UringRing`) reports I/O that never happens (section 8). It is not reachable from the daemon.
+
+## 1. Dependency pass
+
+The last recorded results are in the verification log, not from a run for this document.
+
+| Date and commit | Result |
+| --- | --- |
+| 2026-11-20, `0a2b5de` | `cargo audit`: zero vulnerabilities, 14 unmaintained-crate warnings that do not fail the job. A `rustix` unsoundness advisory (RUSTSEC-2026-0486) was cleared by the lockfile bump. |
+| 2026-11-20, `7ea7eb8` | `cargo deny` failed on one unsound advisory in `tokio`; addressed. |
+| 2026-11-21 to 2026-11-23, `fd1b31a` onward | `deny` passed on every later commit read. The `audit` job failed intermittently when posting its check result to the GitHub API ("Not Found") after reporting no vulnerabilities; cause unidentified. |
+| 2026-11-23, `fce11b1` | CI `release_gate.py` runs the same `cargo deny` checks as CI, including for `research/`; the MSRV job uses `--locked`. |
+
+Open: the 14 unmaintained warnings are accepted and not enumerated here (the list in the earlier version named crates that have since been removed, for example `tabled`); `rustls-pemfile = "2"` (`Cargo.toml:101`) and `bincode = "1.3"` (`spine-transport/Cargo.toml:90`, a dev-dependency block) were tracked as deprecated in the earlier version; whether either is still flagged was not checked. Dependencies of `research/` have their own `Cargo.lock`.
+
+## 2. Cryptographic surface
+
+What the stack crates under `src/` use, from their manifests and code. "Validated module" is a per-binary certification process; none of these crates is one.
+
+| Primitive | Where | Crate and version (manifest) | Notes |
+| --- | --- | --- | --- |
+| ML-KEM-768 (FIPS 203) | mesh handshake (`spine-session`) | `ml-kem 0.2` | Ephemeral per connection |
+| Ed25519 | handshake, name records, mesh envelopes, authority grants, invocations, receipts, revocations | `ed25519-dalek 2` | `verify_strict` at `handshake.rs:168`, in `spine-name` records, `spine-mesh` `identity.rs` and throughout `spine-authority` (`grant.rs`, `invocation.rs`, `receipt.rs`, `revocation.rs`) |
+| AES-256-GCM | mesh frames | `aes-gcm 0.10` | Counter nonce per direction, counter as AAD (`handshake.rs:483`, `:509`) |
+| HKDF-SHA-256 | handshake key derivation | `hkdf 0.12` | Salt = hash of both handshake messages |
+| SHA-256 | names, resources, authority ids, operation hashes | `sha2 0.10` | |
+| TLS 1.3 | native TCP and WebSocket, gateway and metrics when fronted | `rustls 0.23` (Ring provider chosen explicitly by core and SDK, `docs/NATIVE_OPERATIONS.md`) | |
+| OS randomness | ephemeral KEM keys | `rand 0.8` `OsRng` (`handshake.rs:80`, `:202`, `:335`) | The `_with_rng` seams require `CryptoRng` and exist for tests |
+
+Not on the daemon path and not reviewed here: the RLWE lattice code, X3DH, the Chameleon encoder and the Titans codecs (`research/`). The earlier table's rows for HMAC, ECDSA P-256 and the SP 800-90A comparison were not re-verified and are removed.
+
+**FIPS posture.** No crate is a FIPS 140-3 validated module. The `spine-gateway` crate has a `fips` feature (`Cargo.toml:73`, `fips = ["rustls/aws_lc_rs"]`); when enabled the gateway installs the `aws-lc-rs` provider as the rustls process default at start-up (`spine-gateway/src/main.rs:566-570`, `install_fips_provider`); that is an integration point, not a validated module, and the deployer must still build `aws-lc-rs` in FIPS mode. `spine-core` has no such feature and selects the Ring provider explicitly, so the daemon's native TLS is not affected by it. Treat any FIPS statement in older documents as unverified.
+
+**Key memory.** Handshake state and ephemeral secrets derive `Zeroize` and `ZeroizeOnDrop` (`handshake.rs:178`, `:413`), and `ed25519_dalek::SigningKey` zeroizes on drop (`identity.rs`). The daemon's key seed is read from a file (mode 0600 on Unix, `namespace.rs` `load_or_create_key`) into a plain `[u8; 32]`; no zeroizing wrapper was found on it. The earlier "CLOSED in v1.3.0: zeroize on `RingElement`, `QuantumKeyPair`, `MlKemKeyPair`, `Ed25519Keypair` ..." refers to research crates; nothing under `src/` uses them, and `SECURITY.md` carried the same list.
+
+### 2.1 Closed findings, kept as history
+
+The full write-ups are in the git history of this file. Their current status:
+
+- **Chameleon layer keyed with 64 bits (Phases 47 and 48), and the latent AEAD path's 32-bit session nonce (Phase 45).** Concern code that is no longer on the native wire (removed 2026-11-21; `research/spine-protocol-research`). Nothing to fix in the daemon; nothing to rely on either.
+- **Ephemeral mesh keys from a counter-seeded generator (Phase 42).** The handshake now draws them from `OsRng`. This is the one finding that mattered to the deployed channel; see `HANDSHAKE-REVIEW.md`.
+- **Unbounded record store (Phase 44).** `RecordStore` is bounded (`DEFAULT_CAPACITY`, furthest-first eviction, a refusal for a record further than everything held, tombstone share, lapsed-first sweep; decisions 47, 48, 52 of `docs/spec/02-names.md`). The mesh `NameAnnounce` path remains open by design: any peer can announce a valid record, and a key costs nothing (risk 4).
+
+All four earlier findings shared one shape (vetted primitives, standard composition, inadequate entropy or bounds fed in). It is worth continuing to look for it.
+
+## 3. Attack-surface map (ATT&CK-shaped, replaces the v15 table)
+
+| Technique | Surface | Status at `a4efd03` |
+| --- | --- | --- |
+| T1190 Exploit public-facing application | Native port; HTTP gateway; metrics listener | Native: no authorisation (section 0, item 1); loopback bind by default and a refusal to bind wide without mutual TLS or an explicit flag (`config.rs:592-598`). Gateway: refuses to start without `SPINE_GATEWAY_BEARER_TOKEN` or `SPINE_GATEWAY_ALLOW_UNAUTH=1` (`auth.rs` `AuthMode::resolve`); one shared secret, no roles. Metrics and `/ready`: unauthenticated, loopback by default |
+| T1499 Endpoint denial of service | Connections, frames, sessions, mesh listeners, programs | Bounded by component limits listed in `THREAT_MODEL.md` N6, N7, N11; no process-wide memory budget; no sustained-load measurement |
+| T1059 Command and scripting | `execute_binary` | Fuel, host budgets, memory limit, instruction cap, 2 s deadline checked at host calls, capability check on actions, 4 permits (`spine-wasm`, `main.rs:1062`); the capability list is declared by the program and checked against what it did, so it is a consistency check, not a grant; any client may run programs |
+| T1090 / T1046 Outbound reach, scanning | `navigate` and program navigation | Single resolution, every answer checked, connection pinned, no redirects, ports 80 and 443 by default, per-chunk read timeout, per-caller cap, link-local exception guard (`outbound.rs`); see `THREAT_MODEL.md` N8 |
+| T1040 Network sniffing | Native wire; metrics; gateway | Native: TLS if enabled, plaintext otherwise (default on loopback). Mesh: encrypted always. Metrics and gateway: plain HTTP unless fronted |
+| T1557 Adversary in the middle | Mesh dial; QUIC mesh | TCP mesh: pinned keys, signed ephemeral exchange, trust on first use for an unconfigured seed once per process. Mesh QUIC and WebSocket: library only; handshake not bound to TLS |
+| T1565 Data manipulation | Name records, resources | Strict Ed25519 signatures, 7-day TTL, post-dating refusal, resource ids that commit to type and bytes, succession logs; see N4, N5, N10 |
+| T1098 Account manipulation | Node key, name keys | Plain file at rest, 0600 on Unix, plain array in memory; rotation exists as library, CLI and daemon publish path, not as a daemon command |
+| T1036 Masquerading, protocol fingerprint | Wire format | **No mitigation.** The earlier "MITIGATED: Chameleon" row is withdrawn: the layer is not on the native wire. |
+| T1518 Software discovery | `capability_query`, `namespace_status`, `/ready` | By design; the metrics labels carry no name, key, peer, session or address |
+
+Residual ATT&CK risk: T1190 with the native port reachable by an untrusted client, which is full control of the node; T1557 on first contact with an unconfigured seed.
+
+## 4. CMMC 2.0 and NIST SP 800-171
+
+**Not assessed.** The earlier table marked practices MET on the strength of a bearer token that was opt-in (since closed), a single-codec `source_hash` that is in a research crate, "anomaly signal via Titans surprise scores" in a research crate, and TLS that is off by default. A practice-level claim cannot be made from this review. Practices that depend on facts this document establishes, for whoever does assess:
+
+- AC.L1-3.1.1 / 3.1.2 (authorised users and functions): the native wire has no per-user authorisation (section 0, item 1); the gateway has one shared secret.
+- AU.L2-3.3.1 / 3.3.2 (audit records): `tracing` output exists; no retention sink and no per-user identity.
+- IA.L2-3.5.3 (multi-factor): not addressed by the stack.
+- SC.L2-3.13.8 (cryptographic protection in transit): TLS for the native wire only when enabled; mesh always encrypted.
+- SC.L2-3.13.11 (FIPS-validated cryptography): no validated module.
+- SC.L2-3.13.10, 3.13.16: not established.
+
+## 5. Controls confirmed present at `a4efd03`
+
+Each was read in the source; behaviour under load was not measured.
+
+1. Body limits on the gateway: 8 MiB on the router and 40 MiB on `/v1/resources` (`spine-gateway/src/main.rs:640`, `:653`).
+2. Gateway bearer authentication with constant-time comparison and a refusal to start with an ambiguous or missing choice (`auth.rs`).
+3. Wasm fuel metering, host budgets, memory limit, wall-clock deadline at host calls, instruction cap and four executor permits (`spine-wasm`, `main.rs`).
+4. Outbound fetch policy (`outbound.rs`), including `allowed_ports` before DNS, per-caller cap and the link-local exception guard.
+5. Native admission and timeouts (`THREAT_MODEL.md` N6); `CLOSE(shutting_down)` on drain; a failed program answers `execution_failed` instead of aborting the daemon (the earlier `ExecuteBinary` abort under `panic = "abort"` is fixed).
+6. Mesh authentication: derived agent ids, pins with a hard mismatch failure, response and hello checks against the session key, forged-sender tests on real TCP connections.
+7. Name lifetime, tombstones, succession logs, equivocation proofs and their persistence, as in `THREAT_MODEL.md` N4 and N5.
+8. Resource store: content-committing ids, fair share, post-dated refusal, owner-checked delete in the store API (not on the wire).
+9. Knowledge and session bounds (1,024 entries, 64 KiB per entry, 128 query results, 256 state variables).
+10. `/metrics` renders every family with HELP and TYPE from fixed label sets; `/ready` has fixed reasons and warnings (`docs/NATIVE_OPERATIONS.md`).
+
+## 6. Known residuals
+
+Ratings are the reviewer's, not a standard score. "Open" means no change in the code addresses it.
+
+| Item | Rating | Status | Evidence |
+| --- | --- | --- | --- |
+| No authorisation on the native wire | High | Open. Gate built, not enforced, no carrier, `required` refused at start-up | `config.rs` `AuthorityConfig::validate`; `docs/spec/03-authority.md` "What is not done" |
+| Handshake not externally reviewed; session layer not built | High | Open | `HANDSHAKE-REVIEW.md`; `COMPLETION_PLAN.md` Stage 8 |
+| Native wire plaintext by default (loopback); wide bind allowed with an explicit flag | Medium | By design, documented | `config.rs:584-598` |
+| Resolve answer carries no succession log | Medium | Open (wire revision) | `spine-protocol/src/lib.rs:498-506`; `02-names.md` decision 46 |
+| Key succession weak window before entry 1; lost current key unrecoverable | Medium | By design, documented | `02-names.md` 10.4, 10.9 |
+| Evicted tombstone allows resurrection (at most 7 days); proofs not pushed | Medium | Open | `02-names.md` decisions 51, 52 |
+| Per-publisher quotas bound a key, not a party | Medium | Open | `resources.rs:46-49` |
+| Mesh replica records in memory only | Low | Open | `02-names.md` 10.11 item 5 |
+| `execute_binary`: one host call and compile time outside the deadline | Low | Open | `spine-wasm` `DEFAULT_EXECUTION_DEADLINE` docs |
+| Aggregate knowledge memory has no global cap (about 1,000 sessions x 1,024 entries x 64 KiB) | Medium | Open. Computed from constants, not tested | `main.rs:600-613`, `knowledge.rs`, `config.rs` `max_sessions` |
+| Mesh QUIC receive windows are library defaults; 64-stream cap and QUIC handshake timeout untested | Low | Open; transport unused by the daemon | log, `057b2c2` |
+| Mesh QUIC handshake not bound to the TLS channel | Medium for users of the library | Open; transport unused by the daemon | `mesh_quic.rs` module docs |
+| Trust on first use for an unconfigured seed; pins forgotten on restart; pin tables stop at 1,024 | Medium | Open | `mesh_tcp.rs:499`, `:69` |
+| Handshake: no key confirmation, no identity hiding, no rekeying, replayable first message | Low to medium | By design, documented | `handshake.rs` module docs |
+| Node key not zeroized in daemon memory; key file plain on disk | Low | Open | `namespace.rs` `load_or_create_key` |
+| An unknown host name and an internal one answer with different outbound codes | Low | Open | log, `94371e7` |
+| Delete of resources not on the wire | Low | Open | log, `53f32bd` |
+| Metrics, `/ready`, dashboard and gateway have no per-user control; example configs showed wide binds | Low to medium | Partly fixed (templates), docs pages open | log, `9ecfac7`, `0009bf9` |
+| Documents out of step with the code | Low | See section 9 | |
 
 ## 7. Verification
 
-`cargo test --workspace --no-fail-fast` → **1,072 passed / 0 failed
-/ 5 ignored** at the audit-completion commit. `cargo audit` → 0
-vulnerabilities, 10 unmaintained warnings (all accepted in the table
-above). Build clean on Rust stable.
+Most recent CI figures on Linux: **63 suites, 1,593 passed, 0 failed, 3 ignored at `fce11b1`, 2026-11-23** (log). Every job read passed at that commit: lint, docs, MSRV, coverage, `research`, `wire-vectors`, and the tests on Linux, macOS and Windows. These figures were not re-run for this document and are not a statement about `a4efd03`. The earlier "1,072 passed / 0 failed / 5 ignored" figure and the "Build clean on Rust stable" line are replaced by this. What is not established by any job: the Go, Python, JS, browser and fuzz code (nothing builds them), the QUIC listener of the daemon, a research-off peer interoperating with a research-on peer, the formal models (written, not executed as proofs), benchmarks with security modes, Miri or sanitizers on the `unsafe` paths.
+
+## 8. Stub and simulation markers
+
+Scope: `src/` (not `research/`), the patterns `todo!`, `unimplemented!`, `TODO`, `FIXME`, `stub`, `simulat`, `placeholder`, `mock` (case-insensitive on the first letter where noted), searched 2026-11-23 at `a4efd03`. **68 hits in 22 files. Zero are `todo!`, `unimplemented!`, `TODO` or `FIXME`.** Classified by where the hit sits:
+
+| Class | Hits | Files |
+| --- | --- | --- |
+| Library or build code (not in a test module, bench or example) | 16 | compiler 4, ct 1, grpc 2, rdma 3, uring 5, parser 1 |
+| Inside test modules or test helpers | 22 | pool 6, mesh_tcp 5, cache 3, parser 2, congestion 1, naming 1, tls 1, model 1, rdma 1, authority tests 1 |
+| Benches | 18 | traditional_comparison 12, tcp_comparison 4, transport_bench 1, agentic_ai_workload 1 |
+| Examples | 12 | swarm_demo 6, web_intelligence_demo 5, agent_autonomous 1 |
+
+The 16 library hits and the behaviours that matter, with reachability from the daemon (`spine-core` default build: it depends on `spine-wasm`, `spine-transport`, `spine-mesh`, `spine-name`, `spine-protocol`, `spine-storage`; not on `spine-compiler` or `spine-grpc`):
+
+| File:line | What it is | Verdict | Reachable from the daemon |
+| --- | --- | --- | --- |
+| `spine-compiler/src/lib.rs:476, 499, 509, 547` | `Jump(0)`, `JumpIf(0)`, `JumpIfNot(0)` operands pushed as placeholders and overwritten at `:488`, `:519-520`, `:556` | Real (back-patching) | No. `spine-compiler` is a dependency of the gateway, the SDK (`spine-agent`), `spine-ffi` and `spine-web`, not of `spine-core`; the daemon runs binaries the client compiled |
+| `spine-core/src/ct.rs:67` | A comment recording that placeholder SPKIs were removed; the default policy is disabled with no trusted logs | Real, but the module is unused: `mod ct;` sits under `#[allow(dead_code)]` (`main.rs:36-37`) and nothing outside `ct.rs` refers to `CtPolicy` or `CtEnforcement` | No. Certificate Transparency enforcement is not applied to any connection, whatever `SECURITY.md` says about `CtPolicy::default()` |
+| `spine-grpc/build.rs:1`, `src/lib.rs:53` | "client + server stubs" generated by tonic from the `.proto` | Real (generated code) | No (separate bridge crate) |
+| `spine-transport/src/rdma.rs:382, 498, 669` | Typed stubs for InfiniBand verbs and GPU-Direct (`IbVerbsRdma`, `GpuDirectRdma`) and a placeholder comment for pointer types | Returns an explicit `RdmaError::HardwareUnavailable` (`:430`, `:465`, `:485`); the `rdma` feature is off by default; `LocalShmRdma` is a real in-process ring | No. The module is compiled in the default `spine-transport` build and nothing outside it calls it |
+| `spine-transport/src/uring.rs:374, 392, 431, 438, 442` | `UringRing` is a "stub": `submit_and_wait` pops each pending op and reports it complete with `result = op.len`, with no kernel I/O (`:430-453`) | **Neither real, test-only nor an explicit unsupported error: it returns fabricated success.** Compiled only on Linux with the non-default `io-uring` feature (`lib.rs:53-57`); no other crate enables the feature. `uring_backend.rs` builds on it, and the crate's top-level docs list "io_uring Support" as a feature | No. This is the one item the Stage 12 review should resolve: make `UringRing::new` or `submit_and_wait` return an unsupported error, or delete the module |
+| `spine-parser/src/lib.rs:263` | Reads the HTML `placeholder` attribute of a form field | Not a marker (data) | Yes, as ordinary parsing |
+
+Behaviours that are marker-like without containing the words, and are reachable (`main.rs`, `BrowserCommand::ExecuteBinary`):
+
+| File:line | What it does | Reachable |
+| --- | --- | --- |
+| `spine-core/src/main.rs:1250-1259` | A program's `search` action is logged and, without the `research` feature, discarded: it reports `executed` and performs no search | Yes (default build) |
+| `spine-core/src/main.rs:1294-1304` | `query_knowledge` and `reason` actions from a program are only logged; they do nothing | Yes |
+| `spine-mesh/src/naming_mesh.rs:1324` | Application RPC with no handler answers `{"error":{"code":"unsupported","message":"application RPC is disabled"}}` | Yes (when tasks are not enabled): an explicit unsupported answer |
+| `spine-core/src/main.rs:1891, 1899` | Legacy swarm search and task events from the cluster listener log "unsupported" and do nothing | Only in a `research` build (`#[cfg(feature = "research")]`, `main.rs:1786-1794`) |
+
+Markers earlier reviews named that no longer exist: the `Search`, `Click` and `Type` command stubs (the 19-command set has none), the stale `supports_chameleon: true` flag (now `false`, `main.rs:1508`), and `signed_frame.rs` and `negotiation.rs` with no caller (removed). The remaining 22 test, 18 bench and 12 example hits are fixtures and demonstrations; the benches `traditional_comparison.rs` and `tcp_comparison.rs` compare against hand-rolled simulations and their own headers say they were audited as not like-for-like. The plan's Stage 12 item ("confirm each is real, test-only, or returns an explicit unsupported error") is therefore met for every library hit except `uring.rs`.
+
+## 9. Documents found out of step with the code during this refresh
+
+Not changed here unless this file or `THREAT_MODEL.md`, `README.md` or `SECURITY.md`:
+
+- `docs/NATIVE_OPERATIONS.md` says the daemon negotiates `max_inflight` of 1 and that native commands are serial; `DAEMON_MAX_INFLIGHT` is 8 (`spine-protocol/src/native.rs:127`) and each connection runs a reader, command loop and writer. Commands of one connection still run one at a time.
+- `docs/NATIVE_OPERATIONS.md` says "the number of knowledge entries within a live session" is not bounded; it is (1,024).
+- `docs/spec/00-wire.md` still names `put_tracked` and a 256 MiB serialised limit for resources (log, `0896e37`), not re-checked here.
+
+## 10. Not covered
+
+- Any third-party audit; the handshake, the authority crate and the succession design have none.
+- The `research/` workspace and the `research` feature build of the daemon.
+- Behaviour under load; memory use; performance claims.
+- The Go, Python, JS, browser extension and fuzz code.
+- `unsafe` code paths under Miri or sanitizers.
+- Operating-system and deployment hardening; container and network policy.
+- Compliance frameworks (CMMC, NIST SP 800-171, FIPS 140-3): not assessed.
+- The task service beyond the statements in `docs/NATIVE_OPERATIONS.md`.
+- The MCP and gRPC bridges, beyond their being outside the daemon.
+- The exact list of 14 unmaintained dependencies.

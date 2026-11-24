@@ -4,11 +4,11 @@
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org/)
 [![CI](https://github.com/nervosys/SPINE/actions/workflows/ci.yml/badge.svg)](https://github.com/nervosys/SPINE/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/nervosys/SPINE/branch/master/graph/badge.svg)](https://codecov.io/gh/nervosys/SPINE)
-[![Version](https://img.shields.io/badge/version-2.0.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.0.2-blue.svg)](CHANGELOG.md)
 
 **SPINE** (Synaptic Pathways INterconnecting Entities) is a Rust web stack for software agents. It provides semantic HTML parsing, native messages and tools, signed name discovery, resource transfer, authenticated durable read-only mesh tasks, and HTTP, MCP, and gRPC bridges. General agent orchestration and specialized hardware paths include experimental components.
 
-For the current local implementation, use the [agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md), [native installation and operations](docs/NATIVE_OPERATIONS.md), [completion status](docs/COMPLETION_STATUS.md), and [completion checklist](COMPLETION_PLAN.md). The source version is 2.0.2; the release badge refers to the historical 2.0.1 publication. Benchmark figures and test counts below are historical measurements, not results from the current validation run, and they predate the native wire becoming spine-wire v1 on 2026-11-21 (specification: [`docs/spec/00-wire.md`](docs/spec/00-wire.md)). The transport benchmarks drive `spine-transport`'s own framing, not the daemon's native wire.
+For the current local implementation, use the [agent-web quickstart](docs/AGENT_WEB_QUICKSTART.md), [native installation and operations](docs/NATIVE_OPERATIONS.md), [completion status](docs/COMPLETION_STATUS.md), and [completion checklist](COMPLETION_PLAN.md). The source version is 2.0.2 (`Cargo.toml`); the version badge is static and showed 2.0.1 until 2026-11-23. Latest CI figures read, Linux, root workspace: 63 suites, 1,593 passed, 0 failed, 3 ignored at `fce11b1` on 2026-11-23 (not re-run for later commits; the `research/` workspace is a separate job). **Authorization is not enforced on the native wire: any client that can connect has operator-level access to all 19 commands, including `navigate`, `execute_binary` and `mesh_call`; see [`THREAT_MODEL.md`](THREAT_MODEL.md).** Benchmark figures below are historical measurements, not results from the current validation run, and they predate the native wire becoming spine-wire v1 on 2026-11-21 (specification: [`docs/spec/00-wire.md`](docs/spec/00-wire.md)). The transport benchmarks drive `spine-transport`'s own framing, not the daemon's native wire.
 
 > *"A digital nervous system for AI agents — semantic-first parsing, agentic-first framing, swarm-first coordination, all with the option to fall back to plain HTTP whenever a human or legacy client needs to talk to it."*
 
@@ -36,6 +36,8 @@ These are *comparative* results on TCP loopback: the direction and order of magn
 | **SPINE**              | **0.90** (1st of 7) | 0.98 | 0.95 | 0.95 | 0.67 | 0.95 |
 | gRPC                   | 0.83    | —         | —     | —        | —       | —        |
 | OpenAI API (baseline)  | 0.69    | —         | —     | —        | —       | —        |
+
+> The Security score (0.95) comes from the external `agentic-eval` rubric. It is not a result of this repository's review, was not re-checked for this refresh, and should not be read against [`THREAT_MODEL.md`](THREAT_MODEL.md), which finds no authorization on the native wire and no external review of the handshake.
 
 SPINE leads the composite, edging gRPC by +0.07 and the OpenAI API by **+0.21**. It is strongest on the agent-native axes it was designed for (token streaming, capability handshakes, inline W3C trace context) and at protobuf-parity on encoding (CBOR + byte-string tensor payloads — a 1536-dim embedding frame is **68% smaller than JSON** by default, 89% with opt-in compression; measured on the earlier body encoding before spine-wire v1, not re-measured; `wire_sizes.rs` now measures v1 bodies, so re-run it for current sizes). **Interop (0.67) is its weakest axis** — three deployable bridges (MCP stdio server, OpenAI-compatible gateway, reflection-enabled gRPC `AgentService`) map the agentic *surface*, not SPINE's native binary frames, and SPINE has ~zero native install base. Full methodology and every caveat: [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md) and the [Performance](#performance) section below.
 
@@ -288,7 +290,7 @@ Codec ids are stable URIs (e.g. `spine:codec/titans/v1@dim=256,dtype=f32`). `Tit
 
 ## Core Components
 
-SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesive bioinspired architecture (the per-layer list below predates the split and still describes all of them):
+SPINE is composed of 35 crates in two cargo workspaces (20 under `src/`, 15 under `research/`), organized into a cohesive bioinspired architecture (the per-layer list below predates the split and still describes all of them):
 
 ### Two workspaces
 
@@ -316,7 +318,7 @@ SPINE is composed of 32 crates in two cargo workspaces, organized into a cohesiv
 ### Intelligence Layer
 
 - **`spine-neural`**: **Titans architecture** (Neural Long-Term Memory) with MIRAS variants for adaptive protocol encoding.
-- **`spine-crypto`**: **Titans-based message prediction** (a library only; the wire does not use it), X3DH key exchange, and quantum-resistant lattice cryptography with three security levels (Standard, Hardened, PostQuantum).
+- **`spine-crypto`**: **Titans-based message prediction** (a library only; the wire does not use it), X3DH key exchange, and lattice cryptography with three security levels (Standard, Hardened, PostQuantum). Research-grade: not used by the daemon, no external review, and no claim of quantum resistance is made for it.
 - **`spine-recursive`**: **Recursive Language Model** for extended context retrieval (10M+ chars) via REPL environment per arXiv:2512.24601. Note: trades reasoning depth for context breadth.
 - **`spine-knowledge`**: **Unified bioinspired memory** with episodic (hippocampus), semantic (neocortex), working (prefrontal cortex), and collective (social brain) subsystems. CRDT-based distributed single-source-of-truth.
 
@@ -401,7 +403,7 @@ An **experimental, unreviewed moving-target idea** where a latent basis and key 
 
 The SPINE Core maintains a **Virtual DOM** for each session, enabling efficient incremental updates:
 
-- **HLB Execution**: SPINE Binary is executed in a sandboxed WASM environment, producing a Virtual DOM tree.
+- **HLB Execution**: SPINE Binary is executed in a WASM environment with no WASI, network or filesystem imports, fuel metering, host budgets, a memory limit and a 2 s deadline checked at host calls, producing a Virtual DOM tree. One host call is not interruptible and compile time is outside the deadline; any connected client may run programs (see [`THREAT_MODEL.md`](THREAT_MODEL.md) N7).
 - **VDom Diffing**: The core computes the minimal set of patches (Create, Remove, SetAttr, etc.) between execution cycles.
 - **Patch Streaming**: Only the changes are sent to the client, significantly reducing bandwidth for dynamic applications.
 
@@ -651,31 +653,24 @@ Four documents, because they answer different questions:
 | --- | --- |
 | [`SECURITY.md`](SECURITY.md) | Which versions get fixes, and how to report a vulnerability privately |
 | [`THREAT_MODEL.md`](THREAT_MODEL.md) | Which adversaries this is built against, and which it is not |
-| [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) | What an internal audit found, including what remains open |
+| [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) | What an internal review found, what remains open, and the stub and simulation markers |
 | [`HANDSHAKE-REVIEW.md`](HANDSHAKE-REVIEW.md) | The mesh handshake in full, written for an external reviewer |
 
-**What is solid.** Name records are signed and verify against the name itself,
-so resolution needs no CA and a client that checks a record is not trusting the
-resolver. The mesh handshake is ML-KEM-768 + Ed25519 with per-connection
-ephemeral keys, AES-256-GCM frames, and per-direction keys so nonce counters
-cannot collide. The same Ed25519 key positions a node in the DHT, signs its
-records, and authenticates its connections, so "the peer I dialled" and "the
-peer whose records I trust" are one fact.
+**Read these first.** They are the largest open risks and are easy to overstate.
 
-**What is not.** The handshake has had **no external cryptographic review** —
-the package to commission one is written and ready. The Chameleon layer is
-obfuscation, not a cipher, and it is not on the native wire (it is in
-`research/spine-protocol-research`); use TLS or the session layer for
-confidentiality. The lattice and X3DH paths are research-grade. No crate here
-is a FIPS 140-3 validated module.
+1. The authority gate, its durable ledger and the command classification exist as library code and are **not enforced on the wire**. Any client that can connect has operator-level access to all 19 commands, including `navigate`, `execute_binary` and `mesh_call`. `[authority] mode = "required"` is refused at start-up because spine-wire v1 has no carrier for a grant. Nothing issues a receipt.
+2. The mesh handshake has had **no external cryptographic review**, and the session layer (Stage 8 of `COMPLETION_PLAN.md`) is not built. The native client wire does not run over it.
+3. A resolve answer on the client wire carries no succession log, so a client cannot itself verify a rotated name through the daemon.
+4. Publisher keys are free to mint, so per-publisher quotas bound a key, not a party.
+5. Mesh replica records are in memory only, an evicted tombstone allows resurrection, and equivocation proofs spread only when asked for.
+6. One host call in `execute_binary` is not interruptible, and compile time is outside its 2 s deadline.
+7. QUIC receive windows are library defaults, and the daemon does not use the mesh QUIC or WebSocket transports.
 
-**What an audit already found.** Four defects, all now fixed, all sharing one
-shape: vetted primitives, conventional composition, and inadequate entropy fed
-in — a counter-seeded ephemeral keypair, a 32-bit session nonce under a
-non-rotating key, an unbounded record store, and a 64-bit-keyed encoder. None
-would have been visible in a review of the algorithm list, which is the part a
-security summary usually shows you. That is the argument for reading
-`SECURITY_AUDIT.md` rather than this section.
+**What is enforced today** (each item with its code location is in [`THREAT_MODEL.md`](THREAT_MODEL.md)). Name records are signed and verify against the name itself, so resolution needs no CA. The mesh handshake is ML-KEM-768 + Ed25519 with per-connection ephemeral keys and AES-256-GCM frames; the daemon always runs the mesh over it, and a dialer pins the expected key. The native wire has no encryption of its own: confidentiality comes from TLS, which is off by default; a non-loopback bind is refused unless mutual TLS is on or `server.allow_unauthenticated_remote` is set. `execute_binary` is metered and bounded (fuel, host budgets, memory limit, 2 s deadline at host calls, four permits). Outbound fetches resolve once, check every answer, pin the connection and refuse redirects. Names, resources, knowledge and sessions have the bounds listed in the threat model.
+
+**What is not.** Everything in the list above. The Chameleon layer is obfuscation, not a cipher, and is not on the native wire (it is in `research/spine-protocol-research`). The lattice and X3DH code is research-grade. No crate here is a FIPS 140-3 validated module. No compliance framework (CMMC, NIST SP 800-171) is claimed.
+
+**What the 2.0.0 audit found.** Four defects, since closed or moved off the wire, all sharing one shape: vetted primitives, conventional composition, and inadequate entropy or bounds fed in (a counter-seeded ephemeral keypair, a 32-bit session nonce under a non-rotating key, an unbounded record store, and a 64-bit-keyed encoder). `SECURITY_AUDIT.md` gives their present status, a list of the stub and simulation markers in `src/`, and what remains open.
 
 ## Deployment
 
@@ -883,7 +878,7 @@ let result = client.execute_binary(binary).await?;
 
 SPINE bypasses traditional browser rendering pipelines (DOM → Layout → Paint) in favor of a multi-layered stack optimized for AI agents, with a compatibility layer for humans.
 
-### The SPINE Stack (32 Crates, in two workspaces: `src/` and `research/`)
+### The SPINE Stack (35 Crates, in two workspaces: `src/` and `research/`)
 
 1. **Kernel Layer**: `spine-kernel` — SIMD intrinsics, lock-free atomics, zero-copy ring buffers, custom allocators, RDTSC timing.
 2. **Foundation Layer**: `spine-core` (orchestration), `spine-parser` (HTML → UR), `spine-compiler` (HLS → HLB), `spine-wasm` (WASM execution).
@@ -951,7 +946,7 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 
 - [x] Recursive UR parsing
 - [x] Multi-session management
-- [x] Transport encryption (TLS and mTLS; the pre-shared-key AES layer was removed)
+- [x] Transport encryption for the native wire (TLS and mTLS, off by default; the pre-shared-key AES layer was removed)
 - [x] Compression (Zstd)
 - [x] HLS/HLB basic compiler
 - [x] **Chameleon Protocol** (latent-space obfuscation; experimental, moved to `research/spine-protocol-research`)
@@ -963,13 +958,13 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Distributed Agent Coordination** (cluster, load balancing, session affinity)
 - [x] **Titans Neural Encoder** (Neural Long-Term Memory + VAE + Attention)
 - [x] **Titans Message Predictor** (autoregressive byte-level prediction with anomaly detection)
-- [x] **Quantum-Resistant Key Evolution** (RLWE lattice cryptography)
+- [x] **Key Evolution** (RLWE lattice cryptography; research crate only, not used by the daemon, no claim of quantum resistance)
 - [x] **Human Compatibility Layer** (HTML/CSS/JS → HLS transpilation)
 - [x] **Cross-Platform GUI Browser** (egui-based human interface)
 - [x] **Distributed Swarm Intelligence** (skill-based routing, DAG dependencies)
 - [x] **Knowledge Consensus Protocol** (2/3 majority voting across cluster)
 - [x] **Long-Term Memory** (persistent knowledge base with tags)
-- [x] **Capability Enforcement** (permission-based HLB execution)
+- [x] **Capability checks on HLB execution** (the capabilities a program declares are checked against the actions it produced; this is not authorization of clients, which is not enforced)
 - [x] **HLS Memory Operations** (remember, query_memory, reason)
 - [x] **Social Network Swarms** (hierarchical, small-world, scale-free, modular topologies)
 - [x] **Collaborative Roles** (coordinator, executor, expert, validator, innovator, mediator)
@@ -988,7 +983,8 @@ The core uses `DashMap` and `Tokio` to handle hundreds of concurrent agent sessi
 - [x] **Federated resolution** (Kademlia lookup over TCP / WebSocket / QUIC, with
       a capability index so "who can do X" is routed rather than broadcast)
 - [x] **Mesh handshake** (ML-KEM-768 + Ed25519, forward-secret per connection,
-      authenticated against the same key that positions a node in the keyspace)
+      authenticated against the same key that positions a node in the keyspace;
+      no external review)
 - [x] **Bootstrap from an address** (a seed proves its identity by signing with
       the key that *is* its keyspace position)
 - [x] **Replication and maintenance** (records stored at the K closest nodes and
@@ -1216,7 +1212,7 @@ Earlier versions of this README showed snippets using `MessagePool`, `CompactMes
 
 ## Testing
 
-SPINE includes comprehensive test coverage across all 32 crates, which now live in two workspaces:
+The 35 crates live in two workspaces, each with its own test run:
 
 ```bash
 # Run the stack tests (repository root)
@@ -1231,57 +1227,11 @@ cd research && cargo test -p spine-neural
 cd research && cargo test -p spine-crypto
 ```
 
-> **Stale numbers.** The totals and the table below were measured before the
-> research crates moved to `research/`. They were not re-measured for the split,
-> and `cargo test --workspace` at the root no longer includes the research
-> crates, so do not read the root total as the sum of this table.
+### Test results
 
-### Test Summary (1,418 tests, 0 failures; stale, predates the research split and spine-wire v1)
+Latest CI figures read (Linux job, root workspace, `fce11b1`, 2026-11-23): **63 suites, 1,593 passed, 0 failed, 3 ignored.** Every CI job passed at that commit on Linux, macOS and Windows (the 2026-11-23 entries of the verification log in `COMPLETION_PLAN.md` give the per-commit figures). CI excludes `spine-browser`. These are measurements at one commit, not a property of later commits, and they were not re-run for this README edit. The `research/` workspace is tested by a separate CI job whose counts are not stated here.
 
-Latest workspace run: `cargo test --workspace --no-fail-fast` →
-**1,418 passed / 0 failed / 5 ignored** across all 32 crates. The five
-ignored entries are `no_run` / `ignore`-marked doctest fixtures, not
-hidden failures. The per-crate breakdown below is measured rather than
-estimated — it is produced by running each crate on its own, and the
-column sums to the workspace total.
-
-
-| Crate           | Tests | Description                                                   |
-| --------------- | ----- | ------------------------------------------------------------- |
-| spine-agentic   | 244*  | Lifecycle, sandbox, scheduler, contracts, swarm               |
-| spine-mesh      | 182*  | Identity, mesh envelope/node, naming, TCP/WS/QUIC, signed frame |
-| spine-protocol  | 148   | Wire codec, framing, chaos, integration, property (count predates the research move) |
-| spine-name      | 113   | The `spine://` namespace: URIs, records, keyspace, resolution |
-| spine-transport | 85    | Zero-copy I/O, BBR, connection pooling, property              |
-| spine-crypto    | 57    | RLWE, ML-KEM, Titans predictor, property                      |
-| spine-session   | 26    | Mesh handshake: ML-KEM + Ed25519, framing, replay, bounds     |
-| spine-gateway   | 56    | REST gateway, namespace over HTTP, auth, health checks        |
-| spine-parser    | 53    | HTML parsing, UR extraction, agent links, property tests      |
-| spine-core      | 48    | Session orchestration, config, namespace join, TLS/cert       |
-| spine-cluster   | 37    | Load balancing, session management, Sybil resistance          |
-| spine-kernel    | 36    | SIMD, allocators, atomics, ring buffers                       |
-| spine-stream    | 35    | Reactive streams, multiplexing, flow control                  |
-| spine-ffi       | 34    | C FFI null-safety, parse, compile, version                    |
-| spine-wasm      | 30    | HLB compilation, execution, stack ops                         |
-| spine-nostd     | 30    | Fixed-point math, FNV hashing, frame codec                    |
-| spine-storage   | 24    | SQLite WAL, RocksDB, typed storage                            |
-| spine-embedded  | 24    | Agent runtime, ring buffers, routing, watchdog                |
-| spine-human     | 23    | Human interaction patterns, timing, bot-detection bypass      |
-| spine-neural    | 21    | VAE, attention, keyed encoders, memory variants               |
-| spine-knowledge | 21    | Episodic, semantic, collective memory, CRDT                   |
-| spine-compiler  | 21    | HLS parsing, type checking, compilation                       |
-| spine-grpc      | 16    | gRPC service definitions and codec                            |
-| spine-cache     | 16    | LRU, tiered caching, TTL eviction                             |
-| spine-recursive | 15    | Infinite context, LLM dispatchers                             |
-| spine-cli       | 15    | Init scaffolding, config, addr/tag parsing                    |
-| spine-k8s       | 13    | CRD generation, autoscaling, manifests                        |
-| spine-gpu       | 12    | GPU compute, SIMD backend, WGSL shaders                       |
-| spine-agent     | 12    | SDK API, namespace commands, connection handling              |
-| spine-mechgen   | 5     | Mechanism generation                                          |
-| spine-web       | 0     | Umbrella facade crate (re-exports only)                       |
-| spine-browser   | 0     | Cross-platform GUI browser (egui)                             |
-
-\* `spine-agentic` (258) and `spine-mesh` (168) are from the Linux CI run on `6e47224`, which reported those two unit-test suites; before the split `spine-agentic` was listed at 392. Moving `mesh_quic` and `signed_frame` into `spine-mesh` then shifted 14 tests (9 `#[tokio::test]` and 5 `#[test]` attributes), so the table now shows 244 and 182; that adjustment is an attribute count pending the next CI run. The other rows and the 1,418 total date from the last full local run and have not been re-measured, so the column does not currently sum to the total.
+The earlier per-crate table (1,418 tests across 32 crates, with five ignored doc fixtures) was removed on 2026-11-23: it predated the research split and the native wire v1, it was not re-measured, and its column did not sum to its total. Per-crate counts can be produced with `cargo test -p <crate>`.
 
 ### Benchmarks
 
@@ -1306,7 +1256,7 @@ SPINE is an experimental research project. Contributions are welcome, especially
 ## Documentation
 
 - [Architecture Overview](ARCHITECTURE.md) - System design and component interactions
-- [Mathematical Proofs](MATHEMATICAL_PROOFS.md) - Formal proofs of time, space, and security optimality
+- [Mathematical Proofs](MATHEMATICAL_PROOFS.md) - Claimed proofs of time, space, and security optimality (not reviewed for this refresh; no security statement in this README or `THREAT_MODEL.md` depends on it)
 - [HLS Specification](HLS_SPEC.md) - SPINE Source language reference
 - [Optimizations](OPTIMIZATIONS.md) - Performance optimization techniques
 

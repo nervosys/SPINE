@@ -1,5 +1,7 @@
 # Security Policy
 
+> **Status, 2026-11-23 (source at `a4efd03`).** The threat-model table, hardening boundaries, gateway and key-memory sections below were corrected against the code. Any client that can connect to the native port has operator-level access to all 19 commands; the authority gate is library code and is not enforced. The mesh handshake has had no external review. See [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
+
 ## Local implementation verification
 
 The 2026-10-02 continuation patches Rustls and Wasmtime advisories, refuses missing certificates when native TCP TLS is enabled, redacts model-routing tokens and native request payloads, bounds resource transfer, and reports replica sends separately from acknowledged durability. Native and WASM HTTP navigation now share DNS-pinned public-address checks, exact internal-origin exceptions, redirect refusal, and response/concurrency/deadline limits; see [native operations](docs/NATIVE_OPERATIONS.md). See [the evidence report](docs/COMPLETION_STATUS.md). These checks do not establish an independent review of the custom handshake, multi-tenant isolation, cryptographic module certification, or verified hardware erasure. The quickstart uses trusted local clients; public multi-user deployment remains gated on authorization and policy across the remaining bridge/mesh paths.
@@ -58,10 +60,10 @@ shipped components target these properties:
 
 | Asset                            | Property protected             | Mechanism                                  |
 |----------------------------------|--------------------------------|--------------------------------------------|
-| Message payloads on the wire     | Confidentiality                | rustls 0.23 TLS or QUIC; the mesh uses AES-256-GCM. The native frame itself does no sealing |
-| Long-lived agent identity        | Authenticity, non-repudiation  | Ed25519 signing in `spine-agentic`         |
-| Cross-tenant embeddings          | Isolation                      | Stateless `TitansLatentCodec` (research crate, gateway `research` feature) |
-| Certificate Transparency proofs  | Integrity                      | RFC 6962 + Google v3 JSON log list         |
+| Message payloads on the wire     | Confidentiality                | Native wire: rustls 0.23 TLS, off by default; the native QUIC listener (non-default `quic` feature) refuses to start with TLS configured. Mesh: AES-256-GCM over the handshake, always. The native frame itself does no sealing |
+| Long-lived agent identity        | Authenticity                   | Ed25519 in `spine-mesh` (`identity.rs`) and `spine-name` |
+| Cross-tenant embeddings          | Isolation                      | Only in a gateway `research` build: stateless `TitansLatentCodec`. The default gateway answers `/v1/embeddings` with 503 |
+| Certificate Transparency proofs  | Integrity                      | None. `spine-core/src/ct.rs` is compiled but unused (`#[allow(dead_code)]`); no connection is checked against it |
 | Protocol fingerprint             | Resistance to passive analysis | None on the native wire. The Chameleon key (research, `research/spine-protocol-research`, unreviewed) is not a mitigation |
 | Tool calls and their results     | Correlation                    | Frame request id (spine-wire v1) + W3C `traceparent` |
 
@@ -102,18 +104,18 @@ shipped components target these properties:
   transitives under `kube`, `eframe`, `wgpu`, `utoipa`, and
   `scraper`. None has a known exploit at the time of release; we track
   upstream and will bump when patched lines become available.
-- **Default config**: `CtPolicy::default()` ships with **no trusted
-  CT logs** preloaded. Production deployments must call
-  `add_logs_from_json_v3()` with the current Google v3 list.
+- **Certificate Transparency**: `CtPolicy` exists in `spine-core/src/ct.rs`
+  and nothing calls it; no connection is checked against CT logs.
 - **Stateful Titans codec**: `spine_protocol_research::TitansLatentCodec::stateful(...)` is
   context-aware by design — it leaks request history into subsequent
   encodings. Use only for a single-tenant session you control end to
   end. Never register in a shared `CodecRegistry`.
-- **Echo `/v1/chat/completions`**: the gateway's default chat handler
-  echoes the user's last message. Replace with a real LLM source before
-  exposing to untrusted clients.
+- **Echo `/v1/chat/completions`**: the gateway does not select the echo
+  handler by default; without `SPINE_MODEL_URL` or `IRONGATE_URL` it
+  answers that no model is configured, and echo needs
+  `SPINE_GATEWAY_DEMO=1` (`spine-gateway/src/model.rs`).
 
-## Gateway authentication (secure by default as of v1.3.0)
+## Gateway authentication (an explicit choice is required)
 
 The `spine-gateway` binary will **refuse to start** unless the
 deployer makes an explicit authentication choice via env vars:
@@ -126,7 +128,8 @@ deployer makes an explicit authentication choice via env vars:
 | both set                          | Same — ambiguous intent is rejected.                            |
 
 This closes the v1.2.1 residual where bearer auth was opt-in by
-default. CMMC AC.L1-3.1.1, MITRE T1190.
+default. It is one shared secret with no per-user roles, and the gateway
+reaches the daemon as a single client; it does not create tenancy.
 
 ## FIPS 140-3 build
 
@@ -139,8 +142,9 @@ cargo build -p spine-gateway --release --features fips
 
 1. Pulls in `aws-lc-rs` as the rustls `CryptoProvider`.
 2. At startup, installs `aws-lc-rs` as the process-wide rustls
-   default, so every TLS handshake uses AWS-LC primitives instead of
-   `ring`.
+   default of the gateway process (`install_fips_provider`,
+   `spine-gateway/src/main.rs`). The daemon (`spine-core`) has no such
+   feature and selects the Ring provider explicitly.
 
 For an end-to-end FIPS-validated module (required by CMMC L2 / IRAP /
 FedRAMP), the deployer must **also** rebuild `aws-lc-rs` itself in
@@ -148,21 +152,17 @@ FIPS mode (`AWS_LC_FIPS=1` plus the upstream toolchain instructions).
 The cargo feature alone wires SPINE's integration point; AWS-LC's
 validated module is a deployer-toolchain decision.
 
-## Cryptographic key memory hygiene (v1.3.0)
+## Cryptographic key memory hygiene
 
-The following private-key-bearing structs now `Zeroize` on `Drop`
-(NIST SP 800-171 § 3.13.10):
-
-- `spine_crypto::RingElement` — RLWE coefficients
-- `spine_crypto::QuantumKeyPair` — RLWE secret/public ring elements
-- `spine_crypto::MlKemKeyPair` — FIPS 203 decapsulation key bytes
-- `spine_crypto::QuantumKeyEvolution` — rolling key-hash history
-- `spine_agentic::Ed25519Keypair` — wraps `ed25519-dalek::SigningKey`
-  (which itself derives `ZeroizeOnDrop` upstream) plus the cached
-  public-key bytes.
-
-A dropped struct cannot leak its secret to a core-dump, swap-to-disk,
-or hibernation-image attacker.
+Corrected 2026-11-23. Handshake state and ephemeral secrets in
+`spine-session` derive `Zeroize` and `ZeroizeOnDrop`, and
+`ed25519_dalek::SigningKey` zeroizes on drop (`spine-mesh/src/identity.rs`).
+The daemon's key seed is stored in a plain file (mode 0600 on Unix) and
+is read into a plain `[u8; 32]` with no zeroizing wrapper that was found.
+The earlier list of `spine_crypto` and `spine_agentic` structs that
+zeroize on drop concerns research crates that the daemon does not use,
+and is not repeated. Zeroization does not protect against a reader of the
+state directory.
 
 ## Coordinated Disclosure
 
