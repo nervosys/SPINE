@@ -167,6 +167,8 @@ struct BrowserState {
     start_time: std::time::Instant,
     /// Shutdown signal: when true, stop accepting new connections
     shutting_down: std::sync::atomic::AtomicBool,
+    /// The last session persistence attempt failed; cleared by the next success.
+    persistence_failing: std::sync::atomic::AtomicBool,
     /// Becomes true when shutdown starts. Each native session watches it, sends
     /// `CLOSE(shutting_down)` once it is idle, and ends.
     shutdown: tokio::sync::watch::Sender<bool>,
@@ -1386,6 +1388,73 @@ async fn handle_command(
     response
 }
 
+/// Resource store accounting, read off the async threads. `None`: unreadable.
+async fn resource_bytes(state: &Arc<BrowserState>) -> Option<u64> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || state.resources.total_bytes().ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Dependency state for `/ready`.
+async fn dependencies(state: &Arc<BrowserState>) -> spine_core::operations::Dependencies {
+    let mut namespace_peers = 0;
+    if let Some(mesh) = &state.mesh_names {
+        namespace_peers = mesh.peer_count().await;
+    }
+    spine_core::operations::Dependencies {
+        persistence_failing: state
+            .persistence_failing
+            .load(std::sync::atomic::Ordering::Relaxed),
+        storage_unavailable: resource_bytes(state).await.is_none(),
+        namespace_enabled: state.mesh_names.is_some(),
+        namespace_peers,
+        seeds_configured: !state.config.namespace.seeds.is_empty()
+            || !state.config.namespace.dns_seeds.is_empty(),
+    }
+}
+
+/// Everything `/metrics` reports beyond the process-wide registry.
+async fn metrics_snapshot(state: &Arc<BrowserState>) -> spine_core::operations::MetricsSnapshot {
+    use spine_core::operations::{CacheCounts, MeshSnapshot, MetricsSnapshot};
+    let mut mesh = None;
+    if let Some(resolver) = &state.mesh_names {
+        mesh = Some(MeshSnapshot {
+            peers: resolver.peer_count().await,
+            pending_lookups: resolver.pending_lookups(),
+            pending_calls: resolver.pending_application_calls(),
+            metrics: resolver.metrics().await,
+        });
+    }
+    let cache = state.names.cache_stats();
+    MetricsSnapshot {
+        sessions_limit: state.config.server.max_sessions,
+        draining: state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Relaxed),
+        connections: state.connections.snapshot(),
+        outbound: state.fetcher.snapshot(),
+        execute_permits_in_use: EXECUTE_CONCURRENCY
+            .saturating_sub(state.execute_permits.available_permits()),
+        execute_permits_limit: EXECUTE_CONCURRENCY,
+        persistence_failing: state
+            .persistence_failing
+            .load(std::sync::atomic::Ordering::Relaxed),
+        resource_bytes: resource_bytes(state).await,
+        resource_limit_bytes: spine_core::resources::MAX_STORED_BYTES,
+        records_held: state.names.local_len(),
+        cache: CacheCounts {
+            hits: cache.hits,
+            stale_hits: cache.stale_hits,
+            negative_hits: cache.negative_hits,
+            misses: cache.misses,
+            evictions: cache.evictions,
+        },
+        mesh,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = SpineConfig::try_load()?;
@@ -1513,6 +1582,7 @@ async fn main() -> Result<()> {
         ),
         start_time: std::time::Instant::now(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
+        persistence_failing: std::sync::atomic::AtomicBool::new(false),
         shutdown: tokio::sync::watch::channel(false).0,
         config: config.clone(),
         names,
@@ -1530,8 +1600,14 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             if let Err(e) = persistence_state.save_sessions().await {
+                persistence_state
+                    .persistence_failing
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 error!("Failed to save sessions: {}", e);
             } else {
+                persistence_state
+                    .persistence_failing
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 debug!("Sessions persisted to disk");
             }
         }
@@ -1552,22 +1628,7 @@ async fn main() -> Result<()> {
             let mut buffer = vec![];
             let _ = encoder.encode(&metric_families, &mut buffer);
             let mut body = String::from_utf8(buffer).unwrap_or_default();
-            spine_core::operations::append_metrics(&mut body, state.connections.snapshot(), state.fetcher.snapshot());
-            if let Some(mesh) = &state.mesh_names {
-                let metrics = mesh.metrics().await;
-                for (name, value) in [
-                    ("lookups_started", metrics.lookups_started),
-                    ("lookups_resolved", metrics.lookups_resolved),
-                    ("lookups_timed_out", metrics.lookups_timed_out),
-                    ("announcements_rejected", metrics.announcements_rejected),
-                    ("replicas_sent", metrics.replicas_sent),
-                    ("replicas_failed", metrics.replicas_failed),
-                    ("records_expired", metrics.records_expired),
-                ] {
-                    body.push_str(&format!("# TYPE spine_namespace_{name}_total counter\nspine_namespace_{name}_total {value}\n"));
-                }
-                body.push_str(&format!("# TYPE spine_mesh_pending_calls gauge\nspine_mesh_pending_calls {}\n", mesh.pending_application_calls()));
-            }
+            body.push_str(&spine_core::operations::render_metrics(&metrics_snapshot(&state).await));
             body
             }
         }))
@@ -1605,7 +1666,7 @@ async fn main() -> Result<()> {
                 let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
                 let sessions = state.sessions.len();
                 let max = state.config.server.max_sessions;
-                let readiness = spine_core::operations::readiness(shutting_down, sessions, max, state.connections.snapshot());
+                let readiness = spine_core::operations::readiness_with(shutting_down, sessions, max, state.connections.snapshot(), dependencies(&state).await);
                 let ready = readiness.ready;
                 let mut body = serde_json::json!(readiness);
                 body["namespace"] = serde_json::json!(match &state.mesh_names {

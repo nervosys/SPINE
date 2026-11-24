@@ -811,9 +811,19 @@ async fn native_idle_connections_release_global_admission() {
         let excess = tokio::time::timeout(Duration::from_secs(15), AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}"))).await.expect("excess handshake deadline exceeded");
         assert!(excess.is_err(), "an excess connection must not complete the handshake");
         drop(excess);
-        let text = http.get(format!("http://127.0.0.1:{metrics_port}/metrics")).send().await.unwrap().text().await.unwrap();
+        let metrics = http.get(format!("http://127.0.0.1:{metrics_port}/metrics")).send().await.unwrap();
+        assert_eq!(metrics.status().as_u16(), 200);
+        let text = metrics.text().await.unwrap();
         assert!(text.contains("spine_native_connections_rejected_global_total 1\n"));
         assert!(text.contains("spine_native_connections_active 1\n"));
+        assert!(text.contains("# TYPE spine_sessions_active gauge"));
+        assert!(text.contains("# TYPE spine_namespace_enabled gauge"));
+        for line in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let (series, value) = line.rsplit_once(' ').expect("sample line has a value");
+            assert!(value.parse::<f64>().is_ok(), "bad metric value: {line}");
+            let name = series.split('{').next().unwrap();
+            assert!(!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':'), "bad metric name: {line}");
+        }
         // No further traffic from first. Its complete-message idle deadline
         // releases the shared connection budget even if the client stays open.
         tokio::time::sleep(Duration::from_millis(6500)).await;
