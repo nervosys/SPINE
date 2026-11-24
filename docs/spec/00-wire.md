@@ -451,11 +451,11 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with
 | `outbound_redirect_denied` | the origin answered 3xx | `outbound.rs` `fetch` |
 | `outbound_encoding_denied` | the response has a `Content-Encoding` other than `identity` | `outbound.rs` `fetch` |
 | `outbound_response_limit` | the body exceeds `outbound.max_response_bytes` | `outbound.rs` `fetch` |
-| `outbound_busy` | `outbound.max_concurrent` fetches are running | `outbound.rs` `fetch` |
-| `outbound_timeout` | the fetch exceeded `outbound.timeout_secs` | `outbound.rs` `fetch_checked`, `fetch` |
+| `outbound_busy` | `outbound.max_concurrent` fetches are running, or the session already runs `outbound.max_concurrent_per_caller` fetches | `outbound.rs` `fetch` |
+| `outbound_timeout` | the fetch exceeded `outbound.timeout_secs`, or no body chunk arrived within `outbound.read_timeout_secs` | `outbound.rs` `fetch_checked`, `fetch` |
 | `outbound_invalid_url` | the URL does not parse | `outbound.rs` `parse_url` |
 | `outbound_invalid_host` | the URL has no host | `outbound.rs` `parse_url`, `fetch` |
-| `outbound_invalid_port` | no port can be determined | `outbound.rs` `fetch` |
+| `outbound_invalid_port` | no port can be determined, or the URL's effective port is not in `outbound.allowed_ports` and its origin is not in `outbound.internal_origins`; checked before any DNS lookup | `outbound.rs` `fetch` |
 | `outbound_dns_failed` | name resolution failed | `outbound.rs` `fetch` |
 | `outbound_client_failed` | the HTTP client could not be built | `outbound.rs` `fetch` |
 | `outbound_request_failed` | sending the request failed other than by timeout | `outbound.rs` `fetch` |
@@ -497,7 +497,7 @@ Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environme
 | Resource read chunk | 1 to 65,536 bytes | `resource.rs` `MAX_RESOURCE_CHUNK`; fixed | `invalid_request` |
 | Resource store | 256 MiB of accounted bytes (row length plus 1,024 per blob), 64 MiB fair share per publisher; see 04-objects.md section 4.4 | `resources.rs` `MAX_STORED_BYTES`; fixed | `publish_failed` |
 | Tool text | 1 MiB | `tools.rs`; fixed | `invalid_args` |
-| Navigation | `[outbound]`: `enabled` true, `internal_origins` [] (at most 64), `max_response_bytes` 2 MiB (1 to 8 MiB), `timeout_secs` 30 (1 to 300), `max_concurrent` 16 (1 to 256); URL at most 8,192 bytes | `outbound.rs` `FetchConfig` | `outbound_*` |
+| Navigation | `[outbound]`: `enabled` true, `internal_origins` [] (at most 64), `max_response_bytes` 2 MiB (1 to 8 MiB), `timeout_secs` 30 (1 to 300), `max_concurrent` 16 (1 to 256), `allowed_ports` [80, 443] (1 to 16 entries, none 0), `read_timeout_secs` 10 (1 to 300, capped at `timeout_secs`), `max_concurrent_per_caller` 4 (1 to 256, capped at `max_concurrent`), `allow_link_local_exceptions` false; URL at most 8,192 bytes | `outbound.rs` `FetchConfig` | `outbound_*` |
 | SDK TCP connect, TLS handshake | 10 s each | `spine-agent` `AgentClient::connect`, `connect_tls` | error |
 | SDK `HELLO_ACK` | 10 s | `native.rs` `DEFAULT_HELLO_DEADLINE` | error |
 | SDK `capabilities`, `call_tool` | 10 s, 30 s | `spine-agent` | error; the client MUST then reconnect (`recv` is not cancel safe) |
