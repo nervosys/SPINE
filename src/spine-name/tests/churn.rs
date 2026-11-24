@@ -263,10 +263,11 @@ fn replacing_a_held_name_at_capacity_evicts_nothing() {
     assert_eq!(s.get(&name_of(order[9])).unwrap().seq, 2);
 }
 
-/// Documented in `RecordStore::put`: a tombstone is evictable under capacity
-/// pressure like any record, and once evicted it no longer blocks a replay.
+/// Documented in `RecordStore::put` (decision 52): a live record is evicted
+/// before a tombstone, so a nearer arrival does not cost the furthest tombstone
+/// its place.
 #[test]
-fn an_evicted_tombstone_stops_blocking_the_record_it_revoked() {
+fn a_full_store_of_live_records_and_a_tombstone_keeps_the_tombstone() {
     let home = NameKey::of(b"churn-home");
     let order = by_distance(&home);
     let (near, mid, far) = (order[0], order[5], order[11]);
@@ -280,16 +281,70 @@ fn an_evicted_tombstone_stops_blocking_the_record_it_revoked() {
         "while held, the tombstone blocks the old record"
     );
 
-    // A nearer record arrives and the furthest, the tombstone, is given up.
+    // A nearer record arrives: the live record goes, though the tombstone is
+    // the furthest.
     assert_eq!(
         s.put(rec(near, 1, NOW, "h:1"), NOW).unwrap(),
         PutOutcome::Inserted
     );
+    assert!(s.is_revoked(&name_of(far), NOW));
+    assert!(s.get(&name_of(mid)).is_none());
+    assert_eq!(
+        s.put(rec(far, 1, NOW, "h:1"), NOW).unwrap(),
+        PutOutcome::Superseded
+    );
+}
+
+/// A tombstone flood cannot exceed its share of capacity and cannot push the
+/// live records out.
+#[test]
+fn a_tombstone_flood_cannot_exceed_its_share_or_evict_live_records() {
+    let home = NameKey::of(b"churn-home");
+    let order = by_distance(&home);
+    let mut s = RecordStore::with_limits(home, 6);
+    assert_eq!(s.tombstone_limit(), 3);
+    for &seed in &order[0..3] {
+        s.put(rec(seed, 1, NOW, "h:1"), NOW).unwrap();
+    }
+    for (i, &seed) in order[3..12].iter().enumerate() {
+        s.put(tomb(seed, 2, NOW - 100 + i as u64), NOW).unwrap();
+        assert!(s.tombstone_count() <= 3);
+        assert!(s.len() <= 6);
+    }
+    for &seed in &order[0..3] {
+        assert!(s.get(&name_of(seed)).is_some(), "live seed {seed} stayed");
+    }
+    // The three newest tombstones are the ones held.
+    for &seed in &order[9..12] {
+        assert!(s.is_revoked(&name_of(seed), NOW));
+    }
+    assert_eq!(s.tombstone_count(), 3);
+}
+
+/// What the share does not do: a tombstone pushed out by newer tombstones stops
+/// blocking the record it revoked, so the name can be resurrected. Only a
+/// `retire` entry of a succession log is permanent.
+#[test]
+fn a_tombstone_evicted_over_the_share_stops_blocking_the_record_it_revoked() {
+    let home = NameKey::of(b"churn-home");
+    let order = by_distance(&home);
+    let (mid, far) = (order[5], order[11]);
+    let mut s = RecordStore::with_limits(home, 2);
+    assert_eq!(s.tombstone_limit(), 1);
+    s.put(tomb(far, 2, NOW - 10), NOW).unwrap();
+    assert_eq!(
+        s.put(rec(far, 1, NOW, "h:1"), NOW).unwrap(),
+        PutOutcome::Superseded,
+        "while held, the tombstone blocks the old record"
+    );
+
+    // A newer tombstone of another name takes the only tombstone place.
+    s.put(tomb(mid, 2, NOW), NOW).unwrap();
     assert!(s.get(&name_of(far)).is_none());
     assert!(!s.is_revoked(&name_of(far), NOW));
+    assert!(s.is_revoked(&name_of(mid), NOW));
 
-    // With room made, the revoked record is admitted again.
-    s.remove(&name_of(mid)).unwrap();
+    // The revoked record is admitted again.
     assert_eq!(
         s.put(rec(far, 1, NOW, "h:1"), NOW).unwrap(),
         PutOutcome::Inserted

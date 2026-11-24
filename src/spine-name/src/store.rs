@@ -41,6 +41,14 @@ pub enum PutOutcome {
 /// store here. This is.
 pub const DEFAULT_CAPACITY: usize = 10_000;
 
+/// The share of a store's capacity that tombstones may hold: capacity divided by
+/// this, and at least one. With the value 2, a store of 10 000 records holds at
+/// most 5 000 tombstones. A tombstone beyond the share evicts the oldest-published
+/// tombstone (ties: the smaller key), so a flood of revocations cannot push live
+/// records out, and a live record is never refused because tombstones hold the
+/// room. See [`RecordStore::put`] and spec 02, 10.10 decision 52.
+pub const TOMBSTONE_SHARE_DIVISOR: usize = 2;
+
 /// A verified, expiry-aware collection of name records.
 #[derive(Debug, Clone)]
 pub struct RecordStore {
@@ -114,12 +122,58 @@ impl RecordStore {
         }
     }
 
-    /// The record this store would give up first, if it holds any.
+    /// The live (non-tombstone) record this store would give up first, if it
+    /// holds any. A tombstone is never a candidate here.
     fn eviction_candidate(&self) -> Option<(NameKey, (u64, [u8; 32]))> {
         self.by_key
             .iter()
+            .filter(|(_, r)| !r.is_tombstone())
             .map(|(k, r)| (*k, self.eviction_rank(k, r)))
             .max_by(|a, b| a.1.cmp(&b.1))
+    }
+
+    /// How many tombstones this store may hold: [`TOMBSTONE_SHARE_DIVISOR`]
+    /// of its capacity, and at least one.
+    pub fn tombstone_limit(&self) -> usize {
+        (self.capacity / TOMBSTONE_SHARE_DIVISOR).max(1)
+    }
+
+    /// How many tombstones are held (expired ones included until swept). Counted
+    /// by a scan, so there is no second count to keep in step with the map at
+    /// insert, replace, sweep, remove and load.
+    pub fn tombstone_count(&self) -> usize {
+        self.by_key.values().filter(|r| r.is_tombstone()).count()
+    }
+
+    /// The oldest-published tombstone, other than `except`; the smaller key
+    /// breaks a tie in `published_at`, so the choice does not depend on
+    /// arrival or map order.
+    fn oldest_tombstone(&self, except: Option<NameKey>) -> Option<NameKey> {
+        self.by_key
+            .iter()
+            .filter(|(k, r)| r.is_tombstone() && Some(**k) != except)
+            .min_by(|a, b| {
+                a.1.published_at
+                    .cmp(&b.1.published_at)
+                    .then_with(|| a.0.as_bytes().cmp(b.0.as_bytes()))
+            })
+            .map(|(k, _)| *k)
+    }
+
+    fn evict(&mut self, key: &NameKey) {
+        if let Some(evicted) = self.by_key.remove(key) {
+            self.deindex(key, evicted.capabilities);
+        }
+    }
+
+    /// Evict the oldest tombstones, never `keep`, until at most `allowed` remain.
+    fn trim_tombstones(&mut self, allowed: usize, keep: Option<NameKey>) {
+        while self.tombstone_count() > allowed {
+            match self.oldest_tombstone(keep) {
+                Some(oldest) => self.evict(&oldest),
+                None => break,
+            }
+        }
     }
 
     /// The succession logs and equivocation proofs this store holds.
@@ -216,12 +270,29 @@ impl RecordStore {
     ///
     /// A held tombstone keeps its name revoked: a record of the same or lower
     /// `seq` does not supersede it ([`NameRecord::supersedes`]) and is answered
-    /// with [`PutOutcome::Superseded`]. A tombstone is evictable under capacity
-    /// pressure like any record, but only while it is unexpired: when the store
-    /// is full and a new name arrives, the records that have lapsed at `now`
-    /// are dropped first (a lapsed record, tombstone or not, is no longer
-    /// served or enforced, so it must not hold a place against a live one), and
-    /// only if the store is still full is the eviction rule applied.
+    /// with [`PutOutcome::Superseded`].
+    ///
+    /// # Eviction (spec 02, 10.10 decisions 48 and 52)
+    ///
+    /// When the store is full and a new name arrives, in this order: the
+    /// records lapsed at `now` are dropped (a lapsed record, tombstone or not, is
+    /// no longer served or enforced); then, for a live record, the furthest
+    /// *live* record is the victim if the arrival is nearer than it, else the
+    /// arrival is [`PutOutcome::Rejected`], whatever tombstones are held; a
+    /// tombstone is the victim only when no live record is held, and then the
+    /// oldest-published. A tombstone arriving is admitted by evicting the
+    /// furthest live record, whatever the distance (a revocation should be hard
+    /// to lose, and the share below bounds the price). Tombstones hold at most
+    /// [`RecordStore::tombstone_limit`] places ([`TOMBSTONE_SHARE_DIVISOR`]): a
+    /// tombstone that would exceed it evicts the oldest-published tombstone
+    /// first (also when the store is not full). A tombstone that replaces a
+    /// record of its own name is an update and evicts nothing for room, but
+    /// counts toward the share afterwards, and then the oldest *other*
+    /// tombstone goes, never the one just stored.
+    ///
+    /// An evicted tombstone no longer blocks the older record it revoked: the
+    /// name can be resurrected. Only a `retire` entry of a succession log is
+    /// permanent.
     pub fn put(&mut self, record: NameRecord, now: u64) -> Result<PutOutcome, NameError> {
         record.validate_not_postdated(now)?;
         self.logs.authorise(&record)?;
@@ -233,8 +304,21 @@ impl RecordStore {
             }
             self.deindex(&key, existing.capabilities.clone());
             self.index(&key, &record);
+            let tombstone = record.is_tombstone();
             self.by_key.insert(key, record);
+            if tombstone {
+                self.trim_tombstones(self.tombstone_limit(), Some(key));
+            }
             return Ok(PutOutcome::Updated);
+        }
+
+        // A tombstone beyond its share evicts the oldest tombstones first. Lapsed
+        // records are dropped before the choice, so an expired tombstone is
+        // never preferred to a live one for a place.
+        let tombstone = record.is_tombstone();
+        if tombstone && self.tombstone_count() >= self.tombstone_limit() {
+            self.sweep_expired(now);
+            self.trim_tombstones(self.tombstone_limit() - 1, None);
         }
 
         // Full: lapsed records go first, whatever their distance. They are
@@ -249,15 +333,21 @@ impl RecordStore {
         // least suited to hold. If that is the arriving record, it is refused
         // rather than displacing a record nearer to us — otherwise a stream of
         // distant names would evict exactly the ones we are responsible for.
+        // Only a live record is a victim; a tombstone goes only when no live
+        // record is held, and a tombstone arriving evicts the furthest live
+        // record whatever its distance.
         if self.by_key.len() >= self.capacity {
             let incoming = self.eviction_rank(&key, &record);
-            match self.eviction_candidate() {
-                Some((worst_key, worst_rank)) if worst_rank > incoming => {
-                    if let Some(evicted) = self.by_key.remove(&worst_key) {
-                        self.deindex(&worst_key, evicted.capabilities);
-                    }
+            let victim = match self.eviction_candidate() {
+                Some((worst_key, worst_rank)) if tombstone || worst_rank > incoming => {
+                    Some(worst_key)
                 }
-                _ => return Ok(PutOutcome::Rejected),
+                Some(_) => None,
+                None => self.oldest_tombstone(None),
+            };
+            match victim {
+                Some(victim) => self.evict(&victim),
+                None => return Ok(PutOutcome::Rejected),
             }
         }
 
@@ -841,5 +931,245 @@ mod tests {
         assert_eq!(s.put(older.clone(), 1_200).unwrap(), PutOutcome::Rejected);
         assert!(s.get(&older.name).is_none());
         assert_eq!(s.len(), 2);
+    }
+
+    // ---- tombstones under pressure (spec 02, 10.10 decision 52) --------------
+
+    /// The store clock for these tests: after every `published_at` used below.
+    const LATE: u64 = 1_100;
+
+    fn tomb_at(seed: u8, at: u64) -> NameRecord {
+        tombstone(seed, 2, at)
+    }
+
+    /// Case 1: while a live record can go, no tombstone is chosen, however far
+    /// it is; and an arrival further than every live record is refused whatever
+    /// tombstones are held.
+    #[test]
+    fn a_tombstone_is_not_chosen_while_a_live_record_can_go() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 4);
+        // The furthest of all is the tombstone.
+        s.put(tomb_at(order[8], 1_000), LATE).unwrap();
+        for &seed in &order[3..6] {
+            s.put(record(seed, 1, 1_000, &[], 0), LATE).unwrap();
+        }
+        assert_eq!(s.len(), 4);
+
+        let near = record(order[0], 1, 1_000, &[], 0);
+        assert_eq!(s.put(near.clone(), LATE).unwrap(), PutOutcome::Inserted);
+        assert!(s.is_revoked(&tomb_at(order[8], 1_000).name, LATE));
+        assert!(s.get(&record(order[5], 1, 1_000, &[], 0).name).is_none());
+        assert_eq!(s.len(), 4);
+
+        // Further than every live record (but nearer than the tombstone): refused,
+        // exactly as in a store with no tombstone.
+        let beyond = record(order[7], 1, 1_000, &[], 0);
+        assert_eq!(s.put(beyond.clone(), LATE).unwrap(), PutOutcome::Rejected);
+        assert!(s.get(&beyond.name).is_none());
+        assert!(s.is_revoked(&tomb_at(order[8], 1_000).name, LATE));
+        assert_eq!(s.len(), 4);
+    }
+
+    /// Case 2: a tombstone arriving at a store full of nearer live records is
+    /// admitted, and the furthest live record goes.
+    #[test]
+    fn a_tombstone_arriving_at_a_full_store_evicts_the_furthest_live_record() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 4);
+        for &seed in &order[0..4] {
+            s.put(record(seed, 1, 1_000, &[], 0), LATE).unwrap();
+        }
+        let far = tomb_at(order[8], 1_000);
+        assert_eq!(s.put(far.clone(), LATE).unwrap(), PutOutcome::Inserted);
+        assert!(s.is_revoked(&far.name, LATE));
+        assert!(s.get(&record(order[3], 1, 1_000, &[], 0).name).is_none());
+        for &seed in &order[0..3] {
+            assert!(s.get(&record(seed, 1, 1_000, &[], 0).name).is_some());
+        }
+        assert_eq!((s.len(), s.tombstone_count()), (4, 1));
+    }
+
+    /// Case 3: a tombstone that replaces a record of its own name is an update:
+    /// it evicts nothing for room, counts toward the share, and if that exceeds
+    /// it the oldest other tombstone goes, never the one just stored.
+    #[test]
+    fn a_tombstone_replacing_its_own_record_counts_toward_the_share_and_spares_itself() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 4);
+        assert_eq!(s.tombstone_limit(), 2);
+        s.put(tomb_at(order[1], 1_000), LATE).unwrap();
+        s.put(tomb_at(order[2], 1_010), LATE).unwrap();
+        s.put(record(order[3], 1, 1_000, &[], 0), LATE).unwrap();
+        s.put(record(order[4], 1, 1_000, &[], 0), LATE).unwrap();
+        assert_eq!((s.len(), s.tombstone_count()), (4, 2));
+
+        // The store is full and at its share, yet this is an update: nothing is
+        // evicted for room. It is the newest tombstone, and the oldest other one
+        // (not itself, which would be the newest) is the one that goes.
+        let newest = tomb_at(order[4], 1_020);
+        assert_eq!(s.put(newest.clone(), LATE).unwrap(), PutOutcome::Updated);
+        assert!(
+            s.is_revoked(&newest.name, LATE),
+            "the one just stored stays"
+        );
+        assert!(s.get(&tomb_at(order[1], 1_000).name).is_none());
+        assert!(s.get(&tomb_at(order[2], 1_010).name).is_some());
+        assert!(s.get(&record(order[3], 1, 1_000, &[], 0).name).is_some());
+        assert_eq!((s.len(), s.tombstone_count()), (3, 2));
+
+        // Even when the new tombstone is the oldest, it is the other that goes.
+        let mut t = RecordStore::with_limits(home, 4);
+        t.put(tomb_at(order[1], 1_010), LATE).unwrap();
+        t.put(tomb_at(order[2], 1_020), LATE).unwrap();
+        t.put(record(order[3], 1, 1_000, &[], 0), LATE).unwrap();
+        let oldest = tomb_at(order[3], 1_000);
+        assert_eq!(t.put(oldest.clone(), LATE).unwrap(), PutOutcome::Updated);
+        assert!(t.is_revoked(&oldest.name, LATE));
+        assert!(t.get(&tomb_at(order[1], 1_010).name).is_none());
+        assert_eq!((t.len(), t.tombstone_count()), (2, 2));
+    }
+
+    /// Case 4: tombstones at their share leave the rest of the capacity to live
+    /// records, and one more tombstone evicts a tombstone, not a live record.
+    #[test]
+    fn tombstones_at_their_share_leave_room_for_live_records() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 4);
+        s.put(tomb_at(order[6], 1_000), LATE).unwrap();
+        s.put(tomb_at(order[7], 1_010), LATE).unwrap();
+        for &seed in &order[0..2] {
+            assert_eq!(
+                s.put(record(seed, 1, 1_000, &[], 0), LATE).unwrap(),
+                PutOutcome::Inserted
+            );
+        }
+        assert_eq!((s.len(), s.tombstone_count()), (4, 2));
+
+        let third = tomb_at(order[8], 1_020);
+        assert_eq!(s.put(third.clone(), LATE).unwrap(), PutOutcome::Inserted);
+        assert!(
+            s.get(&tomb_at(order[6], 1_000).name).is_none(),
+            "oldest went"
+        );
+        assert!(s.is_revoked(&third.name, LATE));
+        for &seed in &order[0..2] {
+            assert!(s.get(&record(seed, 1, 1_000, &[], 0).name).is_some());
+        }
+        assert_eq!((s.len(), s.tombstone_count()), (4, 2));
+    }
+
+    /// A flood of tombstones never holds more than its share, and live records
+    /// stay.
+    #[test]
+    fn a_tombstone_flood_cannot_exceed_its_share() {
+        let mut s = RecordStore::with_capacity(4);
+        let live = record(1, 1, 1_000, &[], 0);
+        s.put(live.clone(), LATE).unwrap();
+        for seed in 2..=9u8 {
+            s.put(tomb_at(seed, 1_000 + u64::from(seed)), LATE).unwrap();
+            assert!(s.tombstone_count() <= s.tombstone_limit());
+            assert!(s.get(&live.name).is_some());
+        }
+        assert_eq!(s.tombstone_count(), 2);
+        for seed in [8u8, 9] {
+            assert!(s.get(&tomb_at(seed, 0).name).is_some(), "the newest stay");
+        }
+    }
+
+    /// A one-place store: the tombstone is within its share, and a live arrival
+    /// still takes the place when no live record is held.
+    #[test]
+    fn a_live_record_can_always_be_admitted_over_tombstones_alone() {
+        let mut s = RecordStore::with_capacity(1);
+        s.put(tomb_at(1, 1_000), LATE).unwrap();
+        let live = record(2, 1, 1_000, &[], 0);
+        assert_eq!(s.put(live.clone(), LATE).unwrap(), PutOutcome::Inserted);
+        assert!(s.get(&live.name).is_some());
+        assert_eq!(s.tombstone_count(), 0);
+    }
+
+    /// Case 5: a lapsed tombstone is dropped by the sweep before any live
+    /// record is evicted for room.
+    #[test]
+    fn a_lapsed_tombstone_goes_before_a_live_record() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 2);
+        s.put(tomb_at(order[0], 1_000), LATE).unwrap();
+        let later = 1_000 + u64::from(crate::MAX_RECORD_TTL_SECS);
+        let far = short_lived(order[7], later, 600);
+        s.put(far.clone(), later).unwrap();
+        assert_eq!(s.len(), 2);
+
+        let near = short_lived(order[1], later, 600);
+        assert_eq!(s.put(near.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert!(s.get(&tomb_at(order[0], 1_000).name).is_none());
+        assert!(s.get(&far.name).is_some(), "the live record was kept");
+        assert!(s.get(&near.name).is_some());
+
+        // Likewise for a tombstone arriving at a lapsed tombstone's share.
+        let mut t = RecordStore::with_limits(home, 2);
+        t.put(tomb_at(order[0], 1_000), LATE).unwrap();
+        t.put(short_lived(order[7], later, 600), later).unwrap();
+        let fresh = tombstone(order[2], 2, later);
+        assert_eq!(t.put(fresh.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert!(t.get(&tomb_at(order[0], 1_000).name).is_none());
+        assert!(t.get(&short_lived(order[7], later, 600).name).is_some());
+    }
+
+    /// Case 6: the victim does not depend on the order records arrived in, nor
+    /// on the map's order; equal publication times fall to the smaller key.
+    #[test]
+    fn the_victim_choice_is_deterministic() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let live = [order[2], order[5]];
+        let tomb = tomb_at(order[8], 1_000);
+        let near = record(order[0], 1, 1_000, &[], 0);
+        let mut results = Vec::new();
+        for reverse in [false, true] {
+            let mut items = vec![
+                record(live[0], 1, 1_000, &[], 0),
+                record(live[1], 1, 1_000, &[], 0),
+                tomb.clone(),
+            ];
+            if reverse {
+                items.reverse();
+            }
+            let mut s = RecordStore::with_limits(home, 3);
+            for item in items {
+                s.put(item, LATE).unwrap();
+            }
+            s.put(near.clone(), LATE).unwrap();
+            let mut held: Vec<NameKey> = s.records().map(|r| r.name.key()).collect();
+            held.sort_by_key(|k| *k.as_bytes());
+            results.push(held);
+        }
+        assert_eq!(results[0], results[1]);
+        assert!(results[0].contains(&tomb.name.key()));
+        assert!(!results[0].contains(&record(live[1], 1, 1_000, &[], 0).name.key()));
+
+        // Tombstones published at the same time: the smaller key goes first, in
+        // either arrival order.
+        let (a, b, c) = (tomb_at(1, 1_000), tomb_at(2, 1_000), tomb_at(3, 1_000));
+        let smaller = [&a, &b]
+            .into_iter()
+            .min_by_key(|r| *r.name.key().as_bytes())
+            .unwrap()
+            .clone();
+        for pair in [[&a, &b], [&b, &a]] {
+            let mut s = RecordStore::with_capacity(4);
+            for r in pair {
+                s.put(r.clone(), LATE).unwrap();
+            }
+            s.put(c.clone(), LATE).unwrap();
+            assert!(s.get(&smaller.name).is_none());
+            assert_eq!(s.tombstone_count(), 2);
+        }
     }
 }
