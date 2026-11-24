@@ -7,6 +7,7 @@
 //! (`docs/spec/03-authority.md`). It is a library module only: the daemon does
 //! not call it, because spine-wire v1 cannot carry a grant chain.
 
+pub mod actions;
 pub mod authority;
 pub mod authority_ledger;
 pub mod config;

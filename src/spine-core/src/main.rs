@@ -1193,6 +1193,16 @@ async fn handle_command(
                         ));
                     }
                 }
+                // The response cannot say an action was skipped, so one this
+                // daemon does not perform refuses the whole program.
+                if let Some(name) =
+                    spine_core::actions::unsupported_action(action, cfg!(feature = "research"))
+                {
+                    return Err(fail(
+                        ERR_EXECUTION_FAILED,
+                        format!("execution failed: the \"{name}\" action is not supported by this daemon"),
+                    ));
+                }
             }
             if navigations > MAX_NAVIGATIONS_PER_EXECUTE {
                 return Err(fail(

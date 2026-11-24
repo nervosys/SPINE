@@ -182,6 +182,21 @@ async fn execute_binary_is_confined() {
             "a refused program must not replace the session's binary"
         );
 
+        // An action the daemon does not perform is refused with the program,
+        // not dropped: `search` is performed only in a research build.
+        if !cfg!(feature = "research") {
+            let search = vec![
+                Instruction::Push(serde_json::json!("rust")),
+                Instruction::SearchFromStack,
+            ];
+            let unsupported = tokio::time::timeout(step, client.execute_binary(program(search, &["search"])))
+                .await
+                .expect("execute_binary deadline")
+                .unwrap_err();
+            assert_eq!(code_of(&unsupported), "execution_failed");
+            assert!(format!("{unsupported:#}").contains("search"), "{unsupported:#}");
+        }
+
         // A program's knowledge write lands under its own session: the other
         // connection does not see it, whatever key the program chose.
         let store = vec![
