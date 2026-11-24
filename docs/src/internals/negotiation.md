@@ -21,7 +21,8 @@ closed. Frames in the handshake are read under the 64 KiB pre-`HELLO` limit.
 | Frame | Keys |
 |-------|------|
 | `HELLO` (client, first) | `versions` (strictly ascending, not empty), `max_frame` (1,024 to 16,777,216), `extensions` (no duplicates), `agent` (optional, at most 128 bytes) |
-| `HELLO_ACK` (server) | `version`, `max_frame`, `max_inflight` (at least 1), `extensions`, `agent` (optional) |
+| `HELLO_ACK` (server) | `version`, `max_frame`, `max_inflight` (at least 1), `extensions`, `agent` (optional), `binding` (32 random bytes, new for every connection), `authority` (`off`, `audit` or `required`), `time` (the server's Unix seconds) |
+| `IDENTIFY` (client, once, right after `HELLO_ACK`) | `key` (32 bytes), `sig` (64 bytes), `channel` (bytes, empty) |
 | `CLOSE` | `code`, `message`, `supported` (optional, for `unsupported_version`) |
 
 ## Rules
@@ -41,7 +42,14 @@ closed. Frames in the handshake are read under the 64 KiB pre-`HELLO` limit.
   SDK offers none.
 - **Client check.** The client rejects an acknowledgement that selects a version
   it did not offer, raises `max_frame` above its own, names an extension it did
-  not offer, or carries `max_inflight` of 0, each as `protocol_violation`.
+  not offer, carries `max_inflight` of 0, or lacks or mistypes `binding`,
+  `authority` or `time`, each as `protocol_violation`.
+- **Identity.** A client may send one `IDENTIFY`: an Ed25519 key and a signature
+  over the bytes of its `HELLO` and of the acknowledgement (so over `binding`).
+  It must come before the first `REQUEST`, `STREAM_CANCEL` or `EXT`; a second one,
+  a late one or a bad proof is `protocol_violation`. The daemon records the key
+  and logs it; the identity grants nothing. See `docs/spec/00-wire.md` 6.6 for
+  what the proof does not show.
 - **Timeout.** The daemon closes a connection that has not sent `HELLO` within
   `server.hello_timeout_secs` (default 10) with `CLOSE(timeout)`. The SDK waits
   ten seconds for `HELLO_ACK`.

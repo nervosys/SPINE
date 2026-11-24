@@ -1,6 +1,6 @@
 # spine-wire v1: the native client to daemon protocol
 
-Status: spine-wire v1, as implemented at `c33e52b` (branch `completion/agent-web`). Normative for the reference implementation (`src/spine-protocol`, the daemon in `src/spine-core`, the SDK in `src/spine-agent`). Not externally reviewed. Nothing in this revision was compiled or run except the two Python commands of section 15.1; every rule below names the function that enforces it, and a rule that could not be confirmed by reading is marked "unverified".
+Status: spine-wire v1, as implemented at `c33e52b` (branch `completion/agent-web`), and revised in place on 2026-11-24 for a client identity and a per-connection value in the handshake (1.5, 6.3, 6.6). Normative for the reference implementation (`src/spine-protocol`, the daemon in `src/spine-core`, the SDK in `src/spine-agent`). Not externally reviewed. Nothing in this revision was compiled or run except the two Python commands of section 15.1; every rule below names the function that enforces it, and a rule that could not be confirmed by reading is marked "unverified".
 
 This document replaced an earlier one that described the pre-v1 wire (now Appendix A), proposed v1 (the text of sections 2 to 12), planned the migration (Appendix B) and listed open questions (Appendix C). Where the proposal and the implementation differed, the implementation is now the specification, or, when the implementation contradicts another rule of this document or looks like a defect, the behaviour is specified as implemented and listed in section 16. Section labels of the earlier document (`C.7`, `G11`, ...) still appear in source comments and other documents; Appendix D maps them to the sections below.
 
@@ -28,16 +28,26 @@ The client to daemon path: the SDK, the CLI, the gateway and the FFI, Go and Pyt
 
 ### 1.4 Security non-goals
 
-This layer provides no confidentiality, no peer authentication and no replay protection. A frame is plaintext inside whatever carries it. There is no field for a signature, a capability or a nonce, and adding one is a new version.
+This layer provides no confidentiality, no peer authentication and no replay protection. A frame is plaintext inside whatever carries it. The handshake can carry one client public key with a proof that the client holds its private key, and it gives every connection a random value (6.3, 6.6). The proof has no channel binding, so a relay can carry it (6.6), and nothing in the daemon acts on the key. No frame carries a capability, a grant or a request nonce; one that did would be a further revision (1.5).
 
 Where protection comes from today:
 
-- TLS 1.3 through rustls on the TCP and WebSocket listeners. It is off by default (`tls.enabled`), optionally with mutual TLS (`tls.mutual_tls`). There is no SPINE identity on this path: authentication is an X.509 client certificate or nothing.
+- TLS 1.3 through rustls on the TCP and WebSocket listeners. It is off by default (`tls.enabled`), optionally with mutual TLS (`tls.mutual_tls`). The only authentication the daemon acts on is an X.509 client certificate or nothing. A client MAY also present a SPINE key with `IDENTIFY` (6.6): the daemon records it for its log, and it grants nothing.
 - A non-loopback `server.host` is refused at startup unless `tls.mutual_tls` is on or `server.allow_unauthenticated_remote` is set (`spine-core` `config.rs` `SpineConfig::validate`). Every connected client has full control of the node.
 - QUIC has no client authentication and its certificate is self-signed; startup with QUIC is refused when `tls.enabled` (`spine-core` `main.rs` `main`).
 - The mesh path runs a different handshake (`spine-session`: ML-KEM-768, Ed25519, AES-256-GCM) that has had no external review.
 
 Whether to run this wire over the `spine-session` handshake instead of TLS is an open question (Appendix C, G1). It stays open until that handshake is independently reviewed. The frame layer is agnostic: v1 frames would be the plaintext inside session records.
+
+### 1.5 Revision history
+
+2026-11-24: the wire was revised in place. The version byte is still 1 and `HELLO.versions` is still `[1]`. Before the revision, 1.4 said: "There is no field for a signature, a capability or a nonce, and adding one is a new version."
+
+What changed: `HELLO_ACK` gained three required keys, `binding`, `authority` and `time` (6.3, 6.4); a frame type `IDENTIFY`, `0x06`, was allocated (3, 6.6) with its state rule (8.2) and its failure behaviour (7.3); limits and vectors were added (14, 15). The sentence above no longer holds, and 1.4 now says what the handshake carries and what it does not.
+
+Why in place: nothing has been released, and this document is normative for the reference implementation in this repository only. The draft `00-wire-revision.md` (A.3) weighed a version 2 against revising v1 and recommended revising it; its open questions 1, 3 and 13 (in place, keep `IDENTIFY`, a pure-Python Ed25519 in the reference) were answered provisionally that way and remain the project owner's to overturn (`00-wire-revision.md` E).
+
+Consequences. A peer built from the text before this revision does not send or check the three keys: a client of that kind works against a revised server (it ignores keys it does not know, 5.2 rule 9) and never sends `IDENTIFY`; a revised client against such a server closes with `protocol_violation` at `HELLO_ACK` (6.3). "Version 1" therefore names two behaviours with one version byte, and nothing on the wire tells a peer which one it faces except that failure. Nothing else of the draft is in this document: no `AUTH_REQUEST`, no `RECEIPT`, no new error codes, and the authority gate is still not called.
 
 ## 2. Frame
 
@@ -93,6 +103,7 @@ The frame layer needs an ordered, reliable byte stream. Frame boundaries do not 
 | `0x03` | `CLOSE` | either | 0 | `{code, message[, supported]}`, 6.5 |
 | `0x04` | `PING` | either | nonzero | uint token, section 9 |
 | `0x05` | `PONG` | either | the `PING`'s id | the same token |
+| `0x06` | `IDENTIFY` | client, once, only right after `HELLO_ACK` | 0 | `{key, sig, channel}`, 6.6 |
 | `0x10` | `REQUEST` | client | nonzero, not in flight | a command, section 12 |
 | `0x11` | `RESPONSE` | server | the request's id | `{ok: any}` or `{err: {code, message[, details]}}`, 8.4 |
 | `0x20` | `STREAM_START` | server | the request's id | `{role, model[, trace][, decode_hints]}`, section 10 |
@@ -101,7 +112,7 @@ The frame layer needs an ordered, reliable byte stream. Frame boundaries do not 
 | `0x23` | `STREAM_CANCEL` | client | the stream's id | `{[reason]}`; with no reason, the empty map `a0` |
 | `0x80` | `EXT` | either | extension-defined | array `[index, kind, payload]`, section 11 |
 
-All other values (`0x06` to `0x0f`, `0x12` to `0x1f`, `0x24` to `0x7f`, `0x81` to `0xff`) are unallocated. Source: `frame.rs` `FrameType`.
+All other values (`0x07` to `0x0f`, `0x12` to `0x1f`, `0x24` to `0x7f`, `0x81` to `0xff`) are unallocated. Source: `frame.rs` `FrameType`.
 
 ## 4. Compression
 
@@ -156,7 +167,7 @@ The first frame, in the order the code checks it: the frame-layer checks of 7.2 
 
 The client reads the reply under the same maximum. A `CLOSE` in place of `HELLO_ACK` ends the handshake and is reported with its code and message. Otherwise the reply must be a `HELLO_ACK` that passes 6.3 and `validate_against` (`hello.rs` `HelloAck::validate_against`); any failure is `protocol_violation`, and a selected version other than 1 is `unsupported_version`, each answered with a best-effort `CLOSE`.
 
-Sending requests before `HELLO_ACK` is not allowed in v1.
+Sending requests before `HELLO_ACK` is not allowed in v1. After it, and before its first request, a client MAY send one `IDENTIFY` (6.6).
 
 ### 6.2 HELLO
 
@@ -182,8 +193,19 @@ A map; unknown keys are ignored.
 | `max_inflight` | uint (u32) | no | At least 1. The number of requests the server processes concurrently per connection. |
 | `extensions` | array of text | no | The accepted subset of the offered ids, in the order that fixes the extension index (11). No duplicates. |
 | `agent` | text | yes | Informational. Not length-limited. |
+| `binding` | bytes, exactly 32 | no | A value the server draws for this connection from the operating system's random source. See below. |
+| `authority` | text | no | The node's authority mode: `"off"`, `"audit"` or `"required"`, exactly these lower-case texts. |
+| `time` | uint (u64) | no | The server's clock, Unix seconds, when it built the acknowledgement. |
 
-A client MUST treat as `protocol_violation`: `max_frame` outside its range or above the one it offered, `max_inflight` of 0, a duplicate extension, a `version` it did not offer, an extension it did not offer (`HelloAck::validate`, `validate_against`).
+In the deterministic order of its keys, the acknowledgement is: `time`, `agent`, `binding`, `version`, `authority`, `max_frame`, `extensions`, `max_inflight` (`agent` only when present).
+
+A client MUST treat as `protocol_violation`: `max_frame` outside its range or above the one it offered, `max_inflight` of 0, a duplicate extension, a `version` it did not offer, an extension it did not offer, a missing or mistyped `binding`, `authority` or `time`, a `binding` that is not 32 bytes, an `authority` that is not one of the three texts (`HelloAck::validate`, `validate_against`).
+
+`binding` is generated after a valid `HELLO` has been read and before the acknowledgement is written (`hello.rs` `negotiate`, `fresh_binding`, from `OsRng`). Nothing the client sent is an input, so a client cannot steer it, and it is unique per connection with overwhelming probability. It appears once on the wire, here, and in the signed message of `IDENTIFY` through the acknowledgement bytes (6.6). Nothing else uses it: it is not a session token and possession of it grants nothing. (`03-authority.md` calls the value an invocation would be bound to `session`; no invocation is checked by the daemon today.) Both ends keep the bytes of the two handshake bodies for the connection (`connection.rs` `Connection::transcript`, `binding`).
+
+`authority` reports what the node's configuration says, to every client, anonymous or not. The wire has three values. The daemon reports `off`, the only mode in which it starts: it refuses `required` at startup (`spine-core` `config.rs` `AuthorityConfig::validate`) and has no `audit`. It enforces nothing in any mode (section 16, item 20). A client MUST accept all three values.
+
+`time` is not authenticated: an active attacker can shift it. It is a hint for a client whose own clock may be wrong. No peer in this repository uses it.
 
 ### 6.4 Negotiation
 
@@ -194,6 +216,9 @@ A client MUST treat as `protocol_violation`: `max_frame` outside its range or ab
 - `max_inflight`: the server's value, but at least 1. The daemon sends 8 (`native::DAEMON_MAX_INFLIGHT`): the number of requests one connection may have accepted at a time, the running one included (8.3).
 - `extensions`: the offered ids that the server supports, in the order of the client's `HELLO`. The server's own order is ignored. The position in the resulting array is the extension index for the connection.
 - `agent`: the server's own, omitted when it has none (the daemon has none). The SDK offers `spine-protocol/<crate version>`.
+- `binding`: 32 fresh random bytes for every connection, unless the caller of `negotiate` injected one (`LocalConfig::binding`, for tests and the vectors).
+- `authority`: the server's own mode (`LocalConfig::authority`, `off` by default; the daemon sets it from `[authority] mode`, `main.rs` `serve_native`).
+- `time`: the system clock in Unix seconds, unless injected (`LocalConfig::time`).
 
 The daemon accepts no extensions, so it answers an empty list.
 
@@ -202,6 +227,48 @@ The daemon accepts no extensions, so it answers an empty list.
 `CLOSE` carries request id 0 and the closed map `{code: text, message: text[, supported: array of uint]}` (`hello.rs` `Close`). `supported` is meaningful only with `unsupported_version`. Codes: `unsupported_version`, `unknown_frame_type`, `malformed_frame`, `frame_too_large`, `protocol_violation`, `timeout`, `shutting_down` (7.3). A `message` is for people and is not specified. A receiver MUST accept an unknown `code` text as a close without interpreting it.
 
 The sender closes after sending: it writes the frame (at most one second, under the pre-`HELLO` maximum, never compressed), then shuts down its write side (`connection.rs` `best_effort_close`). A peer MUST NOT rely on receiving a `CLOSE`. After sending or receiving one, or after an error, `Connection` refuses further use.
+
+### 6.6 IDENTIFY
+
+A client MAY prove, once per connection, that it holds an Ed25519 private key. The server records the public key as the connection's identity. The identity is recorded and grants nothing: the daemon uses it for its log and for nothing else, and an identified connection gets exactly the answers, limits and rights an anonymous one gets. What the proof does not show is stated below and in 1.4 and section 16 (items 19 and 20).
+
+The frame has type `0x06`, is sent by the client only, and carries request id 0 (`frame.rs` `check_request_id`, `FrameType::Identify`). The body is a closed map (5.2 rule 8; `identify.rs` `Identify`). In the deterministic order of its keys:
+
+| Key | Type | Rule |
+| --- | --- | --- |
+| `key` | bytes, exactly 32 | The client's Ed25519 public key. |
+| `sig` | bytes, exactly 64 | The Ed25519 signature by `key` over the message `M` below. |
+| `channel` | bytes | The channel-binding input. In this revision it MUST be empty, and a server MUST refuse a non-empty one. |
+
+The signed message (`||` is concatenation, `u8(n)` is one byte, `0x00` is one zero byte):
+
+```
+M = "spine-wire-identify-v1" || 0x00
+ || SHA-256(H)                   H = the body bytes of the HELLO frame, exactly as sent
+ || SHA-256(A)                   A = the body bytes of the HELLO_ACK frame, exactly as sent
+ || u8(len(channel)) || channel
+ || key
+```
+
+`H` and `A` are deterministic CBOR (5.1), so both ends hold the same bytes without agreeing on anything else, and neither frame is ever compressed (6.1). `A` holds `binding` (6.3) and `time`, so `M` belongs to one connection. The signature is checked with strict Ed25519 verification, as `ed25519_dalek::VerifyingKey::verify_strict` does it: RFC 8032, with `S` below the group order and a small-order public key or `R` refused (`identify.rs` `Identify::verify`). The domain string is not used by any other signed object of SPINE. With an empty `channel` the body is 118 bytes and the frame 133 (`length` field `0x81`).
+
+Rules:
+
+1. A client MAY send one `IDENTIFY`, as the first frame after it has read `HELLO_ACK` and before any other except `PING` or `PONG`. A server treats an `IDENTIFY` as `protocol_violation` when it has already received one, or a `REQUEST` (answered `overloaded` or not), a `STREAM_CANCEL` (for an id in flight or not) or an `EXT`. A `PING` or `PONG` does not close the window. The server handles frames in arrival order, so a client may send the `IDENTIFY` and its first request without waiting (`connection.rs` `Tracker::check_incoming`).
+2. The server checks the frame before it handles the next one, in this order: the body is deterministic CBOR (`malformed_frame`, as for every body, 7.2 step 6); it is a closed map of the three keys with the stated types and lengths; `channel` is empty; `key` is a valid Ed25519 public key; the signature verifies. A failure of any check after the first is `CLOSE(protocol_violation)`; there is no new close code. The connection then ends (7.3).
+3. On success the connection has an identity, the 32-byte `key`, for the rest of its life. There is no reply frame. The server accepts `IDENTIFY` whatever authority mode it reports.
+4. A client that receives an `IDENTIFY` closes with `protocol_violation` (8.2). A client that tries to send a second one, or one after a request, gets `ConnectionError::Usage` and nothing is sent (`Tracker::check_outgoing`).
+5. A client that sends none is anonymous. The daemon logs the identity at debug level as the key in hex or as `anonymous`, and never uses it as a metric label, because keys cost nothing to mint.
+
+What the proof shows: some party that holds the private key of `key` signed `M` after the server wrote this exact acknowledgement. `M` covers `A`, which holds the 32 random bytes of this connection, so a proof made for another connection does not verify on this one.
+
+What it does not show:
+
+- That the signer is the party that sends the frames on this stream. There is no channel binding (the `channel` field is reserved for a security layer that gives both ends a value to sign, and none does today), so an active relay can forward the client's `HELLO`, the server's acknowledgement and the client's `IDENTIFY` unchanged and then hold a connection that the server attributes to the client's key. This is why an identity grants nothing.
+- Who the server is: the acknowledgement carries no server key.
+- Anything about the key: that it is unique, fresh or held by a person.
+
+No peer in this repository enforces authority (section 16, item 20). A later revision may use the identity; if it does, it has to say so here.
 
 ## 7. Error behaviour
 
@@ -219,7 +286,7 @@ The receive path checks, in this order, and the first failure decides the outcom
 4. The body, in chunks (truncation: no `CLOSE`).
 5. If flag bit 0 is set: shorter than four bytes (`malformed_frame`); declared length above `maxinforce - 11` (`frame_too_large`); not zstd or a decoding error (`malformed_frame`); output length differs from the declared length (`malformed_frame`).
 6. The body is one deterministic CBOR item (`malformed_frame`). This applies to every type, including `CLOSE`, `PING` and a stray `HELLO`.
-7. By type: `CLOSE`: the closed `{code, message[, supported]}` map, else `CLOSE(protocol_violation)` or `malformed_frame` as the decoder reports it; a valid one is delivered to the caller as a close. `PING` and `PONG`: the body must be a uint, else `protocol_violation`. `HELLO` and `HELLO_ACK`: always `protocol_violation`. Any other type: the direction, id and state rules of section 8 and the `EXT` rule of section 11, each `protocol_violation`; at the cap, a server answers `overloaded` instead (8.3).
+7. By type: `CLOSE`: the closed `{code, message[, supported]}` map, else `CLOSE(protocol_violation)` or `malformed_frame` as the decoder reports it; a valid one is delivered to the caller as a close. `PING` and `PONG`: the body must be a uint, else `protocol_violation`. `HELLO` and `HELLO_ACK`: always `protocol_violation`. `IDENTIFY`: the window rule and the proof of 6.6, each `protocol_violation`. Any other type: the direction, id and state rules of section 8 and the `EXT` rule of section 11, each `protocol_violation`; at the cap, a server answers `overloaded` instead (8.3).
 
 During the handshake the order is the one in 6.1; step 7 does not apply and the first frame must be `HELLO`.
 
@@ -233,7 +300,7 @@ After a frame is delivered, the daemon decodes a `REQUEST` body (`native.rs` `de
 | `unknown_frame_type` | `type` is `0x00` or unallocated. |
 | `malformed_frame` | Flag bits 1 to 7 set; a compressed body shorter than 4 bytes, not zstd, undecodable or of the wrong length; a body that is not one deterministic CBOR item (any rule of 5.1, an empty body included). |
 | `frame_too_large` | `length` below 11 or above the maximum in force; a declared uncompressed length above `maxinforce - 11`. |
-| `protocol_violation` | A frame-level request-id rule broken; a well-formed frame that breaks a state rule (wrong direction, reused in-flight id, `RESPONSE` or `STREAM_*` for an id in the wrong state, a second `HELLO` or `HELLO_ACK`, a `PING` or `PONG` whose body is not a uint, an `EXT` for an extension that was not accepted); a `HELLO`, `HELLO_ACK` or `CLOSE` body that is deterministic CBOR but does not fit its type or breaks a bound of 6.2 or 6.3; a first frame that is not `HELLO`. |
+| `protocol_violation` | A frame-level request-id rule broken; a well-formed frame that breaks a state rule (wrong direction, reused in-flight id, `RESPONSE` or `STREAM_*` for an id in the wrong state, a second `HELLO` or `HELLO_ACK`, a `PING` or `PONG` whose body is not a uint, an `EXT` for an extension that was not accepted); a `HELLO`, `HELLO_ACK`, `CLOSE` or `IDENTIFY` body that is deterministic CBOR but does not fit its type or breaks a bound of 6.2, 6.3 or 6.6, including a `HELLO_ACK` without a valid `binding`, `authority` or `time`; an `IDENTIFY` that is a second one, or follows a `REQUEST`, `STREAM_CANCEL` or `EXT`, or has a non-empty `channel`, or whose signature does not verify (6.6); a first frame that is not `HELLO`. |
 | `timeout` | No `HELLO` within the deadline; no frame within `server.idle_timeout_secs` (`Connection::recv_timeout`); a write that exceeded 30 seconds is not answered with a `CLOSE` (7.5). |
 | `shutting_down` | The daemon is shutting down: sent to an established connection once its current request is answered (`main.rs` `handle_session`), and to a connection whose handshake completed during shutdown (`serve_native`). |
 
@@ -260,7 +327,7 @@ Every other code (section 13) comes from the command that ran. A `RESPONSE` body
 
 ### 8.1 Ids
 
-A client request id is a nonzero u64 the client chooses. It names the exchange until the reply (`RESPONSE`, or `STREAM_END` for a stream) has been received. `Connection::request` uses a counter from 1 that skips ids still in flight and 0. Reusing an id that is in flight is a protocol violation. The two directions have independent id spaces: a `PING` carries a sender-chosen id and its `PONG` echoes it. Id 0 is carried by `HELLO`, `HELLO_ACK` and `CLOSE`, and may be carried by `PONG`, `RESPONSE`, `STREAM_*` and `EXT` at the frame layer, where the state rules of this section then apply (`RESPONSE` and `STREAM_*` for id 0 are never in flight, so they are violations). No body carries an id; the header id is the only correlation.
+A client request id is a nonzero u64 the client chooses. It names the exchange until the reply (`RESPONSE`, or `STREAM_END` for a stream) has been received. `Connection::request` uses a counter from 1 that skips ids still in flight and 0. Reusing an id that is in flight is a protocol violation. The two directions have independent id spaces: a `PING` carries a sender-chosen id and its `PONG` echoes it. Id 0 is carried by `HELLO`, `HELLO_ACK`, `CLOSE` and `IDENTIFY`, and may be carried by `PONG`, `RESPONSE`, `STREAM_*` and `EXT` at the frame layer, where the state rules of this section then apply (`RESPONSE` and `STREAM_*` for id 0 are never in flight, so they are violations). No body carries an id; the header id is the only correlation.
 
 ### 8.2 Direction
 
@@ -268,6 +335,7 @@ A client request id is a nonzero u64 the client chooses. It names the exchange u
 | --- | --- | --- |
 | `HELLO`, `HELLO_ACK` | only `HELLO`, first | only `HELLO_ACK`, first |
 | `CLOSE`, `PING`, `PONG`, `EXT` | yes | yes |
+| `IDENTIFY` | once, right after `HELLO_ACK` (6.6) | no |
 | `REQUEST`, `STREAM_CANCEL` | yes | no |
 | `RESPONSE`, `STREAM_START`, `STREAM_TOKEN`, `STREAM_END` | no | yes |
 
@@ -479,6 +547,8 @@ Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environme
 | zstd window | 2^23 bytes | `frame.rs`; fixed | `CLOSE(malformed_frame)` |
 | CBOR depth | 32 | `cbor.rs` `MAX_DEPTH`; fixed | `CLOSE(malformed_frame)` |
 | Requests in flight | 8 | `native.rs` `DAEMON_MAX_INFLIGHT` through `local_config`; not configurable | `overloaded` |
+| `IDENTIFY` | at most 1 per connection, before any request; `channel` empty; body 118 bytes, frame 133 | `identify.rs`, `connection.rs` `Tracker`; fixed | `CLOSE(protocol_violation)` |
+| `binding` | 32 bytes, fresh for every connection | `hello.rs` `fresh_binding`; fixed | |
 | `HELLO` deadline | 10 s | `server.hello_timeout_secs` (`SPINE_HELLO_TIMEOUT`); must be above 0 | `CLOSE(timeout)` |
 | Idle | 300 s | `server.idle_timeout_secs` (`SPINE_IDLE_TIMEOUT`); must be above 0. Restarted by every frame read, `PING` included, and covers a half-sent frame; suspended while a request is in flight (9). | `CLOSE(timeout)` |
 | Connections, total | 256, 1 to 65,536 | `server.max_connections`; counts TCP, WebSocket and QUIC, handshakes included | closed without a byte |
@@ -515,9 +585,11 @@ python scripts/wire_v1.py check docs/spec/00-wire.vectors.json
 python scripts/wire_v1.py generate | diff - docs/spec/00-wire.vectors.json
 ```
 
-The first runs every vector through the reference; the second fails if the committed file differs from what the generator writes (compare with line endings normalised when a checkout has converted them; the committed file is LF, `.gitattributes`). The CI job `wire-vectors` runs both. The Rust side is `src/spine-protocol/tests/conformance_vectors.rs`, which feeds every vector to `cbor::check_deterministic`, `frame::decode_frame`, `frame::encode_frame`, the typed decoders of `native.rs`, `Hello::from_frame` and `hello::negotiate`.
+The first runs every vector through the reference; the second fails if the committed file differs from what the generator writes (compare with line endings normalised when a checkout has converted them; the committed file is LF, `.gitattributes`). The CI job `wire-vectors` runs both. The Rust side is `src/spine-protocol/tests/conformance_vectors.rs`, which feeds every vector to `cbor::check_deterministic`, `frame::decode_frame`, `frame::encode_frame`, the typed decoders of `native.rs`, `Hello::from_frame`, `HelloAck::from_frame`, `hello::negotiate`, `Identify::from_frame` and `Identify::verify`, `verify_strict` and a server `Connection` over an in-memory stream.
 
-The file has these sections: `valid_bodies` (deterministic CBOR the decoder must accept), `invalid_bodies` (each with the rejecting `CborError` variant), `valid_frames` (decode, re-encode and typed read), `invalid_frames` (each with the `FrameError` variant and close code), `incomplete_frames` (valid prefixes; the number of further bytes needed) and `handshakes` (a `HELLO` frame, the server configuration and the expected `HELLO_ACK` or `CLOSE`). Frames with flag bit 0 hold their body in a zstd frame of raw blocks, which is valid zstd and not smaller. A `note` on a vector explains a rule; since this revision no note records a disagreement between the text and the implementation.
+The reference signs and verifies with the pure-Python RFC 8032 Ed25519 of `scripts/names_v1.py` (which checks itself against the RFC's test vectors when the script starts), including the strict rule: `S` below the group order, a small-order key or `R` refused. It is not independent of the name reference, and it is slow.
+
+The file has these sections: `valid_bodies` (deterministic CBOR the decoder must accept), `invalid_bodies` (each with the rejecting `CborError` variant), `valid_frames` (decode, re-encode and typed read), `invalid_frames` (each with the `FrameError` variant and close code), `incomplete_frames` (valid prefixes; the number of further bytes needed) and `handshakes` (a `HELLO` frame, the server configuration, with its `binding`, `authority` and `time`, and the expected `HELLO_ACK` or `CLOSE`). Four sections cover the revision of 1.5: `hello_acks` (`HELLO_ACK` bodies a client accepts, or refuses with `protocol_violation`: each missing or mistyped key, a `binding` of 0, 31 or 33 bytes, an `authority` of another text, a `time` that is not a uint), `identify` (an `IDENTIFY` body against the two handshake bodies it was signed for: valid, with the test seed, the signed message `M` and the deterministic signature; and invalid: a wrong binding, a wrong `HELLO`, a flipped signature bit, another key, a non-empty `channel`, wrong lengths and types, a missing or extra key, a body that is not a map, bodies that are not deterministic CBOR, a small-order key, a small-order `R` and an `S` not below the group order), `identify_sessions` (the frames a server receives after the handshake and the outcome: the identity, or the `CLOSE` code; `PING` and `PONG` before the proof, a second proof, a proof after a request, after a `STREAM_CANCEL` or an `EXT`) and `ed25519_strict` (the verdicts of plain RFC 8032 verification and of strict verification on the same inputs; the Rust test checks the strict one). Frames with flag bit 0 hold their body in a zstd frame of raw blocks, which is valid zstd and not smaller. A `note` on a vector explains a rule; since this revision no note records a disagreement between the text and the implementation.
 
 ### 15.2 What conforming means
 
@@ -564,11 +636,12 @@ A `PING` with token 42 and request id 7 is `00 00 00 0d 01 04 00 00 00 00 00 00 
 
 The vectors cover the frame codec, the CBOR profile, the first-frame bodies and negotiation. They do not cover, and the reference does not implement:
 
-- Connection state: id reuse, direction, `HELLO` first, a second `HELLO`, extension indexes, `max_inflight`, timeouts, the streaming state machine. These are covered by the unit tests in `connection.rs` only.
+- Connection state: id reuse, direction, `HELLO` first, a second `HELLO`, extension indexes, `max_inflight`, timeouts, the streaming state machine. These are covered by the unit tests in `connection.rs` only. The one exception is the window of `IDENTIFY` (`identify_sessions`).
 - Real zstd compression. The reference reads a zstd frame only as far as its structure goes (magic number, declared length against the limit, raw and RLE blocks) and reports others as opaque. So no vector exercises the window limit, a checksum, concatenated or skippable frames, or trailing bytes after the zstd frame (4, rule 3), where the Rust decoder and the reference may differ.
 - Request classification. There is no vector for `unknown_command` or `invalid_request`. The reference's command check looks at names and field names only, not at field types, byte-field lengths or the re-encode rule, so it accepts bodies the daemon rejects (for example `navigate` with a number as `url`). JSON-shaped fields holding an integer below -2^63 are accepted by the reference and expected to be rejected by the daemon (5.3).
 - Non-text map keys in `HELLO_ACK` and `CLOSE`: only `HELLO` has vectors for them (the unit tests in `hello.rs` cover all three).
-- `HELLO_ACK` and `CLOSE` bodies as invalid inputs: only `HELLO` has invalid-body vectors.
+- `CLOSE` bodies as invalid inputs: only `HELLO`, `HELLO_ACK` and `IDENTIFY` have invalid-body vectors.
+- That `binding` is random and fresh. A vector fixes it; a test of the Rust code (`hello.rs`) checks that two negotiations differ.
 - Transports, TLS, the daemon's session and rate behaviour and every reply shape of 12.4.
 
 ## 16. Known deviations and defects
@@ -593,6 +666,9 @@ Behaviour the implementation has that the specification author would change. Eac
 16. **`max_frame`, `max_inflight` and the HELLO `agent` string are not configurable.** `native.rs` `local_config` fixes them, so the statement that a deployment can lower `max_frame` by configuration (Appendix C, G3) is true of the protocol and not of the daemon. Right: configuration keys for them.
 17. **The rate limiter's constants are hard-coded.** `main.rs` `check_rate_limit` (100 and 10 per second). Right: configuration keys. (Fixed: a rate-limited first command no longer creates a session, because the bucket is the connection's and is checked before `create_session`.)
 18. **The SDK has no deadline on most calls.** Only the handshake (10 s), `capabilities` (10 s), `call_tool` (30 s) and a frame write (30 s) have one; `ping`, `navigate` and the rest wait indefinitely for a reply. Right: a per-call deadline option, with the reconnect rule of section 14.
+19. **An identity is recorded and grants nothing, and there is no channel binding.** `IDENTIFY` (6.6) proves that a key signed this connection's handshake, not that the signer is the party at the other end of the stream: a relay between the client and the daemon can forward the handshake and the proof and hold a connection that the daemon attributes to the client's key. The daemon stores the key per connection and logs it at debug level; it changes no answer, limit or right. Right: a value from the security layer under the wire (a TLS exporter, or the planned session layer) in `channel`, which the frame already has room for, and a rule that a server over that layer refuses an empty one.
+20. **Authority is still not enforced.** `HELLO_ACK.authority` reports the configured mode and the daemon starts only in `off`; `AuthorityGate` (`spine-core` `authority.rs`) is not called by any request path, a request cannot carry a chain or an invocation, and `binding` is not checked against anything. Right: the carrier of `00-wire-revision.md` (C3), which is a draft.
+21. **`time` and `authority` are unauthenticated.** An active attacker on a plaintext connection can change either in the acknowledgement. Neither is used by any peer in this repository. Right: do not act on them without TLS, or a layer that authenticates the acknowledgement.
 
 ## Appendix A. History: the pre-v1 wire
 
@@ -709,7 +785,7 @@ Questions the earlier document put to the owner, with what became of each. The l
 | G5 | Deterministic CBOR: a validator and a sorting pass over ciborium, or another crate? | Resolved: `cbor.rs` hand-written scanner and a sorting encoder through `ciborium::Value`; no new dependency. |
 | G6 | Move chameleon and the neural codec to a research crate, or delete? | Resolved: morphology, padding and speculation deleted; chameleon and the neural-codec types moved to `research/spine-protocol-research`. |
 | G7 | Compression: keep the flag? | Resolved: kept, off by default, sender threshold 1 KiB, receiver always accepts (section 4). No sender in the workspace enables it. |
-| G8 | Capability chains in the frame header? | Resolved for v1: no. Authority (layer 3) is a draft; a header field would be a new version. |
+| G8 | Capability chains in the frame header? | Resolved for v1: no header field. Authority (layer 3) is a draft and nothing enforces it. A client key (`IDENTIFY`) and a per-connection value (`binding`) were added to the handshake on 2026-11-24 (1.5, 6.6); they grant nothing, and a carrier for a capability is not specified (`00-wire-revision.md`, a draft). |
 | G9 | `LatentMessage`: an extension or inside the `ExecuteBinary` result? | Resolved: removed from the wire; the result carries only `latent_streams_count`. |
 | G10 | Allow `REQUEST` before `HELLO_ACK`? | Resolved: no (6.1). Revisit with measurements. |
 | G11 | The browser extension speaks JSON to `ws://localhost:9800/ws`, where nothing listens. | Still open. `extension/README.md` marks it as not speaking the native wire; it is neither removed nor given a v1 client. |
@@ -758,5 +834,5 @@ Source comments, other documents and the generator cite labels of the document t
 | R11 | The wire does not rely on the frame for confidentiality; no clear off-loopback by default | Met (1.4). |
 | R12 | Error responses carry a stable code | Met; two codes are derived from text (section 16, items 1 and 2). |
 | R13 | A per-connection in-flight cap answered with `overloaded` | Met in `Connection`; the daemon's cap of 1 never trips it. |
-| R14 | A second implementer can build a conformant peer from the document and vectors | Partly: the vectors do not cover connection state, commands or real zstd (15.4). |
+| R14 | A second implementer can build a conformant peer from the document and vectors | Partly: the vectors do not cover connection state (except the window of `IDENTIFY`), commands or real zstd (15.4). |
 | R15 | A deadline for connection setup | Met (6.1, `server.hello_timeout_secs`). |

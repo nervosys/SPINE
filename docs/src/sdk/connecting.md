@@ -58,6 +58,13 @@ let mut client = AgentClient::connect_with_retry(
 the same over TLS. `AgentClient::over(stream)` runs the handshake on a stream you
 already hold.
 
+A client is anonymous unless you ask otherwise.
+`AgentClient::connect_with_identity(addr, &signing_key)` (and `over_with_identity`
+for a stream) also sends an `IDENTIFY` with an Ed25519 key right after the
+handshake. The daemon records the key and logs it; it grants nothing, so the
+answers do not change. `authority()`, `binding()` and `server_time()` report what
+`HELLO_ACK` said.
+
 ## Connection Lifecycle
 
 1. **Connect** — Establish the TCP/TLS/WS connection and complete `HELLO` / `HELLO_ACK`

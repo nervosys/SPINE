@@ -89,7 +89,7 @@ frame has a fixed 15-byte header, all integers big-endian:
 - **Length**: bytes after this field, `11 + len(body)`, at most the negotiated
   maximum (16 MiB; 64 KiB before the handshake completes)
 - **Ver**: `1`
-- **Type**: `HELLO`, `HELLO_ACK`, `CLOSE`, `PING`, `PONG`, `REQUEST`,
+- **Type**: `HELLO`, `HELLO_ACK`, `CLOSE`, `PING`, `PONG`, `IDENTIFY`, `REQUEST`,
   `RESPONSE`, `STREAM_*` and `EXT`
 - **Flags**: bit 0 means the body is zstd compressed; other bits must be zero
 - **Request id**: correlates a `RESPONSE` with its `REQUEST`; a `PING` and its

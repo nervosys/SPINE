@@ -4,7 +4,7 @@
 
 ## 0. What is open, stated first
 
-1. **Nothing authorises a native command.** The authority gate (`src/spine-core/src/authority.rs`), its durable ledger (`authority_ledger.rs`) and the command classification are library code that the daemon does not call. spine-wire v1 has no carrier for a grant chain or invocation (`docs/spec/00-wire.md`, G8) and the handshake has no client key. `[authority] mode = "required"` is refused at start-up (`config.rs` `AuthorityConfig::validate`). **Any client that can connect has operator-level access to all 19 commands**, including `navigate`, `execute_binary` and `mesh_call`. No receipt is issued. Reachability and, optionally, a TLS client certificate are the only controls (`SpineConfig::validate`, `config.rs:562-598`).
+1. **Nothing authorises a native command.** The authority gate (`src/spine-core/src/authority.rs`), its durable ledger (`authority_ledger.rs`) and the command classification are library code that the daemon does not call. spine-wire v1 has no carrier for a grant chain or invocation (`docs/spec/00-wire.md`, G8); the handshake's optional client key (`IDENTIFY`, 6.6) is recorded and logged and grants nothing, and it is not bound to the channel, so a relay can carry it. `[authority] mode = "required"` is refused at start-up (`config.rs` `AuthorityConfig::validate`). **Any client that can connect has operator-level access to all 19 commands**, including `navigate`, `execute_binary` and `mesh_call`. No receipt is issued. Reachability and, optionally, a TLS client certificate are the only controls (`SpineConfig::validate`, `config.rs:562-598`).
 2. **No external cryptographic review of the handshake, and the session layer (Stage 8) is not built.** The mesh handshake (`spine-session` `handshake.rs`) is the only SPINE-level encrypted channel; the native client wire does not use it.
 3. **A resolve answer on the client wire carries no succession log** (`NameResolution::Resolved { record, provenance }`, `spine-protocol/src/lib.rs:498-506`), so a client cannot itself verify a rotated name through the daemon.
 4. **Publisher keys are free to mint**, so per-publisher quotas bound a key, not a party.
@@ -78,7 +78,7 @@ Residual ATT&CK risk: T1190 with the native port reachable by an untrusted clien
 **Not assessed.** The earlier table marked practices MET on the strength of a bearer token that was opt-in (since closed), a single-codec `source_hash` that is in a research crate, "anomaly signal via Titans surprise scores" in a research crate, and TLS that is off by default. A practice-level claim cannot be made from this review. Practices that depend on facts this document establishes, for whoever does assess:
 
 - AC.L1-3.1.1 / 3.1.2 (authorised users and functions): the native wire has no per-user authorisation (section 0, item 1); the gateway has one shared secret.
-- AU.L2-3.3.1 / 3.3.2 (audit records): `tracing` output exists; no retention sink and no per-user identity.
+- AU.L2-3.3.1 / 3.3.2 (audit records): `tracing` output exists; no retention sink and no per-user identity (a proven `IDENTIFY` key is logged at debug level; it is not authorisation).
 - IA.L2-3.5.3 (multi-factor): not addressed by the stack.
 - SC.L2-3.13.8 (cryptographic protection in transit): TLS for the native wire only when enabled; mesh always encrypted.
 - SC.L2-3.13.11 (FIPS-validated cryptography): no validated module.

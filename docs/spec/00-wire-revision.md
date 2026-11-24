@@ -1,6 +1,6 @@
 # spine-wire v1 revision: a draft proposal
 
-Status: DRAFT, NOT NORMATIVE. A proposal for the project owner to accept, amend or reject. Nothing in it is implemented, and nothing in `00-wire.md`, its vectors, the code or `COMPLETION_PLAN.md` was changed by writing it. If it is accepted, its proposed texts replace or extend the sections of `00-wire.md` named in A.2, and this file is then deleted or reduced to a history note. Written against `completion/agent-web` at `b8911fb`. Nothing here was compiled or run. Every claim about the current protocol or code cites a file and a function or section that was read; a claim that was not confirmed by reading is marked "unverified". Citations are `file` plus `function`, relative to `src/spine-protocol/src` unless a crate or a document is named; line numbers are not used.
+Status: DRAFT, NOT NORMATIVE, except that C1 and C2 were accepted and implemented in stage 1 on 2026-11-24 (see the marks at C1 and C2 and the note under E). The rest is a proposal for the project owner to accept, amend or reject. Nothing else in it is implemented, and nothing in `00-wire.md`, its vectors, the code or `COMPLETION_PLAN.md` was changed by writing it. If it is accepted, its proposed texts replace or extend the sections of `00-wire.md` named in A.2, and this file is then deleted or reduced to a history note. Written against `completion/agent-web` at `b8911fb`. Nothing here was compiled or run. Every claim about the current protocol or code cites a file and a function or section that was read; a claim that was not confirmed by reading is marked "unverified". Citations are `file` plus `function`, relative to `src/spine-protocol/src` unless a crate or a document is named; line numbers are not used.
 
 ## A. Status and scope
 
@@ -100,6 +100,8 @@ How a revised v1 stays closed, concretely:
 Notation: "proposed text" is meant to be pasted into `00-wire.md` with section numbers adjusted. Key order in examples is the deterministic order of 5.1 rule 3 (encoded keys ascending bytewise, so shorter text keys first, then bytewise).
 
 ### C1. Client identity in the handshake
+
+**Accepted and implemented in stage 1 (2026-11-24).** The normative text is `00-wire.md` 1.4, 1.5, 3, 6.1, 6.3, 6.6, 7.3, 8.2 and 14; the code is `identify.rs`, `hello.rs`, `connection.rs` and `native.rs` in `src/spine-protocol`, the daemon's `serve_native` and `read_requests`, and `AgentClient::connect_with_identity`; the vectors are the sections `hello_acks`, `identify`, `identify_sessions` and `ed25519_strict` of `00-wire.vectors.json`. Where the text below and `00-wire.md` differ, `00-wire.md` is right. The differences: `channel` MUST be empty (the table below says "0 or 32" and the text says empty; only empty is implemented and a server refuses anything else); the identity is recorded and logged and nothing uses it, so rule 4 of C1.3 (an invocation's invoker must equal the identity) and the whole of C1.4 beyond reporting the mode are not implemented; `audit` is a legal value of `HELLO_ACK.authority` but no daemon runs it; `AUTH_REQUEST` and `RECEIPT` do not exist.
 
 #### C1.1 What is proposed
 
@@ -202,6 +204,8 @@ Why bother, given that the invocation signature also proves possession of the in
 Replay across connections: prevented by `binding` in `A`. Replay within a connection: the frame is accepted at most once (rule 1). Downgrade: a peer that does not know `IDENTIFY` closes with `unknown_frame_type`; there is no silent fallback. Key substitution: the signature covers `key`. Cross-protocol signature reuse: the domain string is unique and `M` has fixed-position hashes, so no layer-3 or layer-2 object parses as `M`. Resource use: one signature verification per connection, inside the handshake deadline's neighbourhood; the frame is at most 133 bytes; the server must not do the verification before it has sent the acknowledgement. Timing: nothing about the key is secret on the server side. Weak keys: strict verification refuses small-order keys.
 
 ### C2. The session value
+
+**Accepted and implemented in stage 1 (2026-11-24)** as `HELLO_ACK.binding`, `authority` and `time` (`00-wire.md` 6.3, 6.4; `hello.rs` `negotiate`). The server draws `binding` from the operating system's random source and the clock for `time`; both can be injected through `LocalConfig` for the vectors. Rules 1 to 4 of C2.2 concern `AUTH_REQUEST` and are not implemented: nothing passes `binding` to the gate, which no request path calls.
 
 #### C2.1 What it is
 
@@ -530,6 +534,8 @@ Each has a recommended answer and what depends on it.
 14. A TLS exporter as the `channel` value today (C1.7). Recommended: not in this revision. Depends on: the rustls access in generic stream code, and a WebSocket and QUIC story.
 15. Rate-limit `AUTH_REQUEST` under the connection bucket including `capability_query` (C3.6). Recommended: yes, with the change to 7.2 quoted there.
 16. Receipts: always on an authorised request, none for refusals (C5). Recommended: as proposed. Depends on: the node key being acceptable as a receipt signer.
+
+Answered provisionally in stage 1 (2026-11-24) and still the project owner's to overturn: question 1 was answered "in place" (`00-wire.md` 1.5 records it); question 3 was answered "keep `IDENTIFY`" (it is implemented; dropping it means removing frame type `0x06`, 6.6, its vectors and the daemon's arm, and leaves C2); question 13 was answered "yes": the reference imports the pure-Python Ed25519 of `scripts/names_v1.py` instead of carrying a second copy. Every other question is unanswered, and no code depends on its answer yet.
 
 Which of `03-authority.md`'s open questions (Q1 to Q7) this revision forces and which it leaves:
 
