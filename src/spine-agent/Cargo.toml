@@ -32,7 +32,6 @@ anyhow.workspace = true
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
-rustls-pemfile.workspace = true
 rustls-native-certs = "0.6"
 tracing = "0.1"
 

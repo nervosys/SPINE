@@ -42,7 +42,6 @@ axum = "0.7"
 toml = "0.8"
 rustls.workspace = true
 tokio-rustls.workspace = true
-rustls-pemfile.workspace = true
 rcgen = "0.13"
 sha2 = "0.10"
 base64 = "0.22"

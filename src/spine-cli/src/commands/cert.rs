@@ -3,6 +3,8 @@
 use anyhow::Result;
 use colored::Colorize;
 use std::path::PathBuf;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::CertificateDer;
 
 use crate::CertAction;
 
@@ -43,7 +45,7 @@ async fn generate(output: PathBuf) -> Result<()> {
 
 async fn info(path: PathBuf) -> Result<()> {
     let pem_data = std::fs::read(&path)?;
-    let certs: Vec<_> = rustls_pemfile::certs(&mut &pem_data[..]).collect();
+    let certs: Vec<_> = CertificateDer::pem_slice_iter(&pem_data).collect();
 
     if certs.is_empty() {
         eprintln!(

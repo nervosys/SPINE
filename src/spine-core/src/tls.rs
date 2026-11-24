@@ -1,33 +1,32 @@
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::{
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, PrivatePkcs8KeyDer,
+};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 
 pub fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let certfile = File::open(path)?;
-    let mut reader = BufReader::new(certfile);
-    let certs = rustls_pemfile::certs(&mut reader)
-        .filter_map(|c| c.ok())
+    // A section that does not parse is skipped, as it always was.
+    let certs = CertificateDer::pem_reader_iter(certfile)
+        .filter_map(Result::ok)
         .collect();
     Ok(certs)
 }
 
 pub fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     let keyfile = File::open(path)?;
-    let mut reader = BufReader::new(keyfile);
-    let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .filter_map(|k| k.ok())
-        .collect();
-    if keys.is_empty() {
-        return Err(anyhow::anyhow!("No private key found"));
-    }
-    // Safe: checked !keys.is_empty() above
-    Ok(keys.into_iter().next().expect("verified non-empty").into())
+    // Only PKCS#8 ("PRIVATE KEY") sections count, RSA and EC sections are
+    // skipped, a section that does not parse is skipped, and the first key wins.
+    let key = PrivatePkcs8KeyDer::pem_reader_iter(keyfile)
+        .find_map(Result::ok)
+        .ok_or_else(|| anyhow::anyhow!("No private key found"))?;
+    Ok(key.into())
 }
 
 pub fn create_tls_acceptor(
@@ -96,10 +95,10 @@ pub fn build_server_config(
         if let Some(crl_path) = crl_path {
             let crl_data = std::fs::read(crl_path)?;
             let crls = if crl_data.starts_with(b"-----BEGIN") {
-                rustls_pemfile::crls(&mut BufReader::new(&crl_data[..]))
-                    .collect::<std::io::Result<Vec<_>>>()?
+                CertificateRevocationListDer::pem_slice_iter(&crl_data)
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
-                vec![tokio_rustls::rustls::pki_types::CertificateRevocationListDer::from(crl_data)]
+                vec![CertificateRevocationListDer::from(crl_data)]
             };
             anyhow::ensure!(
                 !crls.is_empty(),
@@ -431,11 +430,7 @@ impl AcmeCertManager {
         let cert_path = self.cert_dir.join("acme-cert.pem");
         let pem_data = std::fs::read(&cert_path).ok()?;
         // Parse the first certificate from PEM
-        let mut cursor = std::io::Cursor::new(pem_data);
-        let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
-            .filter_map(|c| c.ok())
-            .collect();
-        let cert_der = certs.first()?;
+        let cert_der = CertificateDer::pem_slice_iter(&pem_data).find_map(Result::ok)?;
         // Use the cert to validate it exists; actual expiry parsed from x509 would need
         // a dedicated parser. For simplicity, estimate from file modification time + 90 days.
         let _ = cert_der;

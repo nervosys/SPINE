@@ -98,4 +98,3 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
 ] }
 tokio-rustls = "0.26"
-rustls-pemfile = "2"

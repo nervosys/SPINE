@@ -34,7 +34,6 @@ toml = "0.8"
 colored = "2"
 uuid = { version = "1", features = ["v4"] }
 reqwest = { workspace = true }
-rustls-pemfile = "2"
 tokio-rustls = { workspace = true }
 
 [dev-dependencies]

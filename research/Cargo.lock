@@ -5800,7 +5800,6 @@ dependencies = [
  "anyhow",
  "rustls",
  "rustls-native-certs 0.6.3",
- "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
  "spine-agentic",

@@ -1,4 +1,5 @@
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
 use spine_parser::UnifiedRepresentation;
@@ -113,9 +114,8 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
         let mut root_store = RootCertStore::empty();
 
         if let Some(ca) = ca_path {
-            let mut reader = std::io::BufReader::new(std::fs::File::open(ca)?);
-            let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
-                .filter_map(|c| c.ok())
+            let certs: Vec<_> = CertificateDer::pem_reader_iter(std::fs::File::open(ca)?)
+                .filter_map(Result::ok)
                 .collect();
             for cert in certs {
                 root_store.add(cert)?;
@@ -129,20 +129,16 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
 
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let config = if let Some((cert_path, key_path)) = client_cert {
-            let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
-            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
-                .filter_map(|c| c.ok())
-                .collect();
+            let certs: Vec<CertificateDer<'static>> =
+                CertificateDer::pem_reader_iter(std::fs::File::open(cert_path)?)
+                    .filter_map(Result::ok)
+                    .collect();
 
-            let mut key_reader = std::io::BufReader::new(std::fs::File::open(key_path)?);
-            let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
-                .filter_map(|k| k.ok())
-                .collect();
-            let key: PrivateKeyDer<'static> = keys
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No key"))?
-                .into();
+            let key: PrivateKeyDer<'static> =
+                PrivatePkcs8KeyDer::pem_reader_iter(std::fs::File::open(key_path)?)
+                    .find_map(Result::ok)
+                    .ok_or_else(|| anyhow::anyhow!("No key"))?
+                    .into();
 
             ClientConfig::builder_with_provider(provider.clone())
                 .with_safe_default_protocol_versions()?
