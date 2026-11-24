@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 pub mod identity;
+pub mod logbook_store;
 pub mod mesh;
 pub mod mesh_quic;
 pub mod mesh_tcp;

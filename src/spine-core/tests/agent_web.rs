@@ -1637,6 +1637,38 @@ async fn rotated_name_resolves_on_another_node_with_its_log() {
         let (code, message) = refusal(&error);
         assert_eq!(code, "record_rejected", "{message}");
         assert!(message.contains("superseded"), "{message}");
+
+        // Stop both nodes and restart only the second, with the first gone, so
+        // nobody can send it the log again. The second never published this
+        // name, so nothing at start-up offers the log to its mesh store: only a
+        // persisted mesh log book still holds it. Without it the mesh store
+        // would refuse the current key's next record for want of the log.
+        drop(agent);
+        drop(second);
+        drop(origin);
+        drop(first);
+        second = start(
+            second_dir.path(),
+            second_port,
+            second_mesh,
+            &[format!("127.0.0.1:{first_mesh}")],
+        );
+        let mut agent = connect(&mut second, second_dir.path(), second_port).await;
+        let error = agent
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+        let next = rotated.by_current_key(3, now);
+        let report = agent
+            .publish_name(serde_json::to_value(&next).unwrap())
+            .await
+            .unwrap_or_else(|error| panic!("{error:#}\n{}", logs()));
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store forgot the log over the restart: {report}\n{}",
+            logs()
+        );
     })
     .await
     .expect("rotated name mesh acceptance deadline exceeded");

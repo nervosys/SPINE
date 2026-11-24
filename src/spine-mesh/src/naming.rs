@@ -22,12 +22,14 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use spine_name::{
-    log_inception_key, log_within_bounds, LogBook, LogChange, NameError, NameKey, NameRecord,
-    NodeInfo, RoutingTable, SpineUri, SuccessionLog,
+    log_inception_key, log_within_bounds, LogBook, LogChange, LogOffer, NameError, NameKey,
+    NameRecord, NodeInfo, RoutingTable, SpineUri, SuccessionLog,
 };
 
+use crate::logbook_store::{LogBookStore, LogStoreError};
 use crate::AgentId;
 
 /// How many peers a lookup queries per round. Kademlia's α: enough parallelism
@@ -800,6 +802,24 @@ pub struct SuccessionStats {
     /// Logs adopted from the response to a log fetch (a subset of
     /// `logs_adopted`).
     pub logs_fetched: u64,
+    /// Offers refused because the durable log book (see
+    /// [`NameService::restore_log_book`]) could not be written: the log or proof
+    /// was not adopted and memory is unchanged. Not counted in `logs_rejected`.
+    pub log_store_failures: u64,
+    /// Rows of the durable log book dropped at load: undecodable, not verifying
+    /// from their key, or over a bound.
+    pub log_rows_dropped: u64,
+}
+
+/// What [`NameService::restore_log_book`] found.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogBookRestore {
+    /// Equivocation proofs restored.
+    pub proofs: usize,
+    /// Succession logs restored.
+    pub logs: usize,
+    /// Rows dropped (also added to [`SuccessionStats::log_rows_dropped`]).
+    pub dropped: u64,
 }
 
 /// What [`NameService::want_log`] decided.
@@ -872,6 +892,9 @@ pub struct NameService {
     succession: SuccessionStats,
     /// Names whose log was fetched for, for the rate bound.
     wants: LogWants,
+    /// Where the log book is kept across restarts, if anywhere (the replica
+    /// records are never stored).
+    log_store: Option<Arc<dyn LogBookStore>>,
 }
 
 impl NameService {
@@ -889,6 +912,7 @@ impl NameService {
             next_request_id: 1,
             succession: SuccessionStats::default(),
             wants: LogWants::default(),
+            log_store: None,
         }
     }
 
@@ -997,7 +1021,13 @@ impl NameService {
         }
         if let Some(log) = log {
             let wanted: HashSet<[u8; 32]> = record.name.public_key().copied().into_iter().collect();
-            let _ = Self::take_log(&mut self.store, &mut self.succession, log, Some(&wanted));
+            let _ = Self::take_log(
+                &mut self.store,
+                &mut self.succession,
+                self.log_store.as_deref(),
+                log,
+                Some(&wanted),
+            );
         }
         let key = record.name.public_key().copied();
         let outcome = self.store.put(record, now);
@@ -1127,7 +1157,65 @@ impl NameService {
     /// one it fetched). Bounded and verified like a log from a peer; see
     /// [`spine_name::RecordStore::offer_log`] for the rules.
     pub fn offer_log(&mut self, log: SuccessionLog) -> Result<LogChange, NameError> {
-        Self::take_log(&mut self.store, &mut self.succession, log, None)
+        Self::take_log(
+            &mut self.store,
+            &mut self.succession,
+            self.log_store.as_deref(),
+            log,
+            None,
+        )
+    }
+
+    /// Back the log book with `store`: load what it holds, then write every log
+    /// and proof it adopts from now on (spec 02, 10.10 decision 50).
+    ///
+    /// Call it once, on a service that has taken no log yet, before the node
+    /// serves. Rows are restored as the local resolver restores its own: proofs
+    /// first, then logs; every row is verified from its inception key, and one
+    /// that does not verify, cannot be decoded, or does not fit the bounds
+    /// ([`spine_name::MAX_SUCCESSION_LOGS`], [`spine_name::MAX_EQUIVOCATION_PROOFS`])
+    /// is dropped and counted ([`SuccessionStats::log_rows_dropped`]), never an
+    /// error. A log row of a name that also has a proof is the remains of an
+    /// interrupted write: it is ignored and deleted. Only a store that cannot be
+    /// read at all is an error ([`NameError::Storage`]), and then nothing is
+    /// attached.
+    pub fn restore_log_book(
+        &mut self,
+        store: Arc<dyn LogBookStore>,
+    ) -> Result<LogBookRestore, NameError> {
+        let rows = store
+            .load()
+            .map_err(|e| NameError::Storage(e.to_string()))?;
+        let mut report = LogBookRestore {
+            dropped: rows.unreadable as u64,
+            ..LogBookRestore::default()
+        };
+        for (key, proof) in rows.proofs {
+            if self.store.restore_proof(key, proof) {
+                report.proofs += 1;
+            } else {
+                report.dropped += 1;
+            }
+        }
+        for (key, log) in rows.logs {
+            if self.store.logs().is_compromised(&key) {
+                // The proof replaces the log (decision 29): finish the delete.
+                let _ = store.remove_log(&key);
+            } else if self.store.restore_log(key, log) {
+                report.logs += 1;
+            } else {
+                report.dropped += 1;
+            }
+        }
+        self.succession.log_rows_dropped += report.dropped;
+        if report.dropped > 0 {
+            tracing::warn!(
+                dropped = report.dropped,
+                "succession log book: rows dropped at load"
+            );
+        }
+        self.log_store = Some(store);
+        Ok(report)
     }
 
     /// The counters of succession logs received and records refused.
@@ -1165,6 +1253,7 @@ impl NameService {
     fn take_log(
         store: &mut spine_name::RecordStore,
         stats: &mut SuccessionStats,
+        persist: Option<&dyn LogBookStore>,
         log: SuccessionLog,
         wanted: Option<&HashSet<[u8; 32]>>,
     ) -> Result<LogChange, NameError> {
@@ -1183,14 +1272,53 @@ impl NameService {
                 "log is for another name".into(),
             ));
         }
-        let result = store.offer_log(log);
+        let result = Self::offer_persisted(store, persist, log);
         match &result {
             Ok(LogChange::Adopted { .. }) => stats.logs_adopted += 1,
             Ok(LogChange::Compromised { .. }) => stats.equivocations_found += 1,
             Ok(LogChange::Unchanged) => {}
+            Err(NameError::Storage(_)) => stats.log_store_failures += 1,
             Err(_) => stats.logs_rejected += 1,
         }
         result
+    }
+
+    /// [`spine_name::RecordStore::offer_log`] with the durable write in between:
+    /// plan, write, then apply, as the local resolver does. A failed write
+    /// returns [`NameError::Storage`] and the store is untouched.
+    fn offer_persisted(
+        store: &mut spine_name::RecordStore,
+        persist: Option<&dyn LogBookStore>,
+        log: SuccessionLog,
+    ) -> Result<LogChange, NameError> {
+        let Some(persist) = persist else {
+            return store.offer_log(log);
+        };
+        let offer = store.plan_log(log)?;
+        if matches!(offer, LogOffer::Full | LogOffer::ProofsFull) {
+            return Err(NameError::SuccessionCapacity);
+        }
+        let storage = |e: LogStoreError| NameError::Storage(e.to_string());
+        match &offer {
+            LogOffer::Adopt {
+                inception_key,
+                log,
+                evict,
+                ..
+            } => {
+                persist.save_log(inception_key, log).map_err(storage)?;
+                if let Some(old) = evict {
+                    persist.remove_log(old).map_err(storage)?;
+                }
+            }
+            LogOffer::Conflict(proof) => {
+                let key = proof.first.inception_key;
+                persist.save_proof(&key, proof).map_err(storage)?;
+                persist.remove_log(&key).map_err(storage)?;
+            }
+            _ => {}
+        }
+        Ok(store.apply_log(offer).0)
     }
 
     fn count_refusal(
@@ -1225,6 +1353,7 @@ impl NameService {
     fn absorb_response_logs(
         store: &mut spine_name::RecordStore,
         stats: &mut SuccessionStats,
+        persist: Option<&dyn LogBookStore>,
         target: Option<[u8; 32]>,
         response: &ResolveResponse,
     ) {
@@ -1249,7 +1378,7 @@ impl NameService {
             stats.logs_oversize += (response.logs.len() - MAX_RESPONSE_LOGS) as u64;
         }
         for log in response.logs.iter().take(MAX_RESPONSE_LOGS) {
-            let _ = Self::take_log(store, stats, log.clone(), Some(&wanted));
+            let _ = Self::take_log(store, stats, persist, log.clone(), Some(&wanted));
         }
     }
 
@@ -1551,7 +1680,13 @@ impl NameService {
             return Vec::new();
         };
         let target = Self::name_target(lookup.query());
-        Self::absorb_response_logs(&mut self.store, &mut self.succession, target, response);
+        Self::absorb_response_logs(
+            &mut self.store,
+            &mut self.succession,
+            self.log_store.as_deref(),
+            target,
+            response,
+        );
         let before = lookup.succession_refusals();
         lookup.on_response_with(response, self.store.logs());
         Self::count_lookup_refusals(&mut self.succession, before, lookup.succession_refusals());
@@ -1606,7 +1741,13 @@ impl NameService {
         let target = Self::name_target(lookup.query());
         let fetch = !lookup.follow_referrals;
         let adopted_before = self.succession.logs_adopted;
-        Self::absorb_response_logs(&mut self.store, &mut self.succession, target, response);
+        Self::absorb_response_logs(
+            &mut self.store,
+            &mut self.succession,
+            self.log_store.as_deref(),
+            target,
+            response,
+        );
         if fetch {
             self.succession.logs_fetched += self.succession.logs_adopted - adopted_before;
         }
@@ -3298,5 +3439,113 @@ mod tests {
         assert!(svc.logs().state(&pk_of(1)).is_some());
         let stats = svc.succession_stats();
         assert_eq!((stats.logs_adopted, stats.logs_fetched), (1, 1));
+    }
+
+    // ---- a durable log book -------------------------------------------------
+
+    fn backed() -> (NameService, Arc<crate::logbook_store::MemoryLogBookStore>) {
+        let store = Arc::new(crate::logbook_store::MemoryLogBookStore::default());
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        svc.restore_log_book(store.clone()).unwrap();
+        (svc, store)
+    }
+
+    #[test]
+    fn an_adopted_log_is_written_and_a_longer_one_replaces_the_row() {
+        let (mut svc, store) = backed();
+        let one = rotation(1);
+        svc.offer_log(one.clone()).unwrap();
+        assert_eq!(store.logs.lock().unwrap().get(&pk_of(1)), Some(&one));
+
+        let retired = one
+            .retired(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[101; 32]),
+                &pk_of(102),
+                1_000,
+            )
+            .unwrap();
+        svc.offer_log(retired.clone()).unwrap();
+        assert_eq!(store.logs.lock().unwrap().len(), 1);
+        assert_eq!(store.logs.lock().unwrap().get(&pk_of(1)), Some(&retired));
+
+        // A log already held writes nothing, even to a store that now fails.
+        store.fail_writes(true);
+        svc.offer_log(one).unwrap();
+        assert_eq!(svc.succession_stats().log_store_failures, 0);
+    }
+
+    #[test]
+    fn a_proof_is_written_and_the_log_row_deleted() {
+        let (mut svc, store) = backed();
+        svc.offer_log(rotation(1)).unwrap();
+        let fork = SuccessionLog::default()
+            .rotated(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[1; 32]),
+                &pk_of(51),
+                &pk_of(52),
+                1_000,
+            )
+            .unwrap();
+        svc.offer_log(fork).unwrap();
+        assert!(store.logs.lock().unwrap().is_empty());
+        assert_eq!(store.proofs.lock().unwrap().len(), 1);
+        assert_eq!(svc.succession_stats().equivocations_found, 1);
+
+        let mut again = NameService::new(NameKey::of(b"local"));
+        let report = again.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.proofs, report.logs, report.dropped), (1, 0, 0));
+        assert!(again.logs().is_compromised(&pk_of(1)));
+        assert!(matches!(
+            again.status_error(&SpineUri::did(pk_of(1))),
+            Some(NameError::Equivocated(_))
+        ));
+    }
+
+    #[test]
+    fn a_log_row_left_beside_a_proof_is_ignored_and_deleted() {
+        let (mut svc, store) = backed();
+        svc.offer_log(rotation(1)).unwrap();
+        let stale = rotation(1);
+        let fork = SuccessionLog::default()
+            .rotated(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[1; 32]),
+                &pk_of(51),
+                &pk_of(52),
+                1_000,
+            )
+            .unwrap();
+        svc.offer_log(fork).unwrap();
+        // An interrupted write: the proof is there and the log row was not deleted.
+        store.logs.lock().unwrap().insert(pk_of(1), stale);
+
+        let mut again = NameService::new(NameKey::of(b"local"));
+        let report = again.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.proofs, report.logs, report.dropped), (1, 0, 0));
+        assert!(store.logs.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_write_changes_nothing_and_is_counted_apart() {
+        let (mut svc, store) = backed();
+        store.fail_writes(true);
+        assert!(matches!(
+            svc.offer_log(rotation(1)),
+            Err(NameError::Storage(_))
+        ));
+        assert!(svc.logs().is_empty());
+        let stats = svc.succession_stats();
+        assert_eq!((stats.log_store_failures, stats.logs_rejected), (1, 0));
+        assert_eq!(stats.logs_adopted, 0);
+    }
+
+    #[test]
+    fn a_service_with_no_store_behaves_as_before() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        svc.offer_log(rotation(1)).unwrap();
+        assert!(svc.logs().state(&pk_of(1)).is_some());
+        assert_eq!(svc.succession_stats().log_store_failures, 0);
     }
 }

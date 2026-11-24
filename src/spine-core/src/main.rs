@@ -1500,9 +1500,24 @@ async fn main() -> Result<()> {
             )?)
         };
     let application = namespace::task_application(&config.namespace, name_backend.clone())?;
+    // The mesh service's succession log book is kept beside the local one when
+    // the namespace has a records path (its own namespaces, spec 02 decision 50).
+    let mesh_log_store: Option<Arc<dyn spine_mesh::logbook_store::LogBookStore>> =
+        if config.namespace.records_path.is_empty() {
+            None
+        } else {
+            Some(Arc::new(namespace::BackendLogBookStore::new(
+                name_backend.clone(),
+            )))
+        };
     let mesh_names = if config.namespace.enabled {
-        match namespace::join_with_application(&config.namespace, &config.server.host, application)
-            .await
+        match namespace::join_with_application(
+            &config.namespace,
+            &config.server.host,
+            application,
+            mesh_log_store,
+        )
+        .await
         {
             Ok(resolver) => Some(resolver),
             Err(e) => {

@@ -244,6 +244,12 @@ pub struct ResolverMetrics {
     /// Succession logs adopted from the answer to such a request (a subset of
     /// `succession_logs_adopted`).
     pub logs_fetched: u64,
+    /// Succession logs or proofs refused because the durable log book could not
+    /// be written (see [`MeshNameResolver::with_log_store`]); nothing was adopted.
+    pub log_store_failures: u64,
+    /// Rows of the durable log book dropped at load: undecodable, not
+    /// verifying from their key, or over a bound.
+    pub log_rows_dropped: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -449,6 +455,21 @@ impl MeshNameResolver {
     pub fn with_application(mut self, application: Arc<dyn MeshApplication>) -> Self {
         self.application = Some(application);
         self
+    }
+
+    /// Keep the succession log book (logs and equivocation proofs, never the
+    /// replica records) in `store`: restore it now and write every log or proof
+    /// adopted from here on before it takes effect. Call it before the resolver
+    /// is shared or serves. Rows that do not verify are dropped and counted
+    /// (`ResolverMetrics::log_rows_dropped`); a store that cannot be read at all
+    /// is an error. See [`NameService::restore_log_book`] and spec 02, 10.10
+    /// decision 50.
+    pub fn with_log_store(
+        mut self,
+        store: Arc<dyn crate::logbook_store::LogBookStore>,
+    ) -> Result<Self, NameMeshError> {
+        self.service.get_mut().restore_log_book(store)?;
+        Ok(self)
     }
 
     pub fn agent_id(&self) -> AgentId {
@@ -1628,6 +1649,8 @@ impl MeshNameResolver {
         metrics.log_fetches_sent = stats.log_fetches_sent;
         metrics.log_fetches_suppressed = stats.log_fetches_suppressed;
         metrics.logs_fetched = stats.logs_fetched;
+        metrics.log_store_failures = stats.log_store_failures;
+        metrics.log_rows_dropped = stats.log_rows_dropped;
         metrics
     }
 
@@ -3501,6 +3524,318 @@ mod tests {
                 ))),
             )
             .unwrap()
+    }
+
+    // ---- a durable log book (spec 02, 10.10 decision 50) --------------------
+
+    type Memory = Arc<crate::logbook_store::MemoryLogBookStore>;
+
+    fn memory() -> Memory {
+        Arc::new(crate::logbook_store::MemoryLogBookStore::default())
+    }
+
+    /// Restart node `i`: a service built from nothing but `store`, which then
+    /// backs the node's log book. The replica records are gone, as after a
+    /// real restart.
+    async fn restart_on(h: &Harness, i: usize, store: &Memory) -> crate::naming::LogBookRestore {
+        let mut service = NameService::new(h.nodes[i].local_key());
+        let report = service.restore_log_book(store.clone()).unwrap();
+        *h.nodes[i].service.lock().await = service;
+        report
+    }
+
+    fn is_name_error(
+        result: &Result<NameRecord, NameMeshError>,
+        check: fn(&spine_name::NameError) -> bool,
+    ) -> bool {
+        matches!(result, Err(NameMeshError::Name(e)) if check(e))
+    }
+
+    #[tokio::test]
+    async fn a_rotation_learned_from_a_peer_survives_a_restart_without_the_peer() {
+        let h = Harness::new(3);
+        let store = memory();
+        restart_on(&h, 1, &store).await;
+        let log = rotation_log(1);
+        let fresh = record_under(1, &log, 101, 2);
+        let envelope = h.nodes[0]
+            .node
+            .announce_name_with_log(fresh.clone(), Some(log.clone()))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert_eq!(store.logs.lock().unwrap().len(), 1, "written when adopted");
+
+        // The restart: no record, no log in memory, and nobody sends anything.
+        let report = restart_on(&h, 1, &store).await;
+        assert_eq!((report.logs, report.proofs, report.dropped), (1, 0, 0));
+        assert_eq!(h.nodes[1].record_count().await, 0);
+        assert_eq!(h.nodes[1].succession_log(&pk_of(1)).await, Some(log));
+        assert!(h.board.is_empty());
+
+        // The superseded key is refused, at a higher seq, with no log in sight.
+        let old = h.nodes[0]
+            .node
+            .announce_name(record_versioned(1, 9))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&old, NOW).await);
+        assert_eq!(h.nodes[1].record_count().await, 0);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (m.announcements_rejected, m.records_refused_by_succession),
+            (1, 1)
+        );
+
+        // A node restarted on an empty store has forgotten, and accepts it.
+        restart_on(&h, 2, &memory()).await;
+        assert!(h.nodes[2].handle_envelope(&old, NOW).await);
+        assert_eq!(h.nodes[2].record_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn the_builder_restores_a_log_book_before_the_resolver_serves() {
+        let h = Harness::new(1);
+        let store = memory();
+        let log = rotation_log(1);
+        store.logs.lock().unwrap().insert(pk_of(1), log.clone());
+        let mesh = Arc::new(MeshNode::new(
+            SigningIdentity::from_seed("builder", [200; 32]),
+            MeshConfig::default(),
+        ));
+        let transport = Arc::new(SwitchTransport {
+            board: h.board.clone(),
+        });
+        let node = MeshNameResolver::new(mesh, transport)
+            .with_log_store(store.clone())
+            .unwrap();
+        assert_eq!(node.succession_log(&pk_of(1)).await, Some(log));
+    }
+
+    #[tokio::test]
+    async fn an_equivocated_name_stays_failed_closed_after_a_restart() {
+        let h = Harness::new(2);
+        let store = memory();
+        restart_on(&h, 1, &store).await;
+        h.nodes[1].offer_log(rotation_log(1)).await.unwrap();
+        h.nodes[1].offer_log(forked_log(1)).await.unwrap();
+        assert_eq!(store.proofs.lock().unwrap().len(), 1);
+        assert_eq!(
+            store.logs.lock().unwrap().len(),
+            0,
+            "the proof replaces the log row"
+        );
+
+        let report = restart_on(&h, 1, &store).await;
+        assert_eq!((report.logs, report.proofs, report.dropped), (0, 1, 0));
+        let name = SpineUri::did(pk_of(1));
+        assert!(is_name_error(&h.nodes[1].resolve(&name).await, |e| {
+            matches!(e, spine_name::NameError::Equivocated(_))
+        }));
+        // Either log's keys are refused, and neither log is taken again.
+        let old_key = h.nodes[0]
+            .node
+            .announce_name(record_versioned(1, 9))
+            .unwrap();
+        let new_key = h.nodes[0]
+            .node
+            .announce_name_with_log(
+                record_under(1, &rotation_log(1), 101, 2),
+                Some(rotation_log(1)),
+            )
+            .unwrap();
+        for envelope in [old_key, new_key] {
+            assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        }
+        assert_eq!(h.nodes[1].record_count().await, 0);
+        assert!(h.nodes[1].succession_log(&pk_of(1)).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_retired_name_stays_retired_after_a_restart() {
+        let h = Harness::new(2);
+        let store = memory();
+        restart_on(&h, 1, &store).await;
+        let retired = rotation_log(1)
+            .retired(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[101; 32]),
+                &pk_of(102),
+                NOW,
+            )
+            .unwrap();
+        h.nodes[1].offer_log(retired).await.unwrap();
+
+        restart_on(&h, 1, &store).await;
+        let name = SpineUri::did(pk_of(1));
+        assert!(is_name_error(&h.nodes[1].resolve(&name).await, |e| {
+            matches!(e, spine_name::NameError::Retired(_))
+        }));
+        let old = h.nodes[0]
+            .node
+            .announce_name(record_versioned(1, 9))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&old, NOW).await);
+        assert_eq!(h.nodes[1].record_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_row_is_dropped_and_counted_and_does_not_stop_the_node() {
+        let h = Harness::new(1);
+        let store = memory();
+        store.logs.lock().unwrap().insert(pk_of(1), rotation_log(1));
+        // A log under the key of another name, a proof under the wrong key, and
+        // a row the store could not decode.
+        store.logs.lock().unwrap().insert(pk_of(3), rotation_log(2));
+        let proof = spine_name::Equivocation {
+            prefix: SuccessionLog::default(),
+            first: rotation_log(4).entries[0].clone(),
+            second: forked_log(4).entries[0].clone(),
+        };
+        store.proofs.lock().unwrap().insert(pk_of(5), proof.clone());
+        store
+            .unreadable
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+
+        let report = restart_on(&h, 0, &store).await;
+        assert_eq!((report.logs, report.proofs, report.dropped), (1, 0, 3));
+        assert_eq!(h.nodes[0].metrics().await.log_rows_dropped, 3);
+        assert!(h.nodes[0].succession_log(&pk_of(1)).await.is_some());
+        assert!(h.nodes[0].succession_log(&pk_of(3)).await.is_none());
+        // The same proof under its own key is kept.
+        store.proofs.lock().unwrap().clear();
+        store.proofs.lock().unwrap().insert(pk_of(4), proof);
+        let report = restart_on(&h, 0, &store).await;
+        assert_eq!((report.logs, report.proofs), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn a_store_that_fails_refuses_the_offer_and_leaves_memory_unchanged() {
+        let h = Harness::new(2);
+        let store = memory();
+        restart_on(&h, 1, &store).await;
+        store.fail_writes(true);
+
+        // An offer, and an announcement that carries a log.
+        let log = rotation_log(1);
+        let refused = h.nodes[1].offer_log(log.clone()).await;
+        assert!(
+            matches!(
+                refused,
+                Err(NameMeshError::Name(spine_name::NameError::Storage(_)))
+            ),
+            "{refused:?}"
+        );
+        let fresh = record_under(1, &log, 101, 2);
+        let envelope = h.nodes[0]
+            .node
+            .announce_name_with_log(fresh.clone(), Some(log.clone()))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert!(h.nodes[1].succession_log(&pk_of(1)).await.is_none());
+        assert!(h.nodes[1].service.lock().await.logs().is_empty());
+        assert_eq!(h.nodes[1].record_count().await, 0, "the record needs it");
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (
+                m.log_store_failures,
+                m.succession_logs_adopted,
+                m.succession_logs_rejected
+            ),
+            (2, 0, 0)
+        );
+        assert!(store.logs.lock().unwrap().is_empty());
+
+        // Healthy again: adopted. Then a conflicting log with a failing store
+        // is not turned into a proof, in memory or on disk.
+        store.fail_writes(false);
+        h.nodes[1].offer_log(log.clone()).await.unwrap();
+        store.fail_writes(true);
+        let refused = h.nodes[1].offer_log(forked_log(1)).await;
+        assert!(
+            matches!(
+                refused,
+                Err(NameMeshError::Name(spine_name::NameError::Storage(_)))
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(h.nodes[1].succession_log(&pk_of(1)).await, Some(log));
+        assert!(!h.nodes[1]
+            .service
+            .lock()
+            .await
+            .logs()
+            .is_compromised(&pk_of(1)));
+        assert!(store.proofs.lock().unwrap().is_empty());
+        assert_eq!(store.logs.lock().unwrap().len(), 1);
+    }
+
+    /// The log of a synthetic name number `n`, with reveal tag `tag` (a different
+    /// tag is a conflicting log), and its inception key.
+    fn synthetic_log(n: u32, tag: u8) -> ([u8; 32], SuccessionLog) {
+        let signer = |t: u8| {
+            let mut bytes = [t; 32];
+            bytes[..4].copy_from_slice(&n.to_le_bytes());
+            SigningKey::from_bytes(&bytes)
+        };
+        let inception = signer(1).verifying_key().to_bytes();
+        let log = SuccessionLog::default()
+            .rotated(
+                &inception,
+                &signer(1),
+                &signer(tag).verifying_key().to_bytes(),
+                &signer(9).verifying_key().to_bytes(),
+                NOW,
+            )
+            .unwrap();
+        (inception, log)
+    }
+
+    #[tokio::test]
+    async fn the_bounds_hold_after_load_and_an_eviction_deletes_its_row() {
+        let h = Harness::new(1);
+        let store = memory();
+        let extra: u32 = 3;
+        let max_logs = spine_name::MAX_SUCCESSION_LOGS as u32;
+        let max_proofs = spine_name::MAX_EQUIVOCATION_PROOFS as u32;
+        for n in 0..max_logs + extra {
+            let (key, log) = synthetic_log(n, 2);
+            store.logs.lock().unwrap().insert(key, log);
+        }
+        for n in (max_logs + extra)..(max_logs + extra + max_proofs + extra) {
+            let (key, a) = synthetic_log(n, 2);
+            let (_, b) = synthetic_log(n, 3);
+            let proof = spine_name::Equivocation {
+                prefix: SuccessionLog::default(),
+                first: a.entries[0].clone(),
+                second: b.entries[0].clone(),
+            };
+            store.proofs.lock().unwrap().insert(key, proof);
+        }
+
+        let report = restart_on(&h, 0, &store).await;
+        assert_eq!(report.proofs, spine_name::MAX_EQUIVOCATION_PROOFS);
+        assert_eq!(report.logs, spine_name::MAX_SUCCESSION_LOGS);
+        assert_eq!(report.dropped, 2 * u64::from(extra));
+        {
+            let service = h.nodes[0].service.lock().await;
+            assert_eq!(service.logs().log_count(), spine_name::MAX_SUCCESSION_LOGS);
+            assert_eq!(
+                service.logs().proof_count(),
+                spine_name::MAX_EQUIVOCATION_PROOFS
+            );
+        }
+
+        // The table is full and no record is held: a new log evicts one, and
+        // the row of the evicted log goes with it.
+        let rows_before = store.logs.lock().unwrap().len();
+        let (new_key, new_log) = synthetic_log(100_000, 2);
+        h.nodes[0].offer_log(new_log).await.unwrap();
+        assert_eq!(
+            h.nodes[0].service.lock().await.logs().log_count(),
+            spine_name::MAX_SUCCESSION_LOGS
+        );
+        let rows = store.logs.lock().unwrap();
+        assert!(rows.contains_key(&new_key));
+        assert_eq!(rows.len(), rows_before, "one row added, one deleted");
     }
 
     async fn pump_bounded(h: &Harness) {

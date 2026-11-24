@@ -36,6 +36,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use spine_mesh::identity::SigningIdentity;
+use spine_mesh::logbook_store::{LogBookRows, LogBookStore, LogStoreError};
 use spine_mesh::mesh::{MeshConfig, MeshNode};
 use spine_mesh::mesh_tcp::{serve_node_with, EncryptionConfig, Security, TcpNameTransport};
 use spine_mesh::naming_mesh::{MaintenancePolicy, MeshNameResolver};
@@ -43,14 +44,116 @@ use tracing::{info, warn};
 
 use crate::config::NamespaceConfig;
 
+/// Storage namespace of the mesh service's succession logs: key is the 32-byte
+/// inception key, value the log as serde JSON. Distinct from the local
+/// resolver's `spine-name-successions-v1` (spec 02, 10.10 decision 50).
+pub const MESH_SUCCESSIONS_NAMESPACE: &str = "spine-mesh-successions-v1";
+
+/// Storage namespace of the mesh service's equivocation proofs: key is the
+/// 32-byte inception key, value the proof as serde JSON.
+pub const MESH_EQUIVOCATIONS_NAMESPACE: &str = "spine-mesh-equivocations-v1";
+
+/// The mesh name service's log book on a [`spine_storage::StorageBackend`]:
+/// logs and equivocation proofs only, never the replica records. The rows are
+/// the local resolver's (a 32-byte key and the serde JSON of the log or proof)
+/// in namespaces of their own, so the two books never share a row even on one
+/// backend file. Rules (verify at load, bounds, write before apply) are the
+/// service's: this type only reads and writes rows.
+pub struct BackendLogBookStore {
+    backend: Arc<dyn spine_storage::StorageBackend>,
+}
+
+impl BackendLogBookStore {
+    pub fn new(backend: Arc<dyn spine_storage::StorageBackend>) -> Self {
+        Self { backend }
+    }
+}
+
+impl std::fmt::Debug for BackendLogBookStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackendLogBookStore")
+            .finish_non_exhaustive()
+    }
+}
+
+fn store_error(e: impl std::fmt::Display) -> LogStoreError {
+    LogStoreError(e.to_string())
+}
+
+impl LogBookStore for BackendLogBookStore {
+    fn load(&self) -> Result<LogBookRows, LogStoreError> {
+        let mut rows = LogBookRows::default();
+        for (key, data) in self
+            .backend
+            .scan(MESH_EQUIVOCATIONS_NAMESPACE, None)
+            .map_err(store_error)?
+        {
+            match (
+                <[u8; 32]>::try_from(key.as_slice()),
+                serde_json::from_slice::<spine_name::Equivocation>(&data),
+            ) {
+                (Ok(key), Ok(proof)) => rows.proofs.push((key, proof)),
+                _ => rows.unreadable += 1,
+            }
+        }
+        for (key, data) in self
+            .backend
+            .scan(MESH_SUCCESSIONS_NAMESPACE, None)
+            .map_err(store_error)?
+        {
+            match (
+                <[u8; 32]>::try_from(key.as_slice()),
+                serde_json::from_slice::<spine_name::SuccessionLog>(&data),
+            ) {
+                (Ok(key), Ok(log)) => rows.logs.push((key, log)),
+                _ => rows.unreadable += 1,
+            }
+        }
+        Ok(rows)
+    }
+
+    fn save_log(
+        &self,
+        inception_key: &[u8; 32],
+        log: &spine_name::SuccessionLog,
+    ) -> Result<(), LogStoreError> {
+        let bytes = serde_json::to_vec(log).map_err(store_error)?;
+        self.backend
+            .put(MESH_SUCCESSIONS_NAMESPACE, inception_key, &bytes)
+            .map_err(store_error)
+    }
+
+    fn save_proof(
+        &self,
+        inception_key: &[u8; 32],
+        proof: &spine_name::Equivocation,
+    ) -> Result<(), LogStoreError> {
+        let bytes = serde_json::to_vec(proof).map_err(store_error)?;
+        self.backend
+            .put(MESH_EQUIVOCATIONS_NAMESPACE, inception_key, &bytes)
+            .map_err(store_error)
+    }
+
+    fn remove_log(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError> {
+        self.backend
+            .delete(MESH_SUCCESSIONS_NAMESPACE, inception_key)
+            .map_err(store_error)
+    }
+}
+
 /// Bring this node onto the mesh: identity, listener, then seeds.
 ///
 /// Returns the resolver even when no seed answered — see the module docs on why
 /// an unreachable namespace is a degraded state rather than a fatal one.
+///
+/// With `log_store` the mesh service's succession log book is restored from it
+/// before the listener starts and kept in it afterwards; without it the book is
+/// in memory, as it always was. A store that cannot be read is an error.
 pub async fn join_with_application(
     cfg: &NamespaceConfig,
     host: &str,
     application: Option<Arc<dyn spine_mesh::naming_mesh::MeshApplication>>,
+    log_store: Option<Arc<dyn LogBookStore>>,
 ) -> Result<Arc<MeshNameResolver>> {
     let seed = load_or_create_key(&cfg.key_path)?;
     let identity = SigningIdentity::from_seed("spine-core", seed);
@@ -66,6 +169,11 @@ pub async fn join_with_application(
     let mut resolver = MeshNameResolver::new(mesh.clone(), transport.clone());
     if let Some(application) = application {
         resolver = resolver.with_application(application);
+    }
+    if let Some(log_store) = log_store {
+        resolver = resolver
+            .with_log_store(log_store)
+            .map_err(|e| anyhow::anyhow!("namespace succession log book: {e}"))?;
     }
     let resolver = Arc::new(resolver);
 
@@ -469,6 +577,53 @@ fn decode_hex(text: &str) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mesh book writes to namespaces of its own, reads back what it wrote,
+    /// and reports a row it cannot decode instead of failing the load.
+    #[test]
+    fn the_mesh_log_book_uses_its_own_namespaces() {
+        use spine_storage::StorageBackend;
+        let backend = Arc::new(spine_storage::InMemoryBackend::new());
+        let store = Arc::new(BackendLogBookStore::new(backend.clone()));
+        let signer = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let inception = signer.verifying_key().to_bytes();
+        let reveal = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let next = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32])
+            .verifying_key()
+            .to_bytes();
+        let log = spine_name::SuccessionLog::default()
+            .rotated(&inception, &signer, &reveal, &next, 1_000)
+            .unwrap();
+
+        store.save_log(&inception, &log).unwrap();
+        assert!(backend
+            .get(MESH_SUCCESSIONS_NAMESPACE, &inception)
+            .unwrap()
+            .is_some());
+        assert!(backend
+            .get("spine-name-successions-v1", &inception)
+            .unwrap()
+            .is_none());
+        backend
+            .put(MESH_SUCCESSIONS_NAMESPACE, b"short", b"{}")
+            .unwrap();
+        backend
+            .put(MESH_EQUIVOCATIONS_NAMESPACE, &[9u8; 32], b"not json")
+            .unwrap();
+
+        let mut service = spine_mesh::naming::NameService::new(spine_name::NameKey::of(b"x"));
+        let report = service.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.logs, report.proofs, report.dropped), (1, 0, 2));
+        assert_eq!(service.logs().log(&inception), Some(&log));
+
+        store.remove_log(&inception).unwrap();
+        assert!(backend
+            .get(MESH_SUCCESSIONS_NAMESPACE, &inception)
+            .unwrap()
+            .is_none());
+    }
 
     #[test]
     fn hex_round_trips() {
