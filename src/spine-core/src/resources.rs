@@ -505,7 +505,10 @@ impl ResourceStore {
 
     /// Store a blob for `owner`, with `now` in seconds since the Unix epoch.
     ///
-    /// The record is verified (`NameRecord::verify`, or the check given to
+    /// A record whose `published_at` is more than `MAX_CLOCK_SKEW_SECS` ahead
+    /// of `now` is refused first (`NameError::PostDated`), before its signature
+    /// is checked: it would extend its own life by post-dating. Then the record
+    /// is verified (`NameRecord::verify`, or the check given to
     /// `with_record_authority`), the data must match the signed resource id
     /// (which commits to the content type), and the blob is charged to `owner`.
     /// Content already stored keeps its first publisher; the new record only
@@ -524,6 +527,7 @@ impl ResourceStore {
         data: &[u8],
         now: u64,
     ) -> Result<([u8; 32], bool)> {
+        record.validate_not_postdated(now)?;
         match &self.record_authority {
             Some(authority) => authority(record)?,
             None => record.verify()?,
@@ -869,6 +873,33 @@ mod tests {
             loaded_after.read(hash, 0, 64),
             Err(ReadError::NotFound)
         ));
+    }
+
+    #[test]
+    fn a_post_dated_record_is_refused_and_nothing_is_written() {
+        let store = memory();
+        let bytes = b"from the future";
+        let now = 1000;
+        let skew = spine_name::MAX_CLOCK_SKEW_SECS;
+        let record = record_at("text/plain", bytes, now + skew + 1);
+        let error = store
+            .put_at([1; 32], &record, "text/plain", bytes, now)
+            .unwrap_err();
+        assert!(
+            matches!(refusal(&error), spine_name::NameError::PostDated { .. }),
+            "{error:#}"
+        );
+        assert_eq!(store.total_bytes().unwrap(), 0);
+        let id = resource_id("text/plain", bytes).unwrap();
+        assert!(!store.backend.exists(NAMESPACE, &id).unwrap());
+        assert!(!store.backend.exists(META_NAMESPACE, &id).unwrap());
+        // Exactly the allowed skew ahead is accepted.
+        let edge = record_at("text/plain", bytes, now + skew);
+        let (hash, created) = store
+            .put_at([1; 32], &edge, "text/plain", bytes, now)
+            .unwrap();
+        assert!(created);
+        assert_eq!(hash, id);
     }
 
     #[test]
