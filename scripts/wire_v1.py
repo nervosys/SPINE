@@ -1055,6 +1055,8 @@ CONVENTIONS = [
     "or the CLOSE code. A valid vector also gives the test 'seed' (Ed25519 signatures are deterministic), the proven 'key', the signed 'message' M (section 6.6) and the 'signature'.",
     "identify_sessions: 'hello_frame' and 'local' make a handshake; the server then receives the 'frames' (hex) in order. 'expect' is "
     "{result: ok, identity: hex or null} when all are accepted and the stream then ends, or {result: close, code} at the first one refused.",
+    "name_results: a RESPONSE 'ok' value for resolve_name (section 12.5), 'body_hex' described by 'body'. 'expect' is 'ok' or 'invalid' (the body is "
+    "not a name resolution a decoder accepts). Entries of a succession log are checked for shape only: their signatures are not part of the wire layer.",
     "ed25519_strict: 'public', 'message' and 'signature' (hex) with the verdict of plain RFC 8032 verification ('plain') and of verify_strict ('strict'); "
     "a conforming server uses the strict one (section 6.6).",
     "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
@@ -1620,6 +1622,224 @@ def make_hello_acks():
     return out
 
 
+NAME_PROVENANCE = ("cache", "stale_cache", "local", "network", "address")
+NAME_OUTCOMES = ("resolved", "unchanged", "not_found", "invalid", "unavailable", "retired", "compromised", "revoked")
+MAX_LOG_ENTRIES = 64
+ENTRY_KEYS = ("commitment", "effective_at", "inception_key", "index", "key", "kind", "prev", "signature")
+
+
+def log_entry(index, kind="rotate"):
+    """A succession entry in the JSON form of 02-names 10.1. Only its shape
+    matters here."""
+    return {
+        "index": index,
+        "kind": kind,
+        "inception_key": "z" + "a" * 52,
+        "key": "z" + "b" * 52,
+        "prev": None if index == 0 else "c" * 52,
+        "commitment": None if kind == "retire" else "d" * 52,
+        "effective_at": 1700000000 + index,
+        "signature": "s" + "e" * 102,
+    }
+
+
+def log_of(n, last_kind="rotate"):
+    return [log_entry(i, last_kind if i == n - 1 else "rotate") for i in range(n)]
+
+
+NAME_RECORD = {
+    "name": "spine://did:z" + "a" * 52 + "/",
+    "seq": 2,
+    "ttl_secs": 3600,
+    "published_at": 1700000000,
+    "endpoints": [{"transport": "tcp", "address": "127.0.0.1:9440", "priority": 0}],
+}
+
+
+def _short_text(v):
+    return isinstance(v, str) and 0 < len(v.encode("utf-8")) <= 128
+
+
+def check_entry_shape(entry):
+    """The structure rule of 00-wire 12.5 for one log entry, or a reason."""
+    if not isinstance(entry, dict) or set(entry) != set(ENTRY_KEYS):
+        return "not exactly the fields of a succession entry"
+    for key in ("inception_key", "key", "signature"):
+        if not _short_text(entry[key]):
+            return "%s is not short text" % key
+    for key in ("prev", "commitment"):
+        if entry[key] is not None and not _short_text(entry[key]):
+            return "%s is not short text or null" % key
+    for key in ("index", "effective_at"):
+        v = entry[key]
+        if not _is_uint(v):
+            return "%s is not an unsigned integer" % key
+    if entry["kind"] not in ("rotate", "retire"):
+        return "kind is not rotate or retire"
+    return None
+
+
+def check_log_shape(log, minimum):
+    if not isinstance(log, list):
+        return "a log is not an array"
+    if len(log) < minimum:
+        return "fewer than %d entries" % minimum
+    if len(log) > MAX_LOG_ENTRIES:
+        return "more than %d entries" % MAX_LOG_ENTRIES
+    for entry in log:
+        problem = check_entry_shape(entry)
+        if problem:
+            return problem
+    return None
+
+
+def name_result_problem(value):
+    """Why `value` is not a name resolution (section 12.5), or None when it is:
+    an externally tagged variant with exactly its fields and a log of the right
+    size and shape."""
+    if not isinstance(value, dict) or len(value) != 1:
+        return "not a single-variant map"
+    (outcome, fields), = value.items()
+    if outcome not in NAME_OUTCOMES:
+        return "unknown outcome"
+    if not isinstance(fields, dict):
+        return "the variant is not a map"
+    expect = {
+        "resolved": {"record", "provenance", "log"},
+        "unchanged": {"ttl_secs"},
+        "not_found": {"name"},
+        "invalid": {"name", "reason"},
+        "unavailable": {"name", "reason"},
+        "retired": {"name", "log"},
+        "compromised": {"name", "logs"},
+        "revoked": {"record", "provenance", "log"},
+    }[outcome]
+    if set(fields) != expect:
+        return "the fields are not exactly %s" % sorted(expect)
+    if "provenance" in fields and fields["provenance"] not in NAME_PROVENANCE:
+        return "provenance is not one of the five texts"
+    for key in ("name", "reason"):
+        if key in fields and not isinstance(fields[key], str):
+            return "%s is not text" % key
+    if "ttl_secs" in fields and not _is_uint(fields["ttl_secs"], 0xFFFFFFFF):
+        return "ttl_secs is not a u32"
+    if outcome in ("resolved", "revoked"):
+        return check_log_shape(fields["log"], 0)
+    if outcome == "retired":
+        return check_log_shape(fields["log"], 1)
+    if outcome == "compromised":
+        logs = fields["logs"]
+        if not isinstance(logs, list) or len(logs) != 2:
+            return "not exactly two logs"
+        for log in logs:
+            problem = check_log_shape(log, 1)
+            if problem:
+                return problem
+    return None
+
+
+def make_name_results():
+    out = []
+
+    def add(name, value, note=None):
+        body = encode(value)
+        v = {"name": name, "body": to_desc(value), "body_hex": body.hex(),
+             "expect": "invalid" if name.startswith("invalid_") else "ok"}
+        if note:
+            v["note"] = note
+        problem = name_result_problem(value)
+        assert (problem is not None) == (v["expect"] == "invalid"), (name, problem)
+        out.append(v)
+
+    def resolved(log, **changes):
+        fields = {"record": NAME_RECORD, "provenance": "network", "log": log}
+        fields.update(changes)
+        return {"resolved": fields}
+
+    def retired(log, **changes):
+        fields = {"name": NAME_RECORD["name"], "log": log}
+        fields.update(changes)
+        return {"retired": fields}
+
+    def compromised(logs, **changes):
+        fields = {"name": NAME_RECORD["name"], "logs": logs}
+        fields.update(changes)
+        return {"compromised": fields}
+
+    def revoked(log, **changes):
+        fields = {"record": NAME_RECORD, "provenance": "local", "log": log}
+        fields.update(changes)
+        return {"revoked": fields}
+
+    note_log = "the log is always present, 0 to 64 entries (section 12.5)"
+    add("valid_resolved_no_log", resolved([]), note=note_log + ": empty is the whole truth only for a name that never rotated")
+    add("valid_resolved_one_entry", resolved(log_of(1)), note=note_log)
+    add("valid_resolved_three_entries", resolved(log_of(3)), note=note_log)
+    add("valid_resolved_max_log", resolved(log_of(MAX_LOG_ENTRIES)), note=note_log)
+    for provenance in NAME_PROVENANCE:
+        add("valid_resolved_provenance_%s" % provenance, resolved([], provenance=provenance))
+    add("valid_unchanged", {"unchanged": {"ttl_secs": 300}}, note="no body, so no log")
+    add("valid_not_found", {"not_found": {"name": "spine://did:zx/"}})
+    add("valid_invalid", {"invalid": {"name": "x", "reason": "no scheme"}})
+    add("valid_unavailable", {"unavailable": {"name": "spine://did:zx/", "reason": "the log is not held"}},
+        note="a node that holds a rotated record without its log answers truthfully with this, never resolved with an empty log (section 12.5)")
+    add("valid_retired_one_entry", retired(log_of(1, "retire")), note="1 to 64 entries, the last of which retires the name")
+    add("valid_retired_two_entries", retired(log_of(2, "retire")))
+    add("valid_retired_max_log", retired(log_of(MAX_LOG_ENTRIES, "retire")))
+    add("valid_compromised_two_logs", compromised([log_of(1), log_of(1)]),
+        note="exactly two logs of 1 to 64 entries: the equivocation proof (section 12.5)")
+    add("valid_compromised_unequal_logs", compromised([log_of(1), log_of(3)]))
+    add("valid_compromised_max_logs", compromised([log_of(MAX_LOG_ENTRIES), log_of(MAX_LOG_ENTRIES)]))
+    add("valid_revoked_no_log", revoked([]), note="the tombstone and the log it is judged under, 0 to 64 entries")
+    add("valid_revoked_with_log", revoked(log_of(2)))
+
+    shape = "a name resolution is one variant with exactly its fields (section 12.5)"
+    add("invalid_resolved_without_log", {"resolved": {"record": NAME_RECORD, "provenance": "network"}},
+        note="the log is mandatory in resolved: it is how a client verifies a rotated name")
+    add("invalid_resolved_log_null", resolved(None), note=shape)
+    add("invalid_resolved_log_is_a_map", resolved({}), note=shape)
+    add("invalid_resolved_log_over_long", resolved(log_of(MAX_LOG_ENTRIES + 1)), note="more than 64 entries")
+    add("invalid_resolved_extra_key", resolved([], extra=1), note=shape)
+    add("invalid_resolved_provenance_unknown", resolved([], provenance="cached"), note=shape)
+    add("invalid_resolved_provenance_is_int", resolved([], provenance=2), note=shape)
+    add("invalid_resolved_log_entry_is_text", resolved(["entry"]), note="an entry is a map of the eight fields")
+    entry = log_entry(0)
+    for key in ENTRY_KEYS:
+        missing = {k: v for k, v in entry.items() if k != key}
+        add("invalid_resolved_entry_missing_%s" % key, resolved([missing]), note="an entry has exactly the eight fields")
+    add("invalid_resolved_entry_extra_key", resolved([dict(entry, extra=1)]), note="an entry has exactly the eight fields")
+    add("invalid_resolved_entry_kind_unknown", resolved([dict(entry, kind="revoke")]), note="kind is rotate or retire")
+    add("invalid_resolved_entry_index_is_text", resolved([dict(entry, index="0")]), note="index is an unsigned integer")
+    add("invalid_resolved_entry_index_negative", resolved([dict(entry, index=-1)]), note="index is an unsigned integer")
+    add("invalid_resolved_entry_signature_is_bytes", resolved([dict(entry, signature=b"\x00" * 64)]),
+        note="the log travels in the JSON form: keys and signatures are text")
+    add("invalid_resolved_entry_signature_empty", resolved([dict(entry, signature="")]), note="the text fields are not empty")
+    add("invalid_resolved_entry_key_over_long", resolved([dict(entry, key="k" * 129)]), note="the text fields are at most 128 bytes")
+    add("invalid_resolved_entry_prev_is_int", resolved([dict(entry, prev=0)]), note="prev is text or null")
+    add("invalid_unchanged_with_log", {"unchanged": {"ttl_secs": 1, "log": []}}, note=shape)
+    add("invalid_unchanged_ttl_over_u32", {"unchanged": {"ttl_secs": 4294967296}}, note="ttl_secs is a u32")
+    add("invalid_not_found_with_log", {"not_found": {"name": "n", "log": []}}, note=shape)
+    add("invalid_unknown_outcome", {"deleted": {"name": "n"}}, note="there is no other outcome")
+    add("invalid_two_outcomes", {"not_found": {"name": "n"}, "unchanged": {"ttl_secs": 1}}, note=shape)
+    add("invalid_outcome_is_text", "unchanged", note=shape)
+    add("invalid_retired_empty_log", retired([]), note="retired carries 1 to 64 entries")
+    add("invalid_retired_without_log", {"retired": {"name": NAME_RECORD["name"]}}, note=shape)
+    add("invalid_retired_over_long", retired(log_of(MAX_LOG_ENTRIES + 1, "retire")), note="more than 64 entries")
+    add("invalid_retired_logs_instead_of_log", {"retired": {"name": "n", "logs": [log_of(1)]}}, note=shape)
+    add("invalid_retired_with_record", retired(log_of(1, "retire"), record=NAME_RECORD), note=shape)
+    add("invalid_compromised_no_logs", compromised([]), note="exactly two logs")
+    add("invalid_compromised_one_log", compromised([log_of(1)]), note="exactly two logs")
+    add("invalid_compromised_three_logs", compromised([log_of(1), log_of(1), log_of(1)]), note="exactly two logs")
+    add("invalid_compromised_empty_log", compromised([log_of(1), []]), note="each log has 1 to 64 entries")
+    add("invalid_compromised_over_long_log", compromised([log_of(1), log_of(MAX_LOG_ENTRIES + 1)]), note="more than 64 entries")
+    add("invalid_compromised_log_instead_of_logs", {"compromised": {"name": "n", "log": log_of(1)}}, note=shape)
+    add("invalid_compromised_logs_is_a_map", compromised({}), note=shape)
+    add("invalid_revoked_without_log", {"revoked": {"record": NAME_RECORD, "provenance": "local"}}, note=shape)
+    add("invalid_revoked_without_provenance", {"revoked": {"record": NAME_RECORD, "log": []}}, note=shape)
+    add("invalid_revoked_over_long_log", revoked(log_of(MAX_LOG_ENTRIES + 1)), note="more than 64 entries")
+    return out
+
+
 def make_handshakes():
     out = []
 
@@ -2062,6 +2282,7 @@ def build_document():
         "identify": make_identify(),
         "identify_sessions": make_identify_sessions(),
         "ed25519_strict": make_ed25519_strict(),
+        "name_results": make_name_results(),
     }
     return doc
 
@@ -2248,6 +2469,18 @@ def check_identify(v):
     return None
 
 
+def check_name_result(v):
+    body = bytes.fromhex(v["body_hex"])
+    if encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    validate(body)
+    problem = name_result_problem(decode(body))
+    verdict = "invalid" if problem else "ok"
+    if verdict != v["expect"]:
+        return "judged %s (%s), expected %s" % (verdict, problem, v["expect"])
+    return None
+
+
 def check_ed25519_strict(v):
     public, message, signature = (bytes.fromhex(v[k]) for k in ("public", "message", "signature"))
     plain = names_v1.ed25519_verify(public, message, signature, strict=False)
@@ -2273,6 +2506,7 @@ CHECKS = [
     ("identify", check_identify, 25),
     ("identify_sessions", check_identify_session, 15),
     ("ed25519_strict", check_ed25519_strict, 6),
+    ("name_results", check_name_result, 60),
 ]
 
 

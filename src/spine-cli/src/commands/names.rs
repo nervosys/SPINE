@@ -151,8 +151,10 @@ pub enum NameAction {
         /// Permit loopback and private-network origins from the signed record.
         #[arg(long)]
         allow_private: bool,
-        /// Succession log of a rotated name. The daemon's answer carries no log,
-        /// so without it a record that claims a rotation is refused.
+        /// Succession log of a rotated name. Optional: the daemon's resolve
+        /// answer carries the log it holds, which is verified from the name's
+        /// inception key. A log given here is combined with it (the longer
+        /// valid extension wins; two that conflict are a compromise).
         #[arg(long)]
         log: Option<PathBuf>,
     },
@@ -439,7 +441,14 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
     let result = match action {
         NameAction::Status => client.namespace_status().await?,
         NameAction::Resolve { name } => {
-            serde_json::to_value(client.resolve_name(&name, None).await?)?
+            let answer = client.resolve_name(&name, None).await?;
+            // The node's answer is evidence, not a verdict: the log is replayed
+            // from the name's inception key and the record judged against it. A
+            // retired, compromised or revoked name is named as such, never as a
+            // missing one, and evidence that does not verify fails the command.
+            let verified = spine_agent::names::verify_resolution(&name, answer.clone())?;
+            eprintln!("verified: {}", verified.outcome());
+            serde_json::to_value(answer)?
         }
         NameAction::Providers { capability } => client.find_providers(&capability, None).await?,
         NameAction::Publish { record, log } => {

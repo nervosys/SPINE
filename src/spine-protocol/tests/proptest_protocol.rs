@@ -273,25 +273,81 @@ fn arb_chunk() -> impl Strategy<Value = ResourceChunk> {
         )
 }
 
+/// One succession entry of the shape of `02-names.md` 10.1 (the protocol layer
+/// checks shape, not signatures): arbitrary short text and numbers in the
+/// fields.
+fn arb_log_entry() -> impl Strategy<Value = Value> {
+    (
+        "[a-z2-7]{1,52}",
+        any::<u64>(),
+        prop::option::of("[a-z2-7]{1,52}"),
+        any::<bool>(),
+        "[a-z2-7]{1,52}",
+        prop::option::of("[a-z2-7]{1,52}"),
+        any::<u64>(),
+        "[a-z2-7]{1,103}",
+    )
+        .prop_map(
+            |(inception_key, index, prev, retire, key, commitment, effective_at, signature)| {
+                let kind = if retire { "retire" } else { "rotate" };
+                serde_json::json!({
+                    "inception_key": inception_key,
+                    "index": index,
+                    "prev": prev,
+                    "kind": kind,
+                    "key": key,
+                    "commitment": commitment,
+                    "effective_at": effective_at,
+                    "signature": signature,
+                })
+            },
+        )
+}
+
+/// A log of `min` to 64 entries.
+fn arb_log(min: usize) -> impl Strategy<Value = Vec<Value>> {
+    vec(arb_log_entry(), min..=4)
+}
+
+fn arb_provenance() -> impl Strategy<Value = NameProvenance> {
+    prop_oneof![
+        Just(NameProvenance::Cache),
+        Just(NameProvenance::StaleCache),
+        Just(NameProvenance::Local),
+        Just(NameProvenance::Network),
+        Just(NameProvenance::Address),
+    ]
+}
+
 fn arb_resolution() -> impl Strategy<Value = NameResolution> {
     prop_oneof![
-        (
-            arb_json(),
-            prop_oneof![
-                Just(NameProvenance::Cache),
-                Just(NameProvenance::StaleCache),
-                Just(NameProvenance::Local),
-                Just(NameProvenance::Network),
-                Just(NameProvenance::Address),
-            ]
-        )
-            .prop_map(|(record, provenance)| NameResolution::Resolved { record, provenance }),
+        (arb_json(), arb_provenance(), arb_log(0)).prop_map(|(record, provenance, log)| {
+            NameResolution::Resolved {
+                record,
+                provenance,
+                log,
+            }
+        }),
         any::<u32>().prop_map(|ttl_secs| NameResolution::Unchanged { ttl_secs }),
         arb_text().prop_map(|name| NameResolution::NotFound { name }),
         (arb_text(), arb_text())
             .prop_map(|(name, reason)| NameResolution::Invalid { name, reason }),
         (arb_text(), arb_text())
             .prop_map(|(name, reason)| NameResolution::Unavailable { name, reason }),
+        (arb_text(), arb_log(1)).prop_map(|(name, log)| NameResolution::Retired { name, log }),
+        (arb_text(), arb_log(1), arb_log(1)).prop_map(|(name, first, second)| {
+            NameResolution::Compromised {
+                name,
+                logs: vec![first, second],
+            }
+        }),
+        (arb_json(), arb_provenance(), arb_log(0)).prop_map(|(record, provenance, log)| {
+            NameResolution::Revoked {
+                record,
+                provenance,
+                log,
+            }
+        }),
     ]
 }
 

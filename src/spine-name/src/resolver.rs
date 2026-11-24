@@ -471,6 +471,27 @@ impl LocalResolver {
         self.store.lock().unwrap().is_revoked(uri, now)
     }
 
+    /// The fresh tombstone this node holds for `uri`, with where it came from:
+    /// the cache first, then the store, as [`Resolver::resolve`] looks. `None`
+    /// when the name has no fresh tombstone. A resolution of a withdrawn name is
+    /// [`NameError::Revoked`], which carries no record; the daemon needs the
+    /// signed tombstone to answer with it (`docs/spec/00-wire.md` 12.4).
+    pub fn tombstone(&self, uri: &SpineUri) -> Option<Resolution> {
+        let now = self.now();
+        let cached = self.cache.lock().unwrap().get(uri, now);
+        if let CacheLookup::Fresh(record) = cached {
+            return record
+                .is_tombstone()
+                .then(|| Resolution::new(record, Provenance::Cache));
+        }
+        self.store
+            .lock()
+            .unwrap()
+            .get_fresh(uri, now)
+            .filter(|record| record.is_tombstone())
+            .map(|record| Resolution::new(record.clone(), Provenance::Local))
+    }
+
     /// Remember that a name did not resolve.
     pub fn cache_negative(&self, uri: &SpineUri) {
         let now = self.now();
@@ -686,6 +707,36 @@ mod tests {
         r.publish(reborn.clone()).unwrap();
         assert!(!r.is_revoked(&rec.name));
         assert_eq!(r.resolve(&rec.name).await.unwrap().record, reborn);
+    }
+
+    #[test]
+    fn the_held_tombstone_is_available_for_the_revoked_answer() {
+        let r = LocalResolver::at_time(1_000);
+        let rec = signed(1, 1_000, 100, &[], 1);
+        r.publish(rec.clone()).unwrap();
+        assert!(
+            r.tombstone(&rec.name).is_none(),
+            "a live record is no tombstone"
+        );
+
+        let t = tombstone(1, 2, 1_000);
+        r.publish(t.clone()).unwrap();
+        let held = r.tombstone(&rec.name).expect("the stored tombstone");
+        assert_eq!(held.record, t);
+        assert_eq!(held.provenance, Provenance::Local);
+
+        // A tombstone that is only cached is found there.
+        let cached = LocalResolver::at_time(1_000);
+        cached.cache_record(t.clone()).unwrap();
+        let held = cached.tombstone(&t.name).expect("the cached tombstone");
+        assert_eq!(held.record, t);
+        assert_eq!(held.provenance, Provenance::Cache);
+
+        // A lapsed one is not held: the name is unknown again.
+        let after = 1_000 + u64::from(crate::MAX_RECORD_TTL_SECS);
+        let lapsed = LocalResolver::at_time(after);
+        lapsed.cache_record(t.clone()).unwrap();
+        assert!(lapsed.tombstone(&t.name).is_none());
     }
 
     #[tokio::test]

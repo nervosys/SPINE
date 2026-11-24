@@ -22,6 +22,9 @@
 //!   proof (and give the listed signed message and signature) or refuse it
 //!   with the listed `CLOSE` code;
 //! * `ed25519_strict`: `verify_strict` gives the listed strict verdict;
+//! * `name_results`: `native::decode_strict::<NameResolution>` accepts or
+//!   refuses each body as listed, and a body it accepts re-encodes to the same
+//!   bytes and passes `NameResolution::validate`;
 //! * `identify_sessions`: a server `Connection` that receives the listed
 //!   frames after its handshake ends as listed.
 //!
@@ -40,6 +43,7 @@ use spine_protocol::frame::{self, Frame, FrameError, FrameType, MAX_FRAME, PRE_H
 use spine_protocol::hello::{self, AuthorityMode, Close, Hello, HelloAck, LocalConfig};
 use spine_protocol::identify::{signed_message, Identify, SigningKey, Transcript};
 use spine_protocol::native;
+use spine_protocol::NameResolution;
 use tokio::io::AsyncWriteExt;
 
 const VECTORS: &str = "../../docs/spec/00-wire.vectors.json";
@@ -534,6 +538,27 @@ fn check_hello_ack(v: &Value) -> Result<(), String> {
     }
 }
 
+/// `name_results`: the `ok` value of a `resolve_name` answer is read strictly
+/// (one encoding per value, unknown fields refused) and its succession logs must
+/// have the sizes and shapes `docs/spec/00-wire.md` 12.5 gives.
+fn check_name_result(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    let want = text(v, "expect")?;
+    match (want, native::decode_strict::<NameResolution>(&body)) {
+        ("ok", Ok(resolution)) => {
+            resolution
+                .validate()
+                .map_err(|e| format!("decoded, but validate says: {e}"))?;
+            let again = cbor::to_vec(&resolution).map_err(|e| format!("re-encoding: {e}"))?;
+            same_bytes("re-encoded name resolution", &again, &body)
+        }
+        ("ok", Err(e)) => Err(format!("refused ({e}), want it accepted")),
+        ("invalid", Ok(_)) => Err("accepted, want it refused".to_string()),
+        ("invalid", Err(_)) => Ok(()),
+        (other, _) => Err(format!("unknown expected verdict {other:?}")),
+    }
+}
+
 /// What a server makes of an `IDENTIFY` body: the `CLOSE` code and reason of
 /// the refusal, or the identity and the decoded body. The deterministic-CBOR
 /// check comes first, as in the connection.
@@ -757,6 +782,11 @@ fn hello_acks_are_accepted_or_refused_as_listed() {
 #[test]
 fn identify_proofs_are_accepted_or_refused_as_listed() {
     run_section(&load(), "identify", 25, check_identify);
+}
+
+#[test]
+fn name_results_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "name_results", 60, check_name_result);
 }
 
 #[test]

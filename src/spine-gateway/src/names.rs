@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use utoipa::{IntoParams, ToSchema};
 
+use spine_agent::names::{verify_resolution, VerifiedResolution};
 use spine_agent::AgentClient;
 use spine_protocol::{NameProvenance, NameResolution};
 
@@ -96,8 +97,10 @@ pub async fn upload_resource(
     record
         .validate(unix_now())
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-    // The gateway holds no succession log, so a record that claims a rotation is
-    // refused with the need-log error; any other record is checked as always.
+    // An upload carries no succession log (the download side gets it from the
+    // node's resolve answer, which an upload has no use for), so a record that
+    // claims a rotation is refused with the need-log error; any other record is
+    // checked as always.
     spine_agent::resources::authorise_without_log(&record).map_err(upload_refusal)?;
     if req.data.len() > spine_protocol::resource::MAX_RESOURCE_BYTES {
         return Err(err(StatusCode::BAD_REQUEST, "resource is too large"));
@@ -146,20 +149,25 @@ pub async fn download_resource(
         let name = params.name.clone();
         Box::pin(async move {
             let resolution = client.resolve_name(&name, None).await?;
-            let NameResolution::Resolved { record, .. } = resolution else {
-                return Ok(into_response(resolution));
+            // The answer carries the name's succession log; the gateway checks it
+            // from the name's inception key and judges the record against it, as
+            // any client does (`spine_agent::names`). A node that sends evidence
+            // that does not verify is a bad gateway, not a missing name.
+            let (record, log) = match verify_resolution(&name, resolution.clone())? {
+                VerifiedResolution::Resolved { record, log, .. } => (record, log),
+                // The other outcomes carry their evidence, verified, and map to
+                // their statuses: a retired, compromised or revoked name is not
+                // a missing one.
+                _ => return Ok(into_response(resolution)),
             };
-            let record: spine_name::NameRecord = serde_json::from_value(record)?;
             record.validate(unix_now())?;
-            // No log here either: a record that claims a rotation is refused
-            // (the need-log error), not mistaken for a bad signature.
-            spine_agent::resources::authorise_without_log(&record)?;
             if validator.is_some() && record.content_hash == validator {
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
             }
-            // `read_resource` verifies the id over type and bytes, so the
-            // header below is the signed content type, not a peer's claim.
-            let resource = client.read_resource(record).await?;
+            // `read_resource_with_log` verifies the id over type and bytes, so
+            // the header below is the signed content type, not a peer's claim.
+            // A rotated name's record is judged against the log just verified.
+            let resource = client.read_resource_with_log(record, Some(&log)).await?;
             let mut response = resource.data.into_response();
             let headers = response.headers_mut();
             headers.insert(
@@ -205,6 +213,40 @@ pub struct ResolvedResponse {
     /// Whether anything actually vouched for this binding. False for `host:`
     /// names, whose address is simply read out of the name itself.
     pub attested: bool,
+    /// The name's succession log as the node holds it, the JSON entries of
+    /// `docs/spec/02-names.md` 10.1; empty when the node holds none. A client
+    /// that checks the record itself replays it from the name's inception key.
+    pub log: Vec<serde_json::Value>,
+}
+
+/// A name that is retired, compromised or revoked, with the evidence the node
+/// sent, unchanged: the logs of a retirement (one) or a compromise (two, the
+/// equivocation proof), or the tombstone and the log it is judged under. The
+/// gateway does not ask its callers to trust these: the evidence is what a
+/// caller verifies.
+#[derive(Serialize, ToSchema)]
+pub struct NameOutcomeResponse {
+    /// `retired`, `compromised` or `revoked`.
+    pub outcome: String,
+    /// The name asked for (`retired`, `compromised`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The tombstone (`revoked`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record: Option<serde_json::Value>,
+    /// Where the tombstone came from (`revoked`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
+    /// The evidence: one log for `retired` and `revoked`, two for `compromised`.
+    pub logs: Vec<Vec<serde_json::Value>>,
+}
+
+fn outcome_response(status: StatusCode, body: NameOutcomeResponse) -> Response {
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(&body.outcome) {
+        headers.insert("x-spine-outcome", value);
+    }
+    (status, headers, Json(body)).into_response()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -361,7 +403,11 @@ fn is_attested(p: NameProvenance) -> bool {
 /// Turn a namespace outcome into the HTTP status that already means it.
 fn into_response(resolution: NameResolution) -> Response {
     match resolution {
-        NameResolution::Resolved { record, provenance } => {
+        NameResolution::Resolved {
+            record,
+            provenance,
+            log,
+        } => {
             let mut headers = HeaderMap::new();
             if let Ok(value) = HeaderValue::from_str(provenance_name(provenance)) {
                 headers.insert("x-spine-provenance", value);
@@ -373,6 +419,7 @@ fn into_response(resolution: NameResolution) -> Response {
                     record,
                     provenance: provenance_name(provenance).to_string(),
                     attested: is_attested(provenance),
+                    log,
                 }),
             )
                 .into_response()
@@ -400,6 +447,44 @@ fn into_response(resolution: NameResolution) -> Response {
         NameResolution::Unavailable { name, reason } => {
             err(StatusCode::SERVICE_UNAVAILABLE, format!("{name}: {reason}")).into_response()
         }
+        // Gone for good: the name's own log retires it. `410`, with the log.
+        NameResolution::Retired { name, log } => outcome_response(
+            StatusCode::GONE,
+            NameOutcomeResponse {
+                outcome: "retired".into(),
+                name: Some(name),
+                record: None,
+                provenance: None,
+                logs: vec![log],
+            },
+        ),
+        // Two conflicting logs of one name: it authorises no record. `409`, with
+        // both logs.
+        NameResolution::Compromised { name, logs } => outcome_response(
+            StatusCode::CONFLICT,
+            NameOutcomeResponse {
+                outcome: "compromised".into(),
+                name: Some(name),
+                record: None,
+                provenance: None,
+                logs,
+            },
+        ),
+        // Withdrawn by its owner, for a while. `410`, with the tombstone.
+        NameResolution::Revoked {
+            record,
+            provenance,
+            log,
+        } => outcome_response(
+            StatusCode::GONE,
+            NameOutcomeResponse {
+                outcome: "revoked".into(),
+                name: None,
+                record: Some(record),
+                provenance: Some(provenance_name(provenance).to_string()),
+                logs: vec![log],
+            },
+        ),
     }
 }
 
@@ -713,8 +798,40 @@ mod tests {
         let res = into_response(NameResolution::Resolved {
             record: serde_json::json!({}),
             provenance: NameProvenance::Network,
+            log: Vec::new(),
         });
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("x-spine-provenance").unwrap(), "Network");
+    }
+
+    /// A retired, compromised or revoked name is not a missing one, and the
+    /// evidence the node sent is passed on for the caller to verify.
+    #[test]
+    fn a_retired_compromised_or_revoked_name_has_its_own_status_and_evidence() {
+        let entry = serde_json::json!({"index": 1});
+        let retired = into_response(NameResolution::Retired {
+            name: "spine://did:x/".into(),
+            log: vec![entry.clone()],
+        });
+        assert_eq!(retired.status(), StatusCode::GONE);
+        assert_eq!(retired.headers().get("x-spine-outcome").unwrap(), "retired");
+
+        let compromised = into_response(NameResolution::Compromised {
+            name: "spine://did:x/".into(),
+            logs: vec![vec![entry.clone()], vec![entry.clone()]],
+        });
+        assert_eq!(compromised.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            compromised.headers().get("x-spine-outcome").unwrap(),
+            "compromised"
+        );
+
+        let revoked = into_response(NameResolution::Revoked {
+            record: serde_json::json!({}),
+            provenance: NameProvenance::Local,
+            log: vec![entry],
+        });
+        assert_eq!(revoked.status(), StatusCode::GONE);
+        assert_eq!(revoked.headers().get("x-spine-outcome").unwrap(), "revoked");
     }
 }

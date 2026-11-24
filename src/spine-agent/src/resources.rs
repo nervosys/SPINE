@@ -1,4 +1,5 @@
 //! Resolution followed by bounded transfer and end-to-end content validation.
+use crate::names::combine_logs;
 use crate::AgentClient;
 use anyhow::{ensure, Context, Result};
 use spine_name::{
@@ -7,7 +8,7 @@ use spine_name::{
 };
 use spine_protocol::{
     resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK},
-    BrowserCommand, NameResolution,
+    BrowserCommand,
 };
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
@@ -108,11 +109,12 @@ pub fn authorise_with_log(record: &NameRecord, log: &SuccessionLog) -> Result<()
     authorise_record(record, Some(&state))
 }
 
-/// Judge a record with the caller's log if there is one, else without.
-fn authorise(record: &NameRecord, log: Option<&SuccessionLog>) -> Result<(), NameError> {
+/// Judge a record with a log if there is one, else without. An empty log is
+/// no log: the key in the name signs, and a head claim needs the log it names.
+pub(crate) fn authorise(record: &NameRecord, log: Option<&SuccessionLog>) -> Result<(), NameError> {
     match log {
-        Some(log) => authorise_with_log(record, log),
-        None => authorise_without_log(record),
+        Some(log) if !log.entries.is_empty() => authorise_with_log(record, log),
+        _ => authorise_without_log(record),
     }
 }
 
@@ -198,13 +200,29 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
     }
 
     /// [`Self::read_resource`] with the name's succession log, if the caller
-    /// has one (`None` is `read_resource`). The daemon's resolution carries no
-    /// log, so a client that resolved a rotated name must be given it.
+    /// has one. Without one, a record that claims a rotation (a
+    /// `spine.succession` head claim) makes the client ask the node it is
+    /// connected to for the log: the resolve answer carries it
+    /// (`docs/spec/00-wire.md` 12.5), the client replays it from the name's
+    /// inception key and judges the record against it, so no out-of-band log is
+    /// needed. A name the node shows to be retired, compromised or revoked is
+    /// the matching [`crate::names::NameOutcomeError`]; a node that cannot
+    /// supply a log that reaches the claim leaves
+    /// [`NameError::NeedSuccessionLog`].
     pub async fn read_resource_with_log(
         &mut self,
         record: NameRecord,
         log: Option<&SuccessionLog>,
     ) -> Result<RetrievedResource> {
+        let fetched;
+        let log = match log {
+            Some(log) => Some(log),
+            None if record.meta.contains_key(SUCCESSION_META_KEY) => {
+                fetched = self.log_from_node(&record).await?;
+                Some(&fetched)
+            }
+            None => None,
+        };
         authorise(&record, log).map_err(binding_error)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -276,6 +294,22 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         })
     }
 
+    /// The succession log of `record`'s name, from the node this client is
+    /// connected to: the verified resolve answer's log. The record the node
+    /// resolves the name to must itself be authorised by that log; a retired,
+    /// compromised or revoked name is its typed error.
+    async fn log_from_node(&mut self, record: &NameRecord) -> Result<SuccessionLog> {
+        let name = record.name.to_string();
+        let resolution = tokio::time::timeout(
+            Duration::from_secs(30),
+            self.resolve_name_verified(&name, None),
+        )
+        .await
+        .context("succession log request timed out")??;
+        let (_, log) = resolution.into_record(&name)?;
+        Ok(log)
+    }
+
     /// Discover an origin and retrieve a verified representation. TCP is the
     /// portable bootstrap transport here; callers needing transport secrecy use
     /// `connect_tls` and `read_resource` with the same resolved record.
@@ -296,9 +330,16 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
     }
 
     /// `fetch_resource_with` with the name's succession log, if the caller has
-    /// one. The resolution answer carries no log, so without one a rotated
-    /// name's record is refused with [`NameError::NeedSuccessionLog`]
-    /// before any origin is dialled.
+    /// one. The node's resolve answer carries the log it holds, which the client
+    /// verifies from the name's inception key
+    /// ([`crate::names::verify_resolution`]), so a caller needs none for a
+    /// rotated name. A caller's log is combined with the node's by the rule a
+    /// verifier's log book keeps ([`combine_logs`]): the longer valid extension
+    /// wins and two conflicting logs are a
+    /// [`crate::names::NameOutcomeError::Compromised`]. The record is judged
+    /// against the result before any origin is dialled. A name the node shows to
+    /// be retired, compromised or revoked is the matching
+    /// [`crate::names::NameOutcomeError`].
     pub async fn fetch_resource_with_log(
         &mut self,
         name: &str,
@@ -306,14 +347,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         log: Option<&SuccessionLog>,
     ) -> Result<RetrievedResource> {
         let resolution = self
-            .resolve_name(name, None)
+            .resolve_name_verified(name, None)
             .await
             .context("resource resolution")?;
-        let NameResolution::Resolved { record, .. } = resolution else {
-            anyhow::bail!("resource did not resolve: {resolution:?}");
+        let (record, node_log) = resolution.into_record(name)?;
+        let combined;
+        let log = match (log, record.name.public_key()) {
+            (Some(caller), Some(key)) => {
+                combined = combine_logs(name, key, &node_log, caller)?;
+                &combined
+            }
+            _ => &node_log,
         };
-        let record: NameRecord = serde_json::from_value(record)?;
-        authorise(&record, log).map_err(binding_error)?;
+        authorise(&record, Some(log)).map_err(binding_error)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
@@ -359,7 +405,10 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
                 .await;
                 match origin {
                     Ok(Ok(mut origin)) => {
-                        match origin.read_resource_with_log(record.clone(), log).await {
+                        match origin
+                            .read_resource_with_log(record.clone(), Some(log))
+                            .await
+                        {
                             Ok(resource) => return Ok(resource),
                             Err(error) => failures.push(error.to_string()),
                         }

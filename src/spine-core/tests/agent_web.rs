@@ -1390,9 +1390,16 @@ impl RotatedName {
     /// Keys are derived from `seed`, `seed + 1` (current) and `seed + 2` (the
     /// key the rotation commits to).
     fn new(seed: u8, now: u64) -> Self {
+        Self::with_keys(seed, seed + 1, seed + 2, now)
+    }
+
+    /// The name of inception seed `seed`, rotated once to the key of seed
+    /// `current`, which commits to the key of seed `next`. Two names with one
+    /// inception seed and different `current` seeds are two branches of one name.
+    fn with_keys(seed: u8, current: u8, next: u8, now: u64) -> Self {
         let inception = SigningKey::from_bytes(&[seed; 32]);
-        let current = SigningKey::from_bytes(&[seed + 1; 32]);
-        let next = SigningKey::from_bytes(&[seed + 2; 32]);
+        let current = SigningKey::from_bytes(&[current; 32]);
+        let next = SigningKey::from_bytes(&[next; 32]);
         let inception_key = inception.verifying_key().to_bytes();
         let log = SuccessionLog::default()
             .rotated(
@@ -1415,6 +1422,14 @@ impl RotatedName {
         NameRecord::new(self.name.clone(), seq, now)
             .unwrap()
             .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"))
+    }
+
+    /// The log's entries as the resolve answer carries them (`02-names.md` 10.1).
+    fn entries(log: &SuccessionLog) -> Vec<serde_json::Value> {
+        match serde_json::to_value(log).unwrap() {
+            serde_json::Value::Array(entries) => entries,
+            other => panic!("a log is a JSON array, not {other}"),
+        }
     }
 
     /// A record signed by the current key, carrying the log's head claim.
@@ -1449,9 +1464,9 @@ async fn resolved(
     name: &SpineUri,
 ) -> (NameRecord, spine_protocol::NameProvenance) {
     match client.resolve_name(&name.to_string(), None).await.unwrap() {
-        spine_protocol::NameResolution::Resolved { record, provenance } => {
-            (serde_json::from_value(record).unwrap(), provenance)
-        }
+        spine_protocol::NameResolution::Resolved {
+            record, provenance, ..
+        } => (serde_json::from_value(record).unwrap(), provenance),
         other => panic!("{name} did not resolve: {other:?}"),
     }
 }
@@ -1622,8 +1637,17 @@ async fn rotated_name_resolves_on_another_node_with_its_log() {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             answer = agent.resolve_name(&name, None).await.unwrap();
         }
+        // The log that came with the record over the mesh goes into the
+        // answer, and the client verifies it from the name's inception key.
+        let verified = spine_agent::names::verify_resolution(&name, answer.clone())
+            .unwrap_or_else(|error| panic!("{error:#}\n{}", logs()));
         let (remote, provenance) = match answer {
-            spine_protocol::NameResolution::Resolved { record, provenance } => {
+            spine_protocol::NameResolution::Resolved {
+                record,
+                provenance,
+                log,
+            } => {
+                assert_eq!(log, RotatedName::entries(&rotated.log), "{}", logs());
                 (record, provenance)
             }
             other => panic!(
@@ -1631,6 +1655,14 @@ async fn rotated_name_resolves_on_another_node_with_its_log() {
                 logs()
             ),
         };
+        assert!(
+            matches!(
+                verified,
+                spine_agent::names::VerifiedResolution::Resolved { ref log, .. }
+                    if *log == rotated.log
+            ),
+            "{verified:?}"
+        );
         let remote: NameRecord = serde_json::from_value(remote).unwrap();
         assert_eq!(remote, record);
         remote
@@ -2000,8 +2032,17 @@ async fn rotated_name_publishes_and_reads_a_resource_through_the_agent_client() 
             .unwrap();
         assert_eq!(report["stored"], true);
 
-        let error = client.read_resource(record.clone()).await.unwrap_err();
-        assert!(is_need_log(&error), "{error:#}");
+        // Changed in stage 2 of the wire revision (`00-wire.md` 12.5): the
+        // resolve answer carries the name's succession log, so `read_resource`
+        // with no log no longer refuses a rotated name's record for want of one
+        // (it was `is_need_log` before). It asks the node it is connected to,
+        // verifies the log it gets and judges the record against it.
+        let read = client
+            .read_resource(record.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{error:#}"));
+        assert_eq!(read.data, bytes);
+        // A log the caller already holds still works, and agrees with the node.
         let read = client
             .read_resource_with_log(record.clone(), Some(&rotated.log))
             .await
@@ -2011,6 +2052,345 @@ async fn rotated_name_publishes_and_reads_a_resource_through_the_agent_client() 
     })
     .await
     .expect("rotated name agent client acceptance deadline exceeded");
+}
+
+/// A record of `rotated`'s name signed by its current key, binding `bytes` and
+/// pointing at the origin on `origin_port`: what a publisher of a resource sends.
+fn resource_binding(
+    rotated: &RotatedName,
+    seq: u64,
+    now: u64,
+    origin_port: u16,
+    id: [u8; 32],
+) -> NameRecord {
+    let state = rotated
+        .log
+        .verify(&rotated.inception.verifying_key().to_bytes())
+        .unwrap();
+    let mut record = NameRecord::new(rotated.name.clone(), seq, now)
+        .unwrap()
+        .with_endpoint(Endpoint::new("tcp", format!("127.0.0.1:{origin_port}")))
+        .with_content_hash(id);
+    record.sign_current(&rotated.current, &state).unwrap();
+    record
+}
+
+/// Stage 2 of the wire revision, the acceptance test of the log in the resolve
+/// answer: a client that holds NO log resolves a rotated name, reads its
+/// resource and fetches it by name, all through the daemon. The answer carries
+/// the log and the client replays it from the name's inception key.
+#[tokio::test]
+async fn a_client_with_no_log_resolves_a_rotated_name_and_reads_its_resource() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut publisher = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let rotated = RotatedName::new(191, now);
+        let bytes = b"bytes of a rotated name, read by a client with no log".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let record = resource_binding(&rotated, 2, now, origin_port, id);
+        publisher
+            .publish_resource_with_log(&record, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap();
+
+        // Another connection: it has the name and nothing else.
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let name = rotated.name.to_string();
+
+        // The raw answer carries the log in the JSON form of 02-names 10.1.
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Resolved {
+                record: held, log, ..
+            } => {
+                assert_eq!(serde_json::from_value::<NameRecord>(held).unwrap(), record);
+                assert_eq!(log, RotatedName::entries(&rotated.log));
+            }
+            other => panic!("{name} did not resolve: {other:?}"),
+        }
+        // And the client verifies it.
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Resolved {
+                record: held, log, ..
+            } => {
+                assert_eq!(held, record);
+                assert_eq!(log, rotated.log);
+            }
+            other => panic!("{name} did not verify: {other:?}"),
+        }
+
+        // A client with no log reads the resource: it asks the node for the
+        // log, verifies it and judges the record. Before stage 2 this was the
+        // need-log refusal.
+        let read = client.read_resource(record.clone()).await.unwrap();
+        assert_eq!(read.data, bytes);
+        // And fetches it by name alone.
+        let fetched = client
+            .fetch_resource_with(&name, spine_agent::resources::FetchPolicy::allow_private())
+            .await
+            .unwrap();
+        assert_eq!(fetched.data, bytes);
+        assert_eq!(fetched.content_type, "text/plain");
+
+        // The verified `fetch_name`: the same answer, and the endpoints to dial.
+        let (verified, endpoints) = client.fetch_name_verified(&name, None).await.unwrap();
+        assert!(matches!(
+            verified,
+            spine_agent::names::VerifiedResolution::Resolved { .. }
+        ));
+        assert_eq!(endpoints, vec![format!("tcp://127.0.0.1:{origin_port}")]);
+
+        // A batch is answered per name, each verified on its own.
+        let batch = client
+            .resolve_names_verified(&[name.clone(), "spine://did:nobody/".to_string()])
+            .await
+            .unwrap();
+        assert!(matches!(
+            batch[0].as_ref().unwrap(),
+            spine_agent::names::VerifiedResolution::Resolved { .. }
+        ));
+        assert_eq!(batch.len(), 2);
+    })
+    .await
+    .expect("a client with no log acceptance deadline exceeded");
+}
+
+/// Stage 2: a retired name answers `retired` with a log the client verifies, and
+/// a client with no log cannot read the resource of a retired name.
+#[tokio::test]
+async fn a_retired_name_answers_retired_with_a_log_the_client_verifies() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let rotated = RotatedName::new(201, now);
+        let bytes = b"bytes of a name that is then retired".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let record = resource_binding(&rotated, 2, now, origin_port, id);
+        client
+            .publish_resource_with_log(&record, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap();
+        let name = rotated.name.to_string();
+        assert_eq!(
+            client.read_resource(record.clone()).await.unwrap().data,
+            bytes
+        );
+
+        // The owner retires the name: the entry reveals the key the rotation
+        // committed to (seed 203) and is signed by the current key.
+        let retired = rotated
+            .log
+            .retired(
+                &rotated.inception.verifying_key().to_bytes(),
+                &rotated.current,
+                &SigningKey::from_bytes(&[203; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                now,
+            )
+            .unwrap();
+        // The node learns it from the log sent beside a record. The record is
+        // refused (the name is retired) and the log is kept, because it is true
+        // on its own (02-names 10.11).
+        let error = client
+            .publish_name(publication_value(&record, &retired).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+
+        // The answer is `retired` and carries the log that retires the name.
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Retired { name: said, log } => {
+                assert_eq!(said, name);
+                assert_eq!(log, RotatedName::entries(&retired));
+                assert_eq!(log.last().unwrap()["kind"], "retire");
+            }
+            other => panic!("{name} is not retired: {other:?}"),
+        }
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Retired { log, .. } => {
+                assert_eq!(log, retired);
+            }
+            other => panic!("{name} is not verified retired: {other:?}"),
+        }
+
+        // The resource paths say why, as a typed error, not "not found".
+        let is_retired = |error: &anyhow::Error| {
+            matches!(
+                error.downcast_ref::<spine_agent::names::NameOutcomeError>(),
+                Some(spine_agent::names::NameOutcomeError::Retired { .. })
+            )
+        };
+        let error = client.read_resource(record.clone()).await.unwrap_err();
+        assert!(is_retired(&error), "{error:#}");
+        let error = client
+            .fetch_resource_with(&name, spine_agent::resources::FetchPolicy::allow_private())
+            .await
+            .unwrap_err();
+        assert!(is_retired(&error), "{error:#}");
+        // A log the caller holds does not make a retired name readable.
+        let error = client
+            .read_resource_with_log(record.clone(), Some(&retired))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<spine_name::NameError>(),
+                Some(spine_name::NameError::Retired(_))
+            ),
+            "{error:#}"
+        );
+    })
+    .await
+    .expect("a retired name acceptance deadline exceeded");
+}
+
+/// Stage 2: a name with two conflicting logs answers `compromised` with both,
+/// and the client derives the proof from them.
+#[tokio::test]
+async fn an_equivocated_name_answers_compromised_with_two_logs() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        // One inception key (seed 211), two rotations of it to different keys:
+        // the same key signed two entries at one position.
+        let first = RotatedName::with_keys(211, 212, 213, now);
+        let second = RotatedName::with_keys(211, 214, 215, now);
+        assert_eq!(first.name, second.name);
+        let name = first.name.to_string();
+        client
+            .publish_name(publication_value(&first.by_current_key(2, now), &first.log).unwrap())
+            .await
+            .unwrap();
+        // The second branch is refused, and the node keeps the proof it makes.
+        let error = client
+            .publish_name(publication_value(&second.by_current_key(3, now), &second.log).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Compromised { name: said, logs } => {
+                assert_eq!(said, name);
+                assert_eq!(logs.len(), 2);
+                let sent = [
+                    RotatedName::entries(&first.log),
+                    RotatedName::entries(&second.log),
+                ];
+                assert!(
+                    logs[0] != logs[1] && logs.iter().all(|log| sent.contains(log)),
+                    "the two logs are the two branches: {logs:?}"
+                );
+            }
+            other => panic!("{name} is not compromised: {other:?}"),
+        }
+        // The client verifies both from the inception key and derives the proof.
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Compromised { proof, .. } => {
+                proof
+                    .verify(&first.inception.verifying_key().to_bytes())
+                    .unwrap();
+            }
+            other => panic!("{name} is not verified compromised: {other:?}"),
+        }
+        let error = client
+            .fetch_resource_with(&name, spine_agent::resources::FetchPolicy::allow_private())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<spine_agent::names::NameOutcomeError>(),
+                Some(spine_agent::names::NameOutcomeError::Compromised { .. })
+            ),
+            "{error:#}"
+        );
+        // A caller's log that conflicts with the node's is a compromise too.
+        let error = client
+            .fetch_resource_with_log(
+                &name,
+                spine_agent::resources::FetchPolicy::allow_private(),
+                Some(&first.log),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<spine_agent::names::NameOutcomeError>()
+                .is_some(),
+            "{error:#}"
+        );
+    })
+    .await
+    .expect("an equivocated name acceptance deadline exceeded");
+}
+
+/// Stage 2: a name whose owner withdrew it answers `revoked` with the tombstone
+/// (it was `invalid` with a reason) and the client verifies the tombstone.
+#[tokio::test]
+async fn a_revoked_name_answers_revoked_with_its_tombstone() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let signing = SigningKey::from_bytes(&[221; 32]);
+        let uri = SpineUri::did(signing.verifying_key().to_bytes());
+        let mut live = NameRecord::new(uri.clone(), 1, now)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"));
+        live.sign(&signing).unwrap();
+        client
+            .publish_name(serde_json::to_value(&live).unwrap())
+            .await
+            .unwrap();
+        let mut tombstone = NameRecord::tombstone(uri.clone(), 2, now).unwrap();
+        tombstone.sign(&signing).unwrap();
+        client
+            .publish_name(serde_json::to_value(&tombstone).unwrap())
+            .await
+            .unwrap();
+
+        let name = uri.to_string();
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Revoked { record, log, .. } => {
+                assert_eq!(
+                    serde_json::from_value::<NameRecord>(record).unwrap(),
+                    tombstone
+                );
+                assert!(log.is_empty(), "a name that never rotated has no log");
+            }
+            other => panic!("{name} is not revoked: {other:?}"),
+        }
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Revoked { record, .. } => {
+                assert!(record.is_tombstone());
+            }
+            other => panic!("{name} is not verified revoked: {other:?}"),
+        }
+        // `fetch_name` carries the same outcome, and no endpoints.
+        let (verified, endpoints) = client.fetch_name_verified(&name, None).await.unwrap();
+        assert_eq!(verified.outcome(), "revoked");
+        assert!(endpoints.is_empty());
+    })
+    .await
+    .expect("a revoked name acceptance deadline exceeded");
 }
 
 // ---- client identity (docs/spec/00-wire.md 6.6) ----

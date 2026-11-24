@@ -473,23 +473,19 @@ async fn publication_report(
     })
 }
 
-/// Map a resolver provenance onto its protocol-level counterpart.
-fn wire_provenance(p: spine_name::Provenance) -> spine_protocol::NameProvenance {
-    match p {
-        spine_name::Provenance::Cache => spine_protocol::NameProvenance::Cache,
-        spine_name::Provenance::StaleCache => spine_protocol::NameProvenance::StaleCache,
-        spine_name::Provenance::Local => spine_protocol::NameProvenance::Local,
-        spine_name::Provenance::Network => spine_protocol::NameProvenance::Network,
-        spine_name::Provenance::Address => spine_protocol::NameProvenance::Address,
-    }
-}
-
 /// Resolve one name, honouring a caller-supplied content-hash validator.
+///
+/// The pure mapping from what the resolver says to the wire outcome, and the
+/// evidence each outcome carries, is `spine_core::name_outcome`; this function
+/// only decides what to ask. A `resolved` answer carries the succession log the
+/// node holds; a retired, compromised or revoked name answers its own outcome
+/// with its evidence (`docs/spec/00-wire.md` 12.5).
 async fn resolve_one(
     state: &Arc<BrowserState>,
     raw: &str,
     if_none_match: Option<[u8; 32]>,
 ) -> spine_protocol::NameResolution {
+    use spine_core::name_outcome;
     use spine_name::Resolver;
 
     let uri = match spine_name::SpineUri::parse(raw) {
@@ -507,23 +503,23 @@ async fn resolve_one(
             // The validator exchange: if the caller already holds this exact
             // representation, say so and send no body. The hash is the content's
             // own, so unlike an ETag the caller can verify the claim itself.
+            // Only an answer that would have been `resolved` can be unchanged.
+            let answer = name_outcome::resolved(
+                &state.names,
+                raw,
+                &resolution.record,
+                resolution.provenance,
+            );
             if let (Some(theirs), Some(ours)) = (if_none_match, resolution.record.content_hash) {
-                if theirs == ours {
+                if theirs == ours
+                    && matches!(answer, spine_protocol::NameResolution::Resolved { .. })
+                {
                     return spine_protocol::NameResolution::Unchanged {
                         ttl_secs: resolution.record.remaining_ttl(state.names.now()) as u32,
                     };
                 }
             }
-            match serde_json::to_value(&resolution.record) {
-                Ok(record) => spine_protocol::NameResolution::Resolved {
-                    record,
-                    provenance: wire_provenance(resolution.provenance),
-                },
-                Err(e) => spine_protocol::NameResolution::Invalid {
-                    name: raw.to_string(),
-                    reason: e.to_string(),
-                },
-            }
+            answer
         }
         // A still-valid negative entry is an answer, not a miss: it is the whole
         // point of caching the absence. Both surface as `NotFound` from the
@@ -539,25 +535,14 @@ async fn resolve_one(
         // starts being a participant. Cache what the walk returns, so the next
         // ask for the same name is answered without another round trip.
         Err(spine_name::NameError::NotFound(_)) => match resolve_over_mesh(state, &uri).await {
-            Ok(Some(record)) if record.is_tombstone() => {
-                let _ = state.names.cache_record(record);
-                spine_protocol::NameResolution::Invalid {
-                    name: raw.to_string(),
-                    reason: spine_name::NameError::Revoked(raw.to_string()).to_string(),
-                }
-            }
             Ok(Some(record)) => {
-                let _ = state.names.cache_record(record.clone());
-                match serde_json::to_value(&record) {
-                    Ok(value) => spine_protocol::NameResolution::Resolved {
-                        record: value,
-                        provenance: spine_protocol::NameProvenance::Network,
-                    },
-                    Err(e) => spine_protocol::NameResolution::Invalid {
-                        name: raw.to_string(),
-                        reason: e.to_string(),
-                    },
-                }
+                // The log that came with the record was offered to the local
+                // resolver already, so a rotated name's record can be cached. A
+                // refusal here is about the name's standing (the log retires
+                // it, it is compromised, the record needs a log this node does
+                // not hold) and `from_mesh` answers it with its outcome.
+                let cached = state.names.cache_record(record.clone());
+                name_outcome::from_mesh(&state.names, raw, &uri, &record, cached.as_ref().err())
             }
             Ok(None) => {
                 // Remember the miss: an agent retrying a name nobody has should
@@ -567,15 +552,33 @@ async fn resolve_one(
                     name: raw.to_string(),
                 }
             }
-            Err(reason) => spine_protocol::NameResolution::Unavailable {
+            Err(reason) => {
+                // A lookup can teach this node that the name is retired (the
+                // log was adopted into the local resolver by
+                // `resolve_over_mesh`): then the answer is that outcome with
+                // its evidence, not a bare failure.
+                match state.names.resolve(&uri).await {
+                    Err(e) => name_outcome::refusal(&state.names, raw, &uri, &e).unwrap_or(
+                        spine_protocol::NameResolution::Unavailable {
+                            name: raw.to_string(),
+                            reason,
+                        },
+                    ),
+                    Ok(_) => spine_protocol::NameResolution::Unavailable {
+                        name: raw.to_string(),
+                        reason,
+                    },
+                }
+            }
+        },
+        // Retired, compromised and revoked names answer with their evidence;
+        // any other refusal is the caller's error, as before.
+        Err(e) => name_outcome::refusal(&state.names, raw, &uri, &e).unwrap_or_else(|| {
+            spine_protocol::NameResolution::Invalid {
                 name: raw.to_string(),
-                reason,
-            },
-        },
-        Err(e) => spine_protocol::NameResolution::Invalid {
-            name: raw.to_string(),
-            reason: e.to_string(),
-        },
+                reason: e.to_string(),
+            }
+        }),
     }
 }
 
@@ -602,7 +605,24 @@ async fn resolve_over_mesh(
             Ok(Some(record))
         }
         Err(spine_mesh::naming_mesh::NameMeshError::NotFound(_)) => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => {
+            // A lookup that taught the mesh service the name is retired: keep
+            // the log that retires it where `resolve_one` can answer with it.
+            // (A name the mesh service knows to be compromised has no accessor
+            // for its proof: that case stays `unavailable`.)
+            if let spine_mesh::naming_mesh::NameMeshError::Name(spine_name::NameError::Retired(_)) =
+                &e
+            {
+                if let Some(key) = uri.public_key() {
+                    if let Some(log) = mesh.succession_log(key).await {
+                        if let Err(error) = state.names.offer_log(log) {
+                            debug!(%error, "retirement log from the mesh was not kept");
+                        }
+                    }
+                }
+            }
+            Err(e.to_string())
+        }
     }
 }
 

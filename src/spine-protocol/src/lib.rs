@@ -9,6 +9,7 @@ pub mod frame;
 pub mod hello;
 pub mod identify;
 pub mod mcp;
+pub mod names;
 pub mod native;
 pub mod replay;
 pub mod resource;
@@ -494,6 +495,13 @@ pub const COMMAND_NAMES: [&str; 19] = [
 ];
 
 /// The result of a name resolution.
+///
+/// Every variant that carries a name's succession evidence (`resolved`,
+/// `retired`, `compromised`, `revoked`) carries it in full, so a client verifies
+/// the answer from the name's own inception key and never has to trust the node
+/// (`docs/spec/00-wire.md` 12.5). The logs are JSON-shaped values in the JSON
+/// form of `docs/spec/02-names.md` 10.1, the convention a name record has in the
+/// same answer; [`names`] checks their structure and `spine-agent` verifies them.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub enum NameResolution {
@@ -504,6 +512,12 @@ pub enum NameResolution {
         /// Where the answer came from — a caller deciding whether to retry
         /// needs to know whether it got a network answer or a stale cache one.
         provenance: NameProvenance,
+        /// The succession log the node holds for the name, 0 to 64 entries.
+        /// Always present. Empty means exactly that this node holds none, which
+        /// is the whole truth only for a name that has never rotated: a record
+        /// that claims a log position the log does not reach is not authorised.
+        #[serde(deserialize_with = "names::any_log")]
+        log: Vec<serde_json::Value>,
     },
     /// The caller's `if_none_match` hash still matches, so no body was sent.
     #[serde(rename = "unchanged")]
@@ -520,6 +534,56 @@ pub enum NameResolution {
     /// A disconnected namespace or failed lookup is not an authoritative miss.
     #[serde(rename = "unavailable")]
     Unavailable { name: String, reason: String },
+    /// The name's succession log ends in a `retire` entry: no key may sign for
+    /// it, ever. The log is the evidence.
+    #[serde(rename = "retired")]
+    Retired {
+        name: String,
+        /// The log, 1 to 64 entries, whose last entry retires the name.
+        #[serde(deserialize_with = "names::non_empty_log")]
+        log: Vec<serde_json::Value>,
+    },
+    /// The node holds an equivocation proof for the name: one key signed two
+    /// entries at one position. The proof is its two logs.
+    #[serde(rename = "compromised")]
+    Compromised {
+        name: String,
+        /// Exactly two logs of 1 to 64 entries each, both valid from the name's
+        /// inception key, neither a prefix of the other.
+        #[serde(deserialize_with = "names::two_logs")]
+        logs: Vec<Vec<serde_json::Value>>,
+    },
+    /// The node holds a fresh tombstone for the name: its owner withdrew it.
+    /// A tombstone lapses (7 days); this outcome is not permanent.
+    #[serde(rename = "revoked")]
+    Revoked {
+        /// The tombstone, a JSON-encoded `spine_name::NameRecord`.
+        record: serde_json::Value,
+        provenance: NameProvenance,
+        /// The succession log the node holds for the name, 0 to 64 entries, as
+        /// in `resolved`: a tombstone of a rotated name is signed by the
+        /// current key and is judged under it.
+        #[serde(deserialize_with = "names::any_log")]
+        log: Vec<serde_json::Value>,
+    },
+}
+
+impl NameResolution {
+    /// Whether this value has the shape the wire allows: the bounds a decoder
+    /// enforces, checked before sending. A decoded value always passes.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            NameResolution::Resolved { log, .. } | NameResolution::Revoked { log, .. } => {
+                names::check_log(log, 0)
+            }
+            NameResolution::Retired { log, .. } => names::check_log(log, 1),
+            NameResolution::Compromised { logs, .. } => names::check_compromised_logs(logs),
+            NameResolution::Unchanged { .. }
+            | NameResolution::NotFound { .. }
+            | NameResolution::Invalid { .. }
+            | NameResolution::Unavailable { .. } => Ok(()),
+        }
+    }
 }
 
 /// Where a resolution came from. Mirrors `spine_name::Provenance` at the

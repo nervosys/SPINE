@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::instrument;
+pub mod names;
 pub mod resources;
 
 // Re-export the compiler for convenience

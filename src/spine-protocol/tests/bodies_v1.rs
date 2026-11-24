@@ -160,6 +160,30 @@ fn sample_record() -> Value {
     json!({"name": "spine://example", "expires": 1_900_000_000u64, "endpoints": ["a", "b"]})
 }
 
+/// `n` succession entries of the shape of `02-names.md` 10.1. The values are
+/// not real keys or signatures: the protocol layer checks shape only.
+fn sample_log(n: u64) -> Vec<Value> {
+    (1..=n)
+        .map(|index| {
+            let prev = if index == 1 {
+                Value::Null
+            } else {
+                json!("b".repeat(52))
+            };
+            json!({
+                "inception_key": "a".repeat(52),
+                "index": index,
+                "prev": prev,
+                "kind": "rotate",
+                "key": "c".repeat(52),
+                "commitment": "d".repeat(52),
+                "effective_at": 1_700_000_000u64,
+                "signature": "e".repeat(103),
+            })
+        })
+        .collect()
+}
+
 /// One command per entry of `COMMAND_NAMES`, in that order, with a typical
 /// `ok` value for its reply. The names are written out here and checked
 /// against both the encoder and `COMMAND_NAMES`.
@@ -614,6 +638,12 @@ fn typed_results_agree_with_the_json_shaped_ones() {
         NameResolution::Resolved {
             record: sample_record(),
             provenance: NameProvenance::Network,
+            log: Vec::new(),
+        },
+        NameResolution::Resolved {
+            record: sample_record(),
+            provenance: NameProvenance::Local,
+            log: sample_log(2),
         },
         NameResolution::Unchanged { ttl_secs: 30 },
         NameResolution::NotFound { name: "n".into() },
@@ -624,6 +654,19 @@ fn typed_results_agree_with_the_json_shaped_ones() {
         NameResolution::Unavailable {
             name: "n".into(),
             reason: "r".into(),
+        },
+        NameResolution::Retired {
+            name: "n".into(),
+            log: sample_log(1),
+        },
+        NameResolution::Compromised {
+            name: "n".into(),
+            logs: vec![sample_log(1), sample_log(2)],
+        },
+        NameResolution::Revoked {
+            record: sample_record(),
+            provenance: NameProvenance::Cache,
+            log: sample_log(3),
         },
     ];
 
@@ -648,7 +691,105 @@ fn typed_results_agree_with_the_json_shaped_ones() {
     for resolution in &resolutions {
         check(resolution);
     }
-    check(&vec![resolutions[0].clone(), resolutions[2].clone()]);
+    check(&vec![resolutions[1].clone(), resolutions[3].clone()]);
+}
+
+/// The answer to a name resolution is read strictly: the log is always there,
+/// at most 64 entries, each a closed map, `compromised` has exactly two logs
+/// and `retired` at least one entry (`docs/spec/00-wire.md` 12.5).
+#[test]
+fn name_resolutions_are_read_strictly() {
+    fn reads(value: Value) -> bool {
+        // As the daemon sends it and a client reads it: a JSON-shaped value,
+        // written as deterministic CBOR, read back as the typed result.
+        let body = cbor::to_vec(&Reply::Ok(&value)).unwrap();
+        native::decode_reply::<NameResolution>(&body).is_ok()
+    }
+    let record = sample_record();
+    let resolved = |log: Value| json!({"resolved": {"record": record.clone(), "provenance": "local", "log": log}});
+    assert!(reads(resolved(json!([]))));
+    assert!(reads(resolved(Value::Array(sample_log(64)))));
+    assert!(
+        !reads(resolved(Value::Array(sample_log(65)))),
+        "an over-long log"
+    );
+    assert!(
+        !reads(json!({"resolved": {"record": record.clone(), "provenance": "local"}})),
+        "a resolved answer without its log"
+    );
+    assert!(
+        !reads(json!({"resolved": {"record": record.clone(), "provenance": "local", "log": null}})),
+        "a null log is not an empty one"
+    );
+    assert!(
+        !reads(
+            json!({"resolved": {"record": record.clone(), "provenance": "local", "log": [], "extra": 1}})
+        ),
+        "an unknown key"
+    );
+    assert!(!reads(resolved(json!("log"))), "a log of the wrong type");
+    assert!(!reads(resolved(json!([1, 2]))), "entries that are not maps");
+    let mut extra_field = sample_log(1);
+    extra_field[0]["extra"] = json!(1);
+    assert!(!reads(resolved(Value::Array(extra_field))));
+
+    let retired = |log: Value| json!({"retired": {"name": "n", "log": log}});
+    assert!(reads(retired(Value::Array(sample_log(1)))));
+    assert!(!reads(retired(json!([]))), "a retirement shows its entry");
+    assert!(!reads(retired(Value::Array(sample_log(65)))));
+    assert!(!reads(json!({"retired": {"name": "n"}})));
+    assert!(!reads(json!({"retired": {"log": sample_log(1)}})));
+
+    let compromised = |logs: Value| json!({"compromised": {"name": "n", "logs": logs}});
+    let one = Value::Array(sample_log(1));
+    let two = Value::Array(sample_log(2));
+    assert!(reads(compromised(json!([one.clone(), two.clone()]))));
+    assert!(!reads(compromised(json!([]))), "no logs");
+    assert!(!reads(compromised(json!([one.clone()]))), "one log");
+    assert!(
+        !reads(compromised(json!([one.clone(), two.clone(), one.clone()]))),
+        "three logs"
+    );
+    assert!(
+        !reads(compromised(json!([one.clone(), []]))),
+        "an empty second log"
+    );
+    assert!(!reads(compromised(json!([
+        one.clone(),
+        Value::Array(sample_log(65))
+    ]))));
+    assert!(
+        !reads(json!({"compromised": {"name": "n", "log": [one.clone(), two.clone()]}})),
+        "the key is logs"
+    );
+
+    let revoked = |log: Value| json!({"revoked": {"record": record.clone(), "provenance": "cache", "log": log}});
+    assert!(reads(revoked(json!([]))));
+    assert!(reads(revoked(Value::Array(sample_log(3)))));
+    assert!(!reads(revoked(Value::Array(sample_log(65)))));
+    assert!(!reads(
+        json!({"revoked": {"record": record.clone(), "provenance": "cache"}})
+    ));
+    assert!(!reads(json!({"revoked": {"record": record, "log": []}})));
+
+    // The sender's check is the decoder's.
+    let too_long = NameResolution::Resolved {
+        record: sample_record(),
+        provenance: NameProvenance::Local,
+        log: sample_log(65),
+    };
+    assert!(too_long.validate().is_err());
+    let one_log = NameResolution::Compromised {
+        name: "n".into(),
+        logs: vec![sample_log(1)],
+    };
+    assert!(one_log.validate().is_err());
+    let no_entry = NameResolution::Retired {
+        name: "n".into(),
+        log: Vec::new(),
+    };
+    assert!(no_entry.validate().is_err());
+    assert!(NameResolution::Unchanged { ttl_secs: 1 }.validate().is_ok());
 }
 
 #[test]
