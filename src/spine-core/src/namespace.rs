@@ -224,13 +224,16 @@ pub async fn join_with_application(
     log_store: Option<Arc<dyn LogBookStore>>,
     counters: Arc<NamespaceCounters>,
 ) -> Result<Arc<MeshNameResolver>> {
-    let seed = load_or_create_key(&cfg.key_path)?;
-    let identity = SigningIdentity::from_seed("spine-core", seed);
+    // Held as a `SigningKey`, which wipes itself on drop, not as a bare seed
+    // kept alive across the awaits below. `from_seed` takes the seed by value,
+    // so one short-lived copy is made for it.
+    let signing = load_or_create_key(&cfg.key_path)?;
+    let identity = SigningIdentity::from_seed("spine-core", signing.to_bytes());
     let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
 
     let (transport, inbound) = TcpNameTransport::with_limits(
         Security::Encrypted(Box::new(EncryptionConfig {
-            signing: ed25519_dalek::SigningKey::from_bytes(&seed),
+            signing: signing.clone(),
         })),
         cfg.connection_limits(),
     )
@@ -249,15 +252,9 @@ pub async fn join_with_application(
     let bind: SocketAddr = format!("{host}:{}", cfg.port)
         .parse()
         .with_context(|| format!("namespace bind address {host}:{}", cfg.port))?;
-    let addr = serve_node_with(
-        bind,
-        resolver.clone(),
-        transport,
-        inbound,
-        Some(ed25519_dalek::SigningKey::from_bytes(&seed)),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("namespace listener: {e}"))?;
+    let addr = serve_node_with(bind, resolver.clone(), transport, inbound, Some(signing))
+        .await
+        .map_err(|e| anyhow::anyhow!("namespace listener: {e}"))?;
 
     // Advertise what the operator configured, falling back to the address we
     // actually bound. The fallback is right for a node on a routable address and
@@ -543,7 +540,7 @@ pub fn spawn_owner_renewal(
     if !cfg.renew_owned_records {
         return Ok(());
     }
-    let signing = ed25519_dalek::SigningKey::from_bytes(&load_or_create_key(&cfg.key_path)?);
+    let signing = load_or_create_key(&cfg.key_path)?;
     let window = cfg.lapse_window_secs;
     let period = Duration::from_secs(cfg.renewal_secs.max(1));
     let budget = cfg.maintain_batch.max(1);
@@ -606,19 +603,56 @@ fn spawn_maintenance(resolver: Arc<MeshNameResolver>, cfg: &NamespaceConfig) {
     });
 }
 
-/// Read the node's key seed, creating one on first run.
+/// Whether the key file at `path` can be read or written by anyone but its
+/// owner (any group or other permission bit).
+#[cfg(unix)]
+fn key_file_is_exposed(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o077 != 0)
+}
+
+/// Warn when an existing key file is open to other users. Nothing is changed:
+/// the operator may have set the mode on purpose. Windows has no mode bits;
+/// the file there carries the access list of its directory.
+fn warn_if_key_is_exposed(path: &Path) {
+    #[cfg(unix)]
+    {
+        if key_file_is_exposed(path) {
+            warn!(
+                key = %path.display(),
+                "node key file is accessible to other users; restrict it with chmod 600"
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// The signing key of a node-key seed in hex, or `None` if the text is not
+/// one. The key zeroizes its secret when dropped (the `zeroize` feature of
+/// `ed25519-dalek`, on by default); the seed array and the hex text it came
+/// from are plain memory and are not wiped, as `spine-core` has no
+/// dependency on `zeroize` to wipe them with.
+fn signing_key_from_hex(text: &str) -> Option<ed25519_dalek::SigningKey> {
+    decode_hex(text).map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed))
+}
+
+/// Read the node's key, creating one on first run.
 ///
 /// Stored as hex because an operator will need to copy this node's identity into
 /// someone else's seed list, and a binary blob makes that needlessly awkward.
-fn load_or_create_key(path: &str) -> Result<[u8; 32]> {
+/// A new file is created with mode 0600 on Unix; an existing one that other
+/// users can read draws a warning.
+fn load_or_create_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
     let path = Path::new(path);
 
     if path.exists() {
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("reading node key {}", path.display()))?;
-        let bytes = decode_hex(raw.trim())
+        let key = signing_key_from_hex(raw.trim())
             .with_context(|| format!("node key {} is not 64 hex characters", path.display()))?;
-        return Ok(bytes);
+        warn_if_key_is_exposed(path);
+        return Ok(key);
     }
 
     let seed: [u8; 32] = rand::random();
@@ -640,7 +674,8 @@ fn load_or_create_key(path: &str) -> Result<[u8; 32]> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             // Another starter won creation: retain its identity, never overwrite it.
             let raw = std::fs::read_to_string(path)?;
-            return decode_hex(raw.trim()).context("existing node key is incomplete or invalid");
+            return signing_key_from_hex(raw.trim())
+                .context("existing node key is incomplete or invalid");
         }
         Err(error) => return Err(error).context("creating node identity"),
     };
@@ -648,7 +683,7 @@ fn load_or_create_key(path: &str) -> Result<[u8; 32]> {
     file.write_all(encode_hex(&seed).as_bytes())?;
     file.sync_all()?;
     info!(key = %path.display(), "generated a new node identity");
-    Ok(seed)
+    Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
 }
 
 fn encode_hex(bytes: &[u8; 32]) -> String {
@@ -838,7 +873,34 @@ mod tests {
 
         let first = load_or_create_key(path).unwrap();
         let second = load_or_create_key(path).unwrap();
-        assert_eq!(first, second, "a restart must not move the node");
+        assert_eq!(
+            first.to_bytes(),
+            second.to_bytes(),
+            "a restart must not move the node"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A new key file is private to its owner, and a file left wider is
+    /// detected (the start-up warning is keyed on this).
+    #[cfg(unix)]
+    #[test]
+    fn a_new_key_file_is_private_and_a_wider_one_is_detected() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("spine-key-mode-{}", std::process::id()));
+        let path = dir.join("node.key");
+        load_or_create_key(path.to_str().unwrap()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(!key_file_is_exposed(&path));
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(key_file_is_exposed(&path));
+        // Loading still works; it warns and changes nothing.
+        load_or_create_key(path.to_str().unwrap()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
