@@ -787,12 +787,20 @@ mod tests {
         assert_eq!(snapshot.busy, 1);
         assert_eq!(snapshot.bytes_received, 5);
         assert_eq!(snapshot.active, 0);
-        let mut metrics = String::new();
-        crate::operations::append_metrics(
-            &mut metrics,
-            crate::connections::ConnectionBudget::new(1, 1).snapshot(),
-            snapshot,
-        );
+        let metrics = crate::operations::render_metrics(&crate::operations::MetricsSnapshot {
+            sessions_limit: 1,
+            draining: false,
+            connections: crate::connections::ConnectionBudget::new(1, 1).snapshot(),
+            outbound: snapshot,
+            execute_permits_in_use: 0,
+            execute_permits_limit: 1,
+            persistence_failing: false,
+            resource_bytes: None,
+            resource_limit_bytes: 0,
+            records_held: 0,
+            cache: crate::operations::CacheCounts::default(),
+            mesh: None,
+        });
         assert!(metrics.contains("spine_outbound_calls_succeeded_total 1\n"));
         assert!(metrics.contains("spine_outbound_calls_denied_total 1\n"));
         assert!(
