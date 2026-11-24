@@ -655,12 +655,24 @@ mod tests {
         let (origin, server) =
             fixture(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello")
                 .await;
-        let denied = Fetcher::new(FetchConfig::default())
+        // With the listener's port allowed, the address policy is what refuses
+        // loopback; with the default port list the port is refused first.
+        let port: u16 = origin.rsplit(':').next().unwrap().parse().unwrap();
+        let denied = Fetcher::new(FetchConfig {
+            allowed_ports: vec![port],
+            ..Default::default()
+        })
+        .unwrap()
+        .fetch_text(&origin)
+        .await
+        .unwrap_err();
+        assert_eq!(denied.to_string(), "outbound_address_denied");
+        let refused = Fetcher::new(FetchConfig::default())
             .unwrap()
             .fetch_text(&origin)
             .await
             .unwrap_err();
-        assert_eq!(denied.to_string(), "outbound_address_denied");
+        assert_eq!(refused.to_string(), "outbound_invalid_port");
         let f = Fetcher::new(FetchConfig {
             internal_origins: vec![origin.clone()],
             ..Default::default()
