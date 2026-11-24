@@ -261,7 +261,7 @@ jobs:
           restore-keys: ${{ runner.os }}-msrv-
 
       - name: Check MSRV compilation
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
   # ── Build Release Binaries ─────────────────────────────────────────────────
   build:

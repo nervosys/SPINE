@@ -24,7 +24,11 @@ def main():
         ("final_verified", [str(bash), "scripts/verify.sh", *expected_total]),
         ("script_regressions", [sys.executable, "scripts/test_verify.py"]),
         ("final_audit", ["cargo", "audit", "--json"]),
-        ("final_deny", ["cargo", "deny", "check", "advisories", "licenses"]),
+        # The two `cargo deny` invocations of the CI `deny` job: the root
+        # workspace, and research/, which is its own workspace and lockfile.
+        ("final_deny", ["cargo", "deny", "check", "advisories", "licenses", "sources"]),
+        ("final_deny_research", ["cargo", "deny", "--manifest-path", "research/Cargo.toml",
+                                 "check", "advisories", "licenses", "sources"]),
         ("final_secrets", [sys.executable, "scripts/scan_secrets.py"]),
         ("final_msrv", ["cargo", "+1.89", "check", "--workspace", "--locked"]),
         ("release", ["cargo", "build", "--locked", "--release", "-p", "spine-core", "-p", "spine-cli", "-p", "spine-gateway"]),
