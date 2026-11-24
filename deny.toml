@@ -27,11 +27,10 @@ ignore = [
     "RUSTSEC-2025-0057",
     # instant unmaintained — transitive timing dependency
     "RUSTSEC-2024-0384",
-    # number_prefix unmaintained — transitive via indicatif
-    "RUSTSEC-2025-0119",
     # paste unmaintained — transitive
     "RUSTSEC-2024-0436",
-    # rustls-pemfile 1.0.4 unmaintained — transitive via rustls-native-certs 0.6.3 (spine-agent)
+    # rustls-pemfile 2.2.0 unmaintained — research/ workspace only, via kube-client (spine-k8s);
+    # the root lockfile no longer contains it (spine-agent uses rustls-native-certs 0.8)
     "RUSTSEC-2025-0134",
     # backoff unmaintained — transitive via kube-runtime
     "RUSTSEC-2025-0012",
