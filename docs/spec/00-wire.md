@@ -478,7 +478,7 @@ Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environme
 | Declared uncompressed length | `max_frame - 11` | fixed | `CLOSE(frame_too_large)` |
 | zstd window | 2^23 bytes | `frame.rs`; fixed | `CLOSE(malformed_frame)` |
 | CBOR depth | 32 | `cbor.rs` `MAX_DEPTH`; fixed | `CLOSE(malformed_frame)` |
-| Requests in flight | 1 | `native.rs` `local_config`; not configurable | `overloaded` (unreachable) |
+| Requests in flight | 8 | `native.rs` `DAEMON_MAX_INFLIGHT` through `local_config`; not configurable | `overloaded` |
 | `HELLO` deadline | 10 s | `server.hello_timeout_secs` (`SPINE_HELLO_TIMEOUT`); must be above 0 | `CLOSE(timeout)` |
 | Idle | 300 s | `server.idle_timeout_secs` (`SPINE_IDLE_TIMEOUT`); must be above 0. Restarted by every frame read, `PING` included, and covers a half-sent frame; suspended while a request is in flight (9). | `CLOSE(timeout)` |
 | Connections, total | 256, 1 to 65,536 | `server.max_connections`; counts TCP, WebSocket and QUIC, handshakes included | closed without a byte |
@@ -750,7 +750,7 @@ Source comments, other documents and the generator cite labels of the document t
 | R3 | Decompressed size is declared and checked before and after inflation | Met (4). |
 | R4 | One encoding per value; non-canonical input is rejected | Met for commands, replies and stream bodies (`decode_strict`); for `HELLO`, `HELLO_ACK` and `CLOSE` the profile is enforced and a non-text key is refused, but typed re-encoding is not checked. |
 | R5 | A version exchange precedes any message | Met (6). |
-| R6 | A header correlation id; several requests in flight | Met by `Connection`; the daemon runs one at a time (8.3). |
+| R6 | A header correlation id; several requests in flight | Met by `Connection`; the daemon accepts up to 8 per connection and runs them one at a time (8.3). |
 | R7 | Streams and cancel are frame types; cancel is processed during production | Frame types and state rules met; no producer; the daemon reads during a command but has nothing to cancel (section 16, items 9 and 12). |
 | R8 | A fixed 15-byte overhead; no per-connection predictor | Met. |
 | R9 | The core carries no research variants; an unnegotiated extension closes | Met (11). |
