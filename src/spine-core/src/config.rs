@@ -11,7 +11,10 @@
 //! # Example `spine.toml`
 //! ```toml
 //! [server]
-//! host = "0.0.0.0"
+//! # Loopback is the default. The metrics listener binds this host too. A host
+//! # that is not loopback is refused unless `tls.mutual_tls = true` (with TLS
+//! # enabled and a client CA) or `allow_unauthenticated_remote = true`.
+//! host = "127.0.0.1"
 //! port = 8080
 //! ws_port_offset = 1
 //! quic_port_offset = 2
