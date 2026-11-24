@@ -801,6 +801,7 @@ mod tests {
             records_held: 0,
             cache: crate::operations::CacheCounts::default(),
             activity: crate::operations::NamespaceCounts::default(),
+            authority: crate::operations::AuthorityCounts::default(),
             mesh: None,
         });
         assert!(metrics.contains("spine_outbound_calls_succeeded_total 1\n"));

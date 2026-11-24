@@ -2814,3 +2814,399 @@ async fn an_identified_client_gets_the_answers_an_anonymous_one_gets() {
     .await
     .expect("identity acceptance deadline exceeded");
 }
+
+// ---- The authority carrier (`docs/spec/00-wire.md` 8.5, 8.6) in modes off and audit.
+
+/// The text of the node's metrics endpoint.
+async fn metrics_text(metrics_port: u16) -> String {
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    http.get(format!("http://127.0.0.1:{metrics_port}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap()
+}
+
+/// The value of the unlabelled counter or gauge `name`, or of the series
+/// `name{labels}` when `series` gives the text between the braces.
+fn metric(text: &str, name: &str, series: Option<&str>) -> u64 {
+    let prefix = match series {
+        Some(labels) => format!("{name}{{{labels}}} "),
+        None => format!("{name} "),
+    };
+    text.lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("no metric {prefix:?} in\n{text}"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// What one `AUTH_REQUEST` was answered with: the receipt, if one came before
+/// the `RESPONSE`, and the `RESPONSE` body.
+struct AuthAnswer {
+    receipt: Option<Vec<u8>>,
+    response: Vec<u8>,
+}
+
+/// The authority parts of a test: the node's key, and an agent whose key holds
+/// the node's whole tree through the single-user root grant.
+struct Authority {
+    node_key: SigningKey,
+    chain: Vec<Vec<u8>>,
+    credentials: spine_agent::authority::Credentials,
+}
+
+impl Authority {
+    fn new() -> Authority {
+        let node_key = SigningKey::from_bytes(&[9; 32]);
+        let agent = SigningKey::from_bytes(&[3; 32]);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let root = spine_core::authority::AuthorityGate::issue_self_root(
+            &node_key,
+            agent.verifying_key().to_bytes(),
+            now - 100,
+            3_600,
+            [1; 16],
+        )
+        .unwrap();
+        let chain = vec![root.encode().unwrap()];
+        let credentials = spine_agent::authority::Credentials::new(
+            agent,
+            chain.clone(),
+            node_key.verifying_key().to_bytes(),
+        )
+        .unwrap();
+        Authority {
+            node_key,
+            chain,
+            credentials,
+        }
+    }
+
+    fn node(&self) -> [u8; 32] {
+        self.node_key.verifying_key().to_bytes()
+    }
+
+    /// The node's key, where the daemon reads it from (`[namespace] key_path`).
+    fn write_node_key(&self, dir: &Path) {
+        std::fs::write(dir.join("spine-node.key"), "09".repeat(32)).unwrap();
+    }
+
+    fn scope(&self, command: &spine_protocol::BrowserCommand) -> spine_agent::authority::Scope {
+        let need = spine_core::authority::classify(command);
+        spine_agent::authority::Scope {
+            action: need.action,
+            effect: need.effect,
+            resource: need.resource(self.node()),
+        }
+    }
+
+    /// The body of an `AUTH_REQUEST` for `command`, and the invocation in it.
+    fn request(
+        &self,
+        conn: &RawConnection,
+        command: &spine_protocol::BrowserCommand,
+        session: [u8; 32],
+        nonce: u8,
+    ) -> (Vec<u8>, spine_authority::Invocation) {
+        let command_bytes = spine_protocol::native::encode_command(command).unwrap();
+        let invocation = self
+            .credentials
+            .invocation(
+                &self.scope(command),
+                &command_bytes,
+                session,
+                conn.server_time(),
+                [nonce; 16],
+            )
+            .unwrap();
+        let body = spine_protocol::auth::encode_auth_request(
+            &self.chain,
+            &invocation.encode().unwrap(),
+            command,
+        )
+        .unwrap();
+        (body, invocation)
+    }
+}
+
+/// Sends `body` as an `AUTH_REQUEST` and reads until its `RESPONSE`.
+async fn send_auth_body(conn: &mut RawConnection, body: Vec<u8>) -> AuthAnswer {
+    use spine_protocol::frame::FrameType;
+    let id = within("send", conn.request_auth(body)).await.unwrap();
+    let mut receipt = None;
+    loop {
+        let frame = next_frame(conn).await;
+        assert_eq!(frame.request_id, id, "a frame for another request");
+        match frame.frame_type {
+            FrameType::Receipt => {
+                assert!(receipt.is_none(), "two receipts for one request");
+                receipt = Some(frame.body);
+            }
+            FrameType::Response => {
+                return AuthAnswer {
+                    receipt,
+                    response: frame.body,
+                }
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+/// The error code of a `RESPONSE` body, or the empty text for an `ok`.
+fn code_in(body: &[u8]) -> String {
+    spine_protocol::native::decode_reply::<serde_json::Value>(body)
+        .unwrap()
+        .into_result()
+        .map(|_| String::new())
+        .unwrap_or_else(|error| error.code)
+}
+
+/// The `ok` value of a `RESPONSE` body.
+fn ok_in(body: &[u8]) -> serde_json::Value {
+    spine_protocol::native::decode_reply::<serde_json::Value>(body)
+        .unwrap()
+        .into_result()
+        .unwrap()
+}
+
+/// In mode `audit` every `AUTH_REQUEST` is checked and nothing is refused on
+/// the verdict: the command runs, the `RESPONSE` is the bytes a plain `REQUEST`
+/// gets, and only an invocation the gate authorised is answered with a receipt
+/// first. A refusal records nothing, the verdicts are counted by step, and a
+/// connection that proved another key than the invoker is refused at step 9.
+#[tokio::test]
+async fn audit_checks_every_auth_request_and_enforces_nothing() {
+    use spine_protocol::BrowserCommand;
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin, metrics) = (origin_port(), port());
+        let authority = Authority::new();
+        authority.write_node_key(dir.path());
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = metrics;
+        config.server.idle_timeout_secs = 120;
+        config.authority.mode = spine_core::config::AuthorityMode::Audit;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let mut conn = raw_connect(origin).await;
+        assert_eq!(
+            conn.authority(),
+            spine_protocol::hello::AuthorityMode::Audit
+        );
+        let navigate = BrowserCommand::Navigate {
+            url: "http://127.0.0.1/".to_string(),
+        };
+        let plain = answer_body(&mut conn, navigate.clone()).await;
+        assert_ne!(code_in(&plain), "", "the plain request is expected to fail");
+
+        // Authorised: a receipt first, then the bytes a REQUEST gets.
+        let (body, invocation) = authority.request(&conn, &navigate, conn.binding(), 1);
+        let answer = send_auth_body(&mut conn, body.clone()).await;
+        assert_eq!(answer.response, plain);
+        let receipt = answer.receipt.expect("a receipt for an authorised request");
+        spine_agent::authority::verify_receipt(&receipt, &authority.node(), &invocation, &plain)
+            .unwrap();
+
+        // The same bytes again: the nonce is spent, the gate refuses, the
+        // command runs all the same, and there is no receipt.
+        let again = send_auth_body(&mut conn, body).await;
+        assert!(again.receipt.is_none());
+        assert_eq!(again.response, plain);
+
+        // An invocation bound to another connection: step 9, runs, no receipt.
+        let (body, _) = authority.request(&conn, &navigate, [0x66; 32], 2);
+        let wrong = send_auth_body(&mut conn, body).await;
+        assert!(wrong.receipt.is_none());
+        assert_eq!(wrong.response, plain);
+
+        // A refused invocation still stores: nothing is enforced.
+        let store = BrowserCommand::StoreKnowledge {
+            key: "audit-key".to_string(),
+            value: serde_json::json!({"v": 1}),
+            tags: Vec::new(),
+        };
+        let (body, _) = authority.request(&conn, &store, [0x66; 32], 3);
+        let stored = send_auth_body(&mut conn, body).await;
+        assert!(stored.receipt.is_none());
+        assert_eq!(code_in(&stored.response), "");
+        let deleted = answer_body(
+            &mut conn,
+            BrowserCommand::DeleteKnowledge {
+                key: "audit-key".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(ok_in(&deleted), serde_json::json!({"deleted": 1}));
+
+        // A body that is not an AUTH_REQUEST body: refused before the gate.
+        let bare = spine_protocol::native::encode_command(&navigate).unwrap();
+        let malformed = send_auth_body(&mut conn, bare).await;
+        assert!(malformed.receipt.is_none());
+        assert_eq!(code_in(&malformed.response), "invalid_request");
+
+        // A connection that proved another key than the invoker.
+        let stranger = SigningKey::from_bytes(&[77; 32]);
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut identified = within(
+            "identified handshake",
+            spine_protocol::native::client_connect_with_identity(stream, Some(&stranger)),
+        )
+        .await
+        .unwrap();
+        let (body, _) = authority.request(&identified, &navigate, identified.binding(), 4);
+        let refused = send_auth_body(&mut identified, body).await;
+        assert!(refused.receipt.is_none());
+        assert_eq!(code_in(&refused.response), code_in(&plain));
+
+        // What the node counted.
+        let text = metrics_text(metrics).await;
+        assert_eq!(metric(&text, "spine_authority_enforcing", None), 0);
+        let verdict = |outcome: &str| {
+            metric(
+                &text,
+                "spine_authority_verdicts_total",
+                Some(&format!("outcome=\"{outcome}\"")),
+            )
+        };
+        assert_eq!(verdict("authorised"), 1);
+        assert_eq!(verdict("refused_step_9"), 4, "{text}");
+        for step in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11] {
+            assert_eq!(verdict(&format!("refused_step_{step}")), 0, "step {step}");
+        }
+        assert_eq!(metric(&text, "spine_authority_receipts_total", None), 1);
+        assert_eq!(
+            metric(&text, "spine_authority_malformed_requests_total", None),
+            1
+        );
+        assert!(
+            metric(
+                &text,
+                "spine_authority_unauthenticated_requests_total",
+                None
+            ) >= 2
+        );
+        assert_eq!(metric(&text, "spine_authority_not_enabled_total", None), 0);
+    })
+    .await
+    .expect("audit acceptance deadline exceeded");
+}
+
+/// In mode `off` an `AUTH_REQUEST` is answered `authority_not_enabled` and its
+/// command does not run; the client library refuses to send one at all.
+#[tokio::test]
+async fn off_refuses_an_auth_request_and_does_not_run_its_command() {
+    use spine_protocol::BrowserCommand;
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin, metrics) = (origin_port(), port());
+        let authority = Authority::new();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = metrics;
+        config.server.idle_timeout_secs = 120;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        assert_eq!(
+            client.authority(),
+            spine_protocol::hello::AuthorityMode::Off
+        );
+
+        let store = BrowserCommand::StoreKnowledge {
+            key: "off-key".to_string(),
+            value: serde_json::json!(1),
+            tags: Vec::new(),
+        };
+        let (body, _) = authority.request(&client.conn, &store, client.binding(), 1);
+        let answer = send_auth_body(&mut client.conn, body).await;
+        assert!(answer.receipt.is_none());
+        assert_eq!(code_in(&answer.response), "authority_not_enabled");
+        let deleted = answer_body(
+            &mut client.conn,
+            BrowserCommand::DeleteKnowledge {
+                key: "off-key".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(
+            ok_in(&deleted),
+            serde_json::json!({"deleted": 0}),
+            "the command ran although the node takes no authority"
+        );
+
+        // The library does not send one to a node that reports `off`.
+        let error = client
+            .request_authorized::<serde_json::Value>(
+                &authority.credentials,
+                &authority.scope(&store),
+                &store,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("off"), "{error}");
+
+        let text = metrics_text(metrics).await;
+        assert_eq!(metric(&text, "spine_authority_not_enabled_total", None), 1);
+        assert_eq!(metric(&text, "spine_authority_enforcing", None), 0);
+    })
+    .await
+    .expect("off acceptance deadline exceeded");
+}
+
+/// `required` is still refused at start-up, and the message says why.
+#[tokio::test]
+async fn required_is_refused_at_startup_until_stage_5() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin_port();
+        config.server.metrics_port = port();
+        config.authority.mode = spine_core::config::AuthorityMode::Required;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        let mut status = None;
+        for _ in 0..600 {
+            if let Some(s) = node.0.try_wait().unwrap() {
+                status = Some(s);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let status = status.expect("the node kept running with authority.mode = required");
+        assert!(!status.success());
+        let log = std::fs::read_to_string(dir.path().join("server.log")).unwrap();
+        assert!(log.contains("required"), "{log}");
+        assert!(log.contains("stage 5"), "{log}");
+    })
+    .await
+    .expect("startup acceptance deadline exceeded");
+}

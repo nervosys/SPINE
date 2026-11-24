@@ -151,6 +151,33 @@ pub struct NamespaceCounts {
     pub seeds_failed: u64,
 }
 
+/// What the authority carrier has done since start (the daemon's
+/// `AuthorityNode`, read). In mode `audit` a refused verdict is only counted:
+/// the command ran.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AuthorityCounts {
+    /// True when a refused verdict stops the command (mode `required`); never
+    /// in a build that refuses to start in that mode.
+    pub enforcing: bool,
+    /// `AUTH_REQUEST`s the gate authorised.
+    pub authorised: u64,
+    /// `AUTH_REQUEST`s the gate refused, by step 1 to 11 (index 0 to 10).
+    pub refused: [u64; 11],
+    /// Plain requests that ran in mode `audit` with no authority presented.
+    pub unauthenticated: u64,
+    /// `AUTH_REQUEST`s refused in mode `off`.
+    pub not_enabled: u64,
+    /// `AUTH_REQUEST` bodies refused before the gate as `invalid_request` or
+    /// `unknown_command`.
+    pub malformed: u64,
+    /// `AUTH_REQUEST`s the connection's rate limit refused before the gate.
+    pub rate_limited: u64,
+    /// Receipts sent.
+    pub receipts: u64,
+    /// Receipts that could not be made after the command ran.
+    pub receipt_failures: u64,
+}
+
 /// What the mesh resolver reports; present only when the namespace is enabled.
 #[derive(Debug, Clone, Copy)]
 pub struct MeshSnapshot {
@@ -178,6 +205,7 @@ pub struct MetricsSnapshot {
     pub records_held: usize,
     pub cache: CacheCounts,
     pub activity: NamespaceCounts,
+    pub authority: AuthorityCounts,
     pub mesh: Option<MeshSnapshot>,
 }
 
@@ -226,6 +254,77 @@ fn counter_family(out: &mut String, name: &str, help: &str, label: &str, samples
             "spine_{name}{{{label}=\"{}\"}} {count}",
             escape_label_value(value)
         );
+    }
+}
+
+/// The names of the `outcome` label of `spine_authority_verdicts_total`, in
+/// order: `authorised`, then one per gate step.
+const VERDICT_OUTCOMES: [&str; 12] = [
+    "authorised",
+    "refused_step_1",
+    "refused_step_2",
+    "refused_step_3",
+    "refused_step_4",
+    "refused_step_5",
+    "refused_step_6",
+    "refused_step_7",
+    "refused_step_8",
+    "refused_step_9",
+    "refused_step_10",
+    "refused_step_11",
+];
+
+fn render_authority(out: &mut String, a: &AuthorityCounts) {
+    gauge(
+        out,
+        "authority_enforcing",
+        "1 when a command the authority gate refused is not run (mode required); 0 in modes off and audit, where nothing is enforced.",
+        u64::from(a.enforcing),
+    );
+    let mut samples: Vec<(&str, u64)> = vec![(VERDICT_OUTCOMES[0], a.authorised)];
+    for (name, count) in VERDICT_OUTCOMES[1..].iter().zip(a.refused.iter()) {
+        samples.push((*name, *count));
+    }
+    counter_family(
+        out,
+        "authority_verdicts_total",
+        "AUTH_REQUESTs by what the authority gate decided. In mode audit a refused verdict is only counted: the command ran.",
+        "outcome",
+        &samples,
+    );
+    for (name, help, value) in [
+        (
+            "authority_unauthenticated_requests_total",
+            "Plain requests that ran in mode audit with no authority presented.",
+            a.unauthenticated,
+        ),
+        (
+            "authority_not_enabled_total",
+            "AUTH_REQUESTs refused in mode off.",
+            a.not_enabled,
+        ),
+        (
+            "authority_malformed_requests_total",
+            "AUTH_REQUEST bodies refused before the gate as invalid_request or unknown_command.",
+            a.malformed,
+        ),
+        (
+            "authority_rate_limited_total",
+            "AUTH_REQUESTs refused by the connection's rate limit before the gate.",
+            a.rate_limited,
+        ),
+        (
+            "authority_receipts_total",
+            "Receipts sent for authorised AUTH_REQUESTs.",
+            a.receipts,
+        ),
+        (
+            "authority_receipt_failures_total",
+            "Receipts that could not be made after the command ran.",
+            a.receipt_failures,
+        ),
+    ] {
+        counter(out, name, help, value);
     }
 }
 
@@ -424,6 +523,7 @@ pub fn render_metrics(m: &MetricsSnapshot) -> String {
             ("skipped_rotated", m.activity.renewals_skipped_rotated),
         ],
     );
+    render_authority(out, &m.authority);
     gauge(
         out,
         "namespace_enabled",
@@ -649,6 +749,17 @@ mod tests {
                 seeds_reached: 1,
                 seeds_failed: 4,
             },
+            authority: AuthorityCounts {
+                enforcing: false,
+                authorised: 5,
+                refused: [0, 1, 0, 0, 0, 0, 0, 0, 3, 2, 4],
+                unauthenticated: 7,
+                not_enabled: 8,
+                malformed: 9,
+                rate_limited: 10,
+                receipts: 5,
+                receipt_failures: 1,
+            },
             mesh,
         }
     }
@@ -755,6 +866,59 @@ mod tests {
         assert!(solo.contains("spine_namespace_owner_renewals_total{outcome=\"failed\"} 1\n"));
         // The process-wide registry already exports this gauge.
         assert!(!text.contains("spine_sessions_active"));
+    }
+
+    #[test]
+    fn authority_metrics_are_exact_and_have_fixed_labels() {
+        let text = render_metrics(&snapshot(None));
+        let expected = "\
+# HELP spine_authority_enforcing 1 when a command the authority gate refused is not run (mode required); 0 in modes off and audit, where nothing is enforced.
+# TYPE spine_authority_enforcing gauge
+spine_authority_enforcing 0
+# HELP spine_authority_verdicts_total AUTH_REQUESTs by what the authority gate decided. In mode audit a refused verdict is only counted: the command ran.
+# TYPE spine_authority_verdicts_total counter
+spine_authority_verdicts_total{outcome=\"authorised\"} 5
+spine_authority_verdicts_total{outcome=\"refused_step_1\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_2\"} 1
+spine_authority_verdicts_total{outcome=\"refused_step_3\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_4\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_5\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_6\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_7\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_8\"} 0
+spine_authority_verdicts_total{outcome=\"refused_step_9\"} 3
+spine_authority_verdicts_total{outcome=\"refused_step_10\"} 2
+spine_authority_verdicts_total{outcome=\"refused_step_11\"} 4
+# HELP spine_authority_unauthenticated_requests_total Plain requests that ran in mode audit with no authority presented.
+# TYPE spine_authority_unauthenticated_requests_total counter
+spine_authority_unauthenticated_requests_total 7
+# HELP spine_authority_not_enabled_total AUTH_REQUESTs refused in mode off.
+# TYPE spine_authority_not_enabled_total counter
+spine_authority_not_enabled_total 8
+# HELP spine_authority_malformed_requests_total AUTH_REQUEST bodies refused before the gate as invalid_request or unknown_command.
+# TYPE spine_authority_malformed_requests_total counter
+spine_authority_malformed_requests_total 9
+# HELP spine_authority_rate_limited_total AUTH_REQUESTs refused by the connection's rate limit before the gate.
+# TYPE spine_authority_rate_limited_total counter
+spine_authority_rate_limited_total 10
+# HELP spine_authority_receipts_total Receipts sent for authorised AUTH_REQUESTs.
+# TYPE spine_authority_receipts_total counter
+spine_authority_receipts_total 5
+# HELP spine_authority_receipt_failures_total Receipts that could not be made after the command ran.
+# TYPE spine_authority_receipt_failures_total counter
+spine_authority_receipt_failures_total 1
+";
+        assert!(
+            text.contains(expected),
+            "missing the authority block in\n{text}"
+        );
+        // Twelve verdict series and no label but `outcome`.
+        let verdicts = text
+            .lines()
+            .filter(|line| line.starts_with("spine_authority_verdicts_total{"))
+            .count();
+        assert_eq!(verdicts, 12);
+        assert!(text.lines().all(|line| !line.contains("identity")));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 //! Node-side enforcement of layer 3 (`docs/spec/03-authority.md`, "Node
-//! enforcement (not yet on the wire)").
+//! enforcement").
 //!
 //! `spine-authority` decides whether an invocation is inside a chain of
 //! grants. This module adds what only the node knows: which of its commands
@@ -13,21 +13,23 @@
 //! * [`AuthorityGate::issue_self_root`] issues the root grant of single-user
 //!   mode: the node's key grants an audience its whole resource tree.
 //!
-//! # Not connected
+//! # Where it is called
 //!
-//! Nothing in the daemon calls this module. spine-wire v1 has no field that
-//! carries a grant chain or an invocation, and layer 1 defines no session
-//! value to bind one to, so there is nothing for the daemon to pass in. The
-//! carrier is a later step; until then `authority.mode = "required"` is
+//! The daemon calls the gate for an `AUTH_REQUEST` (`docs/spec/00-wire.md`
+//! 8.5) in mode `audit`, through [`crate::authority_audit`], and only to log
+//! and count the verdict: the command runs whatever it is. Nothing refuses a
+//! command on the gate's word yet, so `authority.mode = "required"` is still
 //! refused at startup ([`crate::config::AuthorityConfig`]).
 //!
-//! # What the carrier must supply
+//! # What the carrier supplies
 //!
-//! * `chain_bytes` and `invocation_bytes`: the canonical encodings, as sent.
-//! * `op_hash`: the SHA-256 of the exact bytes of the command body on the
-//!   wire ([`operation_hash`]), computed by the node from what it received,
-//!   never taken from the caller.
-//! * `session`: the 32-byte value layer 1 will define for the connection.
+//! * `chain_bytes` and `invocation_bytes`: the canonical encodings, as sent in
+//!   `auth.chain` and `auth.invocation`.
+//! * `op_hash`: the SHA-256 of the canonical encoding of the `command` item of
+//!   the `AUTH_REQUEST` ([`operation_hash`]), computed by the node from what it
+//!   received, never taken from the caller. It is the same bytes a plain
+//!   `REQUEST` body would be.
+//! * `session`: the `binding` of this connection's `HELLO_ACK`.
 //! * `now`: the node's clock, Unix seconds. It must not run backwards.
 //!
 //! # The resource model
@@ -241,11 +243,12 @@ pub fn node_tree(node: PublicKey) -> ResourcePattern {
 }
 
 /// The operation hash of a command: SHA-256 of the exact bytes of the command
-/// body as they were on the wire. An invocation's `op` must equal it.
+/// as they were on the wire (a plain `REQUEST` body, or the `command` item of
+/// an `AUTH_REQUEST` body). An invocation's `op` must equal it.
 ///
-/// The node computes it from the bytes it received. Re-encoding the decoded
-/// command and hashing that would also work for deterministic CBOR, but the
-/// received bytes are what the invoker signed for.
+/// The node computes it from the bytes it received. For deterministic CBOR,
+/// which a decoded body always is, those are also the bytes of the decoded
+/// command's one encoding.
 pub fn operation_hash(command_body: &[u8]) -> [u8; 32] {
     Sha256::digest(command_body).into()
 }
@@ -297,6 +300,10 @@ pub enum RefusalCause {
     /// The usage ledger could not be used: its lock is poisoned, or a durable
     /// ledger could not write the charge to its backend.
     LedgerUnavailable,
+    /// The connection proved a key with `IDENTIFY` and the invocation's
+    /// invoker is another key (`docs/spec/00-wire.md` 6.6, 8.5). Reported as
+    /// step 9, which is where the invocation's invoker is judged.
+    IdentityMismatch,
 }
 
 impl RefusalCause {
@@ -313,6 +320,7 @@ impl RefusalCause {
             | RefusalCause::EffectTooWeak
             | RefusalCause::ResourceMismatch
             | RefusalCause::OperationMismatch => 10,
+            RefusalCause::IdentityMismatch => 9,
             RefusalCause::Charge(ChargeError::NonceReplayed) => 9,
             RefusalCause::Charge(_) => 11,
             RefusalCause::RevocationsUnavailable => 8,
@@ -344,6 +352,9 @@ impl std::fmt::Display for RefusalCause {
             RefusalCause::LedgerUnavailable => {
                 f.write_str("step 11: the usage ledger is unavailable")
             }
+            RefusalCause::IdentityMismatch => f.write_str(
+                "step 9: the invocation's invoker is not the key this connection proved",
+            ),
         }
     }
 }

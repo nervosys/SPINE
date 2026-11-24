@@ -661,7 +661,7 @@ fn signing_key_from_hex(text: &str) -> Option<ed25519_dalek::SigningKey> {
 /// the buffer `read_to_string` grows may leave earlier, shorter allocations
 /// behind, and copies made by the allocator, the operating system or the file
 /// system are out of reach. The key file itself is plain text on disk.
-fn load_or_create_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
+pub fn load_or_create_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
     let path = Path::new(path);
 
     if path.exists() {

@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tracing::instrument;
+pub mod authority;
 pub mod names;
 pub mod resources;
 
@@ -44,6 +45,9 @@ pub struct AgentClient<S> {
     /// request left unanswered keeps its id in flight until its reply is read.
     pub conn: Connection<S>,
     ping_counter: u64,
+    /// When the handshake finished: `HELLO_ACK.time` plus the time since is
+    /// the server's clock now, which is what an invocation is stamped with.
+    connected_at: std::time::Instant,
 }
 
 impl AgentClient<TcpStream> {
@@ -253,6 +257,7 @@ where
         Ok(Self {
             conn,
             ping_counter: 0,
+            connected_at: std::time::Instant::now(),
         })
     }
 
@@ -271,11 +276,13 @@ where
         Ok(Self {
             conn,
             ping_counter: 0,
+            connected_at: std::time::Instant::now(),
         })
     }
 
     /// The authority mode the server reported in `HELLO_ACK`: `Off` when the
-    /// node asks for no grant. Nothing in this client acts on it yet.
+    /// node takes no authority requests; [`AgentClient::request_authorized`]
+    /// refuses to send one to such a node.
     pub fn authority(&self) -> AuthorityMode {
         self.conn.authority()
     }

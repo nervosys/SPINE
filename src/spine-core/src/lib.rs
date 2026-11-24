@@ -4,11 +4,13 @@
 //! in other binaries (e.g. `spine-cli deploy`).
 //!
 //! [`authority`] is the node-side enforcement of layer 3
-//! (`docs/spec/03-authority.md`). It is a library module only: the daemon does
-//! not call it, because spine-wire v1 cannot carry a grant chain.
+//! (`docs/spec/03-authority.md`); [`authority_audit`] is how the daemon uses it
+//! in modes `off` and `audit`: it checks an `AUTH_REQUEST` and reports the
+//! verdict, and refuses nothing on its word.
 
 pub mod actions;
 pub mod authority;
+pub mod authority_audit;
 pub mod authority_ledger;
 pub mod config;
 pub mod connections;

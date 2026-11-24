@@ -51,8 +51,10 @@
 //! [namespace.seed_keys]
 //! "10.0.0.7:9440" = "4f1c0a9e5d3b7a8c2e6f1d0b9a8c7e5d4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c"
 //!
-//! # Layer-3 authority. Only "off" is accepted by this build: spine-wire v1
-//! # cannot carry a grant chain, so nothing would be enforced.
+//! # Layer-3 authority. "off" (the default) and "audit" are accepted by this
+//! # build. "audit" checks every AUTH_REQUEST against the gate and logs and
+//! # counts the verdict, but runs the command whatever the verdict: it enforces
+//! # nothing. "required" is refused until the node enforces it.
 //! [authority]
 //! mode = "off"
 //! trusted_roots = []
@@ -81,12 +83,19 @@ pub struct SpineConfig {
 #[serde(rename_all = "lowercase")]
 pub enum AuthorityMode {
     /// No grant is asked for: every connected client has full control of the
-    /// node, as before layer 3 existed. The default.
+    /// node, as before layer 3 existed. An `AUTH_REQUEST` is answered
+    /// `authority_not_enabled`. The default.
     #[default]
     Off,
+    /// A plain `REQUEST` runs. An `AUTH_REQUEST` goes through the gate and its
+    /// verdict is logged and counted, but the command runs whatever the verdict
+    /// and the client is not told it: the mode shows an operator what
+    /// `required` would refuse, and enforces nothing.
+    Audit,
     /// Every command needs a valid grant chain and invocation. Refused by
-    /// [`SpineConfig::validate`] in this build: spine-wire v1 has no field
-    /// that carries them, so the daemon could not enforce it.
+    /// [`SpineConfig::validate`] in this build: the daemon does not yet answer
+    /// a command with a refused verdict, which is what stage 5 of
+    /// `docs/spec/00-wire-revision.md` adds.
     Required,
 }
 
@@ -96,14 +105,15 @@ pub const MAX_INVOCATION_AGE_SECS: u64 = 3600;
 
 /// Layer-3 authority (`docs/spec/03-authority.md`, "Node enforcement").
 ///
-/// These settings are parsed and validated but not acted on: the daemon does
-/// not check grants yet. Unknown keys in this section are refused, so a
-/// misspelled key cannot be mistaken for a setting that took effect.
+/// In mode `audit` the daemon checks the grants of an `AUTH_REQUEST` and
+/// reports the verdict to its operator; it enforces nothing in any mode this
+/// build accepts. Unknown keys in this section are refused, so a misspelled key
+/// cannot be mistaken for a setting that took effect.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AuthorityConfig {
-    /// `"off"` (default) or `"required"`. `"required"` is refused at startup
-    /// in this build.
+    /// `"off"` (default), `"audit"` or `"required"`. `"required"` is refused at
+    /// startup in this build.
     pub mode: AuthorityMode,
     /// Ed25519 public keys (64 hex characters each, as in
     /// `namespace.seed_keys`) accepted as the root of a chain, in addition to
@@ -156,9 +166,11 @@ impl AuthorityConfig {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.mode != AuthorityMode::Required,
-            "authority.mode = \"required\" is not available in this build: spine-wire v1 has no \
-             field that carries a grant chain or an invocation, so the daemon cannot check one \
-             and would enforce nothing; set authority.mode = \"off\""
+            "authority.mode = \"required\" is not available in this build: the daemon checks an \
+             AUTH_REQUEST (mode \"audit\") but does not yet refuse a command the gate refused, \
+             and a node that reported \"required\" without doing so would give its clients a \
+             protection they do not have; stage 5 of docs/spec/00-wire-revision.md lifts this; \
+             set authority.mode = \"off\" or \"audit\""
         );
         self.trusted_root_keys()?;
         anyhow::ensure!(
@@ -952,9 +964,9 @@ seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
         assert!(config.validate().is_ok());
     }
 
-    /// Enforcement is not connected to the wire, so a configuration that asks
-    /// for it must stop the daemon instead of starting one that enforces
-    /// nothing.
+    /// The daemon does not refuse a command the gate refused yet, so a
+    /// configuration that asks for it must stop the daemon instead of starting
+    /// one that enforces nothing and reports `required`.
     #[test]
     fn authority_mode_required_is_refused_in_this_build() {
         let config: SpineConfig = toml::from_str("[authority]\nmode = \"required\"\n").unwrap();
@@ -962,12 +974,24 @@ seeds = ["spine://host:seed.example.org:9440/", "10.0.0.7:9440"]
         let error = config.validate().unwrap_err().to_string();
         assert!(error.contains("authority.mode"), "{error}");
         assert!(error.contains("not available in this build"), "{error}");
+        assert!(error.contains("stage 5"), "{error}");
+    }
+
+    /// `audit` checks and reports and enforces nothing, so it may start.
+    #[test]
+    fn authority_mode_audit_is_accepted() {
+        let config: SpineConfig = toml::from_str("[authority]\nmode = \"audit\"\n").unwrap();
+        assert_eq!(config.authority.mode, AuthorityMode::Audit);
+        config.validate().unwrap();
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("mode = \"audit\""), "{text}");
     }
 
     #[test]
     fn an_unknown_authority_mode_or_key_does_not_parse() {
         assert!(toml::from_str::<SpineConfig>("[authority]\nmode = \"on\"\n").is_err());
         assert!(toml::from_str::<SpineConfig>("[authority]\nmode = \"Required\"\n").is_err());
+        assert!(toml::from_str::<SpineConfig>("[authority]\nmode = \"Audit\"\n").is_err());
         assert!(toml::from_str::<SpineConfig>("[authority]\nmod = \"off\"\n").is_err());
     }
 

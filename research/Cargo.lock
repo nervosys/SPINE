@@ -5763,6 +5763,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-agentic",
+ "spine-authority",
  "spine-compiler",
  "spine-name",
  "spine-parser",
@@ -5804,6 +5805,18 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "spine-authority"
+version = "2.0.2"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "sha2",
+ "spine-cbor",
+ "spine-name",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

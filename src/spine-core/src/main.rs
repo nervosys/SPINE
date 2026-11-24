@@ -8,6 +8,8 @@ use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
+use spine_core::authority::Authorized;
+use spine_core::authority_audit::{Admission, AuthContext, AuthorityNode};
 use spine_core::outbound;
 use spine_protocol::body::{
     ERR_ACTION_UNSUPPORTED, ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_DELETE_REFUSED,
@@ -20,7 +22,7 @@ use spine_protocol::body::{
 use spine_protocol::connection::{
     response_ok_body, Connection, ConnectionError, ConnectionReader, ConnectionWriter, Incoming,
 };
-use spine_protocol::frame::{CloseCode, Frame, FrameType};
+use spine_protocol::frame::{CloseCode, Frame, FrameError, FrameType, MAX_FRAME};
 use spine_protocol::native;
 use spine_protocol::{BrowserCommand, ToolOutcome, WireError};
 use spine_transport::WebSocketStream;
@@ -188,6 +190,9 @@ struct BrowserState {
     mesh_names: Option<Arc<spine_mesh::naming_mesh::MeshNameResolver>>,
     /// Owner renewal outcomes and the bootstrap at join, counted.
     namespace_counters: Arc<namespace::NamespaceCounters>,
+    /// The authority carrier: the mode, and in mode `audit` the gate, the node
+    /// key and the counters.
+    authority: Arc<AuthorityNode>,
 }
 
 impl KnowledgeEntry {
@@ -1607,7 +1612,36 @@ async fn metrics_snapshot(state: &Arc<BrowserState>) -> spine_core::operations::
             evictions: cache.evictions,
         },
         activity: state.namespace_counters.snapshot(),
+        authority: state.authority.counts(),
         mesh,
+    }
+}
+
+/// The node's authority state for the configured mode. Mode `audit` needs the
+/// node key (`[namespace] key_path`, created on first use as the namespace does)
+/// and keeps the usage ledger in the node's record store when it has one.
+/// `required` is refused by the configuration check before this is reached; it
+/// is refused here again so that no path can start a node that reports it.
+fn build_authority(
+    config: &SpineConfig,
+    backend: &Arc<dyn spine_storage::StorageBackend>,
+) -> Result<AuthorityNode> {
+    match config.authority.mode {
+        config::AuthorityMode::Off => Ok(AuthorityNode::off()),
+        config::AuthorityMode::Audit => {
+            let signer = namespace::load_or_create_key(&config.namespace.key_path)
+                .context("authority.mode = \"audit\" needs the node key")?;
+            let ledger = (!config.namespace.records_path.is_empty()).then(|| backend.clone());
+            let settings = spine_core::authority_audit::AuditSettings {
+                trusted_roots: config.authority.trusted_root_keys()?,
+                skew_secs: config.authority.skew_secs,
+                max_invocation_age_secs: config.authority.max_invocation_age_secs,
+            };
+            AuthorityNode::audit(&settings, signer, ledger, unix_now())
+        }
+        config::AuthorityMode::Required => {
+            anyhow::bail!("authority.mode = \"required\" is not available in this build")
+        }
     }
 }
 
@@ -1713,6 +1747,7 @@ async fn main() -> Result<()> {
         &config.namespace,
         namespace_counters.clone(),
     )?;
+    let authority = Arc::new(build_authority(&config, &name_backend)?);
     let state = Arc::new(BrowserState {
         // A blob named by a record this node currently publishes is never
         // evicted, including after the record is renewed.
@@ -1769,6 +1804,7 @@ async fn main() -> Result<()> {
         names,
         mesh_names,
         namespace_counters,
+        authority,
     });
 
     state.load_sessions().context("load retained sessions")?;
@@ -2451,16 +2487,13 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
-    // HELLO_ACK reports what this node enforces. Only `off` can run today
-    // (`required` is refused at start-up and there is no `audit` in the
-    // config). The per-connection `binding` (32 bytes from the operating
+    // HELLO_ACK reports the node's authority mode: `off` or `audit` (`required`
+    // is refused at start-up). `audit` checks an `AUTH_REQUEST` and enforces
+    // nothing. The per-connection `binding` (32 bytes from the operating
     // system's random source) and `time` (the system clock) are drawn by
     // `negotiate`, once for every connection.
     let mut local = native::local_config();
-    local.authority = match state.config.authority.mode {
-        config::AuthorityMode::Off => spine_protocol::hello::AuthorityMode::Off,
-        config::AuthorityMode::Required => spine_protocol::hello::AuthorityMode::Required,
-    };
+    local.authority = state.authority.mode();
     match Connection::server_handshake(stream, &local, deadline).await {
         Ok(mut conn) => {
             // Admission refused after the handshake: the daemon is draining.
@@ -2500,8 +2533,11 @@ struct Job {
     /// `an_identified_client_gets_the_answers_an_anonymous_one_gets`).
     identity: Option<[u8; 32]>,
     /// This connection's `HELLO_ACK.binding`: what a `delete_resource` proof
-    /// is bound to.
+    /// is bound to, and the `session` of an invocation.
     binding: [u8; 32],
+    /// The request arrived as an `AUTH_REQUEST`: `body` is `{auth, command}`
+    /// and not a command.
+    auth: bool,
 }
 
 /// An identity for the log: the key in hex, or `anonymous`. Never a metric
@@ -2543,6 +2579,28 @@ fn response_frame(request_id: u64, answer: &Answer) -> Frame {
         request_id,
         body,
     }
+}
+
+/// The `RESPONSE` frame for `answer`, as it will be sent on a connection whose
+/// `max_frame` is given: an answer too large to send is replaced here by the
+/// `internal` error the writer would have sent in its place, so that a receipt
+/// made from the frame's body is a receipt for the body the client gets.
+fn fit_response(request_id: u64, answer: &Answer, max_frame: u32) -> Frame {
+    let frame = response_frame(request_id, answer);
+    let length = 11 + frame.body.len() as u64;
+    let max = max_frame.min(MAX_FRAME);
+    if length <= u64::from(max) {
+        return frame;
+    }
+    let error = ConnectionError::Frame(FrameError::LengthTooLarge { length, max });
+    warn!("Response could not be sent: {error}");
+    response_frame(
+        request_id,
+        &Err(fail(
+            ERR_INTERNAL,
+            format!("response could not be sent: {error}"),
+        )),
+    )
 }
 
 /// Why a queued frame did not get written.
@@ -2661,8 +2719,8 @@ async fn write_responses<S>(
 ///
 /// - `PING` and the `overloaded` refusal come back from the reader as
 ///   [`Incoming::Reply`] and are queued for the writer at once.
-/// - A `REQUEST` the reader accepted (the table has room) goes to the command
-///   loop. The queue has room for `max_inflight` jobs, and an id stays in the
+/// - A `REQUEST` or `AUTH_REQUEST` the reader accepted (the table has room)
+///   goes to the command loop. The queue has room for `max_inflight` jobs, and an id stays in the
 ///   table until its `RESPONSE` is written, so the queue cannot be full here.
 /// - `STREAM_CANCEL` is delivered by the reader for an id in flight and
 ///   ignored: v1 defines it only for a stream, and no command streams.
@@ -2695,9 +2753,10 @@ async fn read_requests<S>(
         };
         match received {
             Ok(Some(Incoming::Frame(frame))) => match frame.frame_type {
-                FrameType::Request => {
+                FrameType::Request | FrameType::AuthRequest => {
                     let job = Job {
                         request_id: frame.request_id,
+                        auth: frame.frame_type == FrameType::AuthRequest,
                         body: frame.body,
                         identity: reader.identity(),
                         binding: reader.binding(),
@@ -2766,6 +2825,7 @@ async fn run_commands(
     mut jobs: tokio::sync::mpsc::Receiver<Job>,
     queue: tokio::sync::mpsc::Sender<Outgoing>,
     mut over_seen: tokio::sync::watch::Receiver<bool>,
+    max_frame: u32,
 ) {
     let mut session_lease: Option<SessionLease> = None;
     let tool_rate = RateLease {
@@ -2801,36 +2861,116 @@ async fn run_commands(
             },
         };
         let request_id = job.request_id;
+        let mut authorized: Option<Box<Authorized>> = None;
         let answer = tokio::select! {
             _ = flagged(&mut over_seen) => break,
-            answer = answer_job(&state, &mut session_lease, &tool_rate, &command_rate, job) => answer,
+            answer = answer_job(&state, &mut session_lease, &tool_rate, &command_rate, job, &mut authorized) => answer,
         };
-        if queue
-            .send(Outgoing::Frame(response_frame(request_id, &answer)))
-            .await
-            .is_err()
-        {
+        let response = fit_response(request_id, &answer, max_frame);
+        // A command the gate authorised and that ran gets its receipt first,
+        // while its id is in flight (`docs/spec/00-wire.md` 8.6).
+        if let Some(authorized) = authorized {
+            if let Some(body) =
+                state
+                    .authority
+                    .issue_receipt(&authorized, &response.body, unix_now())
+            {
+                let receipt = Frame {
+                    frame_type: FrameType::Receipt,
+                    request_id,
+                    body,
+                };
+                if queue.send(Outgoing::Frame(receipt)).await.is_err() {
+                    break;
+                }
+            }
+        }
+        if queue.send(Outgoing::Frame(response)).await.is_err() {
             break;
         }
     }
 }
 
+/// What the node's authority state makes of an `AUTH_REQUEST` job: refuses it
+/// in mode `off`, decodes its body, charges the connection's command bucket
+/// (before the gate, so a flood costs the node no signature checks), asks the
+/// gate on a blocking thread and leaves its authorisation, if it got one, in
+/// `authorized`. Returns the command to run, or the answer that replaces it.
+/// In mode `audit` a refused verdict is only counted: the command comes back.
+async fn admit_auth_job(
+    state: &Arc<BrowserState>,
+    command_rate: &RateLease,
+    job: &Job,
+    authorized: &mut Option<Box<Authorized>>,
+) -> Result<BrowserCommand, WireError> {
+    let refuse = |code: &str, message: &str| fail(code, message.to_string());
+    if let Some(Admission::Refuse { code, message }) = state.authority.refuse_if_off() {
+        return Err(refuse(code, message));
+    }
+    let request = match spine_protocol::auth::decode_auth_request(&job.body) {
+        Ok(request) => request,
+        Err(e) => {
+            state.authority.note_malformed();
+            return Err(e.to_wire());
+        }
+    };
+    if !state.check_rate_limit(&command_rate.id) {
+        state.authority.note_rate_limited();
+        return Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string()));
+    }
+    let context = AuthContext {
+        identity: job.identity,
+        binding: job.binding,
+        now: unix_now(),
+    };
+    let node = state.authority.clone();
+    let (request, admission) = tokio::task::spawn_blocking(move || {
+        let admission = node.admit_auth(&request, &context);
+        (request, admission)
+    })
+    .await
+    .map_err(|e| fail(ERR_INTERNAL, format!("the authority check failed: {e}")))?;
+    match admission {
+        Admission::Refuse { code, message } => Err(refuse(code, message)),
+        Admission::Run(authorization) => {
+            *authorized = authorization;
+            Ok(request.command)
+        }
+    }
+}
+
 /// The answer to one request: decodes it, applies the connection's rate
-/// limits, creates the session on first use and runs the command.
+/// limits, creates the session on first use and runs the command. For an
+/// `AUTH_REQUEST` it first asks the node's authority state
+/// ([`admit_auth_job`]); `authorized` is left holding the gate's authorisation
+/// only if the command was then run.
 async fn answer_job(
     state: &Arc<BrowserState>,
     session_lease: &mut Option<SessionLease>,
     tool_rate: &RateLease,
     command_rate: &RateLease,
     job: Job,
+    authorized: &mut Option<Box<Authorized>>,
 ) -> Answer {
     let request_id = job.request_id;
-    let command = match native::decode_command(&job.body) {
-        Ok(command) => command,
-        // C.7: a well-formed frame whose request cannot be served is an
-        // error response, not the end of the connection. The code says
-        // whether the command is unknown or its fields are wrong.
-        Err(e) => return Err(e.to_wire()),
+    // An `AUTH_REQUEST` has been charged to the command bucket already.
+    let charged = job.auth;
+    let command = if job.auth {
+        admit_auth_job(state, command_rate, &job, authorized).await?
+    } else {
+        let command = match native::decode_command(&job.body) {
+            Ok(command) => command,
+            // C.7: a well-formed frame whose request cannot be served is an
+            // error response, not the end of the connection. The code says
+            // whether the command is unknown or its fields are wrong.
+            Err(e) => return Err(e.to_wire()),
+        };
+        if let Admission::Refuse { code, message } =
+            state.authority.admit_plain(&command, job.identity)
+        {
+            return Err(fail(code, message.to_string()));
+        }
+        command
     };
     match command {
         BrowserCommand::CapabilityQuery(query) => {
@@ -2859,6 +2999,8 @@ async fn answer_job(
             let outcome = if state.check_rate_limit(&tool_rate.id) {
                 spine_core::tools::invoke(call)
             } else {
+                // Not run: no receipt for it.
+                authorized.take();
                 ToolOutcome::Err {
                     code: ERR_RATE_LIMIT.into(),
                     message: "tool request rate exceeded".into(),
@@ -2875,7 +3017,7 @@ async fn answer_job(
             );
 
             // Rate limit first: a refused command creates no session.
-            if !state.check_rate_limit(&command_rate.id) {
+            if !charged && !state.check_rate_limit(&command_rate.id) {
                 return Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string()));
             }
 
@@ -2911,7 +3053,9 @@ async fn answer_job(
                     let _ = lease;
                 } else {
                     // No close code means "busy", so the connection stays
-                    // open: the client may retry, or hang up.
+                    // open: the client may retry, or hang up. The command did
+                    // not run, so there is no receipt.
+                    authorized.take();
                     return Err(fail(
                         ERR_SESSION_CAPACITY,
                         "Server busy: maximum sessions reached".into(),
@@ -2921,10 +3065,11 @@ async fn answer_job(
             let id = match session_lease.as_ref() {
                 Some(lease) => lease.id.clone(),
                 None => {
+                    authorized.take();
                     return Err(fail(
                         ERR_SESSION_CAPACITY,
                         "Server busy: maximum sessions reached".into(),
-                    ))
+                    ));
                 }
             };
 
@@ -2957,6 +3102,7 @@ where
     let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
     let (reader, writer) = conn.split();
     let capacity = reader.max_inflight().max(1) as usize;
+    let max_frame = reader.max_frame();
     let (queue_tx, queue_rx) = tokio::sync::mpsc::channel::<Outgoing>(capacity + 16);
     let (jobs_tx, jobs_rx) = tokio::sync::mpsc::channel::<Job>(capacity);
     let (over_tx, over_rx) = tokio::sync::watch::channel(false);
@@ -2973,7 +3119,7 @@ where
         idle,
     ));
 
-    run_commands(state, jobs_rx, queue_tx, over_rx).await;
+    run_commands(state, jobs_rx, queue_tx, over_rx, max_frame).await;
     // The command loop ended (shutdown, or the connection is over): the reader
     // stops, which closes the writer's queue after what is queued is written.
     over.send_replace(true);

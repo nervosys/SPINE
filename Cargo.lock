@@ -4075,6 +4075,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spine-agentic",
+ "spine-authority",
  "spine-compiler",
  "spine-embedded",
  "spine-name",
