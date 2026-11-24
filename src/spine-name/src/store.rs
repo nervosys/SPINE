@@ -88,6 +88,16 @@ impl RecordStore {
         }
     }
 
+    /// A store with no keyspace position, holding at most `capacity`. Under
+    /// pressure it gives up the oldest-published record first (see
+    /// [`RecordStore::with_limits`] for the store that evicts by distance).
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            ..Self::default()
+        }
+    }
+
     /// How many records this store will hold.
     pub fn capacity(&self) -> usize {
         self.capacity
@@ -207,7 +217,11 @@ impl RecordStore {
     /// A held tombstone keeps its name revoked: a record of the same or lower
     /// `seq` does not supersede it ([`NameRecord::supersedes`]) and is answered
     /// with [`PutOutcome::Superseded`]. A tombstone is evictable under capacity
-    /// pressure like any record.
+    /// pressure like any record, but only while it is unexpired: when the store
+    /// is full and a new name arrives, the records that have lapsed at `now`
+    /// are dropped first (a lapsed record, tombstone or not, is no longer
+    /// served or enforced, so it must not hold a place against a live one), and
+    /// only if the store is still full is the eviction rule applied.
     pub fn put(&mut self, record: NameRecord, now: u64) -> Result<PutOutcome, NameError> {
         record.validate_not_postdated(now)?;
         self.logs.authorise(&record)?;
@@ -223,7 +237,15 @@ impl RecordStore {
             return Ok(PutOutcome::Updated);
         }
 
-        // Full: something has to go, and it should be whatever this node is
+        // Full: lapsed records go first, whatever their distance. They are
+        // already invisible to `get_fresh` and `providers_of`, so dropping them
+        // changes nothing a reader can see. An unexpired record, tombstone
+        // included, is not touched by this step.
+        if self.by_key.len() >= self.capacity {
+            self.sweep_expired(now);
+        }
+
+        // Still full: something has to go, and it should be whatever this node is
         // least suited to hold. If that is the arriving record, it is refused
         // rather than displacing a record nearer to us — otherwise a stream of
         // distant names would evict exactly the ones we are responsible for.
@@ -681,5 +703,143 @@ mod tests {
         assert_eq!(s.put(far.clone(), NOW).unwrap(), PutOutcome::Rejected);
         assert!(s.get(&near.name).is_some(), "the nearer record stayed");
         assert!(s.get(&far.name).is_none());
+    }
+
+    fn short_lived(seed: u8, at: u64, ttl: u32) -> NameRecord {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let mut rec = record(seed, 1, at, &[], 0).with_ttl(ttl);
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    /// The seeds `1..=9` ordered nearest first by distance from `home`.
+    fn by_distance(home: &NameKey) -> Vec<u8> {
+        let mut seeds: Vec<u8> = (1..=9).collect();
+        seeds.sort_by_key(|s| home.distance(&record(*s, 1, 1_000, &[], 0).name.key()));
+        seeds
+    }
+
+    /// Lapsed records do not hold a place against a live one: a store full of
+    /// them admits a record further from home than every one of them, which the
+    /// distance rule alone would refuse.
+    #[test]
+    fn a_store_full_of_lapsed_records_admits_a_further_live_record() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 2);
+        for &seed in &order[0..2] {
+            s.put(short_lived(seed, 1_000, 60), NOW).unwrap();
+        }
+        assert_eq!(s.len(), 2);
+
+        let later = 2_000;
+        let far = short_lived(order[8], later, 600);
+        assert_eq!(s.put(far.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert_eq!(s.len(), 1, "both lapsed records were dropped, one admitted");
+        assert!(s.get(&far.name).is_some());
+        assert!(s.get(&short_lived(order[0], 1_000, 60).name).is_none());
+    }
+
+    /// The nearer record is admitted too, and the lapsed ones are gone either
+    /// way.
+    #[test]
+    fn a_store_full_of_lapsed_records_admits_a_nearer_live_record() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 2);
+        for &seed in &order[4..6] {
+            s.put(short_lived(seed, 1_000, 60), NOW).unwrap();
+        }
+        let later = 2_000;
+        let near = short_lived(order[0], later, 600);
+        assert_eq!(s.put(near.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert_eq!(s.len(), 1);
+        assert!(s.get(&near.name).is_some());
+    }
+
+    /// Only lapsed records go: with one live and one lapsed record held, the
+    /// lapsed one makes the room and the live one stays.
+    #[test]
+    fn dropping_lapsed_records_leaves_the_live_ones() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 2);
+        let live = short_lived(order[1], 1_000, 5_000);
+        s.put(live.clone(), NOW).unwrap();
+        s.put(short_lived(order[2], 1_000, 60), NOW).unwrap();
+
+        let later = 2_000;
+        let far = short_lived(order[8], later, 600);
+        assert_eq!(s.put(far.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert_eq!(s.len(), 2);
+        assert!(s.get(&live.name).is_some(), "the live record was kept");
+        assert!(s.get(&far.name).is_some());
+    }
+
+    /// An unexpired tombstone is not given up to make room by this path: the
+    /// full store still refuses a record further than everything it holds.
+    #[test]
+    fn an_unexpired_tombstone_survives_the_lapsed_record_drop() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 2);
+        let tomb = tombstone(order[0], 2, 1_000);
+        s.put(tomb.clone(), NOW).unwrap();
+        s.put(short_lived(order[1], 1_000, 60), NOW).unwrap();
+
+        let later = 2_000;
+        assert!(!tomb.is_expired(later));
+        let far = short_lived(order[7], later, 600);
+        assert_eq!(s.put(far.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert!(s.is_revoked(&tomb.name, later), "the tombstone stayed");
+        assert_eq!(s.len(), 2);
+
+        // Full again, of one tombstone and one live record: nothing lapsed, so
+        // a record further than both is refused and neither is dropped.
+        let further = short_lived(order[8], later, 600);
+        assert_eq!(s.put(further, later).unwrap(), PutOutcome::Rejected);
+        assert!(s.is_revoked(&tomb.name, later));
+        assert!(s.get(&far.name).is_some());
+        assert_eq!(s.len(), 2);
+    }
+
+    /// An expired tombstone is a lapsed record like any other.
+    #[test]
+    fn an_expired_tombstone_is_dropped_to_make_room() {
+        let home = NameKey::of(b"home");
+        let order = by_distance(&home);
+        let mut s = RecordStore::with_limits(home, 1);
+        let tomb = tombstone(order[0], 2, 1_000);
+        s.put(tomb.clone(), NOW).unwrap();
+
+        let later = 1_000 + crate::MAX_RECORD_TTL_SECS;
+        assert!(tomb.is_expired(later));
+        let far = short_lived(order[8], later, 600);
+        assert_eq!(s.put(far.clone(), later).unwrap(), PutOutcome::Inserted);
+        assert!(s.get(&tomb.name).is_none());
+        assert_eq!(s.len(), 1);
+    }
+
+    /// A store with no home evicts the oldest-published record, and refuses an
+    /// arrival older than everything held.
+    #[test]
+    fn a_store_without_a_home_evicts_the_oldest_published() {
+        let mut s = RecordStore::with_capacity(2);
+        assert_eq!(s.capacity(), 2);
+        let oldest = record(1, 1, 1_000, &[], 0);
+        let middle = record(2, 1, 1_100, &[], 0);
+        s.put(oldest.clone(), 1_100).unwrap();
+        s.put(middle.clone(), 1_100).unwrap();
+
+        let newest = record(3, 1, 1_200, &[], 0);
+        assert_eq!(s.put(newest.clone(), 1_200).unwrap(), PutOutcome::Inserted);
+        assert_eq!(s.len(), 2);
+        assert!(s.get(&oldest.name).is_none(), "the oldest was given up");
+        assert!(s.get(&middle.name).is_some());
+
+        let older = record(4, 1, 1_050, &[], 0);
+        assert_eq!(s.put(older.clone(), 1_200).unwrap(), PutOutcome::Rejected);
+        assert!(s.get(&older.name).is_none());
+        assert_eq!(s.len(), 2);
     }
 }

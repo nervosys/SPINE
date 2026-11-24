@@ -729,8 +729,12 @@ impl MeshNameResolver {
     /// record exists in exactly one place.
     ///
     /// A tombstone ([`NameRecord::tombstone`]) is published, replicated and
-    /// maintained like any record. A record the node already holds a
-    /// superseding version of (including a tombstone) is not replicated.
+    /// maintained like any record.
+    ///
+    /// A record this node's own store refuses for want of room is an error
+    /// ([`NameMeshError::Name`] holding [`spine_name::NameError::Capacity`])
+    /// returned before any lookup or copy is sent: a record the node does not
+    /// hold is not replicated from it.
     pub async fn publish(&self, record: NameRecord) -> Result<ReplicationReport, NameMeshError> {
         let now = self.now();
         self.service.lock().await.publish(record.clone(), now)?;
@@ -765,7 +769,8 @@ impl MeshNameResolver {
     }
 
     /// Publish locally without announcing — for names that should be resolvable
-    /// but not advertised.
+    /// but not advertised. A record this node's own store refuses for want of
+    /// room is the same capacity error as [`MeshNameResolver::publish`].
     pub async fn publish_local(&self, record: NameRecord) -> Result<(), NameMeshError> {
         let now = self.now();
         self.service.lock().await.publish(record, now)?;
@@ -1901,6 +1906,50 @@ mod tests {
         fn listen(&self, i: usize, endpoint: &str) {
             self.board.listen(endpoint, *self.nodes[i].node.agent_id());
         }
+    }
+
+    /// A publisher whose own store is full, and refuses the record because it is
+    /// the furthest from home, is told so and sends nothing: neither a lookup
+    /// nor a copy of a record it does not hold.
+    #[tokio::test]
+    async fn publishing_a_record_the_own_store_refuses_fails_and_sends_nothing() {
+        let h = Harness::new(2);
+        let home = h.nodes[0].local_key();
+        *h.nodes[0].service.lock().await = NameService::with_store_capacity(home, 1);
+        h.introduce(0, 1).await;
+
+        let mut seeds: Vec<u8> = (1..=6).collect();
+        seeds.sort_by_key(|s| home.distance(&record(*s, &[]).name.key()));
+        let near = record(seeds[0], &[]);
+        let far = record(seeds[5], &[]);
+
+        h.nodes[0].publish_local(near.clone()).await.unwrap();
+        assert!(h.board.is_empty());
+
+        let refused = tokio::time::timeout(Duration::from_secs(5), h.nodes[0].publish(far.clone()))
+            .await
+            .expect("a refused publication returns at once");
+        assert!(
+            matches!(
+                refused,
+                Err(NameMeshError::Name(spine_name::NameError::Capacity))
+            ),
+            "{refused:?}"
+        );
+        assert!(
+            h.board.is_empty(),
+            "no envelope may be queued for a record the node does not hold"
+        );
+
+        let local = h.nodes[0].publish_local(far).await;
+        assert!(
+            matches!(
+                local,
+                Err(NameMeshError::Name(spine_name::NameError::Capacity))
+            ),
+            "{local:?}"
+        );
+        assert_eq!(h.nodes[0].record_count().await, 1);
     }
 
     /// The property bootstrap exists for: a node holding nothing but an address

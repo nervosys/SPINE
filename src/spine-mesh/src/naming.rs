@@ -892,6 +892,15 @@ impl NameService {
         }
     }
 
+    /// A service whose store holds at most `capacity` records, for tests that
+    /// need a full store without ten thousand records.
+    #[cfg(test)]
+    pub(crate) fn with_store_capacity(local_key: NameKey, capacity: usize) -> Self {
+        let mut service = Self::new(local_key);
+        service.store = spine_name::RecordStore::with_limits(local_key, capacity);
+        service
+    }
+
     /// This node's keyspace position.
     pub fn local_key(&self) -> &NameKey {
         &self.local_key
@@ -905,6 +914,17 @@ impl NameService {
     /// superseded by one already held must not be replicated onward, or two
     /// nodes holding different versions will announce at each other forever.
     /// That includes a record a held tombstone outranks.
+    ///
+    /// A record this node's own store refuses for want of room (the store is
+    /// full and the record is the furthest from home, [`PutOutcome::Rejected`])
+    /// is [`NameError::Capacity`], as at [`LocalResolver::publish`]: a
+    /// publisher is told the name is not held here, so nothing above this
+    /// replicates a record the node does not itself hold. The outcome is never
+    /// `Rejected` for a caller that gets `Ok`.
+    ///
+    /// [`PutOutcome::Rejected`]: spine_name::PutOutcome::Rejected
+    /// [`NameError::Capacity`]: spine_name::NameError::Capacity
+    /// [`LocalResolver::publish`]: spine_name::LocalResolver::publish
     pub fn publish(
         &mut self,
         record: NameRecord,
@@ -914,7 +934,10 @@ impl NameService {
         // `published_at` are checked here so a record a peer would refuse is
         // never stored or replicated.
         record.validate(now)?;
-        self.store.put(record, now)
+        match self.store.put(record, now)? {
+            spine_name::PutOutcome::Rejected => Err(spine_name::NameError::Capacity),
+            outcome => Ok(outcome),
+        }
     }
 
     /// Accept a record announced by someone else.
@@ -2509,6 +2532,41 @@ mod tests {
             "a node must be able to serve what it publishes, wherever it sits"
         );
         assert_eq!(service.record_count(), 1);
+    }
+
+    /// A node's own publication is refused, with the capacity error, when its
+    /// own store is full and the record is the furthest from home: it would
+    /// otherwise be reported published and not held. A record that updates or
+    /// is superseded is answered as before.
+    #[test]
+    fn publishing_a_record_the_own_store_refuses_is_a_capacity_error() {
+        let home = NameKey::of(b"capacity home");
+        let mut seeds: Vec<u8> = (1..=6).collect();
+        seeds.sort_by_key(|s| home.distance(&record(*s, 1, 1_000, &[]).name.key()));
+        let near = record(seeds[0], 1, 1_000, &[]);
+        let far = record(seeds[5], 1, 1_000, &[]);
+
+        let mut service = NameService::with_store_capacity(home, 1);
+        assert_eq!(
+            service.publish(near.clone(), 1_000).unwrap(),
+            spine_name::PutOutcome::Inserted
+        );
+        assert_eq!(
+            service.publish(far, 1_000),
+            Err(spine_name::NameError::Capacity)
+        );
+        assert_eq!(service.record_count(), 1);
+
+        // Update and supersession are not capacity questions.
+        let newer = record(seeds[0], 2, 1_000, &[]);
+        assert_eq!(
+            service.publish(newer, 1_000).unwrap(),
+            spine_name::PutOutcome::Updated
+        );
+        assert_eq!(
+            service.publish(near, 1_000).unwrap(),
+            spine_name::PutOutcome::Superseded
+        );
     }
 
     /// A record is also placed near the keys of the capabilities it advertises,
