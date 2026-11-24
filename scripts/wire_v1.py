@@ -32,7 +32,8 @@ and `negotiate` (C.6, C.10), builders for REQUEST and RESPONSE bodies
 (C.5 rule 7, D), the `delete_resource` proof and its signed message
 (section 12.2), the shapes of the two delete replies (section 12.4) and the
 list of error codes (section 13), which is also compared with the table of the
-specification text.
+specification text, the bodies of `AUTH_REQUEST` and `RECEIPT` and the digest a
+receipt carries (sections 8.5 and 8.6).
 
 What it does not cover:
 
@@ -96,6 +97,8 @@ FRAME_TYPES = {
     "IDENTIFY": 0x06,
     "REQUEST": 0x10,
     "RESPONSE": 0x11,
+    "AUTH_REQUEST": 0x12,
+    "RECEIPT": 0x13,
     "STREAM_START": 0x20,
     "STREAM_TOKEN": 0x21,
     "STREAM_END": 0x22,
@@ -181,6 +184,10 @@ TEXT_FIELDS = {"delete_knowledge": ["key"]}
 # there. `check` compares this list with that table.
 ERROR_CODES = [
     "overloaded", "unknown_command", "invalid_request", "internal", "rate_limit",
+    "authority_required", "authority_not_enabled",
+    "authority_step_1", "authority_step_2", "authority_step_3", "authority_step_4",
+    "authority_step_5", "authority_step_6", "authority_step_7", "authority_step_8",
+    "authority_step_9", "authority_step_10", "authority_step_11",
     "session_capacity", "session_not_found", "session_expired", "no_page_loaded",
     "capability_denied", "execution_failed", "knowledge_entry_too_large", "knowledge_capacity",
     "action_unsupported", "namespace_unavailable", "invalid_peer_id", "mesh_call_failed",
@@ -673,12 +680,13 @@ def raw_frame(version, ftype, flags, request_id, body, length=None):
 
 def check_request_id(ftype, request_id):
     """The request-id rules that hold for a frame type whatever the
-    connection state (as implemented): HELLO, HELLO_ACK and CLOSE carry 0;
-    REQUEST and PING carry a nonzero id. Other types are not checked here."""
+    connection state (as implemented): HELLO, HELLO_ACK, CLOSE and IDENTIFY
+    carry 0; REQUEST, AUTH_REQUEST, RECEIPT and PING carry a nonzero id. Other
+    types are not checked here."""
     ok = True
     if ftype in (0x01, 0x02, 0x03, 0x06):
         ok = request_id == 0
-    elif ftype in (0x10, 0x04):
+    elif ftype in (0x10, 0x12, 0x13, 0x04):
         ok = request_id != 0
     if not ok:
         raise FrameReject(
@@ -1047,6 +1055,72 @@ def validate_reply_value(value):
     raise ValueError("RESPONSE key must be ok or err")
 
 
+MAX_CHAIN_ITEMS = 8
+MAX_RECEIPT_BYTES = 512
+RESULT_DOMAIN = b"spine-wire-result-v1\x00"
+
+
+def validate_auth_request_value(value):
+    """Shape of an AUTH_REQUEST body (decoded; section 8.5): returns the name of
+    its command, or raises ValueError with the answer code in the message. The
+    body is exactly {auth: {chain, invocation}, command}; chain is an array of
+    byte strings of any length (the gate, not the wire layer, refuses an empty
+    chain, more than eight grants and an item over its bound), invocation is a
+    byte string, and command is judged as a REQUEST body is. A body of the wrong
+    shape whose command member names no command is unknown_command, as for a
+    REQUEST (7.4); every other body of the wrong shape is invalid_request."""
+    problem = None
+    auth = value.get("auth") if isinstance(value, dict) else None
+    if not isinstance(value, dict) or set(value) != {"auth", "command"}:
+        problem = "not the map {auth, command}"
+    elif not (isinstance(auth, dict) and set(auth) == {"chain", "invocation"}):
+        problem = "auth is not the map {chain, invocation}"
+    elif not (isinstance(auth["chain"], list) and all(isinstance(g, bytes) for g in auth["chain"])):
+        problem = "auth.chain is not an array of byte strings"
+    elif not isinstance(auth["invocation"], bytes):
+        problem = "auth.invocation is not a byte string"
+    if problem is not None:
+        if isinstance(value, dict) and "command" in value:
+            try:
+                validate_request_value(value["command"])
+            except ValueError as e:
+                if str(e).startswith("unknown_command"):
+                    raise
+        raise ValueError("invalid_request: " + problem)
+    return validate_request_value(value["command"])
+
+
+def validate_receipt_bytes(body):
+    """Why `body` (bytes) is not a RECEIPT body (section 8.6), or None: at most
+    512 bytes, deterministic CBOR, and the closed map {body: map, sig: 64 bytes}."""
+    if len(body) > MAX_RECEIPT_BYTES:
+        return "longer than %d bytes" % MAX_RECEIPT_BYTES
+    try:
+        validate(body)
+    except Reject as e:
+        return "not deterministic CBOR (%s)" % e.reason
+    value = decode(body)
+    if not isinstance(value, dict) or set(value) != {"body", "sig"}:
+        return "not the map {body, sig}"
+    if not isinstance(value["body"], dict):
+        return "body is not a map"
+    if not (isinstance(value["sig"], bytes) and len(value["sig"]) == 64):
+        return "sig is not a byte string of 64 bytes"
+    return None
+
+
+def result_digest(response_body):
+    """The `result` of a receipt: SHA-256 of "spine-wire-result-v1" 00 and the
+    body of the RESPONSE the receipt belongs to (section 8.6)."""
+    return hashlib.sha256(RESULT_DOMAIN + response_body).digest()
+
+
+def command_op(command_item_bytes):
+    """The `op` of an invocation: SHA-256 of the encoding of the command item
+    (section 8.5), which is the body a plain REQUEST for it would have."""
+    return hashlib.sha256(command_item_bytes).digest()
+
+
 STREAM_ROLES = ("assistant", "tool", "user", "system")
 STREAM_END_REASONS = ("stop", "length", "tool_use", "content_filter", "cancelled")
 
@@ -1089,7 +1163,7 @@ CONVENTIONS = [
     "valid_bodies: deterministic CBOR items a decoder must accept. 'hex' is the exact encoding; 'value' describes it.",
     "invalid_bodies: items a decoder must reject. 'reason' is the Rust cbor::CborError variant name, which is also the rule broken (C.5).",
     "valid_frames: whole frames. 'type', 'request_id', 'flags' and 'body' (or 'body_hex') describe 'hex'. 'typed' names the body type that decodes it: "
-    "command, reply, ping, pong, stream, hello, hello_ack, identify, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
+    "command, auth_request, receipt, reply, ping, pong, stream, hello, hello_ack, identify, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
     "A frame with flags 1 has the body u32 uncompressed_len, then a zstd frame. These vectors store the body in a raw-block zstd frame (valid zstd, not smaller). "
     "A receiver must decode them to 'body_hex'; they are not byte-for-byte what a compressing sender would emit, so re-encoding is not part of the check.",
     "invalid_frames: whole frames (or the prefix needed to decide) that a receiver using 'max_frame' as the maximum in force must reject with 'error' (the Rust frame::FrameError variant) and 'close_code' (C.7 wire text). "
@@ -1112,6 +1186,10 @@ CONVENTIONS = [
     "A valid vector also gives the test 'seed' (signatures are deterministic) and the signed 'message'. The daemon's order is: verify the proof first (a failure is delete_refused), then look the blob up under 'owner'.",
     "invalid_commands: REQUEST bodies ('body_hex', described by 'body') that a daemon answers with the error code 'code' (invalid_request or unknown_command, sections 7.4, 12.1, 12.2).",
     "delete_results: the ok value of a delete reply (section 12.4), 'body_hex' described by 'body', for the command named in 'command'. 'expect' is 'ok' or 'invalid' (a closed map {deleted}: a boolean for delete_resource, an unsigned integer for delete_knowledge).",
+    "auth_requests: AUTH_REQUEST bodies (section 8.5), 'body_hex' described by 'body'. 'expect' is 'ok' or the answer code (invalid_request or unknown_command). "
+    "An 'ok' vector also gives the 'command_hex' (the encoding of the command item) and 'op', its SHA-256, which is what an invocation's op field must equal.",
+    "receipts: RECEIPT bodies (section 8.6) of 'length' bytes. 'expect' is 'ok' or 'invalid' (not the closed map {body: map, sig: 64 bytes}, or over 512 bytes). Signatures and contents are not judged here.",
+    "result_digests: the 'digest' a receipt carries as its result for a RESPONSE body: SHA-256 of \"spine-wire-result-v1\" 00 and 'body_hex' (section 8.6).",
     "error_codes: the closed list of codes a v1 daemon produces (section 13) in the order of its table, with their 'count' and the three 'protocol' codes. check also compares it with the table in docs/spec/00-wire.md.",
     "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
     "Not covered: connection state other than the IDENTIFY window (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression.",
@@ -1423,7 +1501,7 @@ def make_invalid_frames():
     for ver in (0, 2, 255):
         add("version_%d" % ver, _frame_build(version=ver))
     # Unknown frame type (C.7 row 4).
-    for t in (0x00, 0x07, 0x0F, 0x12, 0x1F, 0x24, 0x7F, 0x81, 0xFF):
+    for t in (0x00, 0x07, 0x0F, 0x14, 0x1F, 0x24, 0x7F, 0x81, 0xFF):
         add("type_0x%02x" % t, _frame_build(ftype=t))
     # Reserved flag bits (C.7 row 3).
     for bit in range(1, 8):
@@ -1436,6 +1514,10 @@ def make_invalid_frames():
     add("identify_with_max_id", _frame_build(ftype=0x06, request_id=U64_MAX))
     add("hello_with_max_id", _frame_build(ftype=0x01, request_id=U64_MAX))
     add("request_with_id_zero", _frame_build(ftype=0x10, request_id=0))
+    add("auth_request_with_id_zero", _frame_build(ftype=0x12, request_id=0),
+        note="an AUTH_REQUEST carries a nonzero id, as a REQUEST does (section 8.5)")
+    add("receipt_with_id_zero", _frame_build(ftype=0x13, request_id=0),
+        note="a RECEIPT carries the nonzero id of the AUTH_REQUEST it answers (section 8.6)")
     add("ping_with_id_zero", _frame_build(ftype=0x04, request_id=0))
     # Order of the checks.
     add("order_version_before_type", _frame_build(version=2, ftype=0xFF),
@@ -1518,6 +1600,15 @@ def make_valid_frames():
     identify_ack = encode(hello_ack_body(1, 16777216, 8, []))
     add("identify_empty_channel", "IDENTIFY", 0, make_identify_body(IDENTIFY_SEED, identify_hello, identify_ack),
         "identify", note="a 118-byte body and a 133-byte frame (section 6.6)")
+    auth_chain = [b"\x10" * 40, b"\x11" * 56]
+    auth_body = {"auth": {"chain": auth_chain, "invocation": b"\x12" * 90},
+                 "command": command("navigate", {"url": "https://example.org/"})}
+    add("auth_request_navigate", "AUTH_REQUEST", 3, auth_body, "auth_request",
+        note="{auth: {chain, invocation}, command} (section 8.5); the grants and the invocation here are placeholders, which the wire layer does not read")
+    add("auth_request_unit_command", "AUTH_REQUEST", 4,
+        {"auth": {"chain": [b"\x10" * 8], "invocation": b"\x12" * 8}, "command": command("get_ur")}, "auth_request")
+    add("receipt_realistic", "RECEIPT", 3, RECEIPT_EXAMPLE, "receipt",
+        note="{body, sig}, at most 512 bytes (section 8.6); the signature here is a placeholder")
     add("close_without_supported", "CLOSE", 0, close_body("malformed_frame", "body is not deterministic CBOR"), "close")
     add("close_with_supported", "CLOSE", 0, close_body("unsupported_version", "no offered version is supported", [1, 2]), "close")
     add("close_shutting_down_empty_message", "CLOSE", 0, close_body("shutting_down", ""), "close")
@@ -2372,6 +2463,175 @@ def make_delete_results():
     return out
 
 
+RECEIPT_EXAMPLE = {
+    "body": {
+        "v": 1, "recipient": b"\x09" * 32, "invocation": b"\x0a" * 32, "leaf": b"\x0b" * 32,
+        "allowed": True, "effect": "irreversible", "step": None, "calls": 1, "cost": 0, "bytes": 0,
+        "result": b"\x0c" * 32, "time": 1700000001,
+    },
+    "sig": b"\x0d" * 64,
+}
+
+
+def make_auth_requests():
+    """AUTH_REQUEST bodies (section 8.5): 'expect' is "ok" or the answer code."""
+    out = []
+    good_auth = {"chain": [b"\x10" * 40, b"\x11" * 56], "invocation": b"\x12" * 90}
+    nav = command("navigate", {"url": "https://example.org/"})
+
+    def add(name, value, expect, note=None):
+        body = encode(value)
+        v = {"name": name, "body": to_desc(value), "body_hex": body.hex(), "expect": expect}
+        if expect == "ok":
+            item = encode(value["command"])
+            v["command_hex"] = item.hex()
+            v["op"] = command_op(item).hex()
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    add("navigate", {"auth": good_auth, "command": nav}, "ok",
+        "op is the SHA-256 of the command item, the bytes a plain REQUEST body would be (section 8.5)")
+    add("unit_command", {"auth": good_auth, "command": command("get_ur")}, "ok")
+    add("tool_call", {"auth": good_auth, "command": command("tool_call", {"name": "spine.content/hash", "args": {"text": "hi"}})}, "ok")
+    add("empty_chain_is_valid_on_the_wire", {"auth": dict(good_auth, chain=[]), "command": nav}, "ok",
+        "the wire layer reads the chain as byte strings and no more; the gate refuses an empty chain at step 1 (section 8.5)")
+    add("nine_grants_is_valid_on_the_wire", {"auth": dict(good_auth, chain=[b"\x01"] * 9), "command": nav}, "ok",
+        "more than eight grants is refused by the gate at step 1, not by the body decoder (section 8.5)")
+    add("empty_invocation_is_valid_on_the_wire", {"auth": dict(good_auth, invocation=b""), "command": nav}, "ok",
+        "an invocation that does not decode is refused by the gate at step 1")
+    shape = "an AUTH_REQUEST body is exactly {auth: {chain, invocation}, command} (section 8.5)"
+    add("a_bare_command", nav, "invalid_request", "a REQUEST body is not an AUTH_REQUEST body")
+    add("a_bare_unit_command", "get_ur", "invalid_request", "a REQUEST body is not an AUTH_REQUEST body")
+    add("an_array_of_auth_and_command", [good_auth, nav], "invalid_request", "a map, never an array (section 8.5)")
+    add("without_command", {"auth": good_auth}, "invalid_request", shape)
+    add("without_auth", {"command": nav}, "invalid_request", shape)
+    add("extra_member", {"auth": good_auth, "command": nav, "trace": 1}, "invalid_request", "a closed map (section 5 rule 8)")
+    add("auth_is_an_array", {"auth": [good_auth["chain"], good_auth["invocation"]], "command": nav}, "invalid_request",
+        "auth is a map, never an array (section 8.5)")
+    add("auth_without_chain", {"auth": {"invocation": b"\x12"}, "command": nav}, "invalid_request", shape)
+    add("auth_without_invocation", {"auth": {"chain": [b"\x10"]}, "command": nav}, "invalid_request", shape)
+    add("auth_extra_member", {"auth": dict(good_auth, mode="audit"), "command": nav}, "invalid_request", "a closed map (section 5 rule 8)")
+    add("auth_is_null", {"auth": None, "command": nav}, "invalid_request")
+    add("chain_is_a_byte_string", {"auth": dict(good_auth, chain=b"\x10" * 40), "command": nav}, "invalid_request",
+        "an array of byte strings, not one byte string (section 8.5)")
+    add("chain_item_is_text", {"auth": dict(good_auth, chain=["x"]), "command": nav}, "invalid_request")
+    add("chain_item_is_an_array_of_integers", {"auth": dict(good_auth, chain=[[1, 2, 3]]), "command": nav}, "invalid_request",
+        "a byte string is never an array of integers (section 5 rule 7)")
+    add("chain_is_null", {"auth": dict(good_auth, chain=None), "command": nav}, "invalid_request")
+    add("invocation_is_text", {"auth": dict(good_auth, invocation="x"), "command": nav}, "invalid_request")
+    add("invocation_is_null", {"auth": dict(good_auth, invocation=None), "command": nav}, "invalid_request")
+    add("command_with_a_missing_field", {"auth": good_auth, "command": {"navigate": {}}}, "invalid_request",
+        "the command is judged as a REQUEST body is (section 8.5)")
+    add("command_is_an_integer", {"auth": good_auth, "command": 7}, "invalid_request")
+    add("command_delete_resource_short_hash",
+        {"auth": good_auth, "command": {"delete_resource": {"hash": b"\x11" * 31, "owner": b"\x22" * 32, "proof": b"\x33" * 64}}},
+        "invalid_request", "a byte field of the wrong length (section 12.2)")
+    add("unknown_command", {"auth": good_auth, "command": "delete_everything"}, "unknown_command",
+        "a command outside the 21 is unknown_command, as for a REQUEST (section 7.4)")
+    add("an_auth_request_as_the_command", {"auth": good_auth, "command": {"auth": good_auth, "command": nav}}, "invalid_request",
+        "a command is a text or a one-entry map, never an AUTH_REQUEST body")
+    return out
+
+
+def check_auth_request(v):
+    body = bytes.fromhex(v["body_hex"])
+    if encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    validate(body)
+    value = decode(body)
+    try:
+        validate_auth_request_value(value)
+        answer = "ok"
+    except ValueError as e:
+        answer = str(e).split(":")[0]
+    if answer != v["expect"]:
+        return "answered %s, expected %s" % (answer, v["expect"])
+    if answer == "ok":
+        item = encode(value["command"])
+        if item.hex() != v.get("command_hex") or command_op(item).hex() != v.get("op"):
+            return "command_hex or op differs from the command item"
+    return None
+
+
+def make_receipts():
+    """RECEIPT bodies (section 8.6): 'expect' is "ok" or "invalid"."""
+    out = []
+
+    def add(name, value_or_bytes, expect, note=None):
+        if isinstance(value_or_bytes, bytes):
+            body, desc = value_or_bytes, None
+        else:
+            body, desc = encode(value_or_bytes), to_desc(value_or_bytes)
+        v = {"name": name, "body_hex": body.hex(), "length": len(body), "expect": expect}
+        if desc is not None:
+            v["body"] = desc
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    sig = b"\x0d" * 64
+
+    def padded(n):
+        return {"body": {"pad": b"\x00" * n}, "sig": sig}
+
+    add("realistic", RECEIPT_EXAMPLE, "ok", "what a node sends: the signed receipt of spine-authority (section 8.6)")
+    exact = next(n for n in range(0, 600) if len(encode(padded(n))) == MAX_RECEIPT_BYTES)
+    add("exactly_512_bytes", padded(exact), "ok", "512 is the limit of a RECEIPT body (section 8.6)")
+    add("513_bytes", padded(exact + 1), "invalid", "one byte over the limit")
+    add("minimal", {"body": {}, "sig": sig}, "ok", "the wire layer reads the shape, not what the receipt says")
+    add("sig_63_bytes", {"body": {}, "sig": b"\x0d" * 63}, "invalid", "sig is 64 bytes")
+    add("sig_65_bytes", {"body": {}, "sig": b"\x0d" * 65}, "invalid")
+    add("sig_is_text", {"body": {}, "sig": "x" * 64}, "invalid")
+    add("body_is_an_array", {"body": [], "sig": sig}, "invalid", "body is a map")
+    add("body_is_bytes", {"body": b"\x00", "sig": sig}, "invalid")
+    add("without_sig", {"body": {}}, "invalid")
+    add("without_body", {"sig": sig}, "invalid")
+    add("extra_member", {"body": {}, "sig": sig, "x": 1}, "invalid", "a closed map")
+    add("an_array", [{}, sig], "invalid", "a map, never an array")
+    add("empty_map", {}, "invalid")
+    add("not_cbor_text", b"\xff", "invalid", "not deterministic CBOR")
+    return out
+
+
+def check_receipt(v):
+    body = bytes.fromhex(v["body_hex"])
+    if len(body) != v["length"]:
+        return "length is %d, the vector says %d" % (len(body), v["length"])
+    if "body" in v and encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    problem = validate_receipt_bytes(body)
+    verdict = "invalid" if problem else "ok"
+    if verdict != v["expect"]:
+        return "judged %s (%s), expected %s" % (verdict, problem, v["expect"])
+    return None
+
+
+def make_result_digests():
+    """The `result` a receipt carries for a RESPONSE body (section 8.6)."""
+    out = []
+    for name, value in (
+        ("ok_navigated", reply_ok({"navigated": True})),
+        ("ok_empty_map", reply_ok({})),
+        ("err_rate_limit", reply_err("rate_limit", "Rate limit exceeded")),
+        ("err_internal_oversize_replacement", reply_err("internal", "response could not be sent")),
+    ):
+        body = encode(value)
+        out.append({"name": name, "body": to_desc(value), "body_hex": body.hex(),
+                    "digest": result_digest(body).hex(),
+                    "note": "SHA-256 of \"spine-wire-result-v1\" 00 and the RESPONSE body as sent (section 8.6)"})
+    return out
+
+
+def check_result_digest(v):
+    body = bytes.fromhex(v["body_hex"])
+    if encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    if result_digest(body).hex() != v["digest"]:
+        return "digest is %s, the vector says %s" % (result_digest(body).hex(), v["digest"])
+    return None
+
+
 def make_error_codes():
     return {"count": len(ERROR_CODES), "codes": list(ERROR_CODES), "protocol": list(PROTOCOL_ERROR_CODES)}
 
@@ -2546,6 +2806,9 @@ def build_document():
         "delete_proofs": make_delete_proofs(),
         "invalid_commands": make_invalid_commands(),
         "delete_results": make_delete_results(),
+        "auth_requests": make_auth_requests(),
+        "receipts": make_receipts(),
+        "result_digests": make_result_digests(),
         "error_codes": make_error_codes(),
     }
     return doc
@@ -2593,6 +2856,12 @@ def _typed_check(v, frame):
         parse_close(code, body)
     elif typed == "command":
         validate_request_value(decode(body))
+    elif typed == "auth_request":
+        validate_auth_request_value(decode(body))
+    elif typed == "receipt":
+        problem = validate_receipt_bytes(body)
+        if problem:
+            raise ValueError(problem)
     elif typed in ("reply", "none"):
         validate_reply_value(decode(body))
     elif typed in ("ping", "pong"):
@@ -2873,6 +3142,9 @@ CHECKS = [
     ("delete_proofs", check_delete_proof, 12),
     ("invalid_commands", check_invalid_command, 25),
     ("delete_results", check_delete_result, 18),
+    ("auth_requests", check_auth_request, 25),
+    ("receipts", check_receipt, 12),
+    ("result_digests", check_result_digest, 4),
 ]
 
 

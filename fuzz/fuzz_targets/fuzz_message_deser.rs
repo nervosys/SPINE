@@ -20,6 +20,25 @@ fuzz_target!(|data: &[u8]| {
         assert_eq!(again, data, "an accepted command body is canonical");
     }
 
+    // The authority carrier: an `AUTH_REQUEST` body that decodes with nothing
+    // dropped from its chain is canonical too.
+    if let Ok(request) = spine_protocol::auth::decode_auth_request(data) {
+        if request.chain_items == request.chain.len() {
+            let again = spine_protocol::auth::encode_auth_request(
+                &request.chain,
+                &request.invocation,
+                &request.command,
+            )
+            .expect("an accepted AUTH_REQUEST body encodes");
+            assert_eq!(again, data, "an accepted AUTH_REQUEST body is canonical");
+        }
+        assert_eq!(
+            request.command_bytes,
+            cbor::to_vec(&request.command).expect("an accepted command encodes")
+        );
+    }
+    let _ = spine_protocol::auth::check_receipt_body(data);
+
     // The reply path, with a JSON-shaped result.
     if let Ok(reply) = native::decode_reply::<serde_json::Value>(data) {
         let again = cbor::to_vec(&reply).expect("an accepted reply encodes");

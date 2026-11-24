@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub mod agentic;
+pub mod auth;
 pub mod body;
 pub use spine_cbor as cbor;
 pub mod connection;

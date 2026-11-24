@@ -18,20 +18,27 @@
 //!   `CLOSE` code [`FrameError::close_code`] names;
 //! - every body is one deterministic CBOR item (`malformed_frame`);
 //! - direction: a client may send `IDENTIFY` (once), `REQUEST`,
-//!   `STREAM_CANCEL`, `PING`, `PONG`, `EXT` and `CLOSE`; a server may send
-//!   `RESPONSE`, `STREAM_*`, `PING`, `PONG`, `EXT` and `CLOSE`; a second
-//!   `HELLO` or `HELLO_ACK` is never valid;
+//!   `AUTH_REQUEST`, `STREAM_CANCEL`, `PING`, `PONG`, `EXT` and `CLOSE`; a
+//!   server may send `RESPONSE`, `RECEIPT`, `STREAM_*`, `PING`, `PONG`, `EXT`
+//!   and `CLOSE`; a second `HELLO` or `HELLO_ACK` is never valid;
 //! - `IDENTIFY` (`docs/spec/00-wire.md` 6.6): a server accepts at most one,
 //!   before any `REQUEST`, `STREAM_CANCEL` or `EXT` (a `PING` or `PONG` does
 //!   not close that window), and only if its signature verifies for this
 //!   connection's handshake; a failure is `protocol_violation`. The key it
 //!   proves is [`Connection::identity`];
-//! - request ids: a client id must not be in flight already; a `RESPONSE` or
-//!   `STREAM_*` frame must name an in-flight request and follow the C.9 order
-//!   (`STREAM_START`, tokens, `STREAM_END`, or one `RESPONSE`); an id is
-//!   released by `RESPONSE` or `STREAM_END`;
-//! - `max_inflight`: a server that receives a `REQUEST` while it is at the cap
-//!   answers it itself with an `overloaded` `RESPONSE` and does not deliver it;
+//! - request ids: a client id must not be in flight already (a `REQUEST` and an
+//!   `AUTH_REQUEST` share the table); a `RESPONSE` or `STREAM_*` frame must name
+//!   an in-flight request and follow the C.9 order (`STREAM_START`, tokens,
+//!   `STREAM_END`, or one `RESPONSE`); an id is released by `RESPONSE` or
+//!   `STREAM_END`;
+//! - `RECEIPT` (`docs/spec/00-wire.md` 8.6): a server sends at most one for an
+//!   in-flight `AUTH_REQUEST`, before its `RESPONSE` and not once it streams; a
+//!   `RECEIPT` for any other id, a second one, one for a plain `REQUEST` or one
+//!   over 512 bytes is a `protocol_violation` on receipt and
+//!   [`ConnectionError::Usage`] on send;
+//! - `max_inflight`: a server that receives a `REQUEST` or an `AUTH_REQUEST`
+//!   while it is at the cap answers it itself with an `overloaded` `RESPONSE`
+//!   and does not deliver it;
 //! - `EXT` frames name an accepted extension index;
 //! - `PING` is answered with `PONG` inside [`Connection::recv`].
 //!
@@ -52,6 +59,7 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 
+use crate::auth::MAX_RECEIPT_BYTES;
 use crate::cbor::{self, CborError};
 use crate::frame::{
     encode_frame, read_frame, write_frame, CloseCode, Frame, FrameError, FrameType,
@@ -132,10 +140,29 @@ impl ConnectionError {
 /// A request's progress, as far as the in-flight table cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Exchange {
-    /// Sent or received; no reply yet.
+    /// A `REQUEST`, sent or received; no reply yet.
     Pending,
+    /// An `AUTH_REQUEST`, sent or received; no `RECEIPT` and no reply yet.
+    PendingAuth,
+    /// An `AUTH_REQUEST` whose `RECEIPT` has been sent or received; only the
+    /// `RESPONSE` is still to come.
+    Receipted,
     /// `STREAM_START` has been seen; `STREAM_END` releases the id.
     Streaming,
+}
+
+impl Exchange {
+    /// True while the request has had no answer and has not started to stream:
+    /// a `RESPONSE` or a `STREAM_START` may follow.
+    fn awaits_answer(self) -> bool {
+        !matches!(self, Exchange::Streaming)
+    }
+
+    /// True while a `STREAM_START` may still follow: a receipted request gets a
+    /// `RESPONSE` only, because the receipt's result digest is a digest of one.
+    fn may_stream(self) -> bool {
+        matches!(self, Exchange::Pending | Exchange::PendingAuth)
+    }
 }
 
 /// What to do with a frame that passed the state checks.
@@ -153,6 +180,11 @@ enum Transition {
     None,
     /// A request: tracked, and it closes a client's `IDENTIFY` window.
     Track,
+    /// An `AUTH_REQUEST`: tracked like [`Transition::Track`], as one that
+    /// awaits its receipt.
+    TrackAuth,
+    /// A `RECEIPT`: the id now awaits only its `RESPONSE`.
+    Receipt,
     /// The client's `IDENTIFY`: it closes the window.
     Identify,
     /// `STREAM_CANCEL` or `EXT`: closes a client's `IDENTIFY` window.
@@ -378,17 +410,48 @@ impl Tracker {
                     Ok(Transition::Track)
                 }
             }
+            (Role::Client, FrameType::AuthRequest) => {
+                if state.is_some() {
+                    Err(format!("request id {id} is already in flight"))
+                } else {
+                    Ok(Transition::TrackAuth)
+                }
+            }
             (Role::Client, FrameType::StreamCancel) => Ok(Transition::CloseWindow),
             (Role::Server, FrameType::Response) => match state {
-                Some(Exchange::Pending) => Ok(Transition::Release),
                 Some(Exchange::Streaming) => {
                     Err(format!("request {id} is streaming and gets no RESPONSE"))
                 }
+                Some(_) => Ok(Transition::Release),
                 None => Err(format!("RESPONSE for request {id}, which is not in flight")),
             },
+            (Role::Server, FrameType::Receipt) => {
+                if frame.body.len() > MAX_RECEIPT_BYTES {
+                    return Err(format!(
+                        "a RECEIPT body is at most {MAX_RECEIPT_BYTES} bytes, this one has {}",
+                        frame.body.len()
+                    ));
+                }
+                match state {
+                    Some(Exchange::PendingAuth) => Ok(Transition::Receipt),
+                    Some(Exchange::Receipted) => {
+                        Err(format!("request {id} has had its RECEIPT already"))
+                    }
+                    Some(Exchange::Pending) => Err(format!(
+                        "RECEIPT for request {id}, which is not an AUTH_REQUEST"
+                    )),
+                    Some(Exchange::Streaming) => {
+                        Err(format!("request {id} is streaming and gets no RECEIPT"))
+                    }
+                    None => Err(format!("RECEIPT for request {id}, which is not in flight")),
+                }
+            }
             (Role::Server, FrameType::StreamStart) => match state {
-                Some(Exchange::Pending) => Ok(Transition::Stream),
+                Some(exchange) if exchange.may_stream() => Ok(Transition::Stream),
                 Some(Exchange::Streaming) => Err(format!("request {id} is already streaming")),
+                Some(_) => Err(format!(
+                    "request {id} has had its RECEIPT and gets a RESPONSE, not a stream"
+                )),
                 None => Err(format!(
                     "STREAM_START for request {id}, which is not in flight"
                 )),
@@ -417,6 +480,13 @@ impl Tracker {
                 self.in_flight.insert(id, Exchange::Pending);
                 self.close_window();
             }
+            Transition::TrackAuth => {
+                self.in_flight.insert(id, Exchange::PendingAuth);
+                self.close_window();
+            }
+            Transition::Receipt => {
+                self.in_flight.insert(id, Exchange::Receipted);
+            }
             Transition::Identify | Transition::CloseWindow => self.close_window(),
             Transition::Stream => {
                 self.in_flight.insert(id, Exchange::Streaming);
@@ -438,7 +508,10 @@ impl Tracker {
         if self.role == Role::Server
             && matches!(
                 frame.frame_type,
-                FrameType::Request | FrameType::StreamCancel | FrameType::Ext
+                FrameType::Request
+                    | FrameType::AuthRequest
+                    | FrameType::StreamCancel
+                    | FrameType::Ext
             )
         {
             self.identify_open = false;
@@ -458,14 +531,19 @@ impl Tracker {
                 Ok(Verdict::Deliver)
             }
             (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Verdict::Deliver),
-            (Role::Server, FrameType::Request) => {
+            (Role::Server, FrameType::Request | FrameType::AuthRequest) => {
                 if state.is_some() {
                     return Err(format!("request id {id} is already in flight"));
                 }
                 if self.in_flight.len() as u64 >= u64::from(self.max_inflight) {
                     return Ok(Verdict::Overloaded);
                 }
-                self.in_flight.insert(id, Exchange::Pending);
+                let exchange = if frame.frame_type == FrameType::AuthRequest {
+                    Exchange::PendingAuth
+                } else {
+                    Exchange::Pending
+                };
+                self.in_flight.insert(id, exchange);
                 Ok(Verdict::Deliver)
             }
             (Role::Server, FrameType::StreamCancel) => {
@@ -476,21 +554,44 @@ impl Tracker {
                 }
             }
             (Role::Client, FrameType::Response) => match state {
-                Some(Exchange::Pending) => {
+                Some(exchange) if exchange.awaits_answer() => {
                     self.in_flight.remove(&id);
                     Ok(Verdict::Deliver)
                 }
-                Some(Exchange::Streaming) => {
-                    Err(format!("RESPONSE for request {id}, which is streaming"))
-                }
+                Some(_) => Err(format!("RESPONSE for request {id}, which is streaming")),
                 None => Err(format!("RESPONSE for request {id}, which is not in flight")),
             },
+            (Role::Client, FrameType::Receipt) => {
+                if frame.body.len() > MAX_RECEIPT_BYTES {
+                    return Err(format!(
+                        "a RECEIPT body is at most {MAX_RECEIPT_BYTES} bytes, this one has {}",
+                        frame.body.len()
+                    ));
+                }
+                match state {
+                    Some(Exchange::PendingAuth) => {
+                        self.in_flight.insert(id, Exchange::Receipted);
+                        Ok(Verdict::Deliver)
+                    }
+                    Some(Exchange::Receipted) => Err(format!("a second RECEIPT for request {id}")),
+                    Some(Exchange::Pending) => Err(format!(
+                        "RECEIPT for request {id}, which was not an AUTH_REQUEST"
+                    )),
+                    Some(Exchange::Streaming) => {
+                        Err(format!("RECEIPT for request {id}, which is streaming"))
+                    }
+                    None => Err(format!("RECEIPT for request {id}, which is not in flight")),
+                }
+            }
             (Role::Client, FrameType::StreamStart) => match state {
-                Some(Exchange::Pending) => {
+                Some(exchange) if exchange.may_stream() => {
                     self.in_flight.insert(id, Exchange::Streaming);
                     Ok(Verdict::Deliver)
                 }
                 Some(Exchange::Streaming) => Err(format!("request {id} is already streaming")),
+                Some(_) => Err(format!(
+                    "STREAM_START for request {id}, which has had its RECEIPT"
+                )),
                 None => Err(format!(
                     "STREAM_START for request {id}, which is not in flight"
                 )),
@@ -934,6 +1035,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// requests in flight is not capped here: a server at `max_inflight`
     /// answers the extra request with `overloaded`.
     pub async fn request(&mut self, body: Vec<u8>) -> Result<u64, ConnectionError> {
+        self.send_request(FrameType::Request, body).await
+    }
+
+    /// Client only: like [`Connection::request`] for an `AUTH_REQUEST`, whose
+    /// `body` is the closed map `{auth, command}` of `docs/spec/00-wire.md` 8.5
+    /// (see [`crate::auth::encode_auth_request`]). Returns the id; the server
+    /// answers a `RESPONSE`, preceded by a `RECEIPT` when the node authorised
+    /// and ran the command.
+    pub async fn request_auth(&mut self, body: Vec<u8>) -> Result<u64, ConnectionError> {
+        self.send_request(FrameType::AuthRequest, body).await
+    }
+
+    async fn send_request(
+        &mut self,
+        frame_type: FrameType,
+        body: Vec<u8>,
+    ) -> Result<u64, ConnectionError> {
         if self.tracker.role != Role::Client {
             return Err(ConnectionError::Usage(
                 "only a client sends requests".to_string(),
@@ -950,7 +1068,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             id = id.wrapping_add(1);
         }
         self.send(Frame {
-            frame_type: FrameType::Request,
+            frame_type,
             request_id: id,
             body,
         })
@@ -1227,6 +1345,11 @@ impl<S: AsyncRead + Unpin> ConnectionReader<S> {
     /// The negotiated `max_inflight`.
     pub fn max_inflight(&self) -> u32 {
         self.shared.lock().max_inflight
+    }
+
+    /// The negotiated `max_frame`, which applies in both directions.
+    pub fn max_frame(&self) -> u32 {
+        self.max_frame
     }
 
     /// This connection's `binding` (see [`Connection::binding`]).
@@ -2954,5 +3077,244 @@ mod tests {
         assert!(end.is_none());
         assert!(reader.is_finished());
         assert!(writer.is_finished());
+    }
+
+    // ---- AUTH_REQUEST and RECEIPT.
+
+    fn is_usage<T: std::fmt::Debug>(result: Result<T, ConnectionError>) -> bool {
+        matches!(result, Err(ConnectionError::Usage(_)))
+    }
+
+    #[tokio::test]
+    async fn an_auth_request_is_receipted_then_answered() {
+        let (mut c, mut s) = connected(local_cfg(2, &[]), hello_of(&[])).await;
+        let id = c.request_auth(NULL.to_vec()).await.unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(c.in_flight_len(), 1);
+        let got = s.recv().await.unwrap().unwrap();
+        assert_eq!(got.frame_type, FrameType::AuthRequest);
+        assert_eq!(got.request_id, id);
+        assert_eq!(s.in_flight_len(), 1);
+
+        s.send(fr(FrameType::Receipt, id, &NULL)).await.unwrap();
+        // A receipt does not release the id.
+        assert_eq!(s.in_flight_len(), 1);
+        let receipt = c.recv().await.unwrap().unwrap();
+        assert_eq!(receipt.frame_type, FrameType::Receipt);
+        assert_eq!(receipt.request_id, id);
+        assert_eq!(c.in_flight_len(), 1);
+
+        s.respond_ok(id, &5u32).await.unwrap();
+        assert_eq!(s.in_flight_len(), 0);
+        let response = c.recv().await.unwrap().unwrap();
+        assert_eq!(response.frame_type, FrameType::Response);
+        assert_eq!(c.in_flight_len(), 0);
+        // The id is free again.
+        let again = c.request_auth(NULL.to_vec()).await.unwrap();
+        assert_ne!(again, 0);
+    }
+
+    #[tokio::test]
+    async fn an_auth_request_may_be_answered_without_a_receipt() {
+        let (mut c, mut s) = connected(local_cfg(2, &[]), hello_of(&[])).await;
+        let id = c.request_auth(NULL.to_vec()).await.unwrap();
+        s.recv().await.unwrap().unwrap();
+        s.respond_err(id, "authority_not_enabled", "m")
+            .await
+            .unwrap();
+        let response = c.recv().await.unwrap().unwrap();
+        assert_eq!(response.frame_type, FrameType::Response);
+        assert_eq!(c.in_flight_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn auth_requests_and_requests_share_the_id_space_and_the_cap() {
+        let (mut c, mut s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        let a = c.request_auth(NULL.to_vec()).await.unwrap();
+        // The second request, of either kind, meets the cap.
+        let b = c.request(NULL.to_vec()).await.unwrap();
+        let d = c.request_auth(NULL.to_vec()).await.unwrap();
+        assert_ne!(a, b);
+        assert_ne!(b, d);
+        c.send(fr(FrameType::StreamCancel, a, &[0xa0]))
+            .await
+            .unwrap();
+        let first = s.recv().await.unwrap().unwrap();
+        assert_eq!(first.frame_type, FrameType::AuthRequest);
+        let cancel = s.recv().await.unwrap().unwrap();
+        assert_eq!(cancel.frame_type, FrameType::StreamCancel);
+        assert_eq!(s.overloaded_count(), 2);
+        for expected in [b, d] {
+            let over = c.recv().await.unwrap().unwrap();
+            assert_eq!(over.frame_type, FrameType::Response);
+            assert_eq!(over.request_id, expected);
+            let probe: ErrProbe = cbor::from_slice(&over.body).unwrap();
+            assert_eq!(probe.err.code, ERR_OVERLOADED);
+        }
+        // An id in flight cannot be reused by either kind.
+        assert!(is_usage(c.send(fr(FrameType::AuthRequest, a, &NULL)).await));
+        assert!(is_usage(c.send(fr(FrameType::Request, a, &NULL)).await));
+    }
+
+    #[tokio::test]
+    async fn the_server_sends_a_receipt_only_where_the_rules_allow() {
+        let (mut c, mut s) = connected(local_cfg(4, &[]), hello_of(&[])).await;
+        let plain = c.request(NULL.to_vec()).await.unwrap();
+        let auth = c.request_auth(NULL.to_vec()).await.unwrap();
+        s.recv().await.unwrap().unwrap();
+        s.recv().await.unwrap().unwrap();
+
+        // Not for a plain REQUEST, not for an id that is not in flight.
+        assert!(is_usage(s.send(fr(FrameType::Receipt, plain, &NULL)).await));
+        assert!(is_usage(s.send(fr(FrameType::Receipt, 99, &NULL)).await));
+        // Not above 512 bytes.
+        let big = cbor::to_vec(&serde_json::Value::String("x".repeat(600))).unwrap();
+        assert!(big.len() > 512);
+        assert!(is_usage(s.send(fr(FrameType::Receipt, auth, &big)).await));
+        // Once.
+        s.send(fr(FrameType::Receipt, auth, &NULL)).await.unwrap();
+        assert!(is_usage(s.send(fr(FrameType::Receipt, auth, &NULL)).await));
+        // After a receipt the answer is a RESPONSE, not a stream.
+        assert!(is_usage(
+            s.send(fr(FrameType::StreamStart, auth, &NULL)).await
+        ));
+        // A client never sends one.
+        assert!(is_usage(c.send(fr(FrameType::Receipt, auth, &NULL)).await));
+        // The failed sends changed nothing: the id still takes its RESPONSE.
+        s.respond_ok(auth, &1u32).await.unwrap();
+        s.respond_ok(plain, &1u32).await.unwrap();
+        assert_eq!(s.in_flight_len(), 0);
+        // And a receipt after the RESPONSE is for an id that is not in flight.
+        assert!(is_usage(s.send(fr(FrameType::Receipt, auth, &NULL)).await));
+    }
+
+    #[tokio::test]
+    async fn a_stream_for_an_auth_request_takes_no_receipt() {
+        let (mut c, mut s) = connected(local_cfg(2, &[]), hello_of(&[])).await;
+        let id = c.request_auth(NULL.to_vec()).await.unwrap();
+        s.recv().await.unwrap().unwrap();
+        s.send(fr(FrameType::StreamStart, id, &NULL)).await.unwrap();
+        assert!(is_usage(s.send(fr(FrameType::Receipt, id, &NULL)).await));
+        s.send(fr(FrameType::StreamEnd, id, &NULL)).await.unwrap();
+        assert_eq!(s.in_flight_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_client_refuses_a_receipt_it_cannot_match() {
+        let big = cbor::to_vec(&serde_json::Value::String("x".repeat(600))).unwrap();
+        // (what the peer sends after the client's requests 1 (plain) and 2
+        // (auth), and why it is a violation)
+        let cases: Vec<(Vec<Vec<u8>>, &str)> = vec![
+            (vec![enc(FrameType::Receipt, 1, &NULL)], "plain request"),
+            (vec![enc(FrameType::Receipt, 77, &NULL)], "unknown id"),
+            (vec![enc(FrameType::Receipt, 2, &big)], "too large"),
+            (
+                vec![
+                    enc(FrameType::Receipt, 2, &NULL),
+                    enc(FrameType::Receipt, 2, &NULL),
+                ],
+                "second receipt",
+            ),
+            (
+                vec![
+                    enc(FrameType::StreamStart, 2, &NULL),
+                    enc(FrameType::Receipt, 2, &NULL),
+                ],
+                "after a stream began",
+            ),
+            (
+                vec![
+                    enc(FrameType::Receipt, 2, &NULL),
+                    enc(FrameType::StreamStart, 2, &NULL),
+                ],
+                "a stream after the receipt",
+            ),
+            (
+                vec![
+                    enc(FrameType::Response, 2, &NULL),
+                    enc(FrameType::Receipt, 2, &NULL),
+                ],
+                "after the response",
+            ),
+        ];
+        for (frames, what) in cases {
+            let (mut c, mut peer) = client_pair(hello_of(&[]), ack_of(4, &[])).await;
+            c.request(NULL.to_vec()).await.unwrap();
+            c.request_auth(NULL.to_vec()).await.unwrap();
+            for bytes in &frames {
+                peer.write_all(bytes).await.unwrap();
+            }
+            let mut result = Ok(());
+            for _ in 0..frames.len() {
+                match c.recv().await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        result = Err(e);
+                        break;
+                    }
+                }
+            }
+            match result {
+                Err(e) => assert_eq!(e.close_code(), Some(CloseCode::ProtocolViolation), "{what}"),
+                Ok(()) => panic!("{what}: every frame was accepted"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_accepts_a_receipt_then_the_response() {
+        let (mut c, mut peer) = client_pair(hello_of(&[]), ack_of(4, &[])).await;
+        let id = c.request_auth(NULL.to_vec()).await.unwrap();
+        peer.write_all(&enc(FrameType::Receipt, id, &NULL))
+            .await
+            .unwrap();
+        peer.write_all(&enc(FrameType::Response, id, &NULL))
+            .await
+            .unwrap();
+        assert_eq!(
+            c.recv().await.unwrap().unwrap().frame_type,
+            FrameType::Receipt
+        );
+        assert_eq!(
+            c.recv().await.unwrap().unwrap().frame_type,
+            FrameType::Response
+        );
+        assert_eq!(c.in_flight_len(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_auth_request_closes_the_identify_window() {
+        let (mut peer_conn, mut raw) = server_pair(local_cfg(2, &[]), hello_of(&[])).await;
+        raw.write_all(&enc(FrameType::AuthRequest, 1, &NULL))
+            .await
+            .unwrap();
+        let got = peer_conn.recv().await.unwrap().unwrap();
+        assert_eq!(got.frame_type, FrameType::AuthRequest);
+        // An IDENTIFY after it is a violation, as after a REQUEST.
+        raw.write_all(&enc(FrameType::Identify, 0, &NULL))
+            .await
+            .unwrap();
+        let error = peer_conn.recv().await.unwrap_err();
+        assert_eq!(error.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    #[tokio::test]
+    async fn a_server_rejects_a_receipt_from_a_client_and_an_auth_request_with_id_zero() {
+        let (mut s, mut raw) = server_pair(local_cfg(2, &[]), hello_of(&[])).await;
+        raw.write_all(&raw_bytes_with_type(0x12, 0, &NULL))
+            .await
+            .unwrap();
+        let error = s.recv().await.unwrap_err();
+        assert_eq!(error.close_code(), Some(CloseCode::ProtocolViolation));
+        let (mut s, mut raw) = server_pair(local_cfg(2, &[]), hello_of(&[])).await;
+        raw.write_all(&enc(FrameType::Receipt, 1, &NULL))
+            .await
+            .unwrap();
+        let error = s.recv().await.unwrap_err();
+        assert_eq!(error.close_code(), Some(CloseCode::ProtocolViolation));
+    }
+
+    fn raw_bytes_with_type(ty: u8, id: u64, body: &[u8]) -> Vec<u8> {
+        raw(1, ty, 0, id, body)
     }
 }

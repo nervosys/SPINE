@@ -1606,10 +1606,14 @@ fn error_codes_are_stable_unique_snake_case() {
         "knowledge_capacity",
         "action_unsupported",
         "delete_refused",
+        "authority_required",
+        "authority_not_enabled",
+        "authority_step_1",
+        "authority_step_11",
     ] {
         assert!(ALL_ERROR_CODES.contains(&code), "{code} missing");
     }
-    assert_eq!(ALL_ERROR_CODES.len(), 51);
+    assert_eq!(ALL_ERROR_CODES.len(), 64);
 }
 
 type Conn = Connection<DuplexStream>;

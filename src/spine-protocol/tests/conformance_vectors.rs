@@ -34,6 +34,12 @@
 //!   with the listed code (`invalid_request` or `unknown_command`);
 //! * `delete_results`: the `ok` value of a delete reply is read strictly as the
 //!   closed map `{deleted}` of the type the command gives;
+//! * `auth_requests`: `auth::decode_auth_request` accepts each `ok` body (and
+//!   gives the listed command item and the listed `op`, its SHA-256) or refuses
+//!   it with the listed code;
+//! * `receipts`: `auth::check_receipt_body` accepts or refuses each body as
+//!   listed;
+//! * `result_digests`: `auth::result_digest` gives the listed digest;
 //! * `error_codes`: `body::ALL_ERROR_CODES` is the listed list, in order.
 //!
 //! Every check returns a message that names the vector; a vector of a kind
@@ -45,6 +51,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
+use spine_protocol::auth;
 use spine_protocol::cbor;
 use spine_protocol::connection::Connection;
 use spine_protocol::frame::{self, Frame, FrameError, FrameType, MAX_FRAME, PRE_HELLO_MAX_FRAME};
@@ -151,6 +158,8 @@ fn frame_type_named(name: &str) -> Result<FrameType, String> {
         "IDENTIFY" => FrameType::Identify,
         "REQUEST" => FrameType::Request,
         "RESPONSE" => FrameType::Response,
+        "AUTH_REQUEST" => FrameType::AuthRequest,
+        "RECEIPT" => FrameType::Receipt,
         "STREAM_START" => FrameType::StreamStart,
         "STREAM_TOKEN" => FrameType::StreamToken,
         "STREAM_END" => FrameType::StreamEnd,
@@ -246,6 +255,18 @@ fn check_typed(kind: &str, frame: &Frame) -> Result<(), String> {
                 native::encode_command(&command).map_err(|e| format!("encode_command: {e}"))?;
             same_bytes("re-encoded command", &again, body)
         }
+        "auth_request" => {
+            let request =
+                auth::decode_auth_request(body).map_err(|e| format!("decode_auth_request: {e}"))?;
+            if request.chain_items != request.chain.len() {
+                return Err(format!("chain of {} items was cut", request.chain_items));
+            }
+            let again =
+                auth::encode_auth_request(&request.chain, &request.invocation, &request.command)
+                    .map_err(|e| format!("encode_auth_request: {e}"))?;
+            same_bytes("re-encoded AUTH_REQUEST body", &again, body)
+        }
+        "receipt" => auth::check_receipt_body(body).map_err(|e| format!("check_receipt_body: {e}")),
         "reply" => {
             let reply =
                 native::decode_reply::<Value>(body).map_err(|e| format!("decode_reply: {e}"))?;
@@ -617,6 +638,65 @@ fn check_invalid_command(v: &Value) -> Result<(), String> {
     }
 }
 
+/// `auth_requests`: the body is deterministic CBOR and the decoder accepts it
+/// (with the listed command item and `op`) or refuses it with the listed code.
+fn check_auth_request(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    let want = text(v, "expect")?;
+    cbor::check_deterministic(&body).map_err(|e| format!("not deterministic CBOR: {e:?}"))?;
+    match auth::decode_auth_request(&body) {
+        Ok(request) => {
+            if want != "ok" {
+                return Err(format!("accepted, want {want}"));
+            }
+            same_bytes(
+                "command item",
+                &request.command_bytes,
+                &unhex(text(v, "command_hex")?)?,
+            )?;
+            let op = auth::command_op(&request.command_bytes);
+            same_bytes("op", &op, &unhex(text(v, "op")?)?)?;
+            if request.chain_items == request.chain.len() {
+                let again = auth::encode_auth_request(
+                    &request.chain,
+                    &request.invocation,
+                    &request.command,
+                )
+                .map_err(|e| format!("encode_auth_request: {e}"))?;
+                same_bytes("re-encoded body", &again, &body)?;
+            }
+            Ok(())
+        }
+        Err(e) if e.code == want => Ok(()),
+        Err(e) => Err(format!("answered {}, want {want}", e.code)),
+    }
+}
+
+/// `receipts`: the body has the length listed and is or is not the closed map
+/// `{body, sig}` within 512 bytes.
+fn check_receipt(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    let want = text(v, "expect")?;
+    if body.len() as u64 != uint(v, "length")? {
+        return Err(format!("the body has {} bytes", body.len()));
+    }
+    match (auth::check_receipt_body(&body), want) {
+        (Ok(()), "ok") | (Err(_), "invalid") => Ok(()),
+        (Ok(()), other) => Err(format!("accepted, want {other}")),
+        (Err(e), other) => Err(format!("refused ({e}), want {other}")),
+    }
+}
+
+/// `result_digests`: the digest a receipt carries for a `RESPONSE` body.
+fn check_result_digest(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    same_bytes(
+        "digest",
+        &auth::result_digest(&body),
+        &unhex(text(v, "digest")?)?,
+    )
+}
+
 /// `delete_results`: the `ok` value is the closed map `{deleted}`, a boolean
 /// for `delete_resource` and an unsigned integer for `delete_knowledge`.
 fn check_delete_result(v: &Value) -> Result<(), String> {
@@ -841,6 +921,8 @@ fn valid_frames_decode_re_encode_and_read_as_their_type() {
         "IDENTIFY",
         "REQUEST",
         "RESPONSE",
+        "AUTH_REQUEST",
+        "RECEIPT",
         "STREAM_START",
         "STREAM_TOKEN",
         "STREAM_END",
@@ -891,6 +973,21 @@ fn invalid_delete_requests_are_refused_with_the_listed_code() {
 #[test]
 fn delete_replies_are_accepted_or_refused_as_listed() {
     run_section(&load(), "delete_results", 18, check_delete_result);
+}
+
+#[test]
+fn auth_requests_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "auth_requests", 25, check_auth_request);
+}
+
+#[test]
+fn receipts_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "receipts", 12, check_receipt);
+}
+
+#[test]
+fn result_digests_are_the_listed_ones() {
+    run_section(&load(), "result_digests", 4, check_result_digest);
 }
 
 #[test]

@@ -261,7 +261,7 @@ fn claimed_command_name(body: &[u8]) -> Option<String> {
     }
 }
 
-fn classify_request_error(body: &[u8], error: &CborError) -> RequestError {
+pub(crate) fn classify_request_error(body: &[u8], error: &CborError) -> RequestError {
     match claimed_command_name(body) {
         Some(name) if !COMMAND_NAMES.contains(&name.as_str()) => {
             let shown: String = name.chars().take(64).collect();

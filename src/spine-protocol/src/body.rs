@@ -30,6 +30,35 @@ pub const ERR_SESSION_EXPIRED: &str = "session_expired";
 /// The command needs a loaded page and the session has none.
 pub const ERR_NO_PAGE: &str = "no_page_loaded";
 
+// ---- Authority (`AUTH_REQUEST`, `docs/spec/00-wire.md` 8.5 and 13).
+
+/// The node is in mode `required` and the request was a plain `REQUEST`.
+pub const ERR_AUTHORITY_REQUIRED: &str = "authority_required";
+/// The node is in mode `off` and the request was an `AUTH_REQUEST`.
+pub const ERR_AUTHORITY_NOT_ENABLED: &str = "authority_not_enabled";
+/// The authority gate refused at gate step 1: no grants, more than 8, or a grant or the invocation over its size bound.
+pub const ERR_AUTHORITY_STEP_1: &str = "authority_step_1";
+/// The authority gate refused at gate step 2: a grant is malformed, has an unknown version or carries an unknown caveat.
+pub const ERR_AUTHORITY_STEP_2: &str = "authority_step_2";
+/// The authority gate refused at gate step 3: the root's issuer does not own every resource touched or is not a trusted root.
+pub const ERR_AUTHORITY_STEP_3: &str = "authority_step_3";
+/// The authority gate refused at gate step 4: the chain is not linked.
+pub const ERR_AUTHORITY_STEP_4: &str = "authority_step_4";
+/// The authority gate refused at gate step 5: a grant signature does not verify.
+pub const ERR_AUTHORITY_STEP_5: &str = "authority_step_5";
+/// The authority gate refused at gate step 6: a grant is broader than its parent.
+pub const ERR_AUTHORITY_STEP_6: &str = "authority_step_6";
+/// The authority gate refused at gate step 7: a grant is not yet valid or has expired.
+pub const ERR_AUTHORITY_STEP_7: &str = "authority_step_7";
+/// The authority gate refused at gate step 8: a grant is revoked, or revocation data is missing or too old.
+pub const ERR_AUTHORITY_STEP_8: &str = "authority_step_8";
+/// The authority gate refused at gate step 9: the invocation is malformed, for another chain, invoker, recipient or session, stale, badly signed or replayed.
+pub const ERR_AUTHORITY_STEP_9: &str = "authority_step_9";
+/// The authority gate refused at gate step 10: the grant does not cover the command's resource, action or effect class, or the invocation is for another operation.
+pub const ERR_AUTHORITY_STEP_10: &str = "authority_step_10";
+/// The authority gate refused at gate step 11: a limit would be exceeded, or usage could not be recorded.
+pub const ERR_AUTHORITY_STEP_11: &str = "authority_step_11";
+
 // ---- Navigation and execution.
 
 /// `execute_binary` asked for a capability the origin does not grant.
@@ -126,6 +155,19 @@ pub const ALL_ERROR_CODES: &[&str] = &[
     ERR_INVALID_REQUEST,
     ERR_INTERNAL,
     ERR_RATE_LIMIT,
+    ERR_AUTHORITY_REQUIRED,
+    ERR_AUTHORITY_NOT_ENABLED,
+    ERR_AUTHORITY_STEP_1,
+    ERR_AUTHORITY_STEP_2,
+    ERR_AUTHORITY_STEP_3,
+    ERR_AUTHORITY_STEP_4,
+    ERR_AUTHORITY_STEP_5,
+    ERR_AUTHORITY_STEP_6,
+    ERR_AUTHORITY_STEP_7,
+    ERR_AUTHORITY_STEP_8,
+    ERR_AUTHORITY_STEP_9,
+    ERR_AUTHORITY_STEP_10,
+    ERR_AUTHORITY_STEP_11,
     ERR_SESSION_CAPACITY,
     ERR_SESSION_NOT_FOUND,
     ERR_SESSION_EXPIRED,
@@ -269,8 +311,8 @@ mod tests {
     }
 
     #[test]
-    fn the_list_has_51_codes_and_the_four_stage_3_codes_are_in_it() {
-        assert_eq!(ALL_ERROR_CODES.len(), 51);
+    fn the_list_has_64_codes_and_the_stage_3_and_4_codes_are_in_it() {
+        assert_eq!(ALL_ERROR_CODES.len(), 64);
         for code in [
             ERR_KNOWLEDGE_ENTRY_TOO_LARGE,
             ERR_KNOWLEDGE_CAPACITY,
@@ -279,6 +321,18 @@ mod tests {
         ] {
             assert!(ALL_ERROR_CODES.contains(&code), "{code}");
             assert!(!PROTOCOL_ERROR_CODES.contains(&code), "{code}");
+        }
+        let authority: Vec<&str> = ALL_ERROR_CODES
+            .iter()
+            .copied()
+            .filter(|code| code.starts_with("authority_"))
+            .collect();
+        assert_eq!(authority.len(), 13);
+        assert_eq!(authority[0], ERR_AUTHORITY_REQUIRED);
+        assert_eq!(authority[1], ERR_AUTHORITY_NOT_ENABLED);
+        for (index, code) in authority[2..].iter().enumerate() {
+            assert_eq!(*code, format!("authority_step_{}", index + 1));
+            assert!(!PROTOCOL_ERROR_CODES.contains(code), "{code}");
         }
     }
 

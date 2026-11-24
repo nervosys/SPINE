@@ -12,7 +12,8 @@
 //! This layer is stateless apart from the limits the caller passes in. It
 //! checks the length, version, type, flags, the compressed-body rules and the
 //! request-id rules that hold for a frame type unconditionally (`HELLO`,
-//! `HELLO_ACK` and `CLOSE` carry 0; `REQUEST` and `PING` carry a nonzero id).
+//! `HELLO_ACK` and `CLOSE` carry 0; `REQUEST`, `AUTH_REQUEST`, `RECEIPT` and
+//! `PING` carry a nonzero id).
 //!
 //! It does **not** check anything that depends on connection state: id
 //! uniqueness among in-flight requests, direction (which side may send which
@@ -76,6 +77,13 @@ pub enum FrameType {
     Request = 0x10,
     /// The server's answer to a request.
     Response = 0x11,
+    /// A command from the client that carries a grant chain and a signed
+    /// invocation (`docs/spec/00-wire.md` 8.5).
+    AuthRequest = 0x12,
+    /// The server's signed receipt for an `AUTH_REQUEST` the node authorised
+    /// and ran, sent before the `RESPONSE` of the same request id
+    /// (`docs/spec/00-wire.md` 8.6).
+    Receipt = 0x13,
     /// Start of a stream.
     StreamStart = 0x20,
     /// One stream element.
@@ -108,6 +116,8 @@ impl TryFrom<u8> for FrameType {
             0x06 => Ok(FrameType::Identify),
             0x10 => Ok(FrameType::Request),
             0x11 => Ok(FrameType::Response),
+            0x12 => Ok(FrameType::AuthRequest),
+            0x13 => Ok(FrameType::Receipt),
             0x20 => Ok(FrameType::StreamStart),
             0x21 => Ok(FrameType::StreamToken),
             0x22 => Ok(FrameType::StreamEnd),
@@ -265,7 +275,9 @@ fn check_request_id(frame_type: FrameType, request_id: u64) -> Result<(), FrameE
         FrameType::Hello | FrameType::HelloAck | FrameType::Close | FrameType::Identify => {
             request_id == 0
         }
-        FrameType::Request | FrameType::Ping => request_id != 0,
+        FrameType::Request | FrameType::AuthRequest | FrameType::Receipt | FrameType::Ping => {
+            request_id != 0
+        }
         _ => true,
     };
     if ok {
@@ -704,6 +716,8 @@ mod tests {
             (0x06, FrameType::Identify),
             (0x10, FrameType::Request),
             (0x11, FrameType::Response),
+            (0x12, FrameType::AuthRequest),
+            (0x13, FrameType::Receipt),
             (0x20, FrameType::StreamStart),
             (0x21, FrameType::StreamToken),
             (0x22, FrameType::StreamEnd),
@@ -793,7 +807,7 @@ mod tests {
 
     #[test]
     fn unknown_and_zero_types_are_rejected() {
-        for t in [0x00u8, 0x07, 0x0f, 0x12, 0x24, 0x7f, 0x81, 0xff] {
+        for t in [0x00u8, 0x07, 0x0f, 0x14, 0x24, 0x7f, 0x81, 0xff] {
             let bytes = raw(1, t, 0, 1, &[0xf6]);
             let err = decode_frame(&bytes, MAX_FRAME).unwrap_err();
             assert!(matches!(err, FrameError::UnknownFrameType(x) if x == t));
@@ -829,6 +843,8 @@ mod tests {
             (FrameType::Close, 9),
             (FrameType::Identify, 1),
             (FrameType::Request, 0),
+            (FrameType::AuthRequest, 0),
+            (FrameType::Receipt, 0),
             (FrameType::Ping, 0),
         ];
         for (t, id) in bad {
@@ -847,6 +863,8 @@ mod tests {
             (FrameType::Close, 0),
             (FrameType::Identify, 0),
             (FrameType::Request, 1),
+            (FrameType::AuthRequest, 2),
+            (FrameType::Receipt, u64::MAX),
             (FrameType::Ping, u64::MAX),
             (FrameType::Pong, 7),
             (FrameType::Response, 0),
