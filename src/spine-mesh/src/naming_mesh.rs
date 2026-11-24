@@ -246,9 +246,11 @@ pub struct ResolverMetrics {
     pub logs_fetched: u64,
     /// Succession logs or proofs refused because the durable log book could not
     /// be written (see [`MeshNameResolver::with_log_store`]); nothing was adopted.
+    /// Also bad rows at load that could not be deleted.
     pub log_store_failures: u64,
     /// Rows of the durable log book dropped at load: undecodable, not
-    /// verifying from their key, or over a bound.
+    /// verifying from their key, or over a bound. They are deleted too, so a
+    /// restart does not count them again unless the delete failed.
     pub log_rows_dropped: u64,
 }
 
@@ -3704,7 +3706,9 @@ mod tests {
         store.proofs.lock().unwrap().clear();
         store.proofs.lock().unwrap().insert(pk_of(4), proof);
         let report = restart_on(&h, 0, &store).await;
-        assert_eq!((report.logs, report.proofs), (1, 1));
+        assert_eq!((report.logs, report.proofs, report.dropped), (1, 1, 0));
+        // The bad log row was deleted by the first restart.
+        assert!(!store.logs.lock().unwrap().contains_key(&pk_of(3)));
     }
 
     #[tokio::test]
@@ -3823,6 +3827,17 @@ mod tests {
                 spine_name::MAX_EQUIVOCATION_PROOFS
             );
         }
+        // The rows over the bounds were deleted: a second start drops none.
+        assert_eq!(
+            store.logs.lock().unwrap().len(),
+            spine_name::MAX_SUCCESSION_LOGS
+        );
+        assert_eq!(
+            store.proofs.lock().unwrap().len(),
+            spine_name::MAX_EQUIVOCATION_PROOFS
+        );
+        let report = restart_on(&h, 0, &store).await;
+        assert_eq!(report.dropped, 0);
 
         // The table is full and no record is held: a new log evicts one, and
         // the row of the evicted log goes with it.

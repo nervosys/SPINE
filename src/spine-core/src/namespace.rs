@@ -68,6 +68,15 @@ impl BackendLogBookStore {
     pub fn new(backend: Arc<dyn spine_storage::StorageBackend>) -> Self {
         Self { backend }
     }
+
+    /// Delete a row `load` could not decode, so the next start does not count it
+    /// again. A failure is logged and counted in `rows`, never fatal.
+    fn delete_unreadable(&self, namespace: &str, key: &[u8], rows: &mut LogBookRows) {
+        if let Err(error) = self.backend.delete(namespace, key) {
+            rows.delete_failures += 1;
+            warn!(%error, namespace, "succession log book: an unreadable row could not be deleted");
+        }
+    }
 }
 
 impl std::fmt::Debug for BackendLogBookStore {
@@ -94,7 +103,10 @@ impl LogBookStore for BackendLogBookStore {
                 serde_json::from_slice::<spine_name::Equivocation>(&data),
             ) {
                 (Ok(key), Ok(proof)) => rows.proofs.push((key, proof)),
-                _ => rows.unreadable += 1,
+                _ => {
+                    rows.unreadable += 1;
+                    self.delete_unreadable(MESH_EQUIVOCATIONS_NAMESPACE, &key, &mut rows);
+                }
             }
         }
         for (key, data) in self
@@ -107,7 +119,10 @@ impl LogBookStore for BackendLogBookStore {
                 serde_json::from_slice::<spine_name::SuccessionLog>(&data),
             ) {
                 (Ok(key), Ok(log)) => rows.logs.push((key, log)),
-                _ => rows.unreadable += 1,
+                _ => {
+                    rows.unreadable += 1;
+                    self.delete_unreadable(MESH_SUCCESSIONS_NAMESPACE, &key, &mut rows);
+                }
             }
         }
         Ok(rows)
@@ -138,6 +153,12 @@ impl LogBookStore for BackendLogBookStore {
     fn remove_log(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError> {
         self.backend
             .delete(MESH_SUCCESSIONS_NAMESPACE, inception_key)
+            .map_err(store_error)
+    }
+
+    fn remove_proof(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError> {
+        self.backend
+            .delete(MESH_EQUIVOCATIONS_NAMESPACE, inception_key)
             .map_err(store_error)
     }
 }
@@ -692,6 +713,19 @@ mod tests {
         let report = service.restore_log_book(store.clone()).unwrap();
         assert_eq!((report.logs, report.proofs, report.dropped), (1, 0, 2));
         assert_eq!(service.logs().log(&inception), Some(&log));
+        // The rows the store could not decode are gone, so the next start does
+        // not count them again; the good row stays.
+        assert!(backend
+            .get(MESH_SUCCESSIONS_NAMESPACE, b"short")
+            .unwrap()
+            .is_none());
+        assert!(backend
+            .get(MESH_EQUIVOCATIONS_NAMESPACE, &[9u8; 32])
+            .unwrap()
+            .is_none());
+        let mut restarted = spine_mesh::naming::NameService::new(spine_name::NameKey::of(b"x"));
+        let report = restarted.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.logs, report.proofs, report.dropped), (1, 0, 0));
 
         store.remove_log(&inception).unwrap();
         assert!(backend

@@ -805,9 +805,12 @@ pub struct SuccessionStats {
     /// Offers refused because the durable log book (see
     /// [`NameService::restore_log_book`]) could not be written: the log or proof
     /// was not adopted and memory is unchanged. Not counted in `logs_rejected`.
+    /// Also counts the deletes of bad rows at load that failed (the row stays and
+    /// is counted as dropped again at the next start).
     pub log_store_failures: u64,
     /// Rows of the durable log book dropped at load: undecodable, not verifying
-    /// from their key, or over a bound.
+    /// from their key, or over a bound. Each is also deleted from the store, so
+    /// the next start does not count it again, unless the delete failed.
     pub log_rows_dropped: u64,
 }
 
@@ -1175,10 +1178,13 @@ impl NameService {
     /// that does not verify, cannot be decoded, or does not fit the bounds
     /// ([`spine_name::MAX_SUCCESSION_LOGS`], [`spine_name::MAX_EQUIVOCATION_PROOFS`])
     /// is dropped and counted ([`SuccessionStats::log_rows_dropped`]), never an
-    /// error. A log row of a name that also has a proof is the remains of an
-    /// interrupted write: it is ignored and deleted. Only a store that cannot be
-    /// read at all is an error ([`NameError::Storage`]), and then nothing is
-    /// attached.
+    /// error, and deleted from the store (`remove_proof`, `remove_log`; the store
+    /// deletes the rows it could not decode itself), so that the next start does
+    /// not count it again. A delete that fails is logged and counted in
+    /// [`SuccessionStats::log_store_failures`] and the row stays. A log row of a
+    /// name that also has a proof is the remains of an interrupted write: it is
+    /// ignored and deleted. Only a store that cannot be read at all is an error
+    /// ([`NameError::Storage`]), and then nothing is attached.
     pub fn restore_log_book(
         &mut self,
         store: Arc<dyn LogBookStore>,
@@ -1190,23 +1196,35 @@ impl NameService {
             dropped: rows.unreadable as u64,
             ..LogBookRestore::default()
         };
+        let mut delete_failures = rows.delete_failures as u64;
+        // A failed delete is never fatal: the row stays and is dropped again at
+        // the next start.
+        let mut deleted = |result: Result<(), LogStoreError>| {
+            if let Err(error) = result {
+                delete_failures += 1;
+                tracing::warn!(%error, "succession log book: a bad row could not be deleted");
+            }
+        };
         for (key, proof) in rows.proofs {
             if self.store.restore_proof(key, proof) {
                 report.proofs += 1;
             } else {
                 report.dropped += 1;
+                deleted(store.remove_proof(&key));
             }
         }
         for (key, log) in rows.logs {
             if self.store.logs().is_compromised(&key) {
                 // The proof replaces the log (decision 29): finish the delete.
-                let _ = store.remove_log(&key);
+                deleted(store.remove_log(&key));
             } else if self.store.restore_log(key, log) {
                 report.logs += 1;
             } else {
                 report.dropped += 1;
+                deleted(store.remove_log(&key));
             }
         }
+        self.succession.log_store_failures += delete_failures;
         self.succession.log_rows_dropped += report.dropped;
         if report.dropped > 0 {
             tracing::warn!(
@@ -3525,6 +3543,72 @@ mod tests {
         let report = again.restore_log_book(store.clone()).unwrap();
         assert_eq!((report.proofs, report.logs, report.dropped), (1, 0, 0));
         assert!(store.logs.lock().unwrap().is_empty());
+    }
+
+    fn fork_of_one() -> SuccessionLog {
+        SuccessionLog::default()
+            .rotated(
+                &pk_of(1),
+                &SigningKey::from_bytes(&[1; 32]),
+                &pk_of(51),
+                &pk_of(52),
+                1_000,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn rows_that_do_not_verify_are_deleted_so_the_next_start_does_not_count_them() {
+        let (mut svc, store) = backed();
+        svc.offer_log(rotation(1)).unwrap();
+        svc.offer_log(fork_of_one()).unwrap();
+        svc.offer_log(rotation(2)).unwrap();
+        // The proof of name 1 and the log of name 2 are good. Copies of them
+        // under keys that are not their inception keys do not verify.
+        let proof = store.proofs.lock().unwrap().get(&pk_of(1)).unwrap().clone();
+        store.proofs.lock().unwrap().insert(pk_of(9), proof);
+        store.logs.lock().unwrap().insert(pk_of(8), rotation(2));
+
+        let mut again = NameService::new(NameKey::of(b"local"));
+        let report = again.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.proofs, report.logs, report.dropped), (1, 1, 2));
+        assert_eq!(again.succession_stats().log_rows_dropped, 2);
+        assert_eq!(again.succession_stats().log_store_failures, 0);
+        assert_eq!(store.proofs.lock().unwrap().len(), 1);
+        assert!(store.proofs.lock().unwrap().contains_key(&pk_of(1)));
+        assert_eq!(store.logs.lock().unwrap().len(), 1);
+        assert!(store.logs.lock().unwrap().contains_key(&pk_of(2)));
+
+        // The second start finds nothing to drop.
+        let mut third = NameService::new(NameKey::of(b"local"));
+        let report = third.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.proofs, report.logs, report.dropped), (1, 1, 0));
+        assert_eq!(third.succession_stats().log_rows_dropped, 0);
+    }
+
+    #[test]
+    fn a_bad_row_that_cannot_be_deleted_is_counted_and_does_not_stop_the_node() {
+        let (_svc, store) = backed();
+        store.logs.lock().unwrap().insert(pk_of(8), rotation(2));
+        store
+            .unreadable
+            .store(1, std::sync::atomic::Ordering::SeqCst);
+        store.fail_writes(true);
+
+        let mut again = NameService::new(NameKey::of(b"local"));
+        let report = again.restore_log_book(store.clone()).unwrap();
+        assert_eq!((report.logs, report.dropped), (0, 2));
+        // One failed delete for the row that did not verify, one the store
+        // reported for the row it could not decode.
+        assert_eq!(again.succession_stats().log_store_failures, 2);
+        assert!(store.logs.lock().unwrap().contains_key(&pk_of(8)));
+
+        // Once writes work again the rows go.
+        store.fail_writes(false);
+        let mut third = NameService::new(NameKey::of(b"local"));
+        assert_eq!(third.restore_log_book(store.clone()).unwrap().dropped, 2);
+        let mut fourth = NameService::new(NameKey::of(b"local"));
+        assert_eq!(fourth.restore_log_book(store.clone()).unwrap().dropped, 0);
     }
 
     #[test]

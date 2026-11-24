@@ -31,8 +31,12 @@ pub struct LogBookRows {
     pub logs: Vec<([u8; 32], SuccessionLog)>,
     /// Rows the implementation could not decode (a key that is not 32 bytes, a
     /// value that is not the JSON of a log or proof). They are counted as
-    /// dropped by the service.
+    /// dropped by the service. An implementation that knows the raw key of such
+    /// a row deletes it as it loads, so the next start does not count it again.
     pub unreadable: usize,
+    /// How many of the `unreadable` rows the implementation tried to delete and
+    /// could not. The service counts them in `log_store_failures`.
+    pub delete_failures: usize,
 }
 
 /// A durable home for the log book of one [`crate::naming::NameService`].
@@ -55,6 +59,9 @@ pub trait LogBookStore: Send + Sync + std::fmt::Debug {
     /// Delete the log row of `inception_key`, if any (an evicted log, or the log
     /// a proof replaces).
     fn remove_log(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError>;
+    /// Delete the proof row of `inception_key`, if any (a proof row that did not
+    /// verify or fit at load).
+    fn remove_proof(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError>;
 }
 
 /// An in-memory store, with a switch that makes every write fail, for tests.
@@ -63,9 +70,10 @@ pub trait LogBookStore: Send + Sync + std::fmt::Debug {
 pub(crate) struct MemoryLogBookStore {
     pub(crate) proofs: std::sync::Mutex<std::collections::HashMap<[u8; 32], Equivocation>>,
     pub(crate) logs: std::sync::Mutex<std::collections::HashMap<[u8; 32], SuccessionLog>>,
-    /// Extra undecodable rows reported by `load`.
+    /// Extra undecodable rows reported by `load`, which deletes them as a real
+    /// store does: a second `load` reports none, unless writes are failing.
     pub(crate) unreadable: std::sync::atomic::AtomicUsize,
-    /// While set, `save_*` and `remove_log` fail.
+    /// While set, `save_*` and `remove_*` fail.
     pub(crate) failing: std::sync::atomic::AtomicBool,
 }
 
@@ -87,6 +95,14 @@ impl MemoryLogBookStore {
 #[cfg(test)]
 impl LogBookStore for MemoryLogBookStore {
     fn load(&self) -> Result<LogBookRows, LogStoreError> {
+        let unreadable = self.unreadable.load(std::sync::atomic::Ordering::SeqCst);
+        let delete_failures = if self.check().is_err() {
+            unreadable
+        } else {
+            self.unreadable
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            0
+        };
         Ok(LogBookRows {
             proofs: self
                 .proofs
@@ -102,7 +118,8 @@ impl LogBookStore for MemoryLogBookStore {
                 .iter()
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
-            unreadable: self.unreadable.load(std::sync::atomic::Ordering::SeqCst),
+            unreadable,
+            delete_failures,
         })
     }
 
@@ -131,6 +148,12 @@ impl LogBookStore for MemoryLogBookStore {
     fn remove_log(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError> {
         self.check()?;
         self.logs.lock().unwrap().remove(inception_key);
+        Ok(())
+    }
+
+    fn remove_proof(&self, inception_key: &[u8; 32]) -> Result<(), LogStoreError> {
+        self.check()?;
+        self.proofs.lock().unwrap().remove(inception_key);
         Ok(())
     }
 }
