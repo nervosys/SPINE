@@ -51,7 +51,7 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 
 | Code | Raised when |
 | --- | --- |
-| `overloaded` | the connection already has `max_inflight` requests in flight (the daemon sends `max_inflight` 8, reads while a command runs, and refuses a ninth request at once with this code) |
+| `overloaded` | the connection already has `max_inflight` requests in flight (the daemon sends `max_inflight` 8, reads while a command runs, and refuses a ninth request at once with this code); also `execute_binary` when all four executor slots stay busy for two seconds |
 | `unknown_command` | the body names a command outside the set |
 | `invalid_request` | the body is a known command with a defect; also `read_resource` with `max_bytes` outside 1 to 65,536 or an `offset` past the end |
 | `internal` | the daemon failed in a way the client cannot fix |
@@ -60,8 +60,8 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 | `session_not_found` | `get_ur` or `get_raw_html` and the session record is gone |
 | `session_expired` | `navigate` fetched a page and the session record was gone |
 | `no_page_loaded` | `get_ur` or `get_raw_html` arrived before a successful `navigate`; `get_ur` reports a page that fails to parse as `parse_error` |
-| `capability_denied` | an `execute_binary` program declares a capability other than `network`, `storage`, `memory` or `search` |
-| `execution_failed` | a binary failed to compile, instantiate or run |
+| `capability_denied` | an `execute_binary` program declares a capability other than `network`, `storage`, `memory` or `search`, or requests an action it did not declare (a navigation needs `network`, a search `search`, a knowledge write `storage`); nothing it asked for is carried out |
+| `execution_failed` | a binary failed to compile, instantiate or run, exceeded a host budget (instruction count, value stack, value size, elements, events, actions, fuel), or would exceed a per-session cap (256 state variables, 1024 knowledge entries, 4 navigations per call) |
 | `namespace_unavailable` | no namespace or mesh is configured |
 | `invalid_peer_id`, `mesh_call_failed` | a `mesh_call` target is malformed or the call failed |
 | `batch_too_large` | `resolve_names` exceeded its limit |
