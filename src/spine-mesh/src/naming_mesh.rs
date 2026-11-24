@@ -3918,6 +3918,118 @@ mod tests {
         assert!(h.board.is_empty(), "no further request was sent");
     }
 
+    // ---- an equivocation proof travels as two logs (decision 51) -------------
+
+    #[tokio::test]
+    async fn a_proof_reaches_a_node_that_held_one_branch_and_then_a_third_node() {
+        let h = Harness::new(3);
+        let store = memory();
+        restart_on(&h, 1, &store).await;
+        h.introduce(1, 0).await;
+        h.introduce(2, 1).await;
+        let (branch_a, branch_b) = (rotation_log(1), forked_log(1));
+        let name = SpineUri::did(pk_of(1));
+
+        // Node 0 saw both branches: it holds the proof and nothing else.
+        h.nodes[0].offer_log(branch_a.clone()).await.unwrap();
+        h.nodes[0].offer_log(branch_b.clone()).await.unwrap();
+        assert_eq!(h.nodes[0].metrics().await.equivocations_found, 1);
+        assert!(h.nodes[0].succession_log(&pk_of(1)).await.is_none());
+
+        // Node 1 saw only branch A and accepts the name, then its copy lapses
+        // so that resolving it goes to the mesh.
+        let on_a = record_under(1, &branch_a, 101, 2);
+        let envelope = h.nodes[2]
+            .node
+            .announce_name_with_log(on_a.clone(), Some(branch_a.clone()))
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert_eq!(h.nodes[1].record_count().await, 1);
+        let held = tokio::time::timeout(Duration::from_secs(5), h.nodes[1].resolve(&name))
+            .await
+            .expect("a held record resolves without the wire");
+        assert_eq!(held.unwrap(), on_a);
+        assert_eq!(h.nodes[1].sweep(NOW + 7_200).await, 1);
+
+        let seeker = h.nodes[1].clone();
+        let asked = name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve(&asked).await });
+        let result = settle_lookup(&h, lookup).await;
+        assert!(
+            is_name_error(&result, |e| matches!(
+                e,
+                spine_name::NameError::Equivocated(_)
+            )),
+            "{result:?}"
+        );
+        assert!(h.board.is_empty(), "the exchange is over");
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(m.equivocations_found, 1);
+        assert_eq!(h.nodes[0].metrics().await.requests_answered, 1);
+
+        // Persisted through the node's own book: the proof, not the log.
+        assert_eq!(store.proofs.lock().unwrap().len(), 1);
+        assert!(store.logs.lock().unwrap().is_empty());
+        let report = restart_on(&h, 1, &store).await;
+        assert_eq!((report.proofs, report.logs, report.dropped), (1, 0, 0));
+
+        // It now refuses a record under either branch.
+        for rec in [
+            record_under(1, &branch_a, 101, 3),
+            record_under(1, &branch_b, 51, 3),
+        ] {
+            let envelope = h.nodes[2].node.announce_name(rec).unwrap();
+            assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        }
+        assert_eq!(h.nodes[1].record_count().await, 0);
+        assert!(h.nodes[1].succession_log(&pk_of(1)).await.is_none());
+
+        // Node 2 saw only branch B and asks node 1, which answers from the proof
+        // it learned from node 0.
+        h.nodes[2].offer_log(branch_b).await.unwrap();
+        let seeker = h.nodes[2].clone();
+        let asked = name.clone();
+        let lookup = tokio::spawn(async move { seeker.resolve(&asked).await });
+        let result = settle_lookup(&h, lookup).await;
+        assert!(
+            is_name_error(&result, |e| matches!(
+                e,
+                spine_name::NameError::Equivocated(_)
+            )),
+            "{result:?}"
+        );
+        pump_bounded(&h).await;
+        assert!(h.board.is_empty());
+        assert_eq!(h.nodes[2].metrics().await.equivocations_found, 1);
+        assert_eq!(h.nodes[1].metrics().await.requests_answered, 1);
+        // No storm: nothing is sent unasked, so the requests are the lookups'
+        // own (node 2 asks node 1 and may be referred on to node 0 once).
+        assert!(h.nodes[0].metrics().await.requests_answered <= 2);
+        // Having both logs the proof was derived from, a node holds no log of
+        // the name, and the answers it gives are still just the two logs.
+        assert_eq!(h.nodes[2].service.lock().await.logs().proof_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_node_never_sends_a_proof_nobody_asked_for() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+        h.introduce(1, 0).await;
+        // Forming a proof, from logs offered directly or from a response,
+        // causes no envelope: there is no message that carries a proof alone.
+        h.nodes[0].offer_log(rotation_log(1)).await.unwrap();
+        h.nodes[0].offer_log(forked_log(1)).await.unwrap();
+        assert_eq!(h.nodes[0].metrics().await.equivocations_found, 1);
+        assert!(h.board.is_empty());
+        // A name that is not asked about stays unannounced however often the
+        // proof is offered again.
+        for _ in 0..3 {
+            h.nodes[0].offer_log(forked_log(1)).await.unwrap();
+        }
+        assert!(h.board.is_empty());
+        assert_eq!(h.nodes[0].metrics().await.equivocations_found, 1);
+    }
+
     #[tokio::test]
     async fn a_second_refused_announcement_inside_the_window_sends_no_second_fetch() {
         let h = Harness::new(2);

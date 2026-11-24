@@ -519,6 +519,31 @@ impl Equivocation {
         self.first.index
     }
 
+    /// The two logs the proof is made of: the shared prefix followed by `first`,
+    /// and the shared prefix followed by `second`. Both are valid logs of the
+    /// name, and neither is a prefix of the other, so a verifier that is offered
+    /// both (`LogBook::plan`) derives this proof again, with nothing but the
+    /// logs. That is how a proof travels over messages that carry logs and have
+    /// no field for a proof (spec 02, 10.10 decision 51).
+    ///
+    /// `None` when the prefix is already [`MAX_SUCCESSION_ENTRIES`] long: the
+    /// logs would exceed the bound and no receiver would take them. A proof a
+    /// book accepted always fits (it was derived from two logs within the bound),
+    /// so this only guards a hand-made proof. The logs are built, not verified:
+    /// a proof is verified when it enters a book, and checking two logs per
+    /// answer would cost a request up to 128 signature checks.
+    pub fn logs(&self) -> Option<[SuccessionLog; 2]> {
+        if self.prefix.entries.len() >= MAX_SUCCESSION_ENTRIES {
+            return None;
+        }
+        let with = |last: &Succession| {
+            let mut entries = self.prefix.entries.clone();
+            entries.push(last.clone());
+            SuccessionLog { entries }
+        };
+        Some([with(&self.first), with(&self.second)])
+    }
+
     /// Check the proof: the prefix is a valid log, the two entries differ, and
     /// each is a valid next entry after the prefix.
     pub fn verify(&self, inception_key: &[u8; 32]) -> Result<(), SuccessionError> {

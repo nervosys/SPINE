@@ -183,6 +183,24 @@ impl LogBook {
         self.proofs.get(inception_key)
     }
 
+    /// The logs to send a peer that asks about a name: the best log held, or, for
+    /// a name with a proof, the proof's two logs (the held log was replaced by
+    /// the proof, decision 29, and the two conflicting logs are what a receiver
+    /// needs to derive the proof again). Empty for a name with neither, and at
+    /// once, without any lookup, when the book is empty.
+    pub fn logs_to_send(&self, inception_key: &[u8; 32]) -> Vec<SuccessionLog> {
+        if self.is_empty() {
+            return Vec::new();
+        }
+        if let Some(proof) = self.proofs.get(inception_key) {
+            return proof.logs().map(Vec::from).unwrap_or_default();
+        }
+        self.logs
+            .get(inception_key)
+            .map(|held| vec![held.log.clone()])
+            .unwrap_or_default()
+    }
+
     /// Whether a proof is held: the name fails closed.
     pub fn is_compromised(&self, inception_key: &[u8; 32]) -> bool {
         self.proofs.contains_key(inception_key)

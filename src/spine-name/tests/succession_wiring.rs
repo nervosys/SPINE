@@ -720,3 +720,108 @@ fn logs_over_the_bounds_are_recognised_before_any_verification() {
     short_sig.entries[0].signature.truncate(63);
     assert!(!log_within_bounds(&short_sig));
 }
+
+/// A proof is two valid logs: each verifies from the inception key alone and fits
+/// the entry bound, and offering both to an empty book gives the same proof.
+fn assert_proof_travels_as_two_logs(a: SuccessionLog, b: SuccessionLog) {
+    let inception = pk(&sk(1));
+    let mut source = LogBook::new();
+    adopt(&mut source, &inception, a.clone());
+    let offer = source.plan(&inception, b.clone(), &HashSet::new()).unwrap();
+    assert!(matches!(offer, LogOffer::Conflict(_)));
+    source.apply(offer);
+    let proof = source.proof(&inception).unwrap().clone();
+
+    let logs = proof.logs().unwrap();
+    for log in &logs {
+        assert!(log.entries.len() <= MAX_SUCCESSION_ENTRIES);
+        assert!(log_within_bounds(log));
+        log.verify(&inception).unwrap();
+    }
+    assert_eq!(logs[0], a);
+    assert_eq!(logs[1], b);
+    // What a node holding the proof sends for the name.
+    assert_eq!(source.logs_to_send(&inception), logs.to_vec());
+
+    let mut fresh = LogBook::new();
+    for log in &logs {
+        adopt(&mut fresh, &inception, log.clone());
+    }
+    assert!(fresh.is_compromised(&inception));
+    assert_eq!(fresh.proof(&inception), Some(&proof));
+    proof.verify(&inception).unwrap();
+    assert!(
+        fresh.log(&inception).is_none(),
+        "the proof replaces the log"
+    );
+}
+
+#[test]
+fn a_proof_is_two_valid_logs_and_offering_them_to_an_empty_book_gives_the_same_proof() {
+    // Diverging at entry 1.
+    assert_proof_travels_as_two_logs(log_one(), log_fork());
+    // Diverging at entry 2, after a shared first entry: the logs are two long.
+    let fork_two = log_one()
+        .rotated(&pk(&sk(1)), &sk(2), &pk(&sk(3)), &pk(&sk(9)), 1_001)
+        .unwrap();
+    assert_ne!(fork_two, log_two());
+    assert_proof_travels_as_two_logs(log_two(), fork_two);
+}
+
+#[test]
+fn a_name_without_a_proof_sends_its_log_and_a_proof_that_cannot_fit_sends_nothing() {
+    let inception = pk(&sk(1));
+    let mut book = LogBook::new();
+    assert!(book.logs_to_send(&inception).is_empty());
+    adopt(&mut book, &inception, log_two());
+    assert_eq!(book.logs_to_send(&inception), vec![log_two()]);
+    assert!(book.logs_to_send(&pk(&sk(5))).is_empty());
+
+    // A hand-made proof whose prefix is already at the bound has no logs that
+    // a receiver would take.
+    let mut proof = spine_name::Equivocation {
+        prefix: log_one(),
+        first: log_two().entries[1].clone(),
+        second: log_one().entries[0].clone(),
+    };
+    while proof.prefix.entries.len() < MAX_SUCCESSION_ENTRIES {
+        proof.prefix.entries.push(log_one().entries[0].clone());
+    }
+    assert!(proof.logs().is_none());
+}
+
+#[test]
+fn logs_that_are_not_both_signed_by_the_names_own_keys_make_no_proof() {
+    let inception = pk(&sk(1));
+    let other = SuccessionLog::default()
+        .rotated(&pk(&sk(5)), &sk(5), &pk(&sk(6)), &pk(&sk(7)), 1_000)
+        .unwrap();
+
+    let mut store = RecordStore::new();
+    store.offer_log(log_one()).unwrap();
+    // A valid log of another name is a log of another name, not a fork.
+    store.offer_log(other.clone()).unwrap();
+    assert_eq!(
+        (store.logs().log_count(), store.logs().proof_count()),
+        (2, 0)
+    );
+
+    // An entry that is not signed by the key current at its index: another
+    // entry's signature, another name's signature, or a field changed after
+    // signing. None is a valid log, so none can be half of a proof.
+    let mut stolen = log_fork();
+    stolen.entries[0].signature = log_one().entries[0].signature.clone();
+    let mut foreign = log_fork();
+    foreign.entries[0].signature = other.entries[0].signature.clone();
+    let mut tampered = log_fork();
+    tampered.entries[0].effective_at += 1;
+    for bad in [stolen, foreign, tampered] {
+        assert!(matches!(
+            store.offer_log(bad),
+            Err(NameError::InvalidSuccessionLog(_))
+        ));
+    }
+    assert_eq!(store.logs().proof_count(), 0);
+    assert!(!store.logs().is_compromised(&inception));
+    assert_eq!(store.logs().log(&inception), Some(&log_one()));
+}

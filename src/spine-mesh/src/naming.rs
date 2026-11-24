@@ -1266,6 +1266,16 @@ impl NameService {
         book.log(key).cloned()
     }
 
+    /// The logs an answer about the name with inception key `key` carries: its
+    /// log, or the two logs of its equivocation proof (at most two, well inside
+    /// [`MAX_RESPONSE_LOGS`]). A receiver that is offered both derives the proof
+    /// and fails the name closed, and one that is offered a log it cannot verify
+    /// or that is for another name takes nothing (`take_log`). Empty, and no
+    /// lookup, when this node holds no log at all.
+    fn logs_to_answer(&self, key: &[u8; 32]) -> Vec<SuccessionLog> {
+        self.store.logs().logs_to_send(key)
+    }
+
     /// Bound, check against the names `wanted` (when given), and offer one log
     /// received from outside, counting the result.
     fn take_log(
@@ -1494,12 +1504,13 @@ impl NameService {
                 response.record = self.store.get_fresh(uri, now).cloned();
                 // The log goes with the answer, and alone when the name has no
                 // record (a retired name keeps none): none at all, and no
-                // lookup, for a name without one.
+                // lookup, for a name without one. A name this node holds an
+                // equivocation proof for has no record either, and is answered
+                // with the proof's two logs.
                 response.logs = uri
                     .public_key()
-                    .and_then(|key| self.log_of(key))
-                    .into_iter()
-                    .collect();
+                    .map(|key| self.logs_to_answer(key))
+                    .unwrap_or_default();
             }
             ResolveQuery::Capability(term) => {
                 response.providers = self
@@ -3457,6 +3468,88 @@ mod tests {
         assert!(svc.logs().state(&pk_of(1)).is_some());
         let stats = svc.succession_stats();
         assert_eq!((stats.logs_adopted, stats.logs_fetched), (1, 1));
+    }
+
+    // ---- an equivocation proof travels as two logs (decision 51) -------------
+
+    #[test]
+    fn a_node_holding_a_proof_answers_with_both_logs_and_a_peer_that_takes_them_fails_closed() {
+        let mut holder = NameService::new(NameKey::of(b"local"));
+        holder.offer_log(rotation(1)).unwrap();
+        holder.offer_log(fork_of_one()).unwrap();
+        assert!(holder.logs().is_compromised(&pk_of(1)));
+
+        let name = SpineUri::did(pk_of(1));
+        let ask = ResolveRequest {
+            request_id: 1,
+            query: ResolveQuery::Name(name.clone()),
+        };
+        let answer = holder.handle_request(&ask, 1_000);
+        assert!(answer.record.is_none());
+        assert!(!answer.is_answer(), "logs alone are not an answer");
+        assert_eq!(answer.logs, vec![rotation(1), fork_of_one()]);
+        assert!(answer.logs.len() <= MAX_RESPONSE_LOGS);
+        for log in &answer.logs {
+            assert!(log_within_bounds(log));
+            log.verify(&pk_of(1)).unwrap();
+        }
+
+        // A node that saw only one branch takes both and derives the proof.
+        let mut peer = NameService::new(NameKey::of(b"peer"));
+        for seed in 1..=10u8 {
+            peer.add_node(node(seed));
+        }
+        peer.offer_log(rotation(1)).unwrap();
+        assert!(peer.status_error(&name).is_none());
+        let (id, _) = peer.start_lookup_at(ResolveQuery::Name(name.clone()), 1_000);
+        let mut wire = answer.clone();
+        wire.request_id = id;
+        peer.on_response(&wire);
+        assert!(peer.logs().is_compromised(&pk_of(1)));
+        assert_eq!(peer.succession_stats().equivocations_found, 1);
+        assert!(matches!(
+            peer.status_error(&name),
+            Some(NameError::Equivocated(_))
+        ));
+
+        // A node that saw neither branch gets the same proof, and keeps it.
+        let mut fresh = NameService::new(NameKey::of(b"fresh"));
+        for seed in 1..=10u8 {
+            fresh.add_node(node(seed));
+        }
+        let (id, _) = fresh.start_lookup_at(ResolveQuery::Name(name.clone()), 1_000);
+        wire.request_id = id;
+        fresh.on_response(&wire);
+        assert_eq!(peer.logs().proof(&pk_of(1)), fresh.logs().proof(&pk_of(1)));
+        assert!(fresh.logs().log(&pk_of(1)).is_none());
+        // The answer it now gives is the same two logs, not a loop of new ones.
+        let again = fresh.handle_request(&ask, 1_000);
+        assert_eq!(again.logs.len(), 2);
+    }
+
+    #[test]
+    fn logs_that_do_not_make_a_proof_from_the_names_own_keys_fail_nothing_closed() {
+        let name = SpineUri::did(pk_of(1));
+        let mut peer = NameService::new(NameKey::of(b"peer"));
+        for seed in 1..=10u8 {
+            peer.add_node(node(seed));
+        }
+        peer.offer_log(rotation(1)).unwrap();
+        let (id, _) = peer.start_lookup_at(ResolveQuery::Name(name.clone()), 1_000);
+
+        // A fork whose entry was altered after signing, and a valid log of
+        // another name: neither is half of a proof of this name.
+        let mut tampered = fork_of_one();
+        tampered.entries[0].effective_at += 1;
+        let mut answer = ResolveResponse::empty(id);
+        answer.logs = vec![tampered, rotation(2)];
+        peer.on_response(&answer);
+        assert!(!peer.logs().is_compromised(&pk_of(1)));
+        assert!(peer.status_error(&name).is_none());
+        let stats = peer.succession_stats();
+        assert_eq!((stats.equivocations_found, stats.logs_rejected), (0, 2));
+        assert_eq!(peer.logs().log(&pk_of(1)), Some(&rotation(1)));
+        assert!(peer.logs().log(&pk_of(2)).is_none());
     }
 
     // ---- a durable log book -------------------------------------------------
