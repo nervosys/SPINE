@@ -7,7 +7,7 @@
 SPINE provides an agentic web stack:
 
 - **Headless semantic browsing** — Navigate web pages and extract structured Unified Representations instead of raw HTML
-- **Native wire** — spine-wire v1: length-prefixed binary frames, deterministic CBOR bodies, a `HELLO`/`HELLO_ACK` handshake and a closed set of 19 commands (see [Protocol](./architecture/protocol.md))
+- **Native wire** — spine-wire v1: length-prefixed binary frames, deterministic CBOR bodies, a `HELLO`/`HELLO_ACK` handshake and a closed set of 21 commands (see [Protocol](./architecture/protocol.md))
 - **Confidentiality** — On the native client wire, confidentiality and authentication come from TLS (optionally mutual TLS) and nothing else. The mesh path between nodes is a different protocol with its own ML-KEM-768 and Ed25519 handshake (`spine-session`)
 - **Naming and mesh** — `spine://` self-certifying names, signed name records, and an Ed25519-signed agent mesh
 - **HLS scripting** — Domain-specific language compiled to WebAssembly for server-side execution

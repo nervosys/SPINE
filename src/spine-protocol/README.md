@@ -39,7 +39,7 @@ modules that implement it:
 - `cbor`: the deterministic CBOR scanner, encoder and decoder used for every
   body (one encoding per value; non-canonical input is rejected).
 - `body`: the request and response bodies. A request is a command from a closed
-  set of 19; a response is `{ok: ...}` or `{err: {code, message}}`. The stable
+  set of 21; a response is `{ok: ...}` or `{err: {code, message}}`. The stable
   error codes are `ALL_ERROR_CODES`.
 - `native`: maps the `Message` set onto the frames, plus `NativeError` and the
   `remote_error` / `remote_code` helpers.

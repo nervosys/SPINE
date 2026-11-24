@@ -5,7 +5,7 @@
 The body of a frame is one deterministic CBOR item (`docs/spec/00-wire.md` section 5).
 The frame header's request id is the only correlation id; no body carries one.
 
-A `REQUEST` body is a command from a closed set of 19. A command without
+A `REQUEST` body is a command from a closed set of 21. A command without
 fields is the text of its name (`"get_ur"`); a command with fields is a
 single-entry map `{name: fields}`. A name outside the set is `unknown_command`;
 a known name with a defect (an unknown field, a wrong type, a present `null`
@@ -61,7 +61,11 @@ Clients branch on `code`; `message` is for people. The complete table with the r
 | `session_expired` | `navigate` fetched a page and the session record was gone |
 | `no_page_loaded` | `get_ur` or `get_raw_html` arrived before a successful `navigate`; `get_ur` reports a page that fails to parse as `parse_error` |
 | `capability_denied` | an `execute_binary` program declares a capability other than `network`, `storage`, `memory` or `search`, or requests an action it did not declare (a navigation needs `network`, a search `search`, a knowledge write `storage`); nothing it asked for is carried out |
-| `execution_failed` | a binary failed to compile, instantiate or run, exceeded a host budget (instruction count, value stack, value size, elements, events, actions, fuel), or would exceed a per-session cap (256 state variables, 1024 knowledge entries, 4 navigations per call) |
+| `execution_failed` | a binary failed to compile, instantiate or run, exceeded a host budget (instruction count, value stack, value size, elements, events, actions, fuel), or would exceed a per-session cap (256 state variables, 4 navigations per call) |
+| `knowledge_entry_too_large` | a `store_knowledge` entry (key, compact JSON of the value and tags) exceeds 64 KiB |
+| `knowledge_capacity` | a knowledge store would pass the 1,024 entries of a session or the daemon-wide 32 MiB budget, from `store_knowledge` or from a program |
+| `action_unsupported` | an `execute_binary` program requests an action the daemon does not perform; refused whole, before any action runs |
+| `delete_refused` | a `delete_resource` proof does not verify for this connection |
 | `namespace_unavailable` | no namespace or mesh is configured |
 | `invalid_peer_id`, `mesh_call_failed` | a `mesh_call` target is malformed or the call failed |
 | `batch_too_large` | `resolve_names` exceeded its limit |

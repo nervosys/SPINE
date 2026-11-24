@@ -102,13 +102,13 @@ Verification (`record.rs:269-282`) uses the public key inside the `did:` name; t
 
 Bounds on the record itself (count of endpoints, links, capabilities, size of `meta`, length of strings): none found in `spine-name/src/record.rs`, `store.rs`, `resolver.rs` or `uri.rs`. A record is therefore bounded only by the message limit and, for mesh announcements, by the mesh frame limit (4 MiB, `docs/NATIVE_OPERATIONS.md`, "Connection and TLS policy"). Whether the mesh announcement path adds a record-size check is Undetermined (searched `spine-agentic/src/naming_mesh.rs` handling of `NameAnnounce`, lines 938-955, and `spine-agentic/src/naming.rs` only by that call; `accept_announcement` itself was not read).
 
-Quota accounting detail. The store counts serialized bytes (`resources.rs:49-64`). `Blob.data` is a plain `Vec<u8>` with no byte-string attribute (`resources.rs:12-16`) and is stored with `serde_json`, which writes an array of decimal integers. Each data byte therefore occupies between 2 and 4 bytes of stored value. The quota check reads every stored value in the namespace on each insert (`resources.rs:55-60`). Nothing deletes a stored resource: the store has no delete method (`resources.rs:18-97`).
+Quota accounting detail. The store counts serialized bytes (`resources.rs:49-64`). `Blob.data` is a plain `Vec<u8>` with no byte-string attribute (`resources.rs:12-16`) and is stored with `serde_json`, which writes an array of decimal integers. Each data byte therefore occupies between 2 and 4 bytes of stored value. The quota check reads every stored value in the namespace on each insert (`resources.rs:55-60`). When this was written nothing deleted a stored resource; the store now has `delete` (section 4.4) and `delete_resource` reaches it from the wire.
 
 ## 3. Transfer protocol
 
 > As of 2026-11-21 the native wire is spine-wire v1, see 00-wire.md (normative, sections 2 to 14; the earlier wire is its Appendix A); the following describes the earlier wire.
 >
-> Correction for this section: a request is now a command from a closed set of 19 in a REQUEST frame; the request id is in the 15-byte frame header, not in the body; a response is `{ok: ...}` or `{err: {code, message}}`; bodies are deterministic CBOR (no JSON format byte, no `SP` header). Byte fields travel as CBOR byte strings.
+> Correction for this section: a request is now a command from a closed set of 21 in a REQUEST frame; the request id is in the 15-byte frame header, not in the body; a response is `{ok: ...}` or `{err: {code, message}}`; bodies are deterministic CBOR (no JSON format byte, no `SP` header). Byte fields travel as CBOR byte strings.
 
 All commands are `BrowserCommand` variants (`spine-protocol/src/lib.rs:1024-1195`) carried in `Message::Request { id, command }` and answered by `Message::Response { id, result: Option<json>, error: Option<string> }` (`lib.rs:1276-1287`). The session loop is `main.rs:2419-2637`.
 
@@ -245,7 +245,7 @@ Accounting and admission. The store holds at most 256 MiB of accounted bytes. Ea
 
 Referenced. A blob is not evictable while a record stored with it has not expired, or while the daemon's reference source (`with_reference_source`, the content hashes of unexpired records this node publishes) lists it.
 
-Delete. `ResourceStore::delete(owner, hash)` removes a blob only for the publisher recorded when it was stored, even if a name still refers to it. It is not on the wire.
+Delete. `ResourceStore::delete(owner, hash)` removes a blob only for the publisher recorded when it was stored, even if a name still refers to it. The wire's `delete_resource` (`00-wire.md` 12.2) calls it after verifying the owner's proof, made for the connection's `binding`; a wrong owner and an absent hash answer alike (`deleted: false`), and the name record is not touched. Provisional decision (2026-11-24): the publisher that may delete is the recorded one, the name's inception key, so for a rotated name the current key cannot delete. Alternative: record the name, or let any key of the succession log delete; this needs the log at the store and changes what is recorded for every blob.
 
 Publisher identity. Since 2026-11-23 the daemon stores each blob for the key in the name of its record (`publisher_of`: the name's inception key, which is the signing key unless the name has rotated, so a rotation does not change a name's share; `docs/spec/02-names.md`, decision 42), and lists the content hashes of its currently published, unexpired records as referenced, so a renewed record keeps its blob. Publisher keys are free to mint; the per-publisher share limits one key, not one client.
 
@@ -343,7 +343,7 @@ Target: `docs/FIRST_PRINCIPLES.md` line 42. Each item states the as-built positi
 
 Further defects and unsafe properties found while reading (not in the requested checklist):
 
-- [ ] **Unauthenticated publication.** Any native client can publish a name and bytes signed by any key it holds. Since 2026-11-21 the store accounts bytes per publisher key with fair-share eviction, and an owner-checked `delete` exists in the store API but is not on the wire (section 4.4). Residual: publisher keys are free to mint, so the per-publisher share does not bound one client that mints keys, and the daemon still stores for a fixed local owner until its call sites pass the publisher.
+- [ ] **Unauthenticated publication.** Any native client can publish a name and bytes signed by any key it holds. Since 2026-11-21 the store accounts bytes per publisher key with fair-share eviction, and an owner-checked `delete` is on the wire as `delete_resource` (section 4.4). Residual: publisher keys are free to mint, so the per-publisher share does not bound one client that mints keys, and the daemon still stores for a fixed local owner until its call sites pass the publisher.
 - [x] **Orphaned blobs.** A failed name publication removes the blob it created (`main.rs` calls `ResourceStore::remove`); a blob a previous publication also uses is kept.
 - [x] **Unsigned `content_type`.** Resolved by the resource id (section 2.6): a different type is a different id, and every fetch path verifies it.
 - [ ] **No bounds on record fields** (section 2.5).

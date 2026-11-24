@@ -1,6 +1,6 @@
 # Security Policy
 
-> **Status, 2026-11-23 (source at `a4efd03`).** The threat-model table, hardening boundaries, gateway and key-memory sections below were corrected against the code. Any client that can connect to the native port has operator-level access to all 19 commands; the authority gate is library code and is not enforced. The mesh handshake has had no external review. See [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
+> **Status, 2026-11-23 (source at `a4efd03`).** The threat-model table, hardening boundaries, gateway and key-memory sections below were corrected against the code. Any client that can connect to the native port has operator-level access to all 21 commands; the authority gate is library code and is not enforced. The mesh handshake has had no external review. See [`THREAT_MODEL.md`](THREAT_MODEL.md) and [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md).
 
 ## Local implementation verification
 
