@@ -3522,4 +3522,354 @@ mod tests {
         assert!(h.board.drain(&bystander).is_empty());
         assert_eq!(h.nodes[1].peer_count().await, peers_before);
     }
+
+    // ---- placement, churn and conflicting sequences (spec 02, sections 3 to 6) -
+
+    /// Replica placement, churn and expiry over the in-process mesh, with every
+    /// node reading one shared injected clock so time is advanced by the test and
+    /// never waited for.
+    mod churn {
+        use super::*;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        /// A mesh of `count` nodes, as [`Harness::new`] builds, reading `clock`.
+        fn clocked(count: u8, clock: &Arc<AtomicU64>) -> Harness {
+            let board = Arc::new(Switchboard::default());
+            let mut nodes = Vec::new();
+            let mut identities = Vec::new();
+            for i in 0..count {
+                let identity = SigningIdentity::from_seed(&format!("node{i}"), [100 + i; 32]);
+                identities.push(identity.public_identity());
+                let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
+                let transport = Arc::new(SwitchTransport {
+                    board: board.clone(),
+                });
+                let shared = clock.clone();
+                nodes.push(Arc::new(
+                    MeshNameResolver::new(mesh, transport)
+                        .with_clock(move || shared.load(Ordering::SeqCst)),
+                ));
+            }
+            Harness {
+                board,
+                nodes,
+                identities,
+            }
+        }
+
+        /// Deliver queued envelopes until the network goes quiet, handling them
+        /// at time `now` (what [`Harness::pump`] does at the fixed `NOW`).
+        async fn pump_at(h: &Harness, now: u64) {
+            for _ in 0..64 {
+                if h.board.is_empty() {
+                    return;
+                }
+                for node in &h.nodes {
+                    let agent = *node.node.agent_id();
+                    for envelope in h.board.drain(&agent) {
+                        let _ = node.handle_envelope(&envelope, now).await;
+                    }
+                }
+            }
+        }
+
+        async fn quiet(h: &Harness, now: u64) {
+            tokio::time::timeout(Duration::from_secs(5), pump_at(h, now))
+                .await
+                .expect("the mesh goes quiet");
+        }
+
+        /// Pump the mesh until `task` finishes, under a deadline.
+        async fn drive<T: Send + 'static>(
+            h: &Harness,
+            now: u64,
+            task: tokio::task::JoinHandle<T>,
+        ) -> T {
+            tokio::time::timeout(Duration::from_secs(30), async {
+                while !task.is_finished() {
+                    pump_at(h, now).await;
+                    tokio::task::yield_now().await;
+                }
+                task.await.unwrap()
+            })
+            .await
+            .expect("the task finished while the mesh was pumped")
+        }
+
+        async fn publish_from(
+            h: &Harness,
+            index: usize,
+            record: NameRecord,
+            now: u64,
+        ) -> ReplicationReport {
+            let publisher = h.nodes[index].clone();
+            let task = tokio::spawn(async move { publisher.publish(record).await.unwrap() });
+            let report = drive(h, now, task).await;
+            quiet(h, now).await;
+            report
+        }
+
+        async fn maintain_on(h: &Harness, index: usize, now: u64) -> MaintenanceReport {
+            let node = h.nodes[index].clone();
+            let task =
+                tokio::spawn(async move { node.maintain(now, MaintenancePolicy::default()).await });
+            let report = drive(h, now, task).await;
+            quiet(h, now).await;
+            report
+        }
+
+        async fn resolve_from(
+            h: &Harness,
+            index: usize,
+            name: &SpineUri,
+            now: u64,
+        ) -> Result<NameRecord, NameMeshError> {
+            let seeker = h.nodes[index].clone();
+            let name = name.clone();
+            let task = tokio::spawn(async move { seeker.resolve(&name).await });
+            drive(h, now, task).await
+        }
+
+        /// A record whose key is nearer node `who` than every other node.
+        fn record_nearest(h: &Harness, who: usize) -> NameRecord {
+            (1u8..=255)
+                .map(|seed| record(seed, &[]))
+                .find(|rec| {
+                    let target = rec.name.key();
+                    let own = h.nodes[who].local_key().distance(&target);
+                    (0..h.nodes.len())
+                        .filter(|i| *i != who)
+                        .all(|i| own < h.nodes[i].local_key().distance(&target))
+                })
+                .expect("some seed lands nearest that node")
+        }
+
+        fn winner(records: &[NameRecord]) -> NameRecord {
+            records
+                .iter()
+                .max_by_key(|r| (r.seq, r.is_tombstone(), r.published_at, r.signature.clone()))
+                .unwrap()
+                .clone()
+        }
+
+        fn versioned(seed: u8, seq: u64, at: u64, endpoint: &str) -> NameRecord {
+            let key = SigningKey::from_bytes(&[seed; 32]);
+            let name = SpineUri::did(key.verifying_key().to_bytes());
+            let mut rec = NameRecord::new(name, seq, at)
+                .unwrap()
+                .with_ttl(3600)
+                .with_endpoint(Endpoint::new("tcp", endpoint));
+            rec.sign(&key).unwrap();
+            rec
+        }
+
+        // ---- replica placement ----
+
+        /// With fewer nodes than K, "the K closest" is everyone the publisher
+        /// knows.
+        #[tokio::test]
+        async fn in_a_mesh_smaller_than_k_every_known_peer_holds_the_record() {
+            let k = crate::naming::K;
+            assert!(k >= 8, "this test assumes a mesh no larger than K");
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let h = clocked(8, &clock);
+            for i in 1..8 {
+                h.introduce(0, i).await;
+            }
+            let report = publish_from(&h, 0, record(1, &[]), NOW).await;
+            assert_eq!(report.sent, 7);
+            for (i, node) in h.nodes.iter().enumerate() {
+                assert_eq!(node.record_count().await, 1, "node {i}");
+            }
+        }
+
+        /// In a mesh larger than K, exactly the K peers nearest the name key
+        /// receive a copy, and the rest do not. The publisher keeps its own.
+        #[tokio::test]
+        async fn a_record_is_held_by_the_k_closest_peers_and_not_by_the_rest() {
+            let k = crate::naming::K;
+            let count = u8::try_from(k + 4).unwrap();
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let h = clocked(count, &clock);
+            let total = usize::from(count);
+            for i in 1..total {
+                h.introduce(0, i).await;
+            }
+            assert_eq!(h.nodes[0].peer_count().await, total - 1);
+
+            let rec = record(1, &[]);
+            let target = rec.name.key();
+            let mut peers: Vec<usize> = (1..total).collect();
+            peers.sort_by_key(|i| h.nodes[*i].local_key().distance(&target));
+            let (holders, others) = peers.split_at(k);
+
+            let report = publish_from(&h, 0, rec, NOW).await;
+            assert_eq!(report.sent, k, "one directed copy per close peer");
+            assert_eq!(h.nodes[0].record_count().await, 1, "the publisher keeps it");
+            for i in holders {
+                assert_eq!(h.nodes[*i].record_count().await, 1, "node {i} is close");
+            }
+            for i in others {
+                assert_eq!(h.nodes[*i].record_count().await, 0, "node {i} is not close");
+            }
+        }
+
+        /// A node that joins nearer the key than any existing one gets the record
+        /// at the publisher's next maintenance pass.
+        #[tokio::test]
+        async fn a_node_joining_nearest_the_key_holds_it_after_maintenance() {
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let h = clocked(9, &clock);
+            for i in 1..8 {
+                h.introduce(0, i).await;
+            }
+            let rec = record_nearest(&h, 8);
+            publish_from(&h, 0, rec.clone(), NOW).await;
+            for (i, node) in h.nodes.iter().enumerate().take(8) {
+                assert_eq!(node.record_count().await, 1, "node {i}");
+            }
+            assert_eq!(h.nodes[8].record_count().await, 0, "not yet known");
+
+            h.introduce(0, 8).await;
+            let report = maintain_on(&h, 0, NOW).await;
+            assert_eq!(report.refreshed, 1, "{report:?}");
+            assert_eq!(report.replicas_sent, 8, "seven old peers and the new one");
+            assert_eq!(h.nodes[8].record_count().await, 1, "the newcomer holds it");
+            assert_eq!(h.nodes[8].resolve(&rec.name).await.unwrap(), rec);
+        }
+
+        // ---- churn ----
+
+        /// Publisher 0 and holders 1 to 4, each holding a copy; node 5 holds
+        /// nothing and knows all five.
+        async fn placed(clock: &Arc<AtomicU64>) -> (Harness, NameRecord) {
+            let h = clocked(6, clock);
+            for i in 1..=4 {
+                h.introduce(0, i).await;
+            }
+            for i in 0..=4 {
+                h.introduce(5, i).await;
+            }
+            let rec = record(1, &[]);
+            publish_from(&h, 0, rec.clone(), NOW).await;
+            for (i, node) in h.nodes.iter().enumerate().take(5) {
+                assert_eq!(node.record_count().await, 1, "node {i}");
+            }
+            assert_eq!(h.nodes[5].record_count().await, 0, "the seeker has no copy");
+            (h, rec)
+        }
+
+        #[tokio::test]
+        async fn a_lost_holder_does_not_stop_a_node_with_no_copy_resolving() {
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let (h, rec) = placed(&clock).await;
+
+            // Lose the replica nearest the name: the first the seeker would ask.
+            let target = rec.name.key();
+            let lost = (1..=4)
+                .min_by_key(|i| h.nodes[*i].local_key().distance(&target))
+                .unwrap();
+            h.board.blackhole(h.nodes[lost].agent_id());
+
+            let report = maintain_on(&h, 0, NOW).await;
+            assert_eq!(report.expired, 0);
+            assert_eq!(h.nodes[0].record_count().await, 1);
+
+            let found = resolve_from(&h, 5, &rec.name, NOW).await.unwrap();
+            assert_eq!(found, rec);
+        }
+
+        #[tokio::test]
+        async fn the_publisher_alone_still_answers_when_every_other_holder_is_gone() {
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let (h, rec) = placed(&clock).await;
+            for node in &h.nodes[1..=4] {
+                h.board.blackhole(node.agent_id());
+            }
+            let report = maintain_on(&h, 0, NOW).await;
+            assert_eq!(report.expired, 0);
+            assert_eq!(h.nodes[0].record_count().await, 1, "maintenance keeps it");
+
+            let found = resolve_from(&h, 5, &rec.name, NOW).await.unwrap();
+            assert_eq!(found, rec);
+        }
+
+        /// The replicas outlive the publisher, but not the record's own expiry,
+        /// which no node can extend: before a sweep they hold it and decline to
+        /// serve it, and a sweep then removes it.
+        #[tokio::test]
+        async fn replicas_serve_without_the_publisher_until_expiry_and_not_after() {
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let (h, rec) = placed(&clock).await;
+            h.board.blackhole(h.nodes[0].agent_id());
+
+            let last_fresh = NOW + 3599;
+            clock.store(last_fresh, Ordering::SeqCst);
+            let found = resolve_from(&h, 5, &rec.name, last_fresh).await.unwrap();
+            assert_eq!(found, rec);
+
+            let expired = NOW + 3600;
+            clock.store(expired, Ordering::SeqCst);
+            let gone = resolve_from(&h, 5, &rec.name, expired).await;
+            assert!(
+                matches!(gone, Err(NameMeshError::NotFound(_))),
+                "an expired record is not served: {gone:?}"
+            );
+            // Not yet swept: still held, still not served.
+            assert_eq!(h.nodes[1].record_count().await, 1);
+            assert_eq!(h.nodes[1].sweep(expired).await, 1);
+            assert_eq!(h.nodes[1].record_count().await, 0);
+        }
+
+        // ---- conflicting sequences ----
+
+        /// The same three conflicting records announced to two replicas in
+        /// opposite orders leave both serving the same one.
+        #[tokio::test]
+        async fn replicas_told_of_conflicting_records_in_opposite_orders_agree() {
+            let h = Harness::new(3);
+            // Same seq; the first two differ in time, the last two tie on both.
+            let a = versioned(7, 3, NOW, "a:1");
+            let b = versioned(7, 3, NOW + 10, "b:1");
+            let c = versioned(7, 3, NOW + 10, "c:1");
+            let all = [a.clone(), b.clone(), c.clone()];
+            let envelopes: Vec<MeshEnvelope> = all
+                .iter()
+                .map(|r| h.nodes[0].node.announce_name(r.clone()).unwrap())
+                .collect();
+
+            for envelope in &envelopes {
+                assert!(h.nodes[1].handle_envelope(envelope, NOW).await);
+            }
+            for envelope in envelopes.iter().rev() {
+                assert!(h.nodes[2].handle_envelope(envelope, NOW).await);
+            }
+
+            let expected = winner(&all);
+            assert_eq!(h.nodes[1].resolve(&a.name).await.unwrap(), expected);
+            assert_eq!(h.nodes[2].resolve(&a.name).await.unwrap(), expected);
+            assert_eq!(h.nodes[1].record_count().await, 1);
+            assert_eq!(h.nodes[2].record_count().await, 1);
+        }
+
+        /// Replicas that hold different conflicting records answer a seeker, and
+        /// the seeker settles on the one the ordering prefers.
+        #[tokio::test]
+        async fn a_lookup_across_conflicting_replicas_returns_the_preferred_record() {
+            let clock = Arc::new(AtomicU64::new(NOW));
+            let h = clocked(4, &clock);
+            for i in 1..4 {
+                h.introduce(0, i).await;
+            }
+            let a = versioned(7, 3, NOW, "a:1");
+            let b = versioned(7, 3, NOW + 10, "b:1");
+            let c = versioned(7, 3, NOW + 10, "c:1");
+            h.nodes[1].publish_local(a.clone()).await.unwrap();
+            h.nodes[2].publish_local(b.clone()).await.unwrap();
+            h.nodes[3].publish_local(c.clone()).await.unwrap();
+
+            let found = resolve_from(&h, 0, &a.name, NOW).await.unwrap();
+            assert_eq!(found, winner(&[a, b, c]));
+        }
+    }
 }
