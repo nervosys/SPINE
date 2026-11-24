@@ -821,6 +821,8 @@ mod tests {
         let mut reopened = open_on(&backend, 101);
         assert!(reopened.nonce_seen(&INVOKER, &[1u8; 16]));
         assert_eq!(reopened.spent(&ID, 101).unwrap().calls, 0);
+        // The backend recovers: a new invocation can be charged.
+        backend.allow_puts(usize::MAX);
         reopened.charge(&decision(1, 2, 101, calls(1))).unwrap();
     }
 
