@@ -160,9 +160,14 @@ Corrected 2026-11-23. Handshake state and ephemeral secrets in
 The daemon's node key is stored in a plain file, created with mode 0600 on
 Unix (on Windows it takes the access list of its directory); an existing file
 open to other users draws a start-up warning. It is held as an
-`ed25519_dalek::SigningKey`, which wipes itself on drop. The short-lived seed
-array and hex text read from the file are plain memory and are not wiped:
-that needs a `zeroize` dependency in `spine-core`.
+`ed25519_dalek::SigningKey`, which wipes itself on drop. The hex text read from
+the file, the decoded and the freshly generated seed array, the hex text
+written to a new file and the `to_bytes()` copy made for
+`SigningIdentity::from_seed` are held in `zeroize::Zeroizing` and wiped on
+drop. This is best effort: copies made by the operating system (page cache,
+swap, core dumps), the allocator (a string buffer that grew) or the compiler
+(registers, stack slots), and the seed copy `spine-mesh` makes inside its own
+identity type, are out of reach, and the key file is plain text on disk.
 The earlier list of `spine_crypto` and `spine_agentic` structs that
 zeroize on drop concerns research crates that the daemon does not use,
 and is not repeated. Zeroization does not protect against a reader of the

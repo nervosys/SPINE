@@ -42,6 +42,7 @@ use spine_mesh::mesh::{MeshConfig, MeshNode};
 use spine_mesh::mesh_tcp::{serve_node_with, EncryptionConfig, Security, TcpNameTransport};
 use spine_mesh::naming_mesh::{BootstrapReport, MaintenancePolicy, MeshNameResolver};
 use tracing::{info, warn};
+use zeroize::Zeroizing;
 
 use crate::config::NamespaceConfig;
 
@@ -226,9 +227,12 @@ pub async fn join_with_application(
 ) -> Result<Arc<MeshNameResolver>> {
     // Held as a `SigningKey`, which wipes itself on drop, not as a bare seed
     // kept alive across the awaits below. `from_seed` takes the seed by value,
-    // so one short-lived copy is made for it.
+    // so one short-lived copy is made for it: ours is wiped, the by-value
+    // argument is moved into `spine-mesh` and is out of reach from here.
     let signing = load_or_create_key(&cfg.key_path)?;
-    let identity = SigningIdentity::from_seed("spine-core", signing.to_bytes());
+    let seed = Zeroizing::new(signing.to_bytes());
+    let identity = SigningIdentity::from_seed("spine-core", *seed);
+    drop(seed);
     let mesh = Arc::new(MeshNode::new(identity, MeshConfig::default()));
 
     let (transport, inbound) = TcpNameTransport::with_limits(
@@ -630,11 +634,19 @@ fn warn_if_key_is_exposed(path: &Path) {
 
 /// The signing key of a node-key seed in hex, or `None` if the text is not
 /// one. The key zeroizes its secret when dropped (the `zeroize` feature of
-/// `ed25519-dalek`, on by default); the seed array and the hex text it came
-/// from are plain memory and are not wiped, as `spine-core` has no
-/// dependency on `zeroize` to wipe them with.
+/// `ed25519-dalek`, on by default), and the decoded seed array is a
+/// [`Zeroizing`] wiped when this function returns.
+///
+/// This is best effort, not a guarantee: the caller still owns the hex text
+/// (see [`load_or_create_key`]), and copies the compiler leaves in registers or
+/// stack slots, the allocator, the operating system (page cache, swap, core
+/// dumps) and any other crate's types cannot be reached from here.
 fn signing_key_from_hex(text: &str) -> Option<ed25519_dalek::SigningKey> {
-    decode_hex(text).map(|seed| ed25519_dalek::SigningKey::from_bytes(&seed))
+    let mut seed = Zeroizing::new([0u8; 32]);
+    if !decode_hex_into(text, &mut seed) {
+        return None;
+    }
+    Some(ed25519_dalek::SigningKey::from_bytes(&seed))
 }
 
 /// Read the node's key, creating one on first run.
@@ -643,19 +655,27 @@ fn signing_key_from_hex(text: &str) -> Option<ed25519_dalek::SigningKey> {
 /// someone else's seed list, and a binary blob makes that needlessly awkward.
 /// A new file is created with mode 0600 on Unix; an existing one that other
 /// users can read draws a warning.
+///
+/// The hex text read from the file, the generated seed and the hex text written
+/// to it are all held in [`Zeroizing`] and wiped on drop. That is best effort:
+/// the buffer `read_to_string` grows may leave earlier, shorter allocations
+/// behind, and copies made by the allocator, the operating system or the file
+/// system are out of reach. The key file itself is plain text on disk.
 fn load_or_create_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
     let path = Path::new(path);
 
     if path.exists() {
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("reading node key {}", path.display()))?;
+        let raw = Zeroizing::new(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("reading node key {}", path.display()))?,
+        );
         let key = signing_key_from_hex(raw.trim())
             .with_context(|| format!("node key {} is not 64 hex characters", path.display()))?;
         warn_if_key_is_exposed(path);
         return Ok(key);
     }
 
-    let seed: [u8; 32] = rand::random();
+    let seed: Zeroizing<[u8; 32]> = Zeroizing::new(rand::random());
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -673,36 +693,53 @@ fn load_or_create_key(path: &str) -> Result<ed25519_dalek::SigningKey> {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             // Another starter won creation: retain its identity, never overwrite it.
-            let raw = std::fs::read_to_string(path)?;
+            let raw = Zeroizing::new(std::fs::read_to_string(path)?);
             return signing_key_from_hex(raw.trim())
                 .context("existing node key is incomplete or invalid");
         }
         Err(error) => return Err(error).context("creating node identity"),
     };
     use std::io::Write;
-    file.write_all(encode_hex(&seed).as_bytes())?;
+    let text = Zeroizing::new(encode_hex(&seed));
+    file.write_all(text.as_bytes())?;
     file.sync_all()?;
     info!(key = %path.display(), "generated a new node identity");
     Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
 }
 
+/// Lowercase hex, built in place: no per-byte temporary strings, so the only
+/// copy of the text is the returned one (wrap it in [`Zeroizing`] for a secret).
 fn encode_hex(bytes: &[u8; 32]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(64);
     for b in bytes {
-        out.push_str(&format!("{b:02x}"));
+        out.push(char::from(DIGITS[usize::from(b >> 4)]));
+        out.push(char::from(DIGITS[usize::from(b & 0x0f)]));
     }
     out
 }
 
-fn decode_hex(text: &str) -> Option<[u8; 32]> {
+/// Decode 64 hex characters into `out`; false (with `out` unspecified) if the
+/// text is not exactly that.
+fn decode_hex_into(text: &str, out: &mut [u8; 32]) -> bool {
     if text.len() != 64 {
-        return None;
+        return false;
     }
-    let mut out = [0u8; 32];
     for (i, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
+        let Some(byte) = text
+            .get(i * 2..i * 2 + 2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        else {
+            return false;
+        };
+        *slot = byte;
     }
-    Some(out)
+    true
+}
+
+fn decode_hex(text: &str) -> Option<[u8; 32]> {
+    let mut out = [0u8; 32];
+    decode_hex_into(text, &mut out).then_some(out)
 }
 
 #[cfg(test)]
@@ -880,6 +917,23 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Create, then reload from the file: the same public key comes back, and
+    /// the file holds exactly the 64 hex characters of the seed.
+    #[test]
+    fn a_created_key_reloads_with_the_same_public_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("node.key");
+        let path = path.to_str().unwrap();
+
+        let created = load_or_create_key(path).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert_eq!(text.len(), 64);
+        assert_eq!(text, encode_hex(&created.to_bytes()));
+
+        let reloaded = load_or_create_key(path).unwrap();
+        assert_eq!(created.verifying_key(), reloaded.verifying_key());
     }
 
     /// A new key file is private to its owner, and a file left wider is
