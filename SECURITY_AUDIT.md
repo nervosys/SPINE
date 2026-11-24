@@ -11,7 +11,7 @@
 5. **Replica records are in memory only; an evicted tombstone allows resurrection; equivocation proofs spread only when asked for.**
 6. **One host call in `execute_binary` is not interruptible, and compile time is outside the 2 s deadline.**
 7. **QUIC receive windows are library defaults, and the daemon does not use the mesh QUIC or WebSocket transports.**
-8. One `#[cfg]`-gated simulation (`UringRing`) reports I/O that never happens (section 8). It is not reachable from the daemon.
+8. `UringRing` (behind the non-default `io-uring` feature) is a queue with no kernel ring; its `submit_and_wait` returns an `Unsupported` error and no longer reports I/O that never happened (section 8). It is not reachable from the daemon.
 
 ## 1. Dependency pass
 
@@ -44,7 +44,7 @@ Not on the daemon path and not reviewed here: the RLWE lattice code, X3DH, the C
 
 **FIPS posture.** No crate is a FIPS 140-3 validated module. The `spine-gateway` crate has a `fips` feature (`Cargo.toml:73`, `fips = ["rustls/aws_lc_rs"]`); when enabled the gateway installs the `aws-lc-rs` provider as the rustls process default at start-up (`spine-gateway/src/main.rs:566-570`, `install_fips_provider`); that is an integration point, not a validated module, and the deployer must still build `aws-lc-rs` in FIPS mode. `spine-core` has no such feature and selects the Ring provider explicitly, so the daemon's native TLS is not affected by it. Treat any FIPS statement in older documents as unverified.
 
-**Key memory.** Handshake state and ephemeral secrets derive `Zeroize` and `ZeroizeOnDrop` (`handshake.rs:178`, `:413`), and `ed25519_dalek::SigningKey` zeroizes on drop (`identity.rs`). The daemon's key seed is read from a file (mode 0600 on Unix, `namespace.rs` `load_or_create_key`) into a plain `[u8; 32]`; no zeroizing wrapper was found on it. The earlier "CLOSED in v1.3.0: zeroize on `RingElement`, `QuantumKeyPair`, `MlKemKeyPair`, `Ed25519Keypair` ..." refers to research crates; nothing under `src/` uses them, and `SECURITY.md` carried the same list.
+**Key memory.** Handshake state and ephemeral secrets derive `Zeroize` and `ZeroizeOnDrop` (`handshake.rs:178`, `:413`), and `ed25519_dalek::SigningKey` zeroizes on drop (`identity.rs`). The daemon's node key is read from a file (created with mode 0600 on Unix; an existing wider file draws a start-up warning, `namespace.rs` `load_or_create_key`) and held as a `SigningKey`, which wipes itself on drop. The short-lived seed array and hex text are plain memory and not wiped; that needs a `zeroize` dependency in `spine-core`. The earlier "CLOSED in v1.3.0: zeroize on `RingElement`, `QuantumKeyPair`, `MlKemKeyPair`, `Ed25519Keypair` ..." refers to research crates; nothing under `src/` uses them, and `SECURITY.md` carried the same list.
 
 ### 2.1 Closed findings, kept as history
 
@@ -96,7 +96,7 @@ Each was read in the source; behaviour under load was not measured.
 6. Mesh authentication: derived agent ids, pins with a hard mismatch failure, response and hello checks against the session key, forged-sender tests on real TCP connections.
 7. Name lifetime, tombstones, succession logs, equivocation proofs and their persistence, as in `THREAT_MODEL.md` N4 and N5.
 8. Resource store: content-committing ids, fair share, post-dated refusal, owner-checked delete in the store API (not on the wire).
-9. Knowledge and session bounds (1,024 entries, 64 KiB per entry, 128 query results, 256 state variables).
+9. Knowledge and session bounds (1,024 entries, 64 KiB per entry, 128 query results, 256 state variables, and 32 MiB of knowledge for the whole daemon).
 10. `/metrics` renders every family with HELP and TYPE from fixed label sets; `/ready` has fixed reasons and warnings (`docs/NATIVE_OPERATIONS.md`).
 
 ## 6. Known residuals
@@ -114,12 +114,12 @@ Ratings are the reviewer's, not a standard score. "Open" means no change in the 
 | Per-publisher quotas bound a key, not a party | Medium | Open | `resources.rs:46-49` |
 | Mesh replica records in memory only | Low | Open | `02-names.md` 10.11 item 5 |
 | `execute_binary`: one host call and compile time outside the deadline | Low | Open | `spine-wasm` `DEFAULT_EXECUTION_DEADLINE` docs |
-| Aggregate knowledge memory has no global cap (about 1,000 sessions x 1,024 entries x 64 KiB) | Medium | Open. Computed from constants, not tested | `main.rs:600-613`, `knowledge.rs`, `config.rs` `max_sessions` |
+| Aggregate knowledge memory had no global cap (about 1,000 sessions x 1,024 entries x 64 KiB) | Medium | Fixed: 32 MiB daemon-wide byte budget (`KnowledgeBudget`), reserved before every store and released on reaping; unit-tested including concurrent reservations | `knowledge.rs`, `main.rs` `append_knowledge` |
 | Mesh QUIC receive windows are library defaults; 64-stream cap and QUIC handshake timeout untested | Low | Open; transport unused by the daemon | log, `057b2c2` |
 | Mesh QUIC handshake not bound to the TLS channel | Medium for users of the library | Open; transport unused by the daemon | `mesh_quic.rs` module docs |
 | Trust on first use for an unconfigured seed; pins forgotten on restart; pin tables stop at 1,024 | Medium | Open | `mesh_tcp.rs:499`, `:69` |
 | Handshake: no key confirmation, no identity hiding, no rekeying, replayable first message | Low to medium | By design, documented | `handshake.rs` module docs |
-| Node key not zeroized in daemon memory; key file plain on disk | Low | Open | `namespace.rs` `load_or_create_key` |
+| Node key seed array and hex text not wiped; key file plain on disk | Low | Partly fixed: held as a self-wiping `SigningKey`, wider file permissions warned; wiping the temporaries needs a `zeroize` dependency | `namespace.rs` `load_or_create_key` |
 | An unknown host name and an internal one answer with different outbound codes | Low | Open | log, `94371e7` |
 | Delete of resources not on the wire | Low | Open | log, `53f32bd` |
 | Metrics, `/ready`, dashboard and gateway have no per-user control; example configs showed wide binds | Low to medium | Partly fixed (templates), docs pages open | log, `9ecfac7`, `0009bf9` |
@@ -148,15 +148,15 @@ The 16 library hits and the behaviours that matter, with reachability from the d
 | `spine-core/src/ct.rs:67` | A comment recording that placeholder SPKIs were removed; the default policy is disabled with no trusted logs | Real, but the module is unused: `mod ct;` sits under `#[allow(dead_code)]` (`main.rs:36-37`) and nothing outside `ct.rs` refers to `CtPolicy` or `CtEnforcement` | No. Certificate Transparency enforcement is not applied to any connection, whatever `SECURITY.md` says about `CtPolicy::default()` |
 | `spine-grpc/build.rs:1`, `src/lib.rs:53` | "client + server stubs" generated by tonic from the `.proto` | Real (generated code) | No (separate bridge crate) |
 | `spine-transport/src/rdma.rs:382, 498, 669` | Typed stubs for InfiniBand verbs and GPU-Direct (`IbVerbsRdma`, `GpuDirectRdma`) and a placeholder comment for pointer types | Returns an explicit `RdmaError::HardwareUnavailable` (`:430`, `:465`, `:485`); the `rdma` feature is off by default; `LocalShmRdma` is a real in-process ring | No. The module is compiled in the default `spine-transport` build and nothing outside it calls it |
-| `spine-transport/src/uring.rs:374, 392, 431, 438, 442` | `UringRing` is a "stub": `submit_and_wait` pops each pending op and reports it complete with `result = op.len`, with no kernel I/O (`:430-453`) | **Neither real, test-only nor an explicit unsupported error: it returns fabricated success.** Compiled only on Linux with the non-default `io-uring` feature (`lib.rs:53-57`); no other crate enables the feature. `uring_backend.rs` builds on it, and the crate's top-level docs list "io_uring Support" as a feature | No. This is the one item the Stage 12 review should resolve: make `UringRing::new` or `submit_and_wait` return an unsupported error, or delete the module |
+| `spine-transport/src/uring.rs:374, 392, 431, 438, 442` | `UringRing` is a "stub": `submit_and_wait` pops each pending op and reports it complete with `result = op.len`, with no kernel I/O (`:430-453`) | **Fixed after this review: `submit_and_wait` now returns an `Unsupported` I/O error and the docs say io_uring is not implemented. The text of this row describes the code at `a4efd03`: it returned fabricated success.** Compiled only on Linux with the non-default `io-uring` feature (`lib.rs:53-57`); no other crate enables the feature. `uring_backend.rs` builds on it, and the crate's top-level docs list "io_uring Support" as a feature | No. This is the one item the Stage 12 review should resolve: make `UringRing::new` or `submit_and_wait` return an unsupported error, or delete the module |
 | `spine-parser/src/lib.rs:263` | Reads the HTML `placeholder` attribute of a form field | Not a marker (data) | Yes, as ordinary parsing |
 
 Behaviours that are marker-like without containing the words, and are reachable (`main.rs`, `BrowserCommand::ExecuteBinary`):
 
 | File:line | What it does | Reachable |
 | --- | --- | --- |
-| `spine-core/src/main.rs:1250-1259` | A program's `search` action is logged and, without the `research` feature, discarded: it reports `executed` and performs no search | Yes (default build) |
-| `spine-core/src/main.rs:1294-1304` | `query_knowledge` and `reason` actions from a program are only logged; they do nothing | Yes |
+| `spine-core/src/main.rs:1250-1259` | At `a4efd03` a program's `search` action was logged and, without the `research` feature, discarded: it reported `executed` and performed no search. Fixed: the program is refused up front with `execution_failed` naming the action (`actions.rs` `unsupported_action`) | Fixed |
+| `spine-core/src/main.rs:1294-1304` | At `a4efd03` `query_knowledge` and `reason` actions from a program were only logged. Fixed the same way, in every build | Fixed |
 | `spine-mesh/src/naming_mesh.rs:1324` | Application RPC with no handler answers `{"error":{"code":"unsupported","message":"application RPC is disabled"}}` | Yes (when tasks are not enabled): an explicit unsupported answer |
 | `spine-core/src/main.rs:1891, 1899` | Legacy swarm search and task events from the cluster listener log "unsupported" and do nothing | Only in a `research` build (`#[cfg(feature = "research")]`, `main.rs:1786-1794`) |
 
@@ -166,9 +166,8 @@ Markers earlier reviews named that no longer exist: the `Search`, `Click` and `T
 
 Not changed here unless this file or `THREAT_MODEL.md`, `README.md` or `SECURITY.md`:
 
-- `docs/NATIVE_OPERATIONS.md` says the daemon negotiates `max_inflight` of 1 and that native commands are serial; `DAEMON_MAX_INFLIGHT` is 8 (`spine-protocol/src/native.rs:127`) and each connection runs a reader, command loop and writer. Commands of one connection still run one at a time.
-- `docs/NATIVE_OPERATIONS.md` says "the number of knowledge entries within a live session" is not bounded; it is (1,024).
-- `docs/spec/00-wire.md` still names `put_tracked` and a 256 MiB serialised limit for resources (log, `0896e37`), not re-checked here.
+- Corrected afterwards: `docs/NATIVE_OPERATIONS.md` said the daemon negotiates `max_inflight` of 1; `DAEMON_MAX_INFLIGHT` is 8 (`spine-protocol/src/native.rs:127`) and each connection runs a reader, command loop and writer. Commands of one connection still run one at a time. The same document now states the knowledge bounds (1,024 entries per session, 32 MiB daemon-wide).
+- `docs/spec/00-wire.md` was re-checked: it does not name `put_tracked` and its 256 MiB resource limit is the accounted bytes of `resources.rs` `MAX_STORED_BYTES`, with the 64 MiB per-publisher share; nothing needed correcting there. `docs/AGENT_WEB_QUICKSTART.md` called the 256 MiB "serialized" and now says accounted.
 
 ## 10. Not covered
 

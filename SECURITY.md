@@ -157,8 +157,12 @@ validated module is a deployer-toolchain decision.
 Corrected 2026-11-23. Handshake state and ephemeral secrets in
 `spine-session` derive `Zeroize` and `ZeroizeOnDrop`, and
 `ed25519_dalek::SigningKey` zeroizes on drop (`spine-mesh/src/identity.rs`).
-The daemon's key seed is stored in a plain file (mode 0600 on Unix) and
-is read into a plain `[u8; 32]` with no zeroizing wrapper that was found.
+The daemon's node key is stored in a plain file, created with mode 0600 on
+Unix (on Windows it takes the access list of its directory); an existing file
+open to other users draws a start-up warning. It is held as an
+`ed25519_dalek::SigningKey`, which wipes itself on drop. The short-lived seed
+array and hex text read from the file are plain memory and are not wiped:
+that needs a `zeroize` dependency in `spine-core`.
 The earlier list of `spine_crypto` and `spine_agentic` structs that
 zeroize on drop concerns research crates that the daemon does not use,
 and is not repeated. Zeroization does not protect against a reader of the
