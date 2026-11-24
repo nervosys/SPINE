@@ -122,8 +122,19 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
             }
         } else {
             // Fallback to system certs if no CA provided
-            for cert in rustls_native_certs::load_native_certs()? {
-                root_store.add(CertificateDer::from(cert.0))?;
+            let loaded = rustls_native_certs::load_native_certs();
+            for error in &loaded.errors {
+                tracing::warn!(%error, "skipping a system root certificate source");
+            }
+            if loaded.certs.is_empty() && !loaded.errors.is_empty() {
+                anyhow::bail!(
+                    "could not load any system root certificates ({} error(s), first: {})",
+                    loaded.errors.len(),
+                    loaded.errors[0]
+                );
+            }
+            for cert in loaded.certs {
+                root_store.add(cert)?;
             }
         }
 

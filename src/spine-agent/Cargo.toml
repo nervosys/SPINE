@@ -32,7 +32,7 @@ anyhow.workspace = true
 tokio.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
-rustls-native-certs = "0.6"
+rustls-native-certs = "0.8"
 tracing = "0.1"
 
 
