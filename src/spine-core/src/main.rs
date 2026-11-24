@@ -1391,9 +1391,9 @@ async fn handle_command(
 }
 
 /// Resource store accounting, read off the async threads. `None`: unreadable.
-async fn resource_bytes(state: &Arc<BrowserState>) -> Option<u64> {
+async fn resource_usage(state: &Arc<BrowserState>) -> Option<spine_core::resources::ResourceUsage> {
     let state = state.clone();
-    tokio::task::spawn_blocking(move || state.resources.total_bytes().ok())
+    tokio::task::spawn_blocking(move || state.resources.usage().ok())
         .await
         .ok()
         .flatten()
@@ -1409,7 +1409,7 @@ async fn dependencies(state: &Arc<BrowserState>) -> spine_core::operations::Depe
         persistence_failing: state
             .persistence_failing
             .load(std::sync::atomic::Ordering::Relaxed),
-        storage_unavailable: resource_bytes(state).await.is_none(),
+        storage_unavailable: resource_usage(state).await.is_none(),
         namespace_enabled: state.mesh_names.is_some(),
         namespace_peers,
         seeds_configured: !state.config.namespace.seeds.is_empty()
@@ -1432,6 +1432,7 @@ async fn metrics_snapshot(state: &Arc<BrowserState>) -> spine_core::operations::
         });
     }
     let cache = state.names.cache_stats();
+    let usage = resource_usage(state).await;
     MetricsSnapshot {
         sessions_limit: state.config.server.max_sessions,
         draining: state
@@ -1445,8 +1446,9 @@ async fn metrics_snapshot(state: &Arc<BrowserState>) -> spine_core::operations::
         persistence_failing: state
             .persistence_failing
             .load(std::sync::atomic::Ordering::Relaxed),
-        resource_bytes: resource_bytes(state).await,
-        resource_limit_bytes: spine_core::resources::MAX_STORED_BYTES,
+        resource_bytes: usage.map(|u| u.bytes),
+        resource_limit_bytes: state.resources.limit_bytes(),
+        resource_blobs: usage.map_or(0, |u| u.blobs as u64),
         records_held: state.names.local_len(),
         cache: CacheCounts {
             hits: cache.hits,

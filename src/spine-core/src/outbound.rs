@@ -797,6 +797,7 @@ mod tests {
             persistence_failing: false,
             resource_bytes: None,
             resource_limit_bytes: 0,
+            resource_blobs: 0,
             records_held: 0,
             cache: crate::operations::CacheCounts::default(),
             activity: crate::operations::NamespaceCounts::default(),

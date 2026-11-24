@@ -173,6 +173,8 @@ pub struct MetricsSnapshot {
     /// `None` when the store's accounting could not be read.
     pub resource_bytes: Option<u64>,
     pub resource_limit_bytes: u64,
+    /// Blobs in the resource store; 0 while its accounting is unreadable.
+    pub resource_blobs: u64,
     pub records_held: usize,
     pub cache: CacheCounts,
     pub activity: NamespaceCounts,
@@ -373,6 +375,12 @@ pub fn render_metrics(m: &MetricsSnapshot) -> String {
         "resource_store_bytes",
         "Accounted bytes held by the resource store.",
         m.resource_bytes.unwrap_or(0),
+    );
+    gauge(
+        out,
+        "resource_store_blobs",
+        "Blobs held by the resource store.",
+        m.resource_blobs,
     );
     gauge(
         out,
@@ -624,6 +632,7 @@ mod tests {
             persistence_failing: false,
             resource_bytes: Some(1024),
             resource_limit_bytes: 4096,
+            resource_blobs: 3,
             records_held: 7,
             cache: CacheCounts {
                 hits: 5,
@@ -719,6 +728,8 @@ mod tests {
             "spine_execute_permits_in_use 1\n",
             "spine_resource_store_available 1\n",
             "spine_resource_store_bytes 1024\n",
+            "# TYPE spine_resource_store_blobs gauge\nspine_resource_store_blobs 3\n",
+            "spine_resource_store_limit_bytes 4096\n",
             "spine_namespace_records_held 7\n",
             "spine_namespace_cache_lookups_total{result=\"negative_hit\"} 2\n",
             "spine_namespace_enabled 1\n",

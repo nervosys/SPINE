@@ -324,6 +324,20 @@ impl Verified {
     }
 }
 
+/// What the store holds, read from the accounting it already keeps in memory:
+/// nothing is read from the backend and no blob is hashed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceUsage {
+    /// Accounted bytes held by all publishers (`ResourceStore::total_bytes`).
+    pub bytes: u64,
+    /// Blobs held, one per accounting row.
+    pub blobs: usize,
+    /// The total byte limit this store admits against.
+    pub limit_bytes: u64,
+    /// Distinct publishers holding at least one blob.
+    pub publishers: usize,
+}
+
 pub struct ResourceStore {
     backend: Arc<dyn StorageBackend>,
     /// Accounting index; also the write lock. `None` until loaded.
@@ -621,6 +635,29 @@ impl ResourceStore {
     /// Accounted bytes held by all publishers.
     pub fn total_bytes(&self) -> Result<u64> {
         self.with_index(|index| Ok(index.total))
+    }
+
+    /// The total byte limit (`MAX_STORED_BYTES` unless `with_limits` changed it).
+    pub fn limit_bytes(&self) -> u64 {
+        self.total_limit
+    }
+
+    /// Bytes, blobs, limit and publishers in one read of the in-memory index.
+    /// The blob count is the number of accounting rows, which every put,
+    /// delete and eviction already keeps in step with the bytes; the publisher
+    /// count walks that map once (memory only). It fails only if the index
+    /// could not be loaded, as `total_bytes` does.
+    pub fn usage(&self) -> Result<ResourceUsage> {
+        let limit_bytes = self.total_limit;
+        self.with_index(|index| {
+            let publishers: HashSet<&[u8; 32]> = index.metas.values().map(|m| &m.owner).collect();
+            Ok(ResourceUsage {
+                bytes: index.total,
+                blobs: index.metas.len(),
+                limit_bytes,
+                publishers: publishers.len(),
+            })
+        })
     }
 
     fn load_verified(&self, hash: [u8; 32]) -> Result<Arc<Blob>, ReadError> {
@@ -1023,6 +1060,67 @@ mod tests {
             store.delete([2; 32], hash),
             Err(DeleteError::NotOwner)
         ));
+    }
+
+    /// The blob count and the byte total follow every way a blob comes and goes,
+    /// and agree with what the backend holds.
+    #[test]
+    fn usage_follows_put_delete_eviction_and_reopen() {
+        let backend = Arc::new(spine_storage::InMemoryBackend::new());
+        let store = ResourceStore::new(backend.clone()).with_limits(4 * cost(), 2 * cost());
+        let rows = |store: &ResourceStore| {
+            let usage = store.usage().unwrap();
+            assert_eq!(
+                usage.blobs,
+                store.backend.scan(NAMESPACE, None).unwrap().len(),
+                "one accounting row per stored blob"
+            );
+            assert_eq!(
+                usage.blobs,
+                store.backend.scan(META_NAMESPACE, None).unwrap().len()
+            );
+            assert_eq!(usage.bytes, store.total_bytes().unwrap());
+            usage
+        };
+        let empty = rows(&store);
+        assert_eq!(
+            (
+                empty.bytes,
+                empty.blobs,
+                empty.limit_bytes,
+                empty.publishers
+            ),
+            (0, 0, 4 * cost(), 0)
+        );
+
+        // Puts, from two publishers; the same content again adds nothing.
+        put_n(&store, 2, 20, 1000).unwrap();
+        for n in 1..=3 {
+            put_n(&store, 1, n, 1000 + u64::from(n)).unwrap();
+        }
+        put_n(&store, 1, 1, 1005).unwrap();
+        let full = rows(&store);
+        assert_eq!((full.blobs, full.publishers), (4, 2));
+        assert_eq!(full.bytes, 4 * cost());
+
+        // An eviction frees one blob and the admission adds one.
+        put_n(&store, 1, 4, 1010).unwrap();
+        assert_eq!(rows(&store).blobs, 4);
+        // An under-share publisher displaces another's blob.
+        put_n(&store, 2, 21, 1020).unwrap();
+        assert_eq!(rows(&store).blobs, 4);
+
+        // Deletes.
+        store.delete([2; 32], id_of(20)).unwrap();
+        let after = rows(&store);
+        assert_eq!(after.blobs, 3);
+        assert_eq!(after.bytes, 3 * cost());
+        assert!(store.delete([2; 32], [5; 32]).is_err());
+        assert_eq!(rows(&store), after, "a refused delete changes nothing");
+
+        // A reopen rebuilds the same counts from the rows.
+        let reopened = ResourceStore::new(backend).with_limits(4 * cost(), 2 * cost());
+        assert_eq!(rows(&reopened), after);
     }
 
     #[test]
