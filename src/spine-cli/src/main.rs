@@ -215,6 +215,20 @@ enum QueryAction {
         addr: String,
     },
 
+    /// Delete this connection's knowledge entries with a key.
+    ///
+    /// Knowledge belongs to a session, and each one-shot command starts a new
+    /// one, so this finds nothing that an earlier `store` left (it answers 0).
+    /// It exists for completeness; an SDK client deletes within its own session.
+    DeleteKnowledge {
+        /// Key of the entries to delete
+        key: String,
+
+        /// Server address
+        #[arg(short, long, default_value = "127.0.0.1:8080")]
+        addr: String,
+    },
+
     /// Get raw HTML from current page
     Html {
         /// URL to fetch
@@ -300,6 +314,9 @@ async fn main() -> Result<()> {
                 limit,
                 addr,
             } => commands::query::knowledge(addr, query, tags, limit).await,
+            QueryAction::DeleteKnowledge { key, addr } => {
+                commands::query::delete_knowledge(addr, key).await
+            }
             QueryAction::Html { url, addr } => commands::query::html(addr, url).await,
             QueryAction::Exec { script, addr } => commands::query::exec(addr, script).await,
             QueryAction::Ping { addr, count } => commands::query::ping(addr, count).await,

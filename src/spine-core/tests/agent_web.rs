@@ -193,7 +193,9 @@ async fn execute_binary_is_confined() {
                 .await
                 .expect("execute_binary deadline")
                 .unwrap_err();
-            assert_eq!(code_of(&unsupported), "execution_failed");
+            // Stage 3 of the wire revision: not `execution_failed`, which stays
+            // for a program that failed to run.
+            assert_eq!(code_of(&unsupported), "action_unsupported");
             assert!(format!("{unsupported:#}").contains("search"), "{unsupported:#}");
         }
 
@@ -221,7 +223,7 @@ async fn execute_binary_is_confined() {
             .await
             .expect("store_knowledge deadline")
             .unwrap_err();
-        assert_eq!(code_of(&refused), "execution_failed");
+        assert_eq!(code_of(&refused), "knowledge_entry_too_large");
         let mut other = connect(&mut node, dir.path(), origin).await;
         for query in ["", "shared-key"] {
             let theirs = tokio::time::timeout(step, other.query_knowledge(query, vec![], 10))
@@ -234,6 +236,224 @@ async fn execute_binary_is_confined() {
     })
     .await
     .expect("execute_binary confinement deadline exceeded");
+}
+
+/// Stage 3 of the wire revision, `delete_resource` (`00-wire.md` 12.2): only a
+/// proof by the key that published the blob, made for this connection's
+/// `binding`, deletes it. A proof that does not verify is `delete_refused`; a
+/// valid proof by a key that does not own the blob answers as a hash nobody
+/// holds does (`deleted: false`); a repeat is `deleted: false`; the name record
+/// is not touched, and a read of the bytes then fails like any missing blob.
+#[tokio::test]
+async fn delete_resource_needs_the_publishers_proof_made_for_this_connection() {
+    use spine_protocol::resource::sign_delete_proof;
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut node = start(dir.path(), origin, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        let mut other = connect(&mut node, dir.path(), origin).await;
+        assert_ne!(client.binding(), other.binding());
+
+        let now = unix_now();
+        let publisher = SigningKey::from_bytes(&[0x71; 32]);
+        let stranger = SigningKey::from_bytes(&[0x72; 32]);
+        let owner = publisher.verifying_key().to_bytes();
+        let bytes = b"bytes the publisher will delete".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let mut record = NameRecord::new(SpineUri::did(owner), 1, now)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"))
+            .with_content_hash(id);
+        record.sign(&publisher).unwrap();
+        let name = record.name.to_string();
+
+        let report = within(
+            "publish_resource",
+            client.publish_resource(&record, "text/plain", bytes.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report["stored"], true);
+
+        // A proof by another key, for the publisher's `owner` field.
+        let forged = sign_delete_proof(&stranger, &id, &client.binding());
+        let refused = within(
+            "forged proof",
+            client.delete_resource_with_proof(id, owner, forged),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&refused), "delete_refused");
+        // The publisher's own proof, made for the other connection's binding.
+        let elsewhere = sign_delete_proof(&publisher, &id, &other.binding());
+        let refused = within(
+            "proof for another connection",
+            client.delete_resource_with_proof(id, owner, elsewhere),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&refused), "delete_refused");
+        // A valid proof by a key that does not own the blob, and a valid proof
+        // for a hash nobody holds, answer the same: nothing was deleted.
+        assert!(!within(
+            "a stranger's own proof",
+            client.delete_resource(id, &stranger)
+        )
+        .await
+        .unwrap());
+        assert!(!within(
+            "an absent hash",
+            client.delete_resource([0x99; 32], &publisher)
+        )
+        .await
+        .unwrap());
+        // Nothing above removed the blob.
+        let read = within(
+            "read before the delete",
+            client.read_resource(record.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(read.data, bytes);
+
+        // The publisher's proof for this connection deletes it.
+        assert!(within("delete", client.delete_resource(id, &publisher))
+            .await
+            .unwrap());
+        let gone = within(
+            "read after the delete",
+            client.read_resource(record.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&gone), "resource_not_found");
+        // A repeat is a success that says nothing was deleted.
+        assert!(
+            !within("repeat delete", client.delete_resource(id, &publisher))
+                .await
+                .unwrap()
+        );
+        // The name record that bound the resource is not deleted.
+        let resolution = within("resolve_name", client.resolve_name(&name, None))
+            .await
+            .unwrap();
+        assert!(
+            matches!(resolution, spine_protocol::NameResolution::Resolved { .. }),
+            "{resolution:?}"
+        );
+        // And the publisher can store the bytes again.
+        let report = within(
+            "publish again",
+            other.publish_resource(&record, "text/plain", bytes.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report["stored"], true);
+        let read = within("read again", other.read_resource(record.clone()))
+            .await
+            .unwrap();
+        assert_eq!(read.data, bytes);
+    })
+    .await
+    .expect("delete_resource acceptance deadline exceeded");
+}
+
+/// Stage 3 of the wire revision, `delete_knowledge` (`00-wire.md` 12.2): the
+/// entries of one key of this connection's session go, the count is reported,
+/// the rest stay, a repeat deletes nothing, and another session's entries with
+/// the same key are not touched.
+#[tokio::test]
+async fn delete_knowledge_removes_one_key_of_this_session_only() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut node = start(dir.path(), origin, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        let mut other = connect(&mut node, dir.path(), origin).await;
+        let mut fresh = connect(&mut node, dir.path(), origin).await;
+
+        for (key, value) in [("a", 1), ("b", 2), ("a", 3)] {
+            within(
+                "store_knowledge",
+                client.store_knowledge(key, serde_json::json!(value), vec![]),
+            )
+            .await
+            .unwrap();
+        }
+        within(
+            "the other session's store",
+            other.store_knowledge("a", serde_json::json!("theirs"), vec![]),
+        )
+        .await
+        .unwrap();
+
+        // A key that is only a prefix, or another case, matches nothing.
+        for near in ["", "A", "a ", "ab"] {
+            assert_eq!(
+                within("a near miss", client.delete_knowledge(near))
+                    .await
+                    .unwrap(),
+                0,
+                "{near:?}"
+            );
+        }
+        assert_eq!(
+            within("delete a", client.delete_knowledge("a"))
+                .await
+                .unwrap(),
+            2
+        );
+        let left = within("query", client.query_knowledge("", vec![], 10))
+            .await
+            .unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0]["key"], "b");
+        assert_eq!(left[0]["value"], 2);
+        // A repeat is a success that deletes nothing.
+        assert_eq!(
+            within("repeat", client.delete_knowledge("a"))
+                .await
+                .unwrap(),
+            0
+        );
+        // The other session still has its entry under the same key.
+        let theirs = within("the other query", other.query_knowledge("", vec![], 10))
+            .await
+            .unwrap();
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0]["value"], "theirs");
+        // A connection that has stored nothing deletes nothing, and can still
+        // store afterwards.
+        assert_eq!(
+            within("no session", fresh.delete_knowledge("a"))
+                .await
+                .unwrap(),
+            0
+        );
+        within(
+            "store after",
+            fresh.store_knowledge("a", serde_json::json!(4), vec![]),
+        )
+        .await
+        .unwrap();
+        // The deleted room can be stored into again.
+        within(
+            "store a again",
+            client.store_knowledge("a", serde_json::json!(5), vec![]),
+        )
+        .await
+        .unwrap();
+        let again = within("query again", client.query_knowledge("a", vec![], 10))
+            .await
+            .unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0]["value"], 5);
+    })
+    .await
+    .expect("delete_knowledge acceptance deadline exceeded");
 }
 
 /// Shutdown is announced: an idle established connection receives

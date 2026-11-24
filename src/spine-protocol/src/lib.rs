@@ -314,8 +314,9 @@ pub enum ProtocolUnaryOp {
 ///
 /// A command with fields is a single-entry map `{name: fields}`; a command
 /// without is the text string of its name. The 17 browser commands, plus
-/// `tool_call` and `capability_query` from D.1, are the whole set; a name
-/// outside it is answered with `unknown_command`. The Rust name is historical:
+/// `tool_call` and `capability_query` from D.1 and the two delete commands of
+/// the 2026-11-24 revision, are the whole set (21); a name outside it is
+/// answered with `unknown_command`. The Rust name is historical:
 /// it now holds more than browser commands.
 ///
 /// Wire names are the `rename` attributes (listed in
@@ -468,11 +469,31 @@ pub enum BrowserCommand {
     /// [`CapabilityAdvertisement`].
     #[serde(rename = "capability_query")]
     CapabilityQuery(CapabilityQuery),
+
+    // ---- Deletion (`docs/spec/00-wire.md` 12.2, 12.4).
+    /// Delete a stored resource. `proof` is the publisher's Ed25519 signature
+    /// over the message of [`resource::delete_resource_message`], which holds
+    /// this connection's `HELLO_ACK.binding`, so it cannot be replayed on
+    /// another connection. The name record that binds the resource is not
+    /// touched.
+    #[serde(rename = "delete_resource")]
+    DeleteResource {
+        #[serde(with = "wirefmt::byte_array")]
+        hash: [u8; 32],
+        #[serde(with = "wirefmt::byte_array")]
+        owner: [u8; 32],
+        #[serde(with = "wirefmt::byte_array")]
+        proof: [u8; 64],
+    },
+    /// Delete this connection's session's knowledge entries whose key equals
+    /// `key`; the reply says how many.
+    #[serde(rename = "delete_knowledge")]
+    DeleteKnowledge { key: String },
 }
 
 /// The wire names of every [`BrowserCommand`], in declaration order. The
 /// daemon uses it to tell `unknown_command` from `invalid_request`.
-pub const COMMAND_NAMES: [&str; 19] = [
+pub const COMMAND_NAMES: [&str; 21] = [
     "navigate",
     "get_ur",
     "get_raw_html",
@@ -492,6 +513,8 @@ pub const COMMAND_NAMES: [&str; 19] = [
     "mesh_call",
     "tool_call",
     "capability_query",
+    "delete_resource",
+    "delete_knowledge",
 ];
 
 /// The result of a name resolution.

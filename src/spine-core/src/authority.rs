@@ -216,6 +216,16 @@ pub fn classify(command: &BrowserCommand) -> Requirement {
         BrowserCommand::MeshCall { .. } => (Action::Invoke, Effect::Irreversible, NodeArea::Mesh),
         BrowserCommand::ToolCall(_) => (Action::Invoke, Effect::Irreversible, NodeArea::Tools),
         BrowserCommand::CapabilityQuery(_) => (Action::Read, Effect::Read, NodeArea::Tools),
+        // The node's copy of the bytes goes and cannot be got back from the
+        // node; the publisher's own proof is a second, independent check.
+        BrowserCommand::DeleteResource { .. } => {
+            (Action::Publish, Effect::Irreversible, NodeArea::Resources)
+        }
+        // Only this session's own entries go, and storing the value again
+        // restores them.
+        BrowserCommand::DeleteKnowledge { .. } => {
+            (Action::Invoke, Effect::Reversible, NodeArea::Knowledge)
+        }
     };
     Requirement::of(action, effect, area)
 }
@@ -829,6 +839,14 @@ mod tests {
             BrowserCommand::CapabilityQuery(CapabilityQuery {
                 selector: CapabilitySelector::All,
             }),
+            BrowserCommand::DeleteResource {
+                hash: [0u8; 32],
+                owner: [0u8; 32],
+                proof: [0u8; 64],
+            },
+            BrowserCommand::DeleteKnowledge {
+                key: "k".to_string(),
+            },
         ]
     }
 
@@ -854,6 +872,8 @@ mod tests {
             BrowserCommand::MeshCall { .. } => "mesh_call",
             BrowserCommand::ToolCall(_) => "tool_call",
             BrowserCommand::CapabilityQuery(_) => "capability_query",
+            BrowserCommand::DeleteResource { .. } => "delete_resource",
+            BrowserCommand::DeleteKnowledge { .. } => "delete_knowledge",
         }
     }
 
@@ -1043,13 +1063,30 @@ mod tests {
                     assert_eq!(requirement.action, Action::Invoke, "{name}");
                     assert_eq!(requirement.effect, Effect::Irreversible, "{name}");
                 }
-                "publish_name" | "publish_resource" => {
+                "publish_name" | "publish_resource" | "delete_resource" => {
                     assert_eq!(requirement.action, Action::Publish, "{name}");
                     assert_eq!(requirement.effect, Effect::Irreversible, "{name}");
                 }
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn the_delete_commands_are_classified_as_the_spec_table_says() {
+        let delete_resource = classify(&BrowserCommand::DeleteResource {
+            hash: [0u8; 32],
+            owner: [0u8; 32],
+            proof: [0u8; 64],
+        });
+        assert_eq!(delete_resource.action, Action::Publish);
+        assert_eq!(delete_resource.effect, Effect::Irreversible);
+        assert_eq!(delete_resource.node_path, NodeArea::Resources.path());
+        let delete_knowledge = classify(&BrowserCommand::DeleteKnowledge { key: String::new() });
+        assert_eq!(delete_knowledge.action, Action::Invoke);
+        assert_eq!(delete_knowledge.effect, Effect::Reversible);
+        assert_eq!(delete_knowledge.node_path, NodeArea::Knowledge.path());
+        assert_eq!(every_command().len(), COMMAND_NAMES.len());
     }
 
     #[test]

@@ -189,6 +189,45 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         .await
     }
 
+    /// Delete the resource `hash` from the origin, as its publisher.
+    ///
+    /// `owner` is the key the blob was stored under: the key in the name of the
+    /// record that published it (the inception key of a rotated name, not its
+    /// current key). The proof is `owner`'s signature over this connection's
+    /// `binding` and the hash, so it is good for this connection only. Returns
+    /// whether a blob was deleted: `false` is success (no such blob, an earlier
+    /// delete, or a blob another publisher holds, which the origin does not
+    /// tell apart). A proof the origin does not accept is
+    /// [`spine_protocol::native::NativeError::Remote`] with the code
+    /// `delete_refused`. The name record that bound the resource is not
+    /// touched: a later read answers `resource_not_found`.
+    pub async fn delete_resource(
+        &mut self,
+        hash: [u8; 32],
+        owner: &spine_protocol::resource::SigningKey,
+    ) -> Result<bool> {
+        let proof = spine_protocol::resource::sign_delete_proof(owner, &hash, &self.binding());
+        self.delete_resource_with_proof(hash, owner.verifying_key().to_bytes(), proof)
+            .await
+    }
+
+    /// [`Self::delete_resource`] with a proof made elsewhere (an offline signer,
+    /// or a test of a refused proof). The proof must be for this connection's
+    /// [`AgentClient::binding`].
+    pub async fn delete_resource_with_proof(
+        &mut self,
+        hash: [u8; 32],
+        owner: [u8; 32],
+        proof: [u8; 64],
+    ) -> Result<bool> {
+        let value: serde_json::Value = self
+            .send_request(BrowserCommand::DeleteResource { hash, owner, proof })
+            .await?;
+        value["deleted"]
+            .as_bool()
+            .context("delete_resource answered without a flag")
+    }
+
     /// Retrieve from an already connected origin, including a TLS-connected
     /// client. A signed record fixes the expected content across every chunk.
     ///

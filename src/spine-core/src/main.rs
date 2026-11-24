@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use spine_cluster::{ClusterNode, NodeCapabilities};
 use spine_core::outbound;
 use spine_protocol::body::{
-    ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_EXECUTION_FAILED, ERR_INTERNAL,
-    ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED, ERR_LOOKUP_FAILED,
-    ERR_LOOKUP_UNAVAILABLE, ERR_MALFORMED_RECORD, ERR_MESH_CALL_FAILED, ERR_NAMESPACE_UNAVAILABLE,
-    ERR_NO_PAGE, ERR_OVERLOADED, ERR_PARSE_ERROR, ERR_PUBLISH_FAILED, ERR_RATE_LIMIT,
-    ERR_RECORD_EXPIRED, ERR_RECORD_REJECTED, ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY,
-    ERR_SESSION_EXPIRED, ERR_SESSION_NOT_FOUND,
+    ERR_ACTION_UNSUPPORTED, ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_DELETE_REFUSED,
+    ERR_EXECUTION_FAILED, ERR_INTERNAL, ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED,
+    ERR_KNOWLEDGE_CAPACITY, ERR_LOOKUP_FAILED, ERR_LOOKUP_UNAVAILABLE, ERR_MALFORMED_RECORD,
+    ERR_MESH_CALL_FAILED, ERR_NAMESPACE_UNAVAILABLE, ERR_NO_PAGE, ERR_OVERLOADED, ERR_PARSE_ERROR,
+    ERR_PUBLISH_FAILED, ERR_RATE_LIMIT, ERR_RECORD_EXPIRED, ERR_RECORD_REJECTED,
+    ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY, ERR_SESSION_EXPIRED, ERR_SESSION_NOT_FOUND,
 };
 use spine_protocol::connection::{
     response_ok_body, Connection, ConnectionError, ConnectionReader, ConnectionWriter, Incoming,
@@ -204,15 +204,38 @@ impl KnowledgeEntry {
 impl BrowserState {
     /// Appends `entry` to the knowledge of `bucket` (a session id or a
     /// cluster bucket), holding it to the per-session entry cap, the entry
-    /// size and the daemon-wide byte budget. The reason is the refusal.
-    fn append_knowledge(&self, bucket: &str, entry: KnowledgeEntry) -> Result<(), String> {
+    /// size and the daemon-wide byte budget. The refusal carries the reason
+    /// and the wire code that answers it.
+    fn append_knowledge(
+        &self,
+        bucket: &str,
+        entry: KnowledgeEntry,
+    ) -> Result<(), spine_core::knowledge::Refusal> {
         let size = spine_core::knowledge::entry_bytes(&entry.key, &entry.value, &entry.tags);
         let mut held = self.knowledge_base.entry(bucket.to_string()).or_default();
         spine_core::knowledge::admit_entry(held.len(), MAX_KNOWLEDGE_ENTRIES_PER_SESSION, size)?;
         self.knowledge_budget
-            .reserve(spine_core::knowledge::entry_cost(size))?;
+            .reserve(spine_core::knowledge::entry_cost(size))
+            .map_err(spine_core::knowledge::Refusal::Capacity)?;
         held.push(entry);
         Ok(())
+    }
+
+    /// Deletes the entries of the session `session_id` whose key is exactly
+    /// `key`, releases what they were charged from the daemon-wide budget and
+    /// returns how many there were. Zero when the session holds none (or no
+    /// knowledge at all), so a repeat is a no-op. Other sessions' and the
+    /// cluster buckets' entries are never looked at.
+    fn delete_knowledge(&self, session_id: &str, key: &str) -> usize {
+        match self.knowledge_base.get_mut(session_id) {
+            Some(mut held) => spine_core::knowledge::delete_matching(
+                &mut *held,
+                |entry| entry.key == key,
+                KnowledgeEntry::cost,
+                &self.knowledge_budget,
+            ),
+            None => 0,
+        }
     }
 
     fn create_session(self: &Arc<Self>) -> Option<SessionLease> {
@@ -692,6 +715,37 @@ fn read_failure(error: &spine_core::resources::ReadError) -> WireError {
         ReadError::Internal(_) => ERR_INTERNAL,
     };
     fail(code, error.to_string())
+}
+
+/// The answer to `delete_resource`. The proof is checked first, against the
+/// `owner` the request names and this connection's `binding`, before the store
+/// is read, so a caller that cannot prove a key learns nothing about what the
+/// store holds. A proof that does not verify is `delete_refused`. A valid proof
+/// is then looked up under that owner: a blob it owns is deleted
+/// (`deleted: true`); no blob, or a blob another publisher holds, answers
+/// `deleted: false` alike, so a caller with any key at all cannot tell the two
+/// apart. The name record that binds the resource is not touched.
+fn delete_resource(
+    state: &BrowserState,
+    binding: [u8; 32],
+    hash: [u8; 32],
+    owner: [u8; 32],
+    proof: [u8; 64],
+) -> Answer {
+    use spine_core::resources::DeleteError;
+    if !spine_protocol::resource::verify_delete_proof(&owner, &hash, &binding, &proof) {
+        return Err(fail(
+            ERR_DELETE_REFUSED,
+            "the delete proof does not verify".into(),
+        ));
+    }
+    match state.resources.delete(owner, hash) {
+        Ok(()) => Ok(Output::Json(serde_json::json!({ "deleted": true }))),
+        Err(DeleteError::NotFound | DeleteError::NotOwner) => {
+            Ok(Output::Json(serde_json::json!({ "deleted": false })))
+        }
+        Err(error @ DeleteError::Internal(_)) => Err(fail(ERR_INTERNAL, error.to_string())),
+    }
 }
 
 #[instrument(skip_all)]
@@ -1219,8 +1273,8 @@ async fn handle_command(
                     spine_core::actions::unsupported_action(action, cfg!(feature = "research"))
                 {
                     return Err(fail(
-                        ERR_EXECUTION_FAILED,
-                        format!("execution failed: the \"{name}\" action is not supported by this daemon"),
+                        ERR_ACTION_UNSUPPORTED,
+                        format!("the \"{name}\" action is not supported by this daemon"),
                     ));
                 }
             }
@@ -1255,9 +1309,9 @@ async fn handle_command(
                 .map_or(0, |entries| entries.len());
             if held + stores > MAX_KNOWLEDGE_ENTRIES_PER_SESSION {
                 return Err(fail(
-                    ERR_EXECUTION_FAILED,
+                    ERR_KNOWLEDGE_CAPACITY,
                     format!(
-                        "execution failed: a session may hold at most {MAX_KNOWLEDGE_ENTRIES_PER_SESSION} knowledge entries"
+                        "a session may hold at most {MAX_KNOWLEDGE_ENTRIES_PER_SESSION} knowledge entries"
                     ),
                 ));
             }
@@ -1268,9 +1322,7 @@ async fn handle_command(
             state
                 .knowledge_budget
                 .reserve(store_cost)
-                .map_err(|reason| {
-                    fail(ERR_EXECUTION_FAILED, format!("execution failed: {reason}"))
-                })?;
+                .map_err(|reason| fail(ERR_KNOWLEDGE_CAPACITY, reason))?;
 
             // Store binary in session for reactivity
             if let Some(mut session) = state.sessions.get_mut(session_id) {
@@ -1420,11 +1472,8 @@ async fn handle_command(
             };
             state
                 .append_knowledge(session_id, entry)
-                .map_err(|reason| {
-                    fail(
-                        ERR_EXECUTION_FAILED,
-                        format!("store_knowledge failed: {reason}"),
-                    )
+                .map_err(|refusal| {
+                    fail(refusal.code(), format!("store_knowledge failed: {refusal}"))
                 })?;
 
             // Broadcast to cluster
@@ -1476,7 +1525,11 @@ async fn handle_command(
             ))
         }
         // `handle_session` answers these two before a session is involved.
-        BrowserCommand::ToolCall(_) | BrowserCommand::CapabilityQuery(_) => Err(fail(
+        // `answer_job` answers the deletes too, without creating a session.
+        BrowserCommand::ToolCall(_)
+        | BrowserCommand::CapabilityQuery(_)
+        | BrowserCommand::DeleteResource { .. }
+        | BrowserCommand::DeleteKnowledge { .. } => Err(fail(
             ERR_INTERNAL,
             "this command is not served by a session".into(),
         )),
@@ -2446,6 +2499,9 @@ struct Job {
     /// (`docs/spec/00-wire.md` 6.6; the acceptance test
     /// `an_identified_client_gets_the_answers_an_anonymous_one_gets`).
     identity: Option<[u8; 32]>,
+    /// This connection's `HELLO_ACK.binding`: what a `delete_resource` proof
+    /// is bound to.
+    binding: [u8; 32],
 }
 
 /// An identity for the log: the key in hex, or `anonymous`. Never a metric
@@ -2644,6 +2700,7 @@ async fn read_requests<S>(
                         request_id: frame.request_id,
                         body: frame.body,
                         identity: reader.identity(),
+                        binding: reader.binding(),
                     };
                     if jobs.send(job).await.is_err() {
                         break;
@@ -2821,6 +2878,25 @@ async fn answer_job(
             if !state.check_rate_limit(&command_rate.id) {
                 return Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string()));
             }
+
+            // The deletes need no session of their own, and a delete creates
+            // none: `delete_knowledge` on a connection with no session
+            // deleted nothing, and `delete_resource` is bound to the connection
+            // by its proof.
+            let command = match command {
+                BrowserCommand::DeleteResource { hash, owner, proof } => {
+                    COMMANDS_TOTAL.inc();
+                    return delete_resource(state, job.binding, hash, owner, proof);
+                }
+                BrowserCommand::DeleteKnowledge { key } => {
+                    COMMANDS_TOTAL.inc();
+                    let deleted = session_lease
+                        .as_ref()
+                        .map_or(0, |lease| state.delete_knowledge(&lease.id, &key));
+                    return Ok(Output::Json(serde_json::json!({ "deleted": deleted })));
+                }
+                other => other,
+            };
 
             if session_lease.is_none() {
                 *session_lease = state.create_session();

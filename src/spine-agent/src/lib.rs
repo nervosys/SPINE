@@ -485,6 +485,21 @@ where
         Ok(results)
     }
 
+    /// Delete the knowledge entries of this connection's session whose key is
+    /// exactly `key`, and return how many there were. Zero is success: nothing
+    /// held the key, or an earlier call already deleted it. Another session's
+    /// entries are never touched.
+    pub async fn delete_knowledge(&mut self, key: &str) -> anyhow::Result<u64> {
+        let value: serde_json::Value = self
+            .send_request(BrowserCommand::DeleteKnowledge {
+                key: key.to_string(),
+            })
+            .await?;
+        value["deleted"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("delete_knowledge answered without a count"))
+    }
+
     #[instrument(skip(self))]
     pub async fn ping(&mut self) -> anyhow::Result<u64> {
         let now = std::time::SystemTime::now()

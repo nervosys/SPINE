@@ -54,6 +54,14 @@ pub async fn knowledge(addr: String, query: String, tags: String, limit: usize) 
     Ok(())
 }
 
+/// Delete the knowledge entries of this connection's session with `key`.
+pub async fn delete_knowledge(addr: String, key: String) -> Result<()> {
+    let mut client = AgentClient::<TcpStream>::connect(&addr).await?;
+    let deleted = client.delete_knowledge(&key).await?;
+    println!("{deleted}");
+    Ok(())
+}
+
 /// Fetch raw HTML.
 pub async fn html(addr: String, url: String) -> Result<()> {
     let mut client = AgentClient::<TcpStream>::connect(&addr).await?;

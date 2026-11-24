@@ -16,6 +16,43 @@ pub const MAX_KNOWLEDGE_ENTRY_BYTES: usize = 64 * 1024;
 /// limit.
 pub const MAX_KNOWLEDGE_QUERY_RESULTS: usize = 128;
 
+/// Why a knowledge entry was refused, and so which wire code answers.
+///
+/// An entry too large is `knowledge_entry_too_large`; a session already at its
+/// entry cap, or a daemon whose knowledge budget is spent, is
+/// `knowledge_capacity`. Each carries the reason text for the message. Neither
+/// is `execution_failed`, which stays for a program that failed to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The entry is over [`MAX_KNOWLEDGE_ENTRY_BYTES`].
+    EntryTooLarge(String),
+    /// The session holds its most entries, or the daemon-wide budget is spent.
+    Capacity(String),
+}
+
+impl Refusal {
+    /// The wire code of this refusal (`spine_protocol::body`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Refusal::EntryTooLarge(_) => spine_protocol::body::ERR_KNOWLEDGE_ENTRY_TOO_LARGE,
+            Refusal::Capacity(_) => spine_protocol::body::ERR_KNOWLEDGE_CAPACITY,
+        }
+    }
+
+    /// The reason, for the message of the refusal.
+    pub fn reason(&self) -> &str {
+        match self {
+            Refusal::EntryTooLarge(reason) | Refusal::Capacity(reason) => reason,
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
 /// The size of an entry as bounded by [`MAX_KNOWLEDGE_ENTRY_BYTES`].
 pub fn entry_bytes(key: &str, value: &serde_json::Value, tags: &[String]) -> usize {
     let value_len = serde_json::to_vec(value).map_or(usize::MAX, |text| text.len());
@@ -26,18 +63,18 @@ pub fn entry_bytes(key: &str, value: &serde_json::Value, tags: &[String]) -> usi
 }
 
 /// Whether a session already holding `held` entries may store one more of
-/// `size` bytes, against a cap of `max_entries`. The error is the reason, for
-/// the message of the refusal.
-pub fn admit_entry(held: usize, max_entries: usize, size: usize) -> Result<(), String> {
+/// `size` bytes, against a cap of `max_entries`. The error is the reason and
+/// the code that answers it.
+pub fn admit_entry(held: usize, max_entries: usize, size: usize) -> Result<(), Refusal> {
     if size > MAX_KNOWLEDGE_ENTRY_BYTES {
-        return Err(format!(
+        return Err(Refusal::EntryTooLarge(format!(
             "a knowledge entry may hold at most {MAX_KNOWLEDGE_ENTRY_BYTES} bytes"
-        ));
+        )));
     }
     if held >= max_entries {
-        return Err(format!(
+        return Err(Refusal::Capacity(format!(
             "a session may hold at most {max_entries} knowledge entries"
-        ));
+        )));
     }
     Ok(())
 }
@@ -139,6 +176,43 @@ impl KnowledgeBudget {
     }
 }
 
+/// Removes from `entries` every entry that `matches` and returns how many were
+/// removed and what they were charged (`cost`, as [`entry_cost`] gives it for an
+/// entry). Pure: the budget is not touched here.
+pub fn remove_matching<T>(
+    entries: &mut Vec<T>,
+    matches: impl Fn(&T) -> bool,
+    cost: impl Fn(&T) -> u64,
+) -> (usize, u64) {
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    entries.retain(|entry| {
+        if matches(entry) {
+            removed += 1;
+            freed = freed.saturating_add(cost(entry));
+            false
+        } else {
+            true
+        }
+    });
+    (removed, freed)
+}
+
+/// Deletes the entries of one session that `matches`, releases exactly what
+/// they were charged from `budget`, and returns how many there were. Zero for
+/// nothing to delete, so the call is idempotent. It touches the entries it is
+/// given and no others: the caller passes one session's list.
+pub fn delete_matching<T>(
+    entries: &mut Vec<T>,
+    matches: impl Fn(&T) -> bool,
+    cost: impl Fn(&T) -> u64,
+    budget: &KnowledgeBudget,
+) -> usize {
+    let (removed, freed) = remove_matching(entries, matches, cost);
+    budget.release(freed);
+    removed
+}
+
 /// The number of results a query returns for a requested `limit`.
 pub fn query_limit(limit: usize) -> usize {
     limit.min(MAX_KNOWLEDGE_QUERY_RESULTS)
@@ -163,14 +237,97 @@ mod tests {
     fn an_entry_is_refused_over_the_size_or_the_count() {
         assert!(admit_entry(0, 3, MAX_KNOWLEDGE_ENTRY_BYTES).is_ok());
         assert!(admit_entry(2, 3, 1).is_ok());
-        assert!(admit_entry(3, 3, 1).unwrap_err().contains("at most 3"));
-        assert!(admit_entry(0, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1)
-            .unwrap_err()
-            .contains("65536 bytes"));
+        let full = admit_entry(3, 3, 1).unwrap_err();
+        assert!(full.reason().contains("at most 3"));
+        assert_eq!(full.code(), "knowledge_capacity");
+        let large = admit_entry(0, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1).unwrap_err();
+        assert!(large.to_string().contains("65536 bytes"));
+        assert_eq!(large.code(), "knowledge_entry_too_large");
         // The size is judged before the count, so one refusal names one cause.
-        assert!(admit_entry(9, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1)
-            .unwrap_err()
-            .contains("bytes"));
+        let both = admit_entry(9, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1).unwrap_err();
+        assert!(both.reason().contains("bytes"));
+        assert_eq!(both.code(), "knowledge_entry_too_large");
+    }
+
+    #[test]
+    fn the_two_refusals_have_distinct_listed_codes() {
+        let all = spine_protocol::body::ALL_ERROR_CODES;
+        for refusal in [
+            Refusal::EntryTooLarge(String::new()),
+            Refusal::Capacity(String::new()),
+        ] {
+            assert!(all.contains(&refusal.code()), "{}", refusal.code());
+        }
+        assert_ne!(
+            Refusal::EntryTooLarge(String::new()).code(),
+            Refusal::Capacity(String::new()).code()
+        );
+    }
+
+    /// A stand-in entry: a key and what it is charged.
+    fn held(key: &str, size: usize) -> (String, usize) {
+        (key.to_string(), size)
+    }
+
+    #[test]
+    fn deleting_a_key_removes_its_entries_and_returns_exactly_their_budget() {
+        let budget = KnowledgeBudget::new(10_000);
+        let mut entries = vec![held("a", 10), held("b", 20), held("a", 30)];
+        for (_, size) in &entries {
+            budget.reserve(entry_cost(*size)).unwrap();
+        }
+        let before = budget.used();
+        // An unrelated reservation, as another session's entries would hold.
+        budget.reserve(500).unwrap();
+        let removed = delete_matching(
+            &mut entries,
+            |(key, _)| key == "a",
+            |(_, size)| entry_cost(*size),
+            &budget,
+        );
+        assert_eq!(removed, 2);
+        assert_eq!(entries, vec![held("b", 20)]);
+        // What `a` held is back; the other reservation and `b` are untouched.
+        assert_eq!(
+            budget.used(),
+            before - entry_cost(10) - entry_cost(30) + 500
+        );
+        // Deleting what is gone is a no-op that releases nothing.
+        let used = budget.used();
+        assert_eq!(
+            delete_matching(
+                &mut entries,
+                |(key, _)| key == "a",
+                |(_, size)| entry_cost(*size),
+                &budget
+            ),
+            0
+        );
+        assert_eq!(budget.used(), used);
+        // Removing the rest returns the budget to what it was before any entry.
+        assert_eq!(
+            delete_matching(
+                &mut entries,
+                |(key, _)| key == "b",
+                |(_, size)| entry_cost(*size),
+                &budget
+            ),
+            1
+        );
+        budget.release(500);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn a_key_matches_exactly_and_not_as_a_prefix() {
+        let mut entries = vec![held("ab", 1), held("a", 1), held("A", 1)];
+        let (removed, freed) = remove_matching(
+            &mut entries,
+            |(key, _)| key == "a",
+            |(_, size)| entry_cost(*size),
+        );
+        assert_eq!((removed, freed), (1, entry_cost(1)));
+        assert_eq!(entries, vec![held("ab", 1), held("A", 1)]);
     }
 
     #[test]

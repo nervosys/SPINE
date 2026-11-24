@@ -144,6 +144,18 @@ pub enum NameAction {
         #[arg(long)]
         log: Option<PathBuf>,
     },
+    /// Delete a published resource's bytes from the daemon, as its publisher.
+    ///
+    /// RECORD is the record that published them: its signed resource id names
+    /// the blob. `--key` is the publisher's key, the key in the name (for a
+    /// rotated name its inception key, which stored the blob). The daemon answers
+    /// `deleted: false` when it holds no such blob for that key. The name record
+    /// is not touched: the name still resolves, and reading its bytes fails.
+    DeleteResource {
+        record: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+    },
     Fetch {
         name: String,
         #[arg(long)]
@@ -508,6 +520,16 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
                         .await?
                 }
             }
+        }
+        NameAction::DeleteResource { record, key } => {
+            // Read without the checks of `read_record`: an expired record still
+            // names the blob it published.
+            let record: NameRecord = serde_json::from_slice(&std::fs::read(record)?)?;
+            let hash = record
+                .content_hash
+                .context("the record carries no resource id")?;
+            let deleted = client.delete_resource(hash, &read_key(&key)?).await?;
+            serde_json::json!({ "deleted": deleted })
         }
         NameAction::Fetch {
             name,

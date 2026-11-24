@@ -1,6 +1,6 @@
 //! The spine-wire v1 bodies, pinned down.
 //!
-//! * a table with every command (19) and a result for each, round-tripped in
+//! * a table with every command (21) and a result for each, round-tripped in
 //!   both directions;
 //! * `COMMAND_NAMES` agrees with what the encoder writes;
 //! * three bodies whose bytes were worked out by hand and cross-checked by an
@@ -337,6 +337,20 @@ fn table() -> Vec<(&'static str, BrowserCommand, Value)> {
             })
             .unwrap(),
         ),
+        (
+            "delete_resource",
+            BrowserCommand::DeleteResource {
+                hash: [0x11; 32],
+                owner: [0x22; 32],
+                proof: [0x33; 64],
+            },
+            json!({"deleted": true}),
+        ),
+        (
+            "delete_knowledge",
+            BrowserCommand::DeleteKnowledge { key: "k".into() },
+            json!({"deleted": 2}),
+        ),
     ]
 }
 
@@ -421,7 +435,7 @@ fn variants() -> Vec<BrowserCommand> {
 #[test]
 fn the_table_has_every_command_in_command_names_order() {
     let table = table();
-    assert_eq!(table.len(), 19);
+    assert_eq!(table.len(), 21);
     assert_eq!(table.len(), COMMAND_NAMES.len());
     for (i, (name, _, _)) in table.iter().enumerate() {
         assert_eq!(*name, COMMAND_NAMES[i], "entry {i}");
@@ -987,6 +1001,96 @@ fn the_good_read_resource_body_decodes() {
     );
 }
 
+/// A valid `delete_resource` body as a tree, to damage one part at a time.
+fn delete_resource_fields() -> Vec<(&'static str, Cbor)> {
+    vec![
+        ("hash", bytes_of(32, 0x11)),
+        ("owner", bytes_of(32, 0x22)),
+        ("proof", bytes_of(64, 0x33)),
+    ]
+}
+
+#[test]
+fn delete_commands_are_read_strictly() {
+    let good = command_body("delete_resource", map(delete_resource_fields()));
+    assert_eq!(
+        native::decode_command(&good),
+        Ok(BrowserCommand::DeleteResource {
+            hash: [0x11; 32],
+            owner: [0x22; 32],
+            proof: [0x33; 64],
+        })
+    );
+    let with = |field: &str, value: Option<Cbor>| {
+        let mut fields = delete_resource_fields();
+        match value {
+            Some(value) => {
+                for entry in fields.iter_mut() {
+                    if entry.0 == field {
+                        entry.1 = value.clone();
+                    }
+                }
+            }
+            None => fields.retain(|entry| entry.0 != field),
+        }
+        command_body("delete_resource", map(fields))
+    };
+    for (what, body) in [
+        (
+            "a proof of 63 bytes",
+            with("proof", Some(bytes_of(63, 0x33))),
+        ),
+        (
+            "a proof of 65 bytes",
+            with("proof", Some(bytes_of(65, 0x33))),
+        ),
+        (
+            "an owner of 31 bytes",
+            with("owner", Some(bytes_of(31, 0x22))),
+        ),
+        ("a hash of 33 bytes", with("hash", Some(bytes_of(33, 0x11)))),
+        ("a hash as text", with("hash", Some(t("11")))),
+        (
+            "a proof as an array of integers",
+            with(
+                "proof",
+                Some(Cbor::Array((0..64).map(|_| int(3)).collect())),
+            ),
+        ),
+        ("no proof", with("proof", None)),
+        ("no owner", with("owner", None)),
+        ("no hash", with("hash", None)),
+        (
+            "an extra field",
+            command_body("delete_resource", {
+                let mut fields = delete_resource_fields();
+                fields.push(("extra", int(1)));
+                map(fields)
+            }),
+        ),
+        ("a bare name", enc(&t("delete_resource"))),
+        ("a bare knowledge name", enc(&t("delete_knowledge"))),
+        (
+            "a knowledge key that is not text",
+            command_body("delete_knowledge", map(vec![("key", int(1))])),
+        ),
+        (
+            "a knowledge delete with no key",
+            command_body("delete_knowledge", map(vec![])),
+        ),
+        (
+            "a knowledge delete with a tag list",
+            command_body(
+                "delete_knowledge",
+                map(vec![("key", t("k")), ("tags", Cbor::Array(vec![]))]),
+            ),
+        ),
+    ] {
+        let error = native::decode_command(&body).expect_err(what);
+        assert_eq!(error.code, ERR_INVALID_REQUEST, "{what}");
+    }
+}
+
 #[test]
 fn bad_requests_are_answered_with_the_prescribed_code() {
     let with = |field: &str, value: Cbor| {
@@ -1498,9 +1602,14 @@ fn error_codes_are_stable_unique_snake_case() {
         "record_expired",
         "unsupported_tool",
         "outbound_address_denied",
+        "knowledge_entry_too_large",
+        "knowledge_capacity",
+        "action_unsupported",
+        "delete_refused",
     ] {
         assert!(ALL_ERROR_CODES.contains(&code), "{code} missing");
     }
+    assert_eq!(ALL_ERROR_CODES.len(), 51);
 }
 
 type Conn = Connection<DuplexStream>;

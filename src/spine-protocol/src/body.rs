@@ -36,6 +36,15 @@ pub const ERR_NO_PAGE: &str = "no_page_loaded";
 pub const ERR_CAPABILITY_DENIED: &str = "capability_denied";
 /// `execute_binary`: the program failed to compile, instantiate or run.
 pub const ERR_EXECUTION_FAILED: &str = "execution_failed";
+/// `store_knowledge`: the entry (key, compact JSON of the value, tags) is over
+/// 64 KiB.
+pub const ERR_KNOWLEDGE_ENTRY_TOO_LARGE: &str = "knowledge_entry_too_large";
+/// `store_knowledge` or an `execute_binary` store: the session already holds
+/// 1,024 entries, or the daemon-wide knowledge budget is spent.
+pub const ERR_KNOWLEDGE_CAPACITY: &str = "knowledge_capacity";
+/// `execute_binary`: the run requested an action this daemon does not perform;
+/// the program is refused whole.
+pub const ERR_ACTION_UNSUPPORTED: &str = "action_unsupported";
 
 // ---- Namespace.
 
@@ -61,6 +70,8 @@ pub const ERR_RECORD_REJECTED: &str = "record_rejected";
 pub const ERR_PUBLISH_FAILED: &str = "publish_failed";
 /// `read_resource`: the hash or offset names nothing this origin holds.
 pub const ERR_RESOURCE_NOT_FOUND: &str = "resource_not_found";
+/// `delete_resource`: the proof does not verify.
+pub const ERR_DELETE_REFUSED: &str = "delete_refused";
 /// `crawl_names`: the seed is not a valid name.
 pub const ERR_INVALID_SEED: &str = "invalid_seed";
 
@@ -121,6 +132,9 @@ pub const ALL_ERROR_CODES: &[&str] = &[
     ERR_NO_PAGE,
     ERR_CAPABILITY_DENIED,
     ERR_EXECUTION_FAILED,
+    ERR_KNOWLEDGE_ENTRY_TOO_LARGE,
+    ERR_KNOWLEDGE_CAPACITY,
+    ERR_ACTION_UNSUPPORTED,
     ERR_NAMESPACE_UNAVAILABLE,
     ERR_INVALID_PEER_ID,
     ERR_MESH_CALL_FAILED,
@@ -132,6 +146,7 @@ pub const ALL_ERROR_CODES: &[&str] = &[
     ERR_RECORD_REJECTED,
     ERR_PUBLISH_FAILED,
     ERR_RESOURCE_NOT_FOUND,
+    ERR_DELETE_REFUSED,
     ERR_INVALID_SEED,
     ERR_INVALID_ARGS,
     ERR_UNSUPPORTED_TOOL,
@@ -250,6 +265,20 @@ mod tests {
         }
         for code in PROTOCOL_ERROR_CODES {
             assert!(ALL_ERROR_CODES.contains(code));
+        }
+    }
+
+    #[test]
+    fn the_list_has_51_codes_and_the_four_stage_3_codes_are_in_it() {
+        assert_eq!(ALL_ERROR_CODES.len(), 51);
+        for code in [
+            ERR_KNOWLEDGE_ENTRY_TOO_LARGE,
+            ERR_KNOWLEDGE_CAPACITY,
+            ERR_ACTION_UNSUPPORTED,
+            ERR_DELETE_REFUSED,
+        ] {
+            assert!(ALL_ERROR_CODES.contains(&code), "{code}");
+            assert!(!PROTOCOL_ERROR_CODES.contains(&code), "{code}");
         }
     }
 

@@ -615,9 +615,11 @@ impl ResourceStore {
     }
 
     /// Delete a blob on behalf of `owner`, who must be the publisher recorded
-    /// when it was stored. Allowed even while a name still refers to it: that
-    /// name then stops serving bytes, which is the owner's call. Not yet
-    /// reachable from the wire.
+    /// when it was stored (exactly that key: for a rotated name it is the
+    /// inception key, `publisher_of`). Allowed even while a name still refers
+    /// to it: that name then stops serving bytes, which is the owner's call.
+    /// The wire's `delete_resource` calls this after checking the owner's
+    /// proof (`docs/spec/00-wire.md` 12.2).
     pub fn delete(&self, owner: [u8; 32], hash: [u8; 32]) -> Result<(), DeleteError> {
         self.with_index(|index| {
             match index.metas.get(&hash) {
@@ -1069,9 +1071,18 @@ mod tests {
         ));
         assert!(store.read(hash, 0, 4).is_ok());
         assert_eq!(store.held_bytes(&[1; 32]).unwrap(), cost());
+        assert_eq!(store.total_bytes().unwrap(), cost());
         store.delete([1; 32], hash).unwrap();
         assert!(matches!(store.read(hash, 0, 4), Err(ReadError::NotFound)));
+        // Both the publisher's share and the total are released, and a second
+        // delete of the same hash is `NotFound` (the daemon answers
+        // `deleted: false` for it).
         assert_eq!(store.held_bytes(&[1; 32]).unwrap(), 0);
+        assert_eq!(store.total_bytes().unwrap(), 0);
+        assert!(matches!(
+            store.delete([1; 32], hash),
+            Err(DeleteError::NotFound)
+        ));
         assert!(!store.backend.exists(META_NAMESPACE, &hash).unwrap());
     }
 

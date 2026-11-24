@@ -3,7 +3,9 @@
 //! A program's actions are returned to the client as a list (`actions`), and
 //! the response has no place to say that one was not carried out, so an action
 //! the daemon cannot perform is refused with the whole program, before any
-//! action runs, the way an undeclared capability is. Pure, so the daemon (a
+//! action runs, the way an undeclared capability is. The refusal is
+//! `action_unsupported`, not `execution_failed`: the program ran, the daemon
+//! just does not perform what it asked for. Pure, so the daemon (a
 //! binary) and the tests share one definition.
 //!
 //! Performed in every build: `navigate` (outbound fetch, needs `network`) and

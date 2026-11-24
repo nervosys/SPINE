@@ -351,7 +351,7 @@ fn arb_resolution() -> impl Strategy<Value = NameResolution> {
     ]
 }
 
-/// All 19 commands.
+/// All 21 commands.
 fn arb_command() -> impl Strategy<Value = BrowserCommand> {
     let strategies: Vec<BoxedStrategy<BrowserCommand>> = vec![
         arb_text()
@@ -426,6 +426,17 @@ fn arb_command() -> impl Strategy<Value = BrowserCommand> {
         arb_tool_call().prop_map(BrowserCommand::ToolCall).boxed(),
         arb_selector()
             .prop_map(|selector| BrowserCommand::CapabilityQuery(CapabilityQuery { selector }))
+            .boxed(),
+        (arb_bytes32(), arb_bytes32(), arb_bytes32(), arb_bytes32())
+            .prop_map(|(hash, owner, low, high)| {
+                let mut proof = [0u8; 64];
+                proof[..32].copy_from_slice(&low);
+                proof[32..].copy_from_slice(&high);
+                BrowserCommand::DeleteResource { hash, owner, proof }
+            })
+            .boxed(),
+        arb_text()
+            .prop_map(|key| BrowserCommand::DeleteKnowledge { key })
             .boxed(),
     ];
     assert_eq!(strategies.len(), spine_protocol::COMMAND_NAMES.len());
