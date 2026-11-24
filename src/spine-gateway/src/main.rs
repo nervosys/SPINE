@@ -74,7 +74,7 @@ use tracing::instrument;
         CompileResponse, HealthResponse, ReadyResponse,
         ErrorResponse,
         names::ResolveNamesReq, names::PublishReq,
-        names::ResolvedResponse, names::ResolveBatchResponse,
+        names::ResolvedResponse, names::ResolveBatchResponse, names::NameOutcomeResponse,
     )),
     modifiers(&SecurityAddon),
     tags(

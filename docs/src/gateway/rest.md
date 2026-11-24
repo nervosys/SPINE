@@ -105,8 +105,13 @@ Beyond the session API above, the gateway also serves (see Swagger UI for schema
 
 A resource upload is refused with `400` when the record's `ttl_secs` exceeds
 604800 (7 days) or its `published_at` is more than 300 seconds ahead of the
-gateway's clock; name publication is refused the same way by the origin. A revoked
-name resolves as an invalid-name answer whose reason says it was revoked.
+gateway's clock; name publication is refused the same way by the origin. A resolve
+answer carries the name's succession log (`log`), which a client verifies from the
+name's key. A retired or revoked name is `410` and a name with two conflicting
+logs is `409`, each with the evidence (`x-spine-outcome`, `logs`, and for a
+revoked name the tombstone in `record`); none is reported as invalid or missing.
+A resource download verifies the log the same way, so a rotated name's resource is
+served; an upload still refuses a rotated name's record, because it carries no log.
 
 The gateway reaches a daemon over the native wire (spine-wire v1) through
 `spine-agent`; the REST side is plain HTTP unless you terminate TLS in front of it.

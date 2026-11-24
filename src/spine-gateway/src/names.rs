@@ -502,6 +502,8 @@ fn into_response(resolution: NameResolution) -> Response {
         (status = 304, description = "The caller's content hash still matches"),
         (status = 400, body = ErrorResponse, description = "Malformed name or validator"),
         (status = 404, body = ErrorResponse, description = "Nobody has published that name"),
+        (status = 409, body = NameOutcomeResponse, description = "Two conflicting succession logs prove the name compromised; both are in `logs`"),
+        (status = 410, body = NameOutcomeResponse, description = "The name is retired (its log ends in a retirement) or revoked (a tombstone); the evidence is in `logs` and `record`"),
         (status = 502, body = ErrorResponse),
     )
 )]
