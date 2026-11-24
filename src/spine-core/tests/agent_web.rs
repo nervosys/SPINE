@@ -1482,3 +1482,219 @@ async fn rotated_name_resolves_on_another_node_with_its_log() {
     .await
     .expect("rotated name mesh acceptance deadline exceeded");
 }
+
+/// `publish_resource` sent as a raw command. `AgentClient::publish_resource`
+/// first verifies the record under the key in the name (spec 02, 10.11), which
+/// a rotated name's current-key record does not pass, so the SDK cannot send it.
+async fn publish_resource_raw(
+    conn: &mut RawConnection,
+    record: serde_json::Value,
+    content_type: &str,
+    data: &[u8],
+) -> anyhow::Result<serde_json::Value> {
+    let command = spine_protocol::BrowserCommand::PublishResource {
+        record,
+        content_type: content_type.to_string(),
+        data: data.to_vec(),
+    };
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        spine_protocol::native::call::<_, serde_json::Value>(conn, &command),
+    )
+    .await
+    .expect("no reply to publish_resource within 60 seconds");
+    Ok(reply?)
+}
+
+/// The first chunk of a stored resource, by a raw `read_resource`.
+async fn read_resource_raw(
+    conn: &mut RawConnection,
+    hash: [u8; 32],
+) -> anyhow::Result<spine_protocol::resource::ResourceChunk> {
+    let command = spine_protocol::BrowserCommand::ReadResource {
+        hash,
+        offset: 0,
+        max_bytes: spine_protocol::resource::MAX_RESOURCE_CHUNK,
+    };
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        spine_protocol::native::call::<_, spine_protocol::resource::ResourceChunk>(conn, &command),
+    )
+    .await
+    .expect("no reply to read_resource within 60 seconds");
+    Ok(reply?)
+}
+
+/// A resource of a rotated name through one daemon: the binding signed by the
+/// current key is refused until the succession log comes with it, then the
+/// bytes are stored and read back and the name resolves to the binding; the
+/// same publication signed by the superseded key is refused, with or without
+/// the log, before and after a restart.
+#[tokio::test]
+async fn rotated_name_publishes_a_resource_with_its_log() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin_port, mesh_port) = (origin_port(), port());
+        let mut node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let mut conn = raw_connect(origin_port).await;
+        let server_log = || std::fs::read_to_string(dir.path().join("server.log")).unwrap();
+
+        let now = unix_now();
+        let rotated = RotatedName::new(131, now);
+        let bytes = b"bytes of a rotated name".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let state = rotated
+            .log
+            .verify(&rotated.inception.verifying_key().to_bytes())
+            .unwrap();
+        let mut record = rotated.unsigned(2, now).with_content_hash(id);
+        record.sign_current(&rotated.current, &state).unwrap();
+        assert!(
+            record.verify().is_err(),
+            "not signed by the key in the name"
+        );
+
+        // Without the log the resource store cannot judge the head claim, and
+        // nothing is stored.
+        let error = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&record).unwrap(),
+            "text/plain",
+            &bytes,
+        )
+        .await
+        .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "publish_failed", "{message}");
+        assert!(
+            message.contains("succession"),
+            "the refusal must say the succession log is needed: {message}"
+        );
+        let error = read_resource_raw(&mut conn, id).await.unwrap_err();
+        assert_eq!(code_of(&error), "resource_not_found");
+
+        // With the log beside the record the bytes are stored and the binding
+        // is published, locally and in the mesh store.
+        let report = publish_resource_raw(
+            &mut conn,
+            publication_value(&record, &rotated.log).unwrap(),
+            "text/plain",
+            &bytes,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "publication with the log failed: {error:#}\n{}",
+                server_log()
+            )
+        });
+        assert_eq!(report["stored"], true);
+        assert_eq!(report["name"], rotated.name.to_string());
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store refused the record: {report}"
+        );
+        let chunk = read_resource_raw(&mut conn, id).await.unwrap();
+        assert!(chunk.complete);
+        assert_eq!(chunk.content_type, "text/plain");
+        assert_eq!(chunk.data, bytes);
+        assert_eq!(
+            resource_id(&chunk.content_type, &chunk.data).unwrap(),
+            id,
+            "the bytes are those the current key signed for"
+        );
+        let (held, _) = resolved(&mut client, &rotated.name).await;
+        assert_eq!(held, record);
+        assert_eq!(held.content_hash, Some(id));
+
+        // The same publication signed by the superseded key is refused, and
+        // sending the log again does not help it.
+        let mut stale = rotated.unsigned(9, now).with_content_hash(id);
+        stale.sign(&rotated.inception).unwrap();
+        stale.verify().unwrap();
+        for publication in [
+            serde_json::to_value(&stale).unwrap(),
+            publication_value(&stale, &rotated.log).unwrap(),
+        ] {
+            let error = publish_resource_raw(&mut conn, publication, "text/plain", &bytes)
+                .await
+                .unwrap_err();
+            let (code, message) = refusal(&error);
+            assert_eq!(code, "publish_failed", "{message}");
+            assert!(message.contains("superseded"), "{message}");
+        }
+        // Nor can the superseded key store other bytes under the name.
+        let other = b"bytes the superseded key signed".to_vec();
+        let other_id = resource_id("text/plain", &other).unwrap();
+        let mut forged = rotated.unsigned(9, now).with_content_hash(other_id);
+        forged.sign(&rotated.inception).unwrap();
+        let error = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&forged).unwrap(),
+            "text/plain",
+            &other,
+        )
+        .await
+        .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "publish_failed", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        let error = read_resource_raw(&mut conn, other_id).await.unwrap_err();
+        assert_eq!(code_of(&error), "resource_not_found");
+        // The refusals changed nothing.
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, record);
+        assert_eq!(read_resource_raw(&mut conn, id).await.unwrap().data, bytes);
+
+        // Restart: the log comes back from the records file, so the resource
+        // store still judges by the current key with no log sent.
+        drop(conn);
+        drop(client);
+        drop(node);
+        node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let mut conn = raw_connect(origin_port).await;
+        assert_eq!(read_resource_raw(&mut conn, id).await.unwrap().data, bytes);
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, record);
+        let error = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&forged).unwrap(),
+            "text/plain",
+            &other,
+        )
+        .await
+        .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "publish_failed", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        let next_bytes = b"the next bytes of a rotated name".to_vec();
+        let next_id = resource_id("text/plain", &next_bytes).unwrap();
+        let mut next = rotated.unsigned(3, now).with_content_hash(next_id);
+        next.sign_current(&rotated.current, &state).unwrap();
+        let report = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&next).unwrap(),
+            "text/plain",
+            &next_bytes,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "publication after the restart failed: {error:#}\n{}",
+                std::fs::read_to_string(dir.path().join("server.log")).unwrap()
+            )
+        });
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store lost the log over the restart: {report}"
+        );
+        assert_eq!(
+            read_resource_raw(&mut conn, next_id).await.unwrap().data,
+            next_bytes
+        );
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, next);
+    })
+    .await
+    .expect("rotated name resource acceptance deadline exceeded");
+}

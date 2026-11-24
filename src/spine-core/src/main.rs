@@ -680,11 +680,39 @@ async fn handle_command(
             content_type,
             data,
         } => {
-            let result = (|| -> Result<spine_name::NameRecord, WireError> {
+            type Published = (spine_name::NameRecord, Option<spine_name::SuccessionLog>);
+            let result = (|| -> Result<Published, WireError> {
+                // As in `PublishName`: the succession log may ride beside the
+                // record's fields.
+                let log = spine_name::publication_log(&record)
+                    .transpose()
+                    .map_err(|e| {
+                        fail(
+                            ERR_MALFORMED_RECORD,
+                            format!("malformed succession log: {e}"),
+                        )
+                    })?;
                 let record: spine_name::NameRecord = serde_json::from_value(record)
                     .map_err(|e| fail(ERR_MALFORMED_RECORD, e.to_string()))?;
                 if record.is_expired(unix_now()) {
                     return Err(fail(ERR_RECORD_EXPIRED, "record is expired".into()));
+                }
+                // The log is offered before the resource store judges the
+                // record, which it does against the resolver's book. A valid
+                // log is kept even if the publication then fails.
+                if let Some(log) = &log {
+                    if spine_name::log_inception_key(log)
+                        .is_some_and(|key| record.name.public_key() != Some(&key))
+                    {
+                        return Err(fail(
+                            ERR_RECORD_REJECTED,
+                            "succession log is for another name".into(),
+                        ));
+                    }
+                    state
+                        .names
+                        .offer_log(log.clone())
+                        .map_err(|e| fail(ERR_RECORD_REJECTED, e.to_string()))?;
                 }
                 let (hash, created) = state
                     .resources
@@ -703,11 +731,11 @@ async fn handle_command(
                     }
                     return Err(fail(ERR_RECORD_REJECTED, e.to_string()));
                 }
-                Ok(record)
+                Ok((record, log))
             })();
             match result {
-                Ok(record) => {
-                    let publication = publication_report(state, record.clone(), None).await;
+                Ok((record, log)) => {
+                    let publication = publication_report(state, record, log).await;
                     Ok(Output::Json(publication))
                 }
                 Err(e) => Err(e),
@@ -1308,20 +1336,30 @@ async fn main() -> Result<()> {
     let state = Arc::new(BrowserState {
         // A blob named by a record this node currently publishes is never
         // evicted, including after the record is renewed.
-        resources: spine_core::resources::ResourceStore::new(name_backend).with_reference_source({
-            let names = names.clone();
-            move || {
-                let now = unix_now();
-                let records = names
-                    .published_records()
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                Ok(records
-                    .into_iter()
-                    .filter(|record| !record.is_expired(now))
-                    .filter_map(|record| record.content_hash)
-                    .collect())
-            }
-        }),
+        resources: spine_core::resources::ResourceStore::new(name_backend)
+            .with_reference_source({
+                let names = names.clone();
+                move || {
+                    let now = unix_now();
+                    let records = names
+                        .published_records()
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    Ok(records
+                        .into_iter()
+                        .filter(|record| !record.is_expired(now))
+                        .filter_map(|record| record.content_hash)
+                        .collect())
+                }
+            })
+            // A resource's binding record is judged against the succession logs
+            // the resolver holds: the current key of a rotated name, never a
+            // superseded one (spec 02, section 10).
+            .with_record_authority({
+                let names = names.clone();
+                move |record: &spine_name::NameRecord| {
+                    names.authorise(record).map_err(anyhow::Error::from)
+                }
+            }),
         sessions: DashMap::new(),
         session_gate: Default::default(),
         snapshot_gate: Mutex::new(()),

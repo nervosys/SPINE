@@ -189,7 +189,9 @@ async fn bootstrap_addresses(cfg: &NamespaceConfig) -> Vec<String> {
 /// not renew because a key succession log has moved them off this node's key.
 #[derive(Debug, Default)]
 pub struct RenewalPlan {
-    /// Records renewed with the node key, ready to publish.
+    /// Records renewed with the node key, ready to publish: those of names
+    /// with no succession log whose key is the node key, and those of rotated
+    /// names whose current key is the node key (these carry the head claim).
     pub renewed: Vec<spine_name::NameRecord>,
     /// Names (canonical strings) that need renewal but were rotated: the node
     /// key is the name's inception key, which a succession entry has superseded,
@@ -214,38 +216,68 @@ fn rotated_error(name: &str) -> anyhow::Error {
 /// not undo a revocation. Renewed records keep their `ttl_secs`, capped at the
 /// maximum record lifetime.
 ///
-/// The node holds one key, the key of the names it owns, which is their
-/// inception key. A name whose succession log has rotated away from that key is
-/// not renewed: it is reported in [`RenewalPlan::rotated`] (spec 02, 10.11),
-/// since only the name's current key, which this node never has, may sign it.
+/// The node holds one key, and renews a name exactly when that key is the one
+/// that may sign the name now (spec 02, 10.6 and 10.11):
+///
+/// - A name with no succession log held, whose key (its inception key) is the
+///   node key: renewed with `NameRecord::renewed`, as always.
+/// - A rotated name whose log makes the node key its current key: renewed with
+///   `NameRecord::renewed_current`, so the record carries the head claim. The
+///   name's inception key is then another key, since a log never rotates back
+///   to a key the name has used. Only a record the resolver already admits is
+///   renewed, and it admits a rotated name's record only under the current
+///   key, so this never signs a name the node key has not signed before.
+/// - A name whose inception key is the node key and whose log has rotated away
+///   from it: not renewed, and reported in [`RenewalPlan::rotated`], since the
+///   node key is superseded and only the current key, which this node does not
+///   have, may sign.
+///
+/// A retired or compromised name has no admitted record and is never listed.
 pub fn plan_owned_renewals(
     names: &spine_name::LocalResolver,
     signing: &ed25519_dalek::SigningKey,
     now: u64,
     window: u64,
 ) -> Result<RenewalPlan> {
-    let inception = signing.verifying_key().to_bytes();
-    let authority = spine_name::Authority::Did(inception);
-    let rotated = names
-        .succession_state(&inception)
-        .is_some_and(|state| state.index() > 0);
+    let node_key = signing.verifying_key().to_bytes();
     let mut plan = RenewalPlan::default();
     for record in names.published_records()? {
-        if record.name.authority() == &authority
-            && !record.is_tombstone()
-            && !names.is_revoked(&record.name)
-            && record.ttl_secs > 0
-            && record.remaining_ttl(now) <= window.min((record.ttl_secs as u64) / 2)
+        let Some(inception) = record.name.public_key().copied() else {
+            continue;
+        };
+        // The log held for the record's name, if the name has rotated.
+        let state = names
+            .succession_state(&inception)
+            .filter(|state| state.index() > 0);
+        let node_signs = match &state {
+            None => inception == node_key,
+            Some(state) => state.current() == spine_name::Current::Key(node_key),
+        };
+        // A name under the node key that has rotated away is reported below.
+        let superseded_here = inception == node_key && !node_signs;
+        if !node_signs && !superseded_here {
+            continue;
+        }
+        if record.is_tombstone()
+            || names.is_revoked(&record.name)
+            || record.ttl_secs == 0
+            || record.remaining_ttl(now) > window.min((record.ttl_secs as u64) / 2)
         {
-            if rotated {
+            continue;
+        }
+        let ttl = record.ttl_secs.min(spine_name::MAX_RECORD_TTL_SECS);
+        match &state {
+            None => plan.renewed.push(record.renewed(signing, now, ttl)?),
+            Some(state) if node_signs => {
+                plan.renewed
+                    .push(record.renewed_current(signing, state, now, ttl)?);
+            }
+            Some(_) => {
                 let name = record.name.to_string();
                 if !plan.rotated.contains(&name) {
                     plan.rotated.push(name);
                 }
-                continue;
             }
-            let ttl = record.ttl_secs.min(spine_name::MAX_RECORD_TTL_SECS);
-            plan.renewed.push(record.renewed(signing, now, ttl)?);
         }
     }
     Ok(plan)
@@ -300,7 +332,16 @@ pub fn spawn_owner_renewal(
                             continue;
                         }
                         if let Some(mesh) = &mesh {
-                            if let Err(error) = mesh.publish(record).await {
+                            // A rotated name's record goes out with its log.
+                            let log = record
+                                .name
+                                .public_key()
+                                .and_then(|key| names.succession_log(key));
+                            let sent = match log {
+                                Some(log) => mesh.publish_with_log(record, log).await,
+                                None => mesh.publish(record).await,
+                            };
+                            if let Err(error) = sent {
                                 warn!(%error, "renewal saved locally but mesh publication failed");
                             }
                         }
@@ -554,6 +595,90 @@ mod tests {
             error.to_string().contains("spine name renew --log"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn renewal_signs_a_rotated_name_when_the_node_key_is_its_current_key() {
+        use spine_name::{NameRecord, SpineUri, SuccessionLog, SUCCESSION_META_KEY};
+        let inception = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let node = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let next = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let after = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let bystander = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let name_key = inception.verifying_key().to_bytes();
+        let node_key = node.verifying_key().to_bytes();
+        let names = spine_name::LocalResolver::persistent(
+            || 200,
+            Arc::new(spine_storage::InMemoryBackend::new()),
+        )
+        .unwrap();
+
+        // The name was created under another key and rotated to the node key.
+        let log = SuccessionLog::default()
+            .rotated(
+                &name_key,
+                &inception,
+                &node_key,
+                &next.verifying_key().to_bytes(),
+                150,
+            )
+            .unwrap();
+        let state = log.verify(&name_key).unwrap();
+        let mut record = NameRecord::new(SpineUri::did(name_key), 2, 160)
+            .unwrap()
+            .with_ttl(50);
+        record.sign_current(&node, &state).unwrap();
+        names.publish_with_log(record.clone(), log.clone()).unwrap();
+
+        // The holder of the superseded inception key is told, and signs nothing;
+        // a key that has nothing to do with the name sees nothing.
+        let plan = plan_owned_renewals(&names, &inception, 200, 25).unwrap();
+        assert!(plan.renewed.is_empty());
+        assert_eq!(plan.rotated, [record.name.to_string()]);
+        let plan = plan_owned_renewals(&names, &bystander, 200, 25).unwrap();
+        assert!(plan.renewed.is_empty() && plan.rotated.is_empty());
+
+        // The node key is current: it renews, with the head claim.
+        let plan = plan_owned_renewals(&names, &node, 200, 25).unwrap();
+        assert!(plan.rotated.is_empty());
+        assert_eq!(plan.renewed.len(), 1);
+        let renewed = plan.renewed[0].clone();
+        assert_eq!(renewed.name, record.name);
+        assert_eq!(renewed.seq, 3);
+        assert_eq!(renewed.published_at, 200);
+        assert!(!renewed.is_expired(200));
+        assert!(renewed.meta.contains_key(SUCCESSION_META_KEY));
+        assert_eq!(
+            renewed.meta.get(SUCCESSION_META_KEY),
+            record.meta.get(SUCCESSION_META_KEY)
+        );
+        renewed.verify_with(&node_key).unwrap();
+        assert!(
+            renewed.verify().is_err(),
+            "not signed by the key in the name"
+        );
+        // What the renewal loop does with it: the resolver admits it.
+        names.publish(renewed).unwrap();
+        assert!(plan_owned_renewals(&names, &node, 200, 25)
+            .unwrap()
+            .renewed
+            .is_empty());
+
+        // The name rotates on: the node key is superseded, the record it signed
+        // is no longer admitted, and nothing is signed with it again.
+        let longer = log
+            .rotated(
+                &name_key,
+                &node,
+                &next.verifying_key().to_bytes(),
+                &after.verifying_key().to_bytes(),
+                170,
+            )
+            .unwrap();
+        names.offer_log(longer).unwrap();
+        let plan = plan_owned_renewals(&names, &node, 240, 25).unwrap();
+        assert!(plan.renewed.is_empty());
+        assert!(plan.rotated.is_empty());
     }
 
     #[test]

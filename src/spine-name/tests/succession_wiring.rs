@@ -342,6 +342,56 @@ async fn publishing_with_the_log_admits_a_rotated_record_in_one_step() {
         .unwrap();
 }
 
+/// `LocalResolver::authorise` is the book's judgement and nothing else: it is
+/// `verify` for a name without a log, follows the log once one is held, and
+/// stores, caches and drops nothing.
+#[test]
+fn the_resolver_judges_a_record_without_storing_it() {
+    let r = LocalResolver::at_time(NOW);
+    let by_inception = plain(&sk(1), 1);
+    let by_current = current(&sk(1), &sk(2), &log_one(), 2);
+
+    // No log held: exactly `verify`, and a claim asks for the log.
+    assert_eq!(r.authorise(&by_inception), by_inception.verify());
+    assert_eq!(r.authorise(&by_inception), Ok(()));
+    let mut tampered = by_inception.clone();
+    tampered.seq += 1;
+    assert_eq!(r.authorise(&tampered), tampered.verify());
+    assert_eq!(r.authorise(&tampered), Err(NameError::BadSignature));
+    assert!(matches!(
+        r.authorise(&by_current),
+        Err(NameError::NeedSuccessionLog { .. })
+    ));
+    assert_eq!(r.local_len(), 0);
+    assert!(r.succession_state(&pk(&sk(1))).is_none());
+
+    // The log is held: the current key is authorised, the inception key is not,
+    // and another name is still judged by `verify`.
+    r.offer_log(log_one()).unwrap();
+    assert_eq!(r.authorise(&by_current), Ok(()));
+    assert!(matches!(
+        r.authorise(&by_inception),
+        Err(NameError::SupersededKey(_))
+    ));
+    let other = plain(&sk(9), 1);
+    assert_eq!(r.authorise(&other), other.verify());
+    assert_eq!(r.authorise(&other), Ok(()));
+    assert_eq!(r.local_len(), 0, "judging is not publishing");
+    assert_eq!(r.succession_log(&pk(&sk(1))), Some(log_one()));
+
+    // Retired: nothing is authorised, by any key. The current-key record's
+    // claim is behind the log now, which is judged before retirement (10.6).
+    r.offer_log(log_retired()).unwrap();
+    assert!(matches!(
+        r.authorise(&by_current),
+        Err(NameError::SuccessionRefused { .. })
+    ));
+    assert!(matches!(
+        r.authorise(&by_inception),
+        Err(NameError::Retired(_))
+    ));
+}
+
 #[cfg(feature = "storage")]
 mod persistence {
     use super::*;

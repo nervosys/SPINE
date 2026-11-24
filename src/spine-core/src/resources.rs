@@ -15,6 +15,16 @@
 //! client's whole-object check against the signed id is the end-to-end
 //! guarantee.
 //!
+//! Authority. The signed record is judged once, when a blob is stored: by
+//! `NameRecord::verify` (the key in the name), or by the check given to
+//! `ResourceStore::with_record_authority`, which the daemon points at its
+//! resolver's succession logs so that a rotated name stores under its current
+//! key and a superseded key is refused (spec 02, section 10). The record is
+//! not kept. A stored blob is bytes under their id and nothing else, so the
+//! load and the first read check the id only, and a blob stored before its
+//! name rotated or retired stays readable by id; whether a name still leads to
+//! it is the resolver's answer.
+//!
 //! Quota. The store is bounded in bytes. Publishers share it fairly: see
 //! `ResourceStore::put_at`.
 use anyhow::{ensure, Context, Result};
@@ -287,6 +297,9 @@ impl std::error::Error for DeleteError {}
 
 type ReferenceSource = Box<dyn Fn() -> Result<Vec<[u8; 32]>> + Send + Sync>;
 
+/// Judges whether a record's signer may publish for its name.
+type RecordAuthorityCheck = Box<dyn Fn(&NameRecord) -> Result<()> + Send + Sync>;
+
 /// Ids this process has hashed on read, oldest first.
 #[derive(Default)]
 struct Verified {
@@ -320,6 +333,8 @@ pub struct ResourceStore {
     /// does not re-read and re-parse it for every chunk.
     last: Mutex<Option<([u8; 32], Arc<Blob>)>>,
     reference_source: Option<ReferenceSource>,
+    /// `None`: a record is judged by `NameRecord::verify`.
+    record_authority: Option<RecordAuthorityCheck>,
     total_limit: u64,
     fair_share: u64,
     #[cfg(test)]
@@ -338,6 +353,7 @@ impl ResourceStore {
             verified: Mutex::new(Verified::default()),
             last: Mutex::new(None),
             reference_source: None,
+            record_authority: None,
             total_limit: MAX_STORED_BYTES,
             fair_share: FAIR_SHARE_BYTES,
             #[cfg(test)]
@@ -357,6 +373,25 @@ impl ResourceStore {
         source: impl Fn() -> Result<Vec<[u8; 32]>> + Send + Sync + 'static,
     ) -> Self {
         self.reference_source = Some(Box::new(source));
+        self
+    }
+
+    /// Replace the check `put_at` makes on the signed record. Without this the
+    /// check is `NameRecord::verify`: the key in the name signs. The daemon
+    /// supplies `spine_name::LocalResolver::authorise`, which is the same for a
+    /// name with no succession log and otherwise requires the name's current
+    /// key, so a record signed by a superseded key, or for a retired or
+    /// compromised name, stores nothing (spec 02, section 10.6).
+    ///
+    /// The check replaces `verify`, it is not added to it: it must itself
+    /// refuse a record whose signature or lifetime is invalid. It is called
+    /// once per `put_at`, before anything is read or written and outside the
+    /// store's lock. It is not consulted when a blob is loaded or read.
+    pub fn with_record_authority(
+        mut self,
+        authority: impl Fn(&NameRecord) -> Result<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.record_authority = Some(Box::new(authority));
         self
     }
 
@@ -456,7 +491,8 @@ impl ResourceStore {
 
     /// Store a blob for `owner`, with `now` in seconds since the Unix epoch.
     ///
-    /// The record is verified, the data must match the signed resource id
+    /// The record is verified (`NameRecord::verify`, or the check given to
+    /// `with_record_authority`), the data must match the signed resource id
     /// (which commits to the content type), and the blob is charged to `owner`.
     /// Content already stored keeps its first publisher; the new record only
     /// extends the time the blob counts as referenced.
@@ -474,7 +510,10 @@ impl ResourceStore {
         data: &[u8],
         now: u64,
     ) -> Result<([u8; 32], bool)> {
-        record.verify()?;
+        match &self.record_authority {
+            Some(authority) => authority(record)?,
+            None => record.verify()?,
+        }
         ensure!(data.len() <= MAX_RESOURCE_BYTES, "resource exceeds 8 MiB");
         // The signed record carries the resource id, which commits to the
         // content type as well as the bytes. Invalid types and id mismatches
@@ -1052,5 +1091,232 @@ mod tests {
         let store = memory().with_limits(cost() - 1, cost() - 1);
         assert!(put_n(&store, 1, 1, 1000).is_err());
         assert_eq!(store.total_bytes().unwrap(), 0);
+    }
+
+    // ---- record authority and key succession (spec 02, section 10) ----
+
+    fn key(n: u8) -> SigningKey {
+        SigningKey::from_bytes(&[n; 32])
+    }
+
+    fn public(key: &SigningKey) -> [u8; 32] {
+        key.verifying_key().to_bytes()
+    }
+
+    /// An unsigned binding of `bytes` to the name whose inception key is
+    /// `name_key`.
+    fn binding(name_key: &SigningKey, bytes: &[u8], seq: u64) -> NameRecord {
+        let mut record = NameRecord::new(SpineUri::did(public(name_key)), seq, 100)
+            .unwrap()
+            .with_content_hash(resource_id("text/plain", bytes).unwrap());
+        record.ttl_secs = 100;
+        record
+    }
+
+    /// The name of `key(20)`, rotated once: `key(21)` is current and the entry
+    /// commits to `key(22)`.
+    fn rotation() -> spine_name::SuccessionLog {
+        spine_name::SuccessionLog::default()
+            .rotated(
+                &public(&key(20)),
+                &key(20),
+                &public(&key(21)),
+                &public(&key(22)),
+                90,
+            )
+            .unwrap()
+    }
+
+    /// A binding for the rotated name signed by its current key, with the
+    /// head claim.
+    fn by_current_key(bytes: &[u8], seq: u64) -> NameRecord {
+        let state = rotation().verify(&public(&key(20))).unwrap();
+        let mut record = binding(&key(20), bytes, seq);
+        record.sign_current(&key(21), &state).unwrap();
+        record
+    }
+
+    /// A binding signed by the key in the name: the only signer of a name
+    /// without a log, and a superseded key once the name has rotated.
+    fn by_inception_key(name_key: &SigningKey, bytes: &[u8], seq: u64) -> NameRecord {
+        let mut record = binding(name_key, bytes, seq);
+        record.sign(name_key).unwrap();
+        record
+    }
+
+    /// A store over `backend` whose records are judged by `names`, as the
+    /// daemon wires it.
+    fn judged_by(
+        backend: Arc<dyn StorageBackend>,
+        names: &Arc<spine_name::LocalResolver>,
+    ) -> ResourceStore {
+        let names = names.clone();
+        ResourceStore::new(backend).with_record_authority(move |record: &NameRecord| {
+            names.authorise(record).map_err(anyhow::Error::from)
+        })
+    }
+
+    fn refusal(error: &anyhow::Error) -> &spine_name::NameError {
+        error
+            .downcast_ref::<spine_name::NameError>()
+            .unwrap_or_else(|| panic!("not a name error: {error:#}"))
+    }
+
+    #[test]
+    fn without_a_record_authority_the_key_in_the_name_signs_as_before() {
+        // No hook: the store knows nothing of succession. The inception key is
+        // accepted and the current key of a rotated name is a bad signature.
+        let store = memory();
+        let old = by_inception_key(&key(20), b"old key", 1);
+        let hash = store.put(&old, "text/plain", b"old key").unwrap();
+        assert_eq!(store.read(hash, 0, 64).unwrap().data, b"old key");
+        let fresh = by_current_key(b"current key", 2);
+        let error = store.put(&fresh, "text/plain", b"current key").unwrap_err();
+        assert_eq!(refusal(&error), &spine_name::NameError::BadSignature);
+        assert!(matches!(
+            store.read(fresh.content_hash.unwrap(), 0, 64),
+            Err(ReadError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn a_rotated_name_stores_under_its_current_key_and_not_a_superseded_one() {
+        let names = Arc::new(spine_name::LocalResolver::at_time(100));
+        let store = judged_by(Arc::new(spine_storage::InMemoryBackend::new()), &names);
+        let fresh = by_current_key(b"current key", 2);
+
+        // The claim cannot be judged until the log is held.
+        let error = store.put(&fresh, "text/plain", b"current key").unwrap_err();
+        assert!(
+            matches!(
+                refusal(&error),
+                spine_name::NameError::NeedSuccessionLog { .. }
+            ),
+            "{error:#}"
+        );
+        assert_eq!(store.total_bytes().unwrap(), 0);
+
+        names.offer_log(rotation()).unwrap();
+        let (hash, created) = store
+            .put_as(publisher_of(&fresh), &fresh, "text/plain", b"current key")
+            .unwrap();
+        assert!(created);
+        assert_eq!(store.read(hash, 0, 64).unwrap().data, b"current key");
+        // The quota share is the name's (its inception key), whichever key signs.
+        assert_eq!(publisher_of(&fresh), public(&key(20)));
+        assert_eq!(store.held_bytes(&public(&key(20))).unwrap(), cost_of(11));
+
+        // The superseded key stores nothing, for new content or for content
+        // already held.
+        let stale = by_inception_key(&key(20), b"old key", 9);
+        let error = store.put(&stale, "text/plain", b"old key").unwrap_err();
+        assert!(
+            matches!(refusal(&error), spine_name::NameError::SupersededKey(_)),
+            "{error:#}"
+        );
+        assert!(matches!(
+            store.read(stale.content_hash.unwrap(), 0, 64),
+            Err(ReadError::NotFound)
+        ));
+        let stale_same = by_inception_key(&key(20), b"current key", 9);
+        let error = store
+            .put(&stale_same, "text/plain", b"current key")
+            .unwrap_err();
+        assert!(
+            matches!(refusal(&error), spine_name::NameError::SupersededKey(_)),
+            "{error:#}"
+        );
+        assert_eq!(store.total_bytes().unwrap(), cost_of(11));
+    }
+
+    /// Accounted size of a `text/plain` blob of `len` bytes.
+    fn cost_of(len: usize) -> u64 {
+        accounted(5 + "text/plain".len() + len)
+    }
+
+    #[test]
+    fn a_retired_name_stores_nothing() {
+        let names = Arc::new(spine_name::LocalResolver::at_time(100));
+        let store = judged_by(Arc::new(spine_storage::InMemoryBackend::new()), &names);
+        // Retired at once: the inception key signs entry 1 and reveals itself.
+        let retired = spine_name::SuccessionLog::default()
+            .retired(&public(&key(20)), &key(20), &public(&key(20)), 90)
+            .unwrap();
+        names.offer_log(retired).unwrap();
+        let record = by_inception_key(&key(20), b"too late", 1);
+        let error = store.put(&record, "text/plain", b"too late").unwrap_err();
+        assert!(
+            matches!(refusal(&error), spine_name::NameError::Retired(_)),
+            "{error:#}"
+        );
+        assert_eq!(store.total_bytes().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_name_without_a_log_is_judged_exactly_as_before() {
+        // Both an empty book and a book that holds another name's log.
+        for other_log in [false, true] {
+            let names = Arc::new(spine_name::LocalResolver::at_time(100));
+            if other_log {
+                names.offer_log(rotation()).unwrap();
+            }
+            let store = judged_by(Arc::new(spine_storage::InMemoryBackend::new()), &names);
+            let plain = memory();
+
+            let record = signed(b"unrotated");
+            let hash = store.put(&record, "text/plain", b"unrotated").unwrap();
+            assert_eq!(
+                hash,
+                plain.put(&record, "text/plain", b"unrotated").unwrap()
+            );
+            assert_eq!(store.read(hash, 0, 64).unwrap().data, b"unrotated");
+
+            // Every refusal is the one the store without a hook gives.
+            let mut forged = signed(b"forged");
+            forged.seq += 1;
+            let mismatched = signed(b"signed bytes");
+            for (record, data) in [(&forged, &b"forged"[..]), (&mismatched, &b"other"[..])] {
+                let judged = store.put(record, "text/plain", data).unwrap_err();
+                let bare = plain.put(record, "text/plain", data).unwrap_err();
+                assert_eq!(refusal(&judged), refusal(&bare));
+            }
+            assert_eq!(
+                refusal(&store.put(&forged, "text/plain", b"forged").unwrap_err()),
+                &spine_name::NameError::BadSignature
+            );
+        }
+    }
+
+    #[test]
+    fn a_blob_stored_before_a_rotation_stays_readable_by_id() {
+        let backend: Arc<dyn StorageBackend> = Arc::new(spine_storage::InMemoryBackend::new());
+        let names = Arc::new(spine_name::LocalResolver::at_time(100));
+        let store = judged_by(backend.clone(), &names);
+        let old = by_inception_key(&key(20), b"kept bytes", 1);
+        let hash = store.put(&old, "text/plain", b"kept bytes").unwrap();
+
+        // The name rotates. The record that brought the blob is no longer
+        // authorised, and cannot be used to store again.
+        names.offer_log(rotation()).unwrap();
+        let error = store.put(&old, "text/plain", b"kept bytes").unwrap_err();
+        assert!(
+            matches!(refusal(&error), spine_name::NameError::SupersededKey(_)),
+            "{error:#}"
+        );
+        // The bytes are still the bytes of their id: served now, and kept by
+        // a store that loads them afterwards.
+        assert_eq!(store.read(hash, 0, 64).unwrap().data, b"kept bytes");
+        let reopened = judged_by(backend, &names);
+        assert_eq!(reopened.read(hash, 0, 64).unwrap().data, b"kept bytes");
+        assert_eq!(reopened.total_bytes().unwrap(), cost_of(10));
+
+        // The current key binds the same bytes again without a second copy.
+        let fresh = by_current_key(b"kept bytes", 2);
+        assert_eq!(fresh.content_hash, Some(hash));
+        let (again, created) = reopened
+            .put_tracked(&fresh, "text/plain", b"kept bytes")
+            .unwrap();
+        assert_eq!(again, hash);
+        assert!(!created);
     }
 }

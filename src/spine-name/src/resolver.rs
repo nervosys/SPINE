@@ -415,6 +415,23 @@ impl LocalResolver {
         Ok(())
     }
 
+    /// Judge `record` against the succession logs this resolver holds, for a
+    /// caller that keeps something else under the record (the daemon's resource
+    /// store). It is [`LogBook::authorise`](crate::LogBook::authorise) on the
+    /// resolver's book: exactly [`NameRecord::verify`] when no log or proof is
+    /// held for the name and the record carries no `spine.succession` claim,
+    /// and otherwise the record must be signed by the name's current key
+    /// ([`NameError::SupersededKey`], [`NameError::Retired`],
+    /// [`NameError::Equivocated`], [`NameError::NeedSuccessionLog`] or
+    /// [`NameError::SuccessionRefused`] if not).
+    ///
+    /// Read-only: nothing is stored, cached or dropped. The clock is not
+    /// consulted, so expiry and post-dating are not judged here (as they are
+    /// not by `verify`); the lifetime rules of `verify` are.
+    pub fn authorise(&self, record: &NameRecord) -> Result<(), NameError> {
+        self.store.lock().unwrap().logs().authorise(record)
+    }
+
     /// The state of the best succession log held for the name whose inception
     /// key is `inception_key`, if any (none: the inception key signs).
     pub fn succession_state(&self, inception_key: &[u8; 32]) -> Option<SuccessionState> {
