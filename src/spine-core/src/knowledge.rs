@@ -94,14 +94,8 @@ impl KnowledgeBudget {
     /// Reserves `cost` bytes, or refuses with the reason when that would pass
     /// the limit. Nothing is reserved on a refusal.
     pub fn reserve(&self, cost: u64) -> Result<(), String> {
-        self.used
-            .fetch_update(
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-                |used| used.checked_add(cost).filter(|total| *total <= self.limit),
-            )
-            .map(|_| ())
-            .map_err(|_| {
+        self.update(|used| used.checked_add(cost).filter(|total| *total <= self.limit))
+            .map_err(|()| {
                 format!(
                     "the daemon may hold at most {} bytes of knowledge",
                     self.limit
@@ -113,20 +107,35 @@ impl KnowledgeBudget {
     /// (loaded from a snapshot): later reservations are refused until enough
     /// is released.
     pub fn charge(&self, cost: u64) {
-        let _ = self.used.fetch_update(
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-            |used| Some(used.saturating_add(cost)),
-        );
+        let _ = self.update(|used| Some(used.saturating_add(cost)));
     }
 
     /// Returns `cost` bytes, never below zero.
     pub fn release(&self, cost: u64) {
-        let _ = self.used.fetch_update(
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-            |used| Some(used.saturating_sub(cost)),
-        );
+        let _ = self.update(|used| Some(used.saturating_sub(cost)));
+    }
+
+    /// Replaces the counter with `next(current)` atomically, retrying when
+    /// another thread changed it in between; `Err` when `next` declines. A
+    /// plain compare-and-swap loop: `fetch_update` is deprecated on current
+    /// toolchains and its replacement is newer than the minimum supported one.
+    fn update(&self, next: impl Fn(u64) -> Option<u64>) -> Result<(), ()> {
+        use std::sync::atomic::Ordering;
+        let mut current = self.used.load(Ordering::Acquire);
+        loop {
+            let Some(wanted) = next(current) else {
+                return Err(());
+            };
+            match self.used.compare_exchange_weak(
+                current,
+                wanted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(seen) => current = seen,
+            }
+        }
     }
 }
 
