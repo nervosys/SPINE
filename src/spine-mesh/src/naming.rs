@@ -940,6 +940,11 @@ impl NameService {
         }
     }
 
+    /// The record held for `uri`, expired or not.
+    pub fn held(&self, uri: &SpineUri) -> Option<&NameRecord> {
+        self.store.get(uri)
+    }
+
     /// Accept a record announced by someone else.
     ///
     /// Distinct from [`NameService::publish`], which is how a node stores what

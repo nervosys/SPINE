@@ -734,10 +734,25 @@ impl MeshNameResolver {
     /// A record this node's own store refuses for want of room is an error
     /// ([`NameMeshError::Name`] holding [`spine_name::NameError::Capacity`])
     /// returned before any lookup or copy is sent: a record the node does not
-    /// hold is not replicated from it.
+    /// hold is not replicated from it. The same goes for a record the store
+    /// already outranks (an older `seq`, or a held tombstone): that is
+    /// [`spine_name::NameError::StalePublication`], as at
+    /// [`spine_name::LocalResolver::publish`], and nothing is sent. Offering the
+    /// very record the node already holds is not stale: it is replicated again
+    /// and succeeds, which is what owner renewal and start-up rely on.
     pub async fn publish(&self, record: NameRecord) -> Result<ReplicationReport, NameMeshError> {
         let now = self.now();
-        self.service.lock().await.publish(record.clone(), now)?;
+        {
+            let mut service = self.service.lock().await;
+            let outcome = service.publish(record.clone(), now)?;
+            // `Superseded` covers an identical record as well as an older one
+            // (the store's order is strict), so tell them apart by what is held.
+            if outcome == spine_name::PutOutcome::Superseded
+                && service.held(&record.name) != Some(&record)
+            {
+                return Err(spine_name::NameError::StalePublication.into());
+            }
+        }
         Ok(self.replicate(&record).await)
     }
 
@@ -770,7 +785,10 @@ impl MeshNameResolver {
 
     /// Publish locally without announcing — for names that should be resolvable
     /// but not advertised. A record this node's own store refuses for want of
-    /// room is the same capacity error as [`MeshNameResolver::publish`].
+    /// room is the same capacity error as [`MeshNameResolver::publish`]. A
+    /// record the store already outranks is left unstored and answered `Ok`:
+    /// nothing is replicated from here, so there is nothing to refuse, and
+    /// start-up re-offers every persisted record this way.
     pub async fn publish_local(&self, record: NameRecord) -> Result<(), NameMeshError> {
         let now = self.now();
         self.service.lock().await.publish(record, now)?;
@@ -1950,6 +1968,77 @@ mod tests {
             "{local:?}"
         );
         assert_eq!(h.nodes[0].record_count().await, 1);
+    }
+
+    /// Re-offering the record the node already holds is how owner renewal and
+    /// start-up work: it is replicated again and succeeds.
+    #[tokio::test]
+    async fn re_publishing_the_current_record_replicates_again() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+        let rec = record_versioned(1, 3);
+
+        for _ in 0..2 {
+            let node = h.nodes[0].clone();
+            let rec = rec.clone();
+            let run = tokio::spawn(async move { node.publish(rec).await });
+            h.pump_until(16).await;
+            let report = tokio::time::timeout(Duration::from_secs(5), run)
+                .await
+                .expect("the publication returns")
+                .unwrap()
+                .expect("an identical re-publication succeeds");
+            assert_eq!(report.sent, 1, "{report:?}");
+        }
+        pump_bounded(&h).await;
+        let held = h.nodes[1].service.lock().await.held(&rec.name).cloned();
+        assert_eq!(held, Some(rec));
+    }
+
+    /// An older record than the one held is refused as `LocalResolver` refuses
+    /// it, and nothing is sent: the peers keep the newer one.
+    #[tokio::test]
+    async fn publishing_an_older_record_is_refused_and_sends_nothing() {
+        let h = Harness::new(2);
+        h.introduce(0, 1).await;
+        let newer = record_versioned(1, 2);
+        let older = record_versioned(1, 1);
+
+        let node = h.nodes[0].clone();
+        let first = newer.clone();
+        let run = tokio::spawn(async move { node.publish(first).await });
+        h.pump_until(16).await;
+        run.await.unwrap().unwrap();
+        pump_bounded(&h).await;
+        assert!(h.board.is_empty());
+
+        let refused = tokio::time::timeout(Duration::from_secs(5), h.nodes[0].publish(older))
+            .await
+            .expect("a refused publication returns at once");
+        assert!(
+            matches!(
+                refused,
+                Err(NameMeshError::Name(spine_name::NameError::StalePublication))
+            ),
+            "{refused:?}"
+        );
+        assert!(
+            h.board.is_empty(),
+            "no envelope may be queued for a record the node does not hold"
+        );
+        pump_bounded(&h).await;
+        for node in &h.nodes {
+            let held = node.service.lock().await.held(&newer.name).cloned();
+            assert_eq!(held, Some(newer.clone()), "the newer record is kept");
+        }
+
+        // publish_local keeps its answer: nothing is replicated from it.
+        h.nodes[0]
+            .publish_local(record_versioned(1, 1))
+            .await
+            .unwrap();
+        let held = h.nodes[0].service.lock().await.held(&newer.name).cloned();
+        assert_eq!(held, Some(newer));
     }
 
     /// The property bootstrap exists for: a node holding nothing but an address
