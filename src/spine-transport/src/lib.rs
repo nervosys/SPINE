@@ -12,7 +12,9 @@
 //! - **Connection Pooling**: Smart reuse with health monitoring
 //! - **Adaptive Congestion Control**: BBR-inspired algorithms
 //! - **Batch Coalescing**: Combine small messages for efficiency
-//! - **io_uring Support**: Linux kernel bypass for extreme performance
+//! - **io_uring**: *not implemented.* The non-default `io-uring` feature builds
+//!   type definitions and a queue that performs no I/O; waiting on it returns
+//!   an `Unsupported` error
 //!
 //! # Architecture
 //!

@@ -1041,7 +1041,7 @@ distribute_task(description, required_roles):
 
 **Key Components**:
 
-- **Zero-Copy I/O**: Uses `io_uring` on Linux for kernel-bypassing I/O
+- **Zero-Copy I/O**: Pooled buffers; `io_uring` is not implemented (the non-default `io-uring` feature builds types and a queue that perform no I/O, and waiting on it returns an `Unsupported` error)
 - **BBR Congestion Control**: Bottleneck Bandwidth and Round-trip propagation time
 - **Connection Pooling**: Reusable connections with health checking
 - **Frame Protocol**: this crate's own binary framing with CRC32 checksums (a 12-byte header). It is separate from the native client to daemon wire, which is spine-wire v1 in `spine-protocol`
@@ -1073,7 +1073,7 @@ distribute_task(description, required_roles):
 └─────────────────────────┬───────────────────────────────┘
                           │
 ┌─────────────────────────▼───────────────────────────────┐
-│              Zero-Copy I/O (io_uring)                   │
+│        Zero-Copy I/O (io_uring: not implemented)        │
 │  • Kernel bypass           • Completion queues          │
 │  • Registered buffers      • SQ/CQ batching             │
 └─────────────────────────────────────────────────────────┘
