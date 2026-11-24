@@ -812,7 +812,7 @@ mod tests {
         let tomb = tombstone(order[0], 2, 1_000);
         s.put(tomb.clone(), NOW).unwrap();
 
-        let later = 1_000 + crate::MAX_RECORD_TTL_SECS;
+        let later = 1_000 + u64::from(crate::MAX_RECORD_TTL_SECS);
         assert!(tomb.is_expired(later));
         let far = short_lived(order[8], later, 600);
         assert_eq!(s.put(far.clone(), later).unwrap(), PutOutcome::Inserted);
