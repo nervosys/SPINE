@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use spine_protocol::{Instruction, SpineBinary};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use wasmtime::*;
 
 // =============================================================================
@@ -138,6 +139,22 @@ pub const MAX_STRING_DATA_BYTES: usize = 64 * 1024;
 /// wasmtime already meters. Host calls also pay one unit per byte they
 /// read or scan.
 pub const HOST_CALL_FUEL: u64 = 64;
+
+/// Wall-clock time one `execute()` may spend running the guest, measured
+/// from the moment the guest starts and checked at every host call.
+///
+/// Fuel bounds the work, not the time: it counts instructions and bytes, so
+/// a run that is within its fuel can still be slow on a loaded machine, and
+/// the daemon runs programs on blocking threads that cannot be cancelled. A
+/// run past this deadline is stopped at its next host call with an error
+/// that names the deadline.
+///
+/// Not covered: building the WAT, parsing it and compiling the module happen
+/// before the guest starts, and are bounded by [`MAX_INSTRUCTIONS`] and
+/// [`MAX_STRING_DATA_BYTES`], not by this deadline. A single host call is not
+/// interrupted either; each is bounded by the byte and value budgets above.
+/// Use [`WasmRuntime::with_deadline`] for another value.
+pub const DEFAULT_EXECUTION_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Rough per-node overhead used when estimating the size of a value.
 const VALUE_OVERHEAD: usize = 16;
@@ -407,6 +424,10 @@ impl HostState {
 struct StoreData {
     host: Arc<Mutex<HostState>>,
     limits: StoreLimits,
+    /// When the guest must stop, and the allowance it was given (for the
+    /// message). `None` until the guest starts, and for a store built
+    /// without one.
+    deadline: Option<(Instant, Duration)>,
 }
 
 /// Lock the host state of a call.
@@ -421,7 +442,27 @@ fn host<'a>(caller: &'a Caller<'_, StoreData>) -> std::sync::MutexGuard<'a, Host
 /// Charge `units` of fuel for host work. Guest instructions are metered
 /// by wasmtime; this makes host calls (and the bytes they read, scan or
 /// build) draw on the same budget, so total work is bounded by fuel.
+///
+/// This is also where the wall-clock deadline is enforced: every host
+/// function calls it first, and the generated guest is one straight-line
+/// function that does its work only through host calls (no loop, so
+/// wasmtime's epoch checks, which sit at function entry and loop headers,
+/// would run once before any of it), so a check here sees every step the
+/// program takes.
 fn charge_fuel(caller: &mut Caller<'_, StoreData>, units: u64) -> Result<()> {
+    let past = caller
+        .data()
+        .deadline
+        .filter(|(at, _)| Instant::now() >= *at);
+    if let Some((_, allowed)) = past {
+        let err = host(caller).violate(
+            "deadline",
+            format!("execution ran past its {allowed:?} wall-clock deadline"),
+        );
+        // Nothing further is to run, whatever the guest does with the error.
+        caller.set_fuel(0)?;
+        return Err(err);
+    }
     let left = caller.get_fuel()?;
     if left < units {
         let err = host(caller).violate(
@@ -1052,6 +1093,9 @@ pub struct WasmRuntime {
     /// Fuel units allocated to each `execute()` call. See
     /// [`DEFAULT_FUEL_BUDGET`] for the rationale.
     fuel_budget: u64,
+    /// Wall-clock allowance of each `execute()` call. See
+    /// [`DEFAULT_EXECUTION_DEADLINE`].
+    deadline: Duration,
 }
 
 /// Per-execution fuel budget for untrusted HLS code. wasmtime charges
@@ -1087,8 +1131,12 @@ impl WasmRuntime {
         config.wasm_multi_value(true);
         // Sandbox controls — close the CPU-DoS vector for /api/sessions/
         // {id}/execute. consume_fuel is the wasmtime-recommended way to
-        // bound an untrusted program's CPU; epoch interruption would
-        // also work but requires a separate thread driving the ticker.
+        // bound an untrusted program's CPU. Epoch interruption is not
+        // used for the wall-clock deadline: wasmtime checks the epoch only
+        // at function entry and loop headers, and the generated guest is a
+        // single loop-free function that works through host calls, so no
+        // check would run while it works. The deadline is checked in
+        // `charge_fuel` instead (see `DEFAULT_EXECUTION_DEADLINE`).
         config.consume_fuel(true);
 
         let engine = Engine::new(&config)?;
@@ -1096,7 +1144,16 @@ impl WasmRuntime {
         Ok(Self {
             engine,
             fuel_budget,
+            deadline: DEFAULT_EXECUTION_DEADLINE,
         })
+    }
+
+    /// Use `deadline` as the wall-clock allowance of each `execute()` call
+    /// instead of [`DEFAULT_EXECUTION_DEADLINE`]. A zero deadline refuses any
+    /// program that makes a host call.
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
     }
 
     /// Execute an HLB binary using WebAssembly.
@@ -1107,6 +1164,13 @@ impl WasmRuntime {
     /// [`MAX_LIVE_BYTES`], [`MAX_ELEMENTS`], [`MAX_EVENTS`],
     /// [`MAX_ACTIONS`], [`MAX_CALL_ARGS`]). A program that exceeds one is
     /// stopped and an error naming the budget is returned.
+    ///
+    /// The guest also has a wall-clock deadline ([`DEFAULT_EXECUTION_DEADLINE`],
+    /// or the one given to [`WasmRuntime::with_deadline`]), counted from the
+    /// moment it starts and checked at each host call; past it the run is
+    /// stopped with a `host budget exceeded: deadline` error. Compiling (WAT
+    /// build, parse, Cranelift) comes before the guest starts and is not
+    /// covered by it; [`MAX_INSTRUCTIONS`] and [`MAX_STRING_DATA_BYTES`] bound it.
     pub fn execute(&self, binary: &SpineBinary) -> Result<WasmExecutionResult> {
         let compile_start = std::time::Instant::now();
 
@@ -1132,6 +1196,7 @@ impl WasmRuntime {
             StoreData {
                 host: host_state.clone(),
                 limits,
+                deadline: None,
             },
         );
         store.limiter(|data| &mut data.limits);
@@ -1160,8 +1225,13 @@ impl WasmRuntime {
             .get_typed_func::<(), i32>(&mut store, "execute")
             .context("Failed to get execute function")?;
 
-        // Execute
-        let exec_start = std::time::Instant::now();
+        // The deadline runs from here, not from the start of `execute`:
+        // compiling is bounded by the instruction cap. A deadline too far
+        // out to represent is no deadline.
+        let exec_start = Instant::now();
+        store.data_mut().deadline = exec_start
+            .checked_add(self.deadline)
+            .map(|at| (at, self.deadline));
         let call = execute_fn.call(&mut store, ());
         let exec_time = exec_start.elapsed();
         let instruction_count = match call {
@@ -2657,6 +2727,66 @@ mod tests {
         assert!(msg.contains("host budget exceeded: fuel"), "got: {msg}");
     }
 
+    fn small_program() -> SpineBinary {
+        empty_binary(
+            (0..20)
+                .map(|i| Instruction::DefineElement {
+                    id: i,
+                    tag: "div".to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn test_zero_deadline_refuses_a_normal_program_by_name() {
+        let runtime = WasmRuntime::new().unwrap().with_deadline(Duration::ZERO);
+        let msg = err_text(runtime.execute(&small_program()));
+        assert!(msg.contains("host budget exceeded: deadline"), "got: {msg}");
+        assert!(msg.contains("wall-clock deadline"), "got: {msg}");
+        assert!(msg.contains("0ns"), "the allowance is named: {msg}");
+    }
+
+    #[test]
+    fn test_default_deadline_lets_a_normal_program_pass() {
+        let runtime = WasmRuntime::new().unwrap();
+        let result = runtime.execute(&small_program()).unwrap();
+        assert_eq!(result.elements.len(), 20);
+        // A deadline too large to add to the clock is no deadline.
+        let unbounded = WasmRuntime::new().unwrap().with_deadline(Duration::MAX);
+        let result = unbounded.execute(&small_program()).unwrap();
+        assert_eq!(result.elements.len(), 20);
+    }
+
+    /// A run with no host call has nothing to check; it ends at once.
+    #[test]
+    fn test_zero_deadline_does_not_touch_a_program_without_host_calls() {
+        let runtime = WasmRuntime::new().unwrap().with_deadline(Duration::ZERO);
+        assert!(runtime.execute(&empty_binary(vec![])).is_ok());
+    }
+
+    /// The deadline is per execution, not per engine: many runs at once on
+    /// one runtime do not interfere with each other.
+    #[test]
+    fn test_parallel_executions_on_one_runtime_all_pass() {
+        let runtime = Arc::new(WasmRuntime::new().unwrap());
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let runtime = Arc::clone(&runtime);
+                std::thread::spawn(move || {
+                    (0..10)
+                        .map(|_| runtime.execute(&small_program()).map(|r| r.elements.len()))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            for outcome in handle.join().unwrap() {
+                assert_eq!(outcome.unwrap(), 20);
+            }
+        }
+    }
+
     #[test]
     fn test_normal_stack_program_still_runs() {
         let runtime = WasmRuntime::new().unwrap();
@@ -2691,6 +2821,7 @@ mod tests {
             StoreData {
                 host: Arc::new(Mutex::new(HostState::default())),
                 limits: guest_limits(),
+                deadline: None,
             },
         );
         store.limiter(|data| &mut data.limits);

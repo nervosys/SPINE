@@ -24,6 +24,7 @@ error that names the budget. All are `pub const` in the crate root.
 | `MAX_INSTRUCTIONS` | 65,536 | instructions per program, checked before any compiling |
 | `MAX_STRING_DATA_BYTES` | 64 KiB | string data a program carries (the guest memory is one page) |
 | `DEFAULT_FUEL_BUDGET` | 1,000,000,000 | guest instructions plus host work, per run |
+| `DEFAULT_EXECUTION_DEADLINE` | 2 s | wall-clock time of the guest, from its start, checked at every host call; `WasmRuntime::with_deadline` changes it |
 | `HOST_CALL_FUEL` | 64 | fuel charged per host call, plus one unit per byte it reads or scans |
 | `DEFAULT_MAX_MEMORY_PAGES` | 256 (16 MiB) | guest linear memory, enforced by a wasmtime `ResourceLimiter` |
 | `MAX_STACK_DEPTH` | 1,024 | host value stack |
@@ -34,11 +35,17 @@ error that names the budget. All are `pub const` in the crate root.
 | `MAX_CALL_ARGS` | 32 | `num_args` of a call |
 | `MAX_LATENT_STREAMS` / `MAX_LATENT_DIMS` | 256 / 16,384 | latent vectors and their size |
 
-Sizes are checked before anything is allocated. There is no wall-clock
-timeout inside the crate: the run time is bounded by the fuel and the host
-budgets above, and a caller that needs a hard deadline runs `execute` on a
-thread it can abandon. `WasmStats::memory_used_bytes` is the guest's linear
-memory, not the host values.
+Sizes are checked before anything is allocated. Fuel bounds the work, and
+`DEFAULT_EXECUTION_DEADLINE` bounds the time: a run past it is stopped at its
+next host call with `host budget exceeded: deadline`. The deadline is checked
+in the host calls rather than with wasmtime epoch interruption, because the
+generated guest is one loop-free function that does its work through host
+calls, and epoch checks sit only at function entry and loop headers. It runs
+from the moment the guest starts: building, parsing and compiling the module
+come before it and are bounded by `MAX_INSTRUCTIONS`, and one host call is not
+interrupted (each is bounded by the byte and value budgets).
+`WasmStats::memory_used_bytes` is the guest's linear memory, not the host
+values.
 
 ## Workspace dependencies
 
