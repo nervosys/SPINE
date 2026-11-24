@@ -199,6 +199,14 @@ async fn execute_binary_is_confined() {
             .unwrap();
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0]["key"], "shared-key");
+        // The direct command is bounded as well: an oversized entry is refused
+        // and not stored.
+        let oversized = serde_json::json!("x".repeat(70_000));
+        let refused = tokio::time::timeout(step, client.store_knowledge("big", oversized, vec![]))
+            .await
+            .expect("store_knowledge deadline")
+            .unwrap_err();
+        assert_eq!(code_of(&refused), "execution_failed");
         let mut other = connect(&mut node, dir.path(), origin).await;
         for query in ["", "shared-key"] {
             let theirs = tokio::time::timeout(step, other.query_knowledge(query, vec![], 10))

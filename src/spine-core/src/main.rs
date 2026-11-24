@@ -1322,6 +1322,9 @@ async fn handle_command(
             })))
         }
         BrowserCommand::StoreKnowledge { key, value, tags } => {
+            // The same count `execute_binary` holds a session to, and a bound
+            // on one entry (the frame limit is the only other).
+            let size = spine_core::knowledge::entry_bytes(&key, &value, &tags);
             let entry = KnowledgeEntry {
                 key: key.clone(),
                 value: value.clone(),
@@ -1331,11 +1334,24 @@ async fn handle_command(
                     .unwrap_or_default()
                     .as_nanos() as u64,
             };
-            state
-                .knowledge_base
-                .entry(session_id.to_string())
-                .or_default()
-                .push(entry);
+            {
+                let mut held = state
+                    .knowledge_base
+                    .entry(session_id.to_string())
+                    .or_default();
+                spine_core::knowledge::admit_entry(
+                    held.len(),
+                    MAX_KNOWLEDGE_ENTRIES_PER_SESSION,
+                    size,
+                )
+                .map_err(|reason| {
+                    fail(
+                        ERR_EXECUTION_FAILED,
+                        format!("store_knowledge failed: {reason}"),
+                    )
+                })?;
+                held.push(entry);
+            }
 
             // Broadcast to cluster
             #[cfg(feature = "research")]
@@ -1351,20 +1367,26 @@ async fn handle_command(
             ))
         }
         BrowserCommand::QueryKnowledge { query, tags, limit } => {
-            let entries = state
+            // Filter under the read guard and clone only what is returned, at
+            // most `MAX_KNOWLEDGE_QUERY_RESULTS`.
+            let limit = spine_core::knowledge::query_limit(limit);
+            let results: Vec<KnowledgeEntry> = state
                 .knowledge_base
                 .get(session_id)
-                .map(|e| e.clone())
-                .unwrap_or_default();
-            let results: Vec<_> = entries
-                .into_iter()
-                .filter(|e| {
-                    let matches_tags = tags.is_empty() || tags.iter().all(|t| e.tags.contains(t));
-                    let matches_query = query.is_empty() || e.key.contains(&query);
-                    matches_tags && matches_query
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter(|e| {
+                            let matches_tags =
+                                tags.is_empty() || tags.iter().all(|t| e.tags.contains(t));
+                            let matches_query = query.is_empty() || e.key.contains(&query);
+                            matches_tags && matches_query
+                        })
+                        .take(limit)
+                        .cloned()
+                        .collect()
                 })
-                .take(limit)
-                .collect();
+                .unwrap_or_default();
             Ok(Output::Json(serde_json::json!({ "results": results })))
         }
         BrowserCommand::GetBinaryCapabilities => {

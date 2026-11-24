@@ -11,6 +11,7 @@ pub mod authority;
 pub mod authority_ledger;
 pub mod config;
 pub mod connections;
+pub mod knowledge;
 pub mod operations;
 pub mod outbound;
 pub mod resources;
