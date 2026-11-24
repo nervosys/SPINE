@@ -51,6 +51,8 @@ Consequences. A peer built from the text before this revision does not send or c
 
 2026-11-24, second step (names): `NameResolution` was revised in the same way (12.4, 12.5). The `resolved` outcome gained a required key `log`, the succession log the node holds for the name, 0 to 64 entries; three outcomes were added, `retired`, `compromised` and `revoked`, each carrying the evidence a client verifies; and a revoked name is no longer reported as `invalid`. The version byte is still 1. The command set, the frame types and the error codes of section 13 are unchanged: these are new shapes of one `ok` value, not new commands or errors. Consequences: a client built before this step reads a revised daemon's `resolved` answer with an unknown key, which `NameResolution` refuses (the type is closed), so such a client fails to decode every resolve answer of a revised daemon; a revised client reading an older daemon's `resolved` answer finds `log` missing and refuses it the same way. As with the first step, "version 1" now names two behaviours and nothing on the wire tells a peer which one it faces except that failure. Of the draft `00-wire-revision.md`, this step implements C6 only.
 
+2026-11-24, third step (delete and codes): two commands were added, `delete_resource` and `delete_knowledge` (12.2, 12.4), so the closed command set is 21, and four error codes, `knowledge_entry_too_large`, `knowledge_capacity`, `action_unsupported` and `delete_refused` (13), so the list is 51. Three refusals that were `execution_failed` now carry their own code: a `store_knowledge` entry over 64 KiB is `knowledge_entry_too_large`; a knowledge store past the per-session count or the daemon-wide byte budget, from `store_knowledge` or from a program, is `knowledge_capacity`; a program that requests an action the daemon does not perform is `action_unsupported`. `execution_failed` stays for a program that failed to compile, instantiate or run. The version byte is still 1. Consequences: an older client sends neither command, and reads the three renamed refusals as a code it does not know, which it MUST tolerate (13) and which no longer reads as `execution_failed`; an older daemon answers either new command with `unknown_command`, and an older SDK decoding a reply to one of them is not reachable because it never sends one. "Version 1" now names three behaviours. Of the draft `00-wire-revision.md`, this step implements C7 and the four non-authority codes of C4. Still not in this document: `AUTH_REQUEST`, `RECEIPT`, the `authority_*` codes, and a call of the authority gate.
+
 ## 2. Frame
 
 ### 2.1 Layout
@@ -312,7 +314,7 @@ These answer a `REQUEST` with a `RESPONSE` whose `err.code` is as shown, the sam
 
 | Code | Condition |
 | --- | --- |
-| `unknown_command` | The body is a text string, or a single-entry map with a text key, that names a command outside the 19 of section 12. |
+| `unknown_command` | The body is a text string, or a single-entry map with a text key, that names a command outside the 21 of section 12. |
 | `invalid_request` | The body fails to decode as a command for any other reason: a missing, unknown or mistyped field, a present `null` for an optional field, a known name with the wrong shape, a body that is not a command (a map with two entries, a non-text key), or a decoded value that does not re-encode to the same bytes. |
 | `overloaded` | The server is at `max_inflight`; the request is not executed and its id is not tracked (8.3). |
 
@@ -388,7 +390,7 @@ The core command set and the frame types are closed; an extension cannot add a v
 
 ### 12.1 Encoding and decoding
 
-A `REQUEST` body is one of 19 commands (`lib.rs` `BrowserCommand`, `COMMAND_NAMES`). A command without fields is the text of its name; a command with fields is a single-entry map `{name: fields}`, where `fields` is a map with text keys. `execute_binary`, `tool_call` and `capability_query` carry one struct whose fields are the map. Names are lower snake_case and exactly as listed.
+A `REQUEST` body is one of 21 commands (`lib.rs` `BrowserCommand`, `COMMAND_NAMES`). A command without fields is the text of its name; a command with fields is a single-entry map `{name: fields}`, where `fields` is a map with text keys. `execute_binary`, `tool_call` and `capability_query` carry one struct whose fields are the map. Names are lower snake_case and exactly as listed.
 
 The daemon decodes with `native.rs` `decode_command`: the body must be deterministic CBOR (else the connection closes, 7.2), must decode as a command, and the decoded command must re-encode to exactly the received bytes (`decode_strict`). The re-encode check catches bodies that the decoder alone would accept, for example `{"get_ur": {"x": 1}}`, which would otherwise read as the unit command. Failure is `unknown_command` if `claimed_command_name` finds a name outside `COMMAND_NAMES` (a text body, or a map with one entry and a text key), else `invalid_request`.
 
@@ -432,8 +434,30 @@ Commands with no fields: `get_ur`, `get_raw_html`, `get_binary_capabilities`, `n
 | | `args` | JSON | no | |
 | | `trace` | `TraceContext` | yes | |
 | `capability_query` | `selector` | `CapabilitySelector` | no | |
+| `delete_resource` | `hash` | 32 bytes | no | yes |
+| | `owner` | 32 bytes | no | yes |
+| | `proof` | 64 bytes | no | yes |
+| `delete_knowledge` | `key` | text | no | |
 
-A byte field of the wrong length (not 32 bytes for the 32-byte fields) is `invalid_request`.
+A byte field of the wrong length (not 32 bytes for the 32-byte fields, not 64 for `proof`) is `invalid_request`.
+
+**`delete_resource`** removes the bytes of a blob that `publish_resource` stored; `hash` is its resource id, `owner` the Ed25519 public key that published it, and `proof` that key's signature, made for this connection, over the message
+
+```
+M = "spine-wire-delete-resource-v1" 00 || hash (32 bytes) || binding (32 bytes)
+```
+
+where the domain text is 29 ASCII bytes followed by one zero byte and `binding` is the `HELLO_ACK.binding` of this connection (6.3). `M` is 94 bytes. The signature is Ed25519, verified strictly as in 6.6 (`S` below the group order, a small-order key or `R` refused). The domain text is unique to this message, so a signature made for `IDENTIFY` or for anything else does not verify, and a proof made for another connection does not verify on this one: a captured request cannot be replayed on another connection. Within one connection a proof can be repeated, which deletes nothing the second time (see below).
+
+The daemon checks, in this order:
+
+1. The body decodes (7.4): else `unknown_command` or `invalid_request`, as for any command, and a byte field of the wrong length is `invalid_request`.
+2. The proof: strict verification of `proof` over `M` under `owner`. A proof that does not verify, including any proof under a small-order `owner` (the all-zero key of an ownerless blob is one), is `delete_refused`. Nothing else is read or changed before this step.
+3. The store: the blob is deleted when it exists and `owner` is exactly the key recorded as its publisher; the reply is `{deleted: true}`. A hash nobody holds, and a hash held by another key, are both `{deleted: false}`, a success: a client that proves some key learns nothing about blobs that key does not own.
+
+Who may delete: only the recorded publisher, which is the key the store recorded when it accepted the blob. That key is the name's inception key (`02-names.md` decision 42), the key of the record's own name. For a name whose key has rotated, the current key is not the recorded publisher and cannot delete; the superseded inception key can. That is the same rule as for storing and for the per-publisher quota, and section 16, item 25 records it as a limit. Deleting is allowed while a name still refers to the blob: the name record is not touched, `resolve_name` still answers, and `read_resource` of the hash then answers `resource_not_found`, as for any hash nobody holds. The accounted bytes (the row length plus 1,024) are released from both the publisher's share and the store total. A repeat is `{deleted: false}`. The blob can be published again.
+
+**`delete_knowledge`** removes every entry of this connection's session whose key equals `key` exactly (a byte-for-byte comparison of the text: no prefix, no case folding, no tag filter) and replies `{deleted: n}` with the number removed. Entries of other sessions are not read or changed. The daemon-wide knowledge budget (13, `knowledge_capacity`) is released by the same amount the entries were charged, so the room can be stored into again. A key nothing holds, a connection that has stored nothing, and a repeat all reply `{deleted: 0}`, a success. The command does not create a session and is not counted against `server.max_sessions`. It does draw on the connection's command bucket (14).
 
 ### 12.3 Shared types
 
@@ -476,6 +500,8 @@ The `ok` value, by command (`spine-core` `main.rs` `handle_command`, `handle_ses
 | `mesh_call` | the peer application's reply, JSON; the SDK reads `result`, or `error.{code, message}`, from it |
 | `tool_call` | the tool's content, JSON |
 | `capability_query` | a `CapabilityAdvertisement` (typed); `agent_id` is the node's DID when a namespace is configured, else `"spine-core:local-unattested"`; a `semantic` selector matches nothing |
+| `delete_resource` | `{deleted: bool}`: true when a blob was removed (12.2) |
+| `delete_knowledge` | `{deleted: uint}`: the number of entries removed, 0 when none (12.2) |
 
 `NameResolution` is externally tagged, with one variant per outcome (12.5):
 
@@ -526,7 +552,7 @@ Evidence that fails any of these is not a statement about the name: the node is 
 
 ## 13. Error codes
 
-Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with the condition and the place that raises it. A client MUST tolerate a code not in this list.
+Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 51 codes), with the condition and the place that raises it. A client MUST tolerate a code not in this list.
 
 | Code | Condition | Raised in |
 | --- | --- | --- |
@@ -540,7 +566,10 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with
 | `session_expired` | `navigate` fetched a page and the session record was gone | `main.rs` `handle_command` |
 | `no_page_loaded` | `get_ur` or `get_raw_html` before a successful `navigate`; `get_ur` does not use it for a page that fails to parse (`parse_error`) | `main.rs` `handle_command` |
 | `capability_denied` | `execute_binary` lists a capability other than `network`, `storage`, `memory`, `search`, or the program requests an action it did not list (a navigation needs `network`, a search `search`, a knowledge write `storage`); nothing the program asked for is carried out. The list is the program's declaration, not a grant | `main.rs` `handle_command` |
-| `execution_failed` | `execute_binary`: the program failed to compile, instantiate or run, ran out of fuel (host work draws on it too), or exceeded a fixed limit: 65,536 instructions; 64 KiB of string data; a host value stack of 1,024; 64 KiB per host value; 1 MiB of live host values; 4,096 elements, 4,096 events and 64 actions per run; 32 arguments per call; 16 MiB of guest memory; 4 navigations per run; 256 state variables and 1,024 knowledge entries per session. `store_knowledge` is refused with the same code when the session already holds 1,024 entries or the entry (key, compact JSON of the value and tags, in bytes) exceeds 64 KiB. Knowledge is also bounded across the daemon: 32 MiB in total (each entry counts its bytes plus 128), and `store_knowledge` or a program's store past that is refused with this code. A program whose run requests an action the daemon does not perform is refused whole, before any action runs, naming the action: in a default build the performed actions are `navigate` and `store_knowledge`, and `search`, `query_knowledge` and `reason` are refused (`search` is performed only in a build with the `research` feature; `query_knowledge` and `reason` in none; the response lists a run's actions but has no field for one that was skipped). At most four programs run at once; one that finds no free slot for 2 s is answered `overloaded`. A program that runs longer than 2 s from the start of the guest is stopped at its next host call; building, parsing and compiling come before that and are bounded by the instruction cap, and one host call is not interrupted | `main.rs` `handle_command` |
+| `execution_failed` | `execute_binary`: the program failed to compile, instantiate or run, ran out of fuel (host work draws on it too), or exceeded a fixed limit: 65,536 instructions; 64 KiB of string data; a host value stack of 1,024; 64 KiB per host value; 1 MiB of live host values; 4,096 elements, 4,096 events and 64 actions per run; 32 arguments per call; 16 MiB of guest memory; 4 navigations per run; 256 state variables per session. A program's refusal for knowledge past a limit is `knowledge_capacity`, and for an action the daemon does not perform `action_unsupported`; both are listed below and neither is this code. At most four programs run at once; one that finds no free slot for 2 s is answered `overloaded`. A program that runs longer than 2 s from the start of the guest is stopped at its next host call; building, parsing and compiling come before that and are bounded by the instruction cap, and one host call is not interrupted | `main.rs` `handle_command` |
+| `knowledge_entry_too_large` | `store_knowledge`: the entry (key, compact JSON of the value and tags, in bytes) exceeds 64 KiB. The entry is not stored and nothing is charged | `main.rs` `handle_command`; `knowledge.rs` `admit_entry` |
+| `knowledge_capacity` | a knowledge store would pass a bound: the session already holds 1,024 entries, or the daemon-wide budget of 32 MiB in total (each entry counts its bytes plus 128) is exhausted. From `store_knowledge`, and from `execute_binary` when the program's stores would pass either bound (the whole program is then refused before it runs, and nothing is reserved). `delete_knowledge` releases room | `main.rs` `handle_command`, `append_knowledge`; `knowledge.rs` `admit_entry` |
+| `action_unsupported` | `execute_binary`: the run requests an action the daemon does not perform; the program is refused whole, before any action runs, naming the action. In a default build the performed actions are `navigate` and `store_knowledge`, and `search`, `query_knowledge` and `reason` are refused (`search` is performed only in a build with the `research` feature; `query_knowledge` and `reason` in none; the response lists a run's actions but has no field for one that was skipped) | `main.rs` `handle_command`; `actions.rs` `unsupported_action` |
 | `namespace_unavailable` | `mesh_call` and no namespace is configured (checked before `peer_id`) | `main.rs` `handle_command` |
 | `invalid_peer_id` | `mesh_call` with a namespace, and `peer_id` is not a UUID | `main.rs` `handle_command` |
 | `mesh_call_failed` | `mesh_call` could not be delivered or the peer refused it | `main.rs` `handle_command` |
@@ -552,6 +581,7 @@ Complete list a v1 daemon produces (`body.rs` `ALL_ERROR_CODES`, 47 codes), with
 | `record_rejected` | `publish_name`: the store refused the record (signature or policy); `publish_resource`: the same after the bytes were stored (a blob this request added is removed) | `main.rs` `handle_command` |
 | `publish_failed` | `publish_resource`: the store refused the blob (record verification, over 8 MiB, no signed resource id, id or content-type mismatch, no room under the accounted-byte quota after eviction; storage rules in 04-objects.md section 4.4) | `main.rs`; `resources.rs` `put_as`, which stores for the key that signed the record |
 | `resource_not_found` | `read_resource`: no blob for the hash | `main.rs` `handle_command` |
+| `delete_refused` | `delete_resource`: `proof` does not verify strictly over `M` (12.2) under `owner` for this connection's `binding`. A valid proof of a key that does not own the blob is not this code (`deleted: false`) | `main.rs` `delete_resource`; `resource.rs` `verify_delete_proof` |
 | `invalid_seed` | `crawl_names`: `seed` does not parse as a name | `main.rs` `handle_command` |
 | `invalid_args` | `tool_call` of a known tool: `args.text` is not text or exceeds 1 MiB (the tool name is checked first) | `tools.rs` `invoke` |
 | `unsupported_tool` | `tool_call`: the name is neither tool, whatever `args` holds | `tools.rs` `invoke` |
@@ -608,6 +638,8 @@ Configuration keys are in `spine.toml` (`SPINE_CONFIG_PATH`) unless an environme
 | Bind address | `127.0.0.1` | `server.host`; non-loopback needs `tls.mutual_tls` or `server.allow_unauthenticated_remote` | startup refused |
 | Shutdown drain | 30 s | `server.shutdown_timeout_secs` (`SPINE_SHUTDOWN_TIMEOUT`) | process exits |
 | `resolve_names` batch | 256 names | `main.rs`; fixed | `batch_too_large` |
+| Knowledge | 1,024 entries per session, 64 KiB per entry, 32 MiB in total (each entry counts its bytes plus 128) | `knowledge.rs`, `main.rs`; fixed | `knowledge_capacity`; `knowledge_entry_too_large` |
+| `delete_resource` proof | 64 bytes, over a 94-byte message | `resource.rs` `DELETE_RESOURCE_DOMAIN`; fixed | `delete_refused` |
 | Resource upload | 8 MiB (`MAX_RESOURCE_BYTES`) | `resource.rs`; fixed | `publish_failed` |
 | Resource read chunk | 1 to 65,536 bytes | `resource.rs` `MAX_RESOURCE_CHUNK`; fixed | `invalid_request` |
 | Resource store | 256 MiB of accounted bytes (row length plus 1,024 per blob), 64 MiB fair share per publisher; see 04-objects.md section 4.4 | `resources.rs` `MAX_STORED_BYTES`; fixed | `publish_failed` |
@@ -634,7 +666,7 @@ The first runs every vector through the reference; the second fails if the commi
 
 The reference signs and verifies with the pure-Python RFC 8032 Ed25519 of `scripts/names_v1.py` (which checks itself against the RFC's test vectors when the script starts), including the strict rule: `S` below the group order, a small-order key or `R` refused. It is not independent of the name reference, and it is slow.
 
-The file has these sections: `valid_bodies` (deterministic CBOR the decoder must accept), `invalid_bodies` (each with the rejecting `CborError` variant), `valid_frames` (decode, re-encode and typed read), `invalid_frames` (each with the `FrameError` variant and close code), `incomplete_frames` (valid prefixes; the number of further bytes needed) and `handshakes` (a `HELLO` frame, the server configuration, with its `binding`, `authority` and `time`, and the expected `HELLO_ACK` or `CLOSE`). Four sections cover the revision of 1.5: `hello_acks` (`HELLO_ACK` bodies a client accepts, or refuses with `protocol_violation`: each missing or mistyped key, a `binding` of 0, 31 or 33 bytes, an `authority` of another text, a `time` that is not a uint), `identify` (an `IDENTIFY` body against the two handshake bodies it was signed for: valid, with the test seed, the signed message `M` and the deterministic signature; and invalid: a wrong binding, a wrong `HELLO`, a flipped signature bit, another key, a non-empty `channel`, wrong lengths and types, a missing or extra key, a body that is not a map, bodies that are not deterministic CBOR, a small-order key, a small-order `R` and an `S` not below the group order), `identify_sessions` (the frames a server receives after the handshake and the outcome: the identity, or the `CLOSE` code; `PING` and `PONG` before the proof, a second proof, a proof after a request, after a `STREAM_CANCEL` or an `EXT`) and `ed25519_strict` (the verdicts of plain RFC 8032 verification and of strict verification on the same inputs; the Rust test checks the strict one). A seventh section covers the names step of 1.5: `name_results` (the `ok` value of a `resolve_name` answer: each outcome with and without logs, logs of 0, 1, 3 and 64 entries, and the refusals: a missing, mistyped or extra key, a log of 65 entries, one log or three in `compromised`, an empty log in `retired`, an entry with a missing, extra or mistyped field). Frames with flag bit 0 hold their body in a zstd frame of raw blocks, which is valid zstd and not smaller. A `note` on a vector explains a rule; since this revision no note records a disagreement between the text and the implementation.
+The file has these sections: `valid_bodies` (deterministic CBOR the decoder must accept), `invalid_bodies` (each with the rejecting `CborError` variant), `valid_frames` (decode, re-encode and typed read), `invalid_frames` (each with the `FrameError` variant and close code), `incomplete_frames` (valid prefixes; the number of further bytes needed) and `handshakes` (a `HELLO` frame, the server configuration, with its `binding`, `authority` and `time`, and the expected `HELLO_ACK` or `CLOSE`). Four sections cover the revision of 1.5: `hello_acks` (`HELLO_ACK` bodies a client accepts, or refuses with `protocol_violation`: each missing or mistyped key, a `binding` of 0, 31 or 33 bytes, an `authority` of another text, a `time` that is not a uint), `identify` (an `IDENTIFY` body against the two handshake bodies it was signed for: valid, with the test seed, the signed message `M` and the deterministic signature; and invalid: a wrong binding, a wrong `HELLO`, a flipped signature bit, another key, a non-empty `channel`, wrong lengths and types, a missing or extra key, a body that is not a map, bodies that are not deterministic CBOR, a small-order key, a small-order `R` and an `S` not below the group order), `identify_sessions` (the frames a server receives after the handshake and the outcome: the identity, or the `CLOSE` code; `PING` and `PONG` before the proof, a second proof, a proof after a request, after a `STREAM_CANCEL` or an `EXT`) and `ed25519_strict` (the verdicts of plain RFC 8032 verification and of strict verification on the same inputs; the Rust test checks the strict one). A seventh section covers the names step of 1.5: `name_results` (the `ok` value of a `resolve_name` answer: each outcome with and without logs, logs of 0, 1, 3 and 64 entries, and the refusals: a missing, mistyped or extra key, a log of 65 entries, one log or three in `compromised`, an empty log in `retired`, an entry with a missing, extra or mistyped field). Four sections cover the third step of 1.5: `delete_proofs` (the `delete_resource` proof: valid ones with the test seed, the signed message `M` and the deterministic signature; invalid ones: a proof made for another connection or another hash, by another key, under another owner, a flipped bit in `R` or `S`, an `S` not below the group order, a small-order owner, the all-zero owner, and messages with another domain, without the domain, or with the hash and binding swapped), `invalid_commands` (request bodies of the delete commands that are `invalid_request`: a byte field of the wrong length or type, a missing or extra field, a bare name; and two `unknown_command` names), `delete_results` (the `ok` value of the two delete replies: a boolean for `delete_resource`, an unsigned integer for `delete_knowledge`, and the refusals) and `error_codes` (the 51 codes in the order of the table of 13; the checker also compares it with that table). Frames with flag bit 0 hold their body in a zstd frame of raw blocks, which is valid zstd and not smaller. A `note` on a vector explains a rule; since this revision no note records a disagreement between the text and the implementation.
 
 ### 15.2 What conforming means
 
@@ -771,7 +803,7 @@ Count: 12 kept, 6 moved, 6 deleted. `Message` in `lib.rs` is now a record type f
 
 ### A.4 Command inventory
 
-`BrowserCommand` had 35 variants. The 17 kept commands plus `tool_call` and `capability_query` are the 19 of section 12.
+`BrowserCommand` had 35 variants. The 17 kept commands plus `tool_call` and `capability_query` were the 19 commands of section 12 until the delete commands of 1.5 made them 21.
 
 | # | Variant | Pre-v1 behaviour in the research-free daemon | Fate in v1 |
 | --- | --- | --- | --- |
@@ -884,3 +916,4 @@ Source comments, other documents and the generator cite labels of the document t
 22. **A rotated record without its log is `unavailable`, and a name compromised only on the mesh is too.** A node that holds a record whose head claim reaches past its log answers `unavailable` (12.5), which a client cannot tell from a disconnected namespace except by the reason text. Right: a reason code, or a fetch of the log from a peer before answering. The mesh service holds equivocation proofs that `spine-mesh` does not expose, so a name compromised there is answered by the daemon as `unavailable` until the proof reaches the local resolver's book (when a log of the name is offered to it, as a lookup that carries one does).
 23. **`find_providers` and `crawl_names` carry no logs.** A client that gets a provider record from them cannot judge a rotated name's key history from that answer; it resolves the name (12.5).
 24. **Nothing carries a log to a client that is behind.** The log in an answer is what the node holds (`02-names.md` 10.8); a client has no way to ask for a longer one or to learn that one exists.
+25. **A rotated name's current key cannot delete its blob.** `delete_resource` is by the recorded publisher, the inception key of the name, as is storing and the per-publisher quota (12.2). After a rotation the holder of the current key has no wire command that deletes the bytes, and the holder of the superseded key can still delete them. Right: record the publisher as the name, or let a delete be authorised by any key of the name's succession log, which needs the log at the store. Not done: it changes what the store records for every blob.

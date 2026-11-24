@@ -26,7 +26,15 @@
 //!   refuses each body as listed, and a body it accepts re-encodes to the same
 //!   bytes and passes `NameResolution::validate`;
 //! * `identify_sessions`: a server `Connection` that receives the listed
-//!   frames after its handshake ends as listed.
+//!   frames after its handshake ends as listed;
+//! * `delete_proofs`: `resource::verify_delete_proof` gives the listed verdict,
+//!   and a valid vector's signed message and deterministic proof are the ones
+//!   `resource::delete_resource_message` and `resource::sign_delete_proof` give;
+//! * `invalid_commands`: `native::decode_command` refuses each request body
+//!   with the listed code (`invalid_request` or `unknown_command`);
+//! * `delete_results`: the `ok` value of a delete reply is read strictly as the
+//!   closed map `{deleted}` of the type the command gives;
+//! * `error_codes`: `body::ALL_ERROR_CODES` is the listed list, in order.
 //!
 //! Every check returns a message that names the vector; a vector of a kind
 //! this test does not understand fails with its name instead of panicking.
@@ -43,6 +51,7 @@ use spine_protocol::frame::{self, Frame, FrameError, FrameType, MAX_FRAME, PRE_H
 use spine_protocol::hello::{self, AuthorityMode, Close, Hello, HelloAck, LocalConfig};
 use spine_protocol::identify::{signed_message, Identify, SigningKey, Transcript};
 use spine_protocol::native;
+use spine_protocol::resource;
 use spine_protocol::NameResolution;
 use tokio::io::AsyncWriteExt;
 
@@ -505,6 +514,12 @@ fn bytes32(v: &Value, key: &str) -> Result<[u8; 32], String> {
     <[u8; 32]>::try_from(bytes).map_err(|b| format!("field {key:?} has {} bytes, want 32", b.len()))
 }
 
+/// A hex field of exactly `N` bytes.
+fn fixed_bytes<const N: usize>(v: &Value, key: &str) -> Result<[u8; N], String> {
+    let bytes = unhex(text(v, key)?)?;
+    <[u8; N]>::try_from(bytes).map_err(|b| format!("field {key:?} has {} bytes, want {N}", b.len()))
+}
+
 fn authority_named(name: &str) -> Result<AuthorityMode, String> {
     match name {
         "off" => Ok(AuthorityMode::Off),
@@ -555,6 +570,80 @@ fn check_name_result(v: &Value) -> Result<(), String> {
         ("ok", Err(e)) => Err(format!("refused ({e}), want it accepted")),
         ("invalid", Ok(_)) => Err("accepted, want it refused".to_string()),
         ("invalid", Err(_)) => Ok(()),
+        (other, _) => Err(format!("unknown expected verdict {other:?}")),
+    }
+}
+
+/// `delete_proofs`: strict verification of a `delete_resource` proof, and for a
+/// valid one the signed message and the deterministic signature of the seed.
+fn check_delete_proof(v: &Value) -> Result<(), String> {
+    let owner: [u8; 32] = fixed_bytes(v, "owner")?;
+    let hash: [u8; 32] = fixed_bytes(v, "hash")?;
+    let binding: [u8; 32] = fixed_bytes(v, "binding")?;
+    let proof: [u8; 64] = fixed_bytes(v, "proof")?;
+    let want = match text(v, "expect")? {
+        "valid" => true,
+        "invalid" => false,
+        other => return Err(format!("unknown expected verdict {other:?}")),
+    };
+    let got = resource::verify_delete_proof(&owner, &hash, &binding, &proof);
+    if got != want {
+        return Err(format!("verify_delete_proof gave {got}, want {want}"));
+    }
+    if want {
+        let message = resource::delete_resource_message(&hash, &binding);
+        same_bytes("signed message", &message, &unhex(text(v, "message")?)?)?;
+        let seed: [u8; 32] = fixed_bytes(v, "seed")?;
+        let signing = SigningKey::from_bytes(&seed);
+        if signing.verifying_key().to_bytes() != owner {
+            return Err("owner is not the key of the seed".to_string());
+        }
+        let again = resource::sign_delete_proof(&signing, &hash, &binding);
+        same_bytes("proof signed by the seed", &again, &proof)?;
+    }
+    Ok(())
+}
+
+/// `invalid_commands`: the request body is deterministic CBOR and the command
+/// decoder refuses it with the listed code.
+fn check_invalid_command(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    let want = text(v, "code")?;
+    cbor::check_deterministic(&body).map_err(|e| format!("not deterministic CBOR: {e:?}"))?;
+    match native::decode_command(&body) {
+        Ok(command) => Err(format!("accepted as {command:?}, want {want}")),
+        Err(e) if e.code == want => Ok(()),
+        Err(e) => Err(format!("answered {}, want {want}", e.code)),
+    }
+}
+
+/// `delete_results`: the `ok` value is the closed map `{deleted}`, a boolean
+/// for `delete_resource` and an unsigned integer for `delete_knowledge`.
+fn check_delete_result(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    let command = text(v, "command")?;
+    let want = text(v, "expect")?;
+    let judged: Result<(), String> = match native::decode_strict::<Value>(&body) {
+        Err(e) => Err(format!("refused: {e}")),
+        Ok(value) => match value.as_object() {
+            Some(map) if map.len() == 1 && map.contains_key("deleted") => {
+                let deleted = &map["deleted"];
+                match command {
+                    "delete_resource" if deleted.is_boolean() => Ok(()),
+                    "delete_knowledge" if deleted.is_u64() => Ok(()),
+                    "delete_resource" | "delete_knowledge" => {
+                        Err(format!("deleted has the wrong type: {deleted}"))
+                    }
+                    other => Err(format!("unknown command {other:?}")),
+                }
+            }
+            _ => Err("not a map holding only deleted".to_string()),
+        },
+    };
+    match (want, judged) {
+        ("ok", Ok(())) | ("invalid", Err(_)) => Ok(()),
+        ("ok", Err(e)) => Err(format!("refused ({e}), want it accepted")),
+        ("invalid", Ok(())) => Err("accepted, want it refused".to_string()),
         (other, _) => Err(format!("unknown expected verdict {other:?}")),
     }
 }
@@ -787,6 +876,44 @@ fn identify_proofs_are_accepted_or_refused_as_listed() {
 #[test]
 fn name_results_are_accepted_or_refused_as_listed() {
     run_section(&load(), "name_results", 60, check_name_result);
+}
+
+#[test]
+fn delete_resource_proofs_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "delete_proofs", 12, check_delete_proof);
+}
+
+#[test]
+fn invalid_delete_requests_are_refused_with_the_listed_code() {
+    run_section(&load(), "invalid_commands", 25, check_invalid_command);
+}
+
+#[test]
+fn delete_replies_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "delete_results", 18, check_delete_result);
+}
+
+#[test]
+fn the_error_code_list_is_the_listed_one() {
+    let root = load();
+    let section = root
+        .get("error_codes")
+        .expect("section \"error_codes\" is missing from the vector file");
+    let codes: Vec<&str> = section["codes"]
+        .as_array()
+        .expect("error_codes.codes is not an array")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(codes.as_slice(), spine_protocol::body::ALL_ERROR_CODES);
+    assert_eq!(section["count"].as_u64(), Some(codes.len() as u64));
+    let protocol = section["protocol"]
+        .as_array()
+        .expect("error_codes.protocol is not an array");
+    assert!(!protocol.is_empty());
+    for code in protocol.iter().filter_map(Value::as_str) {
+        assert!(codes.contains(&code), "{code} is not in the list");
+    }
 }
 
 #[test]

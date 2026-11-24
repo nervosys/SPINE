@@ -19,8 +19,341 @@
     "identify_sessions: 'hello_frame' and 'local' make a handshake; the server then receives the 'frames' (hex) in order. 'expect' is {result: ok, identity: hex or null} when all are accepted and the stream then ends, or {result: close, code} at the first one refused.",
     "name_results: a RESPONSE 'ok' value for resolve_name (section 12.5), 'body_hex' described by 'body'. 'expect' is 'ok' or 'invalid' (the body is not a name resolution a decoder accepts). Entries of a succession log are checked for shape only: their signatures are not part of the wire layer.",
     "ed25519_strict: 'public', 'message' and 'signature' (hex) with the verdict of plain RFC 8032 verification ('plain') and of verify_strict ('strict'); a conforming server uses the strict one (section 6.6).",
+    "delete_proofs: the proof of a delete_resource request (section 12.2). 'owner', 'hash', 'binding' (the connection's HELLO_ACK binding) and 'proof' are hex; 'expect' is 'valid' when strict Ed25519 verification of the message \"spine-wire-delete-resource-v1\" 00 || hash || binding under 'owner' accepts, else 'invalid'. A valid vector also gives the test 'seed' (signatures are deterministic) and the signed 'message'. The daemon's order is: verify the proof first (a failure is delete_refused), then look the blob up under 'owner'.",
+    "invalid_commands: REQUEST bodies ('body_hex', described by 'body') that a daemon answers with the error code 'code' (invalid_request or unknown_command, sections 7.4, 12.1, 12.2).",
+    "delete_results: the ok value of a delete reply (section 12.4), 'body_hex' described by 'body', for the command named in 'command'. 'expect' is 'ok' or 'invalid' (a closed map {deleted}: a boolean for delete_resource, an unsigned integer for delete_knowledge).",
+    "error_codes: the closed list of codes a v1 daemon produces (section 13) in the order of its table, with their 'count' and the three 'protocol' codes. check also compares it with the table in docs/spec/00-wire.md.",
     "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
     "Not covered: connection state other than the IDENTIFY window (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression."
+  ],
+  "delete_proofs": [
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "valid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "7370696e652d776972652d64656c6574652d7265736f757263652d763100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f4242424242424242424242424242424242424242424242424242424242424242",
+      "name": "valid",
+      "note": "the signature by the owner over the domain, the hash and the connection's binding (section 12.2)",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "8ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be925644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005",
+      "seed": "2121212121212121212121212121212121212121212121212121212121212121"
+    },
+    {
+      "binding": "4343434343434343434343434343434343434343434343434343434343434343",
+      "expect": "valid",
+      "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "message": "7370696e652d776972652d64656c6574652d7265736f757263652d763100aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa4343434343434343434343434343434343434343434343434343434343434343",
+      "name": "valid_another_blob_and_connection",
+      "note": "another hash and another binding sign another message",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "25c485bdc07573b2906981a494dbaeae1a642f299b5f13e79d030c974dfa02975acc559076bb7d89a296cc1d2c52d987db1063b900d27693052d2236ed224a01",
+      "seed": "2121212121212121212121212121212121212121212121212121212121212121"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "valid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "message": "7370696e652d776972652d64656c6574652d7265736f757263652d763100000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f4242424242424242424242424242424242424242424242424242424242424242",
+      "name": "valid_another_owner",
+      "note": "the check is against the owner the request names; whether that key owns the blob is the next step",
+      "owner": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "proof": "0f33b24afd47fe05863dd8637e7eaafd50bd14bb8bc7430b61ddb4abf5ec35d3f15c203ff9ac17ca4143b00e5c8320d173ebb0c77eb816b91570d9d809775e07",
+      "seed": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_proof_for_another_connection",
+      "note": "signed for a connection with another binding: a captured proof does not verify elsewhere (section 12.2)",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "3da04d27dd744ca1c1ead1aeb58fd3888f66faff5ca53b2213e42c2357e41e3527a48e0968784924040391e05984c3efd674944ce41e2f945ca07ed46338770c"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_proof_for_another_hash",
+      "note": "the signature covers the hash",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "21c7aebed982eca5e184cd7a9f7716fff4dd22af8d75d8aedc517d0dc428b4d5ad70da77d7594d8f7db3bdff92f6fe14b2f76e93c2e35f780dd7e48dc386380f"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_signed_by_another_key",
+      "note": "a proof by another key for the owner the request names",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "0f33b24afd47fe05863dd8637e7eaafd50bd14bb8bc7430b61ddb4abf5ec35d3f15c203ff9ac17ca4143b00e5c8320d173ebb0c77eb816b91570d9d809775e07"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_owner_is_another_key",
+      "note": "the proof verifies only under the key that made it",
+      "owner": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "proof": "8ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be925644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_signature_bit_flip_in_r",
+      "note": "one bit of R changed",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "8fce89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be925644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_signature_bit_flip_in_s",
+      "note": "one bit of S changed",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "8ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be924644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_non_canonical_s",
+      "note": "S + L: S is not below the group order, refused by strict verification",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "8ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e04cf357b250026e41fc003c29a65c19bedf737fe3a51a5419ab2cd46b5ed62015"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_small_order_owner",
+      "note": "the identity point as owner with R = identity and S = 0 verifies under plain RFC 8032 and is refused by strict verification",
+      "owner": "0100000000000000000000000000000000000000000000000000000000000000",
+      "proof": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_all_zero_owner_and_proof",
+      "note": "the key of an ownerless blob is all zeros: no proof can be made for it, so such a blob cannot be deleted through the wire",
+      "owner": "0000000000000000000000000000000000000000000000000000000000000000",
+      "proof": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_signed_with_the_identify_domain",
+      "note": "the domain string is unique to this message: a signature over another domain does not verify",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "470879d22568a7f5d0979834dc7d12a6561705d06ef64391b39d759958ea47cae241ba04d6ce5ab594d2aefb7358b819fd2f4b91878fb888f379a696d8d92904"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_message_without_the_domain",
+      "note": "the domain is part of the message",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "7eaa24f209dc798f868d9fad360e436b6f54c9b8ce606ae43d5b4663ca7ed5964579e5c0e2c0a87e13063b486157f7c936e3e8020eada8a292f0f9c60a281301"
+    },
+    {
+      "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+      "expect": "invalid",
+      "hash": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "name": "invalid_hash_and_binding_swapped",
+      "note": "the layout is hash then binding",
+      "owner": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b",
+      "proof": "9fec078dc87b0867e13edee4d06a65e8389bd5ebce5b3fe800536eec9544f0516e34e67834d7eb61de3bfabd0464b2c6b06a42415460dd62ab42d4d1a5e03909"
+    }
+  ],
+  "delete_results": [
+    {
+      "body": {
+        "deleted": true
+      },
+      "body_hex": "a16764656c65746564f5",
+      "command": "delete_resource",
+      "expect": "ok",
+      "name": "resource_true",
+      "note": "a blob was deleted"
+    },
+    {
+      "body": {
+        "deleted": false
+      },
+      "body_hex": "a16764656c65746564f4",
+      "command": "delete_resource",
+      "expect": "ok",
+      "name": "resource_false",
+      "note": "no blob, or a blob that is not the proven key's: a success, so a probe learns nothing (section 12.2)"
+    },
+    {
+      "body": {
+        "deleted": 1
+      },
+      "body_hex": "a16764656c6574656401",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_one",
+      "note": "a boolean, not an integer"
+    },
+    {
+      "body": {
+        "deleted": "true"
+      },
+      "body_hex": "a16764656c657465646474727565",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_text"
+    },
+    {
+      "body": {
+        "deleted": null
+      },
+      "body_hex": "a16764656c65746564f6",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_null"
+    },
+    {
+      "body": {
+        "deleted": true,
+        "name": "n"
+      },
+      "body_hex": "a2646e616d65616e6764656c65746564f5",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_extra_key",
+      "note": "the ok value is a closed map"
+    },
+    {
+      "body": {},
+      "body_hex": "a0",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_empty_map"
+    },
+    {
+      "body": true,
+      "body_hex": "f5",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_not_a_map"
+    },
+    {
+      "body": [
+        true
+      ],
+      "body_hex": "81f5",
+      "command": "delete_resource",
+      "expect": "invalid",
+      "name": "resource_array"
+    },
+    {
+      "body": {
+        "deleted": 0
+      },
+      "body_hex": "a16764656c6574656400",
+      "command": "delete_knowledge",
+      "expect": "ok",
+      "name": "knowledge_zero",
+      "note": "nothing held the key: a success (section 12.2)"
+    },
+    {
+      "body": {
+        "deleted": 2
+      },
+      "body_hex": "a16764656c6574656402",
+      "command": "delete_knowledge",
+      "expect": "ok",
+      "name": "knowledge_two"
+    },
+    {
+      "body": {
+        "deleted": {
+          "$int": "18446744073709551615"
+        }
+      },
+      "body_hex": "a16764656c657465641bffffffffffffffff",
+      "command": "delete_knowledge",
+      "expect": "ok",
+      "name": "knowledge_u64_max",
+      "note": "the count is an unsigned 64-bit integer"
+    },
+    {
+      "body": {
+        "deleted": true
+      },
+      "body_hex": "a16764656c65746564f5",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_true",
+      "note": "an integer, not a boolean"
+    },
+    {
+      "body": {
+        "deleted": -1
+      },
+      "body_hex": "a16764656c6574656420",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_negative"
+    },
+    {
+      "body": {
+        "deleted": 1.5
+      },
+      "body_hex": "a16764656c65746564f93e00",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_float"
+    },
+    {
+      "body": {
+        "deleted": 2.0
+      },
+      "body_hex": "a16764656c65746564f94000",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_float_integral",
+      "note": "a float is not an integer (section 5 rule 2)"
+    },
+    {
+      "body": {
+        "deleted": "2"
+      },
+      "body_hex": "a16764656c657465646132",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_text"
+    },
+    {
+      "body": {
+        "deleted": 2,
+        "kept": 1
+      },
+      "body_hex": "a2646b657074016764656c6574656402",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_extra_key"
+    },
+    {
+      "body": {},
+      "body_hex": "a0",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_empty_map"
+    },
+    {
+      "body": 2,
+      "body_hex": "02",
+      "command": "delete_knowledge",
+      "expect": "invalid",
+      "name": "knowledge_not_a_map"
+    }
   ],
   "ed25519_strict": [
     {
@@ -78,6 +411,67 @@
       "strict": false
     }
   ],
+  "error_codes": {
+    "codes": [
+      "overloaded",
+      "unknown_command",
+      "invalid_request",
+      "internal",
+      "rate_limit",
+      "session_capacity",
+      "session_not_found",
+      "session_expired",
+      "no_page_loaded",
+      "capability_denied",
+      "execution_failed",
+      "knowledge_entry_too_large",
+      "knowledge_capacity",
+      "action_unsupported",
+      "namespace_unavailable",
+      "invalid_peer_id",
+      "mesh_call_failed",
+      "batch_too_large",
+      "lookup_failed",
+      "lookup_unavailable",
+      "record_expired",
+      "malformed_record",
+      "record_rejected",
+      "publish_failed",
+      "resource_not_found",
+      "delete_refused",
+      "invalid_seed",
+      "invalid_args",
+      "unsupported_tool",
+      "parse_error",
+      "outbound_disabled",
+      "outbound_address_denied",
+      "outbound_scheme_denied",
+      "outbound_credentials_denied",
+      "outbound_fragment_denied",
+      "outbound_redirect_denied",
+      "outbound_encoding_denied",
+      "outbound_response_limit",
+      "outbound_busy",
+      "outbound_timeout",
+      "outbound_invalid_url",
+      "outbound_invalid_host",
+      "outbound_invalid_port",
+      "outbound_dns_failed",
+      "outbound_client_failed",
+      "outbound_request_failed",
+      "outbound_body_failed",
+      "outbound_invalid_utf8",
+      "outbound_url_limit",
+      "outbound_dns_limit",
+      "outbound_http_status"
+    ],
+    "count": 51,
+    "protocol": [
+      "overloaded",
+      "unknown_command",
+      "invalid_request"
+    ]
+  },
   "format": "spine-wire-vectors",
   "handshakes": [
     {
@@ -4588,6 +4982,454 @@
       "name": "DepthExceeded_33_deep_in_second_element",
       "note": "the top array is level 1, so 32 more arrays make level 33",
       "reason": "DepthExceeded"
+    }
+  ],
+  "invalid_commands": [
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "11111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a36468617368581f11111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_hash_31_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "111111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a364686173685821111111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_hash_33_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "22222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572581f222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_owner_31_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e65725840222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_owner_64_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66583f333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_proof_63_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "3333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f6658413333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_proof_65_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f6658202222222222222222222222222222222222222222222222222222222222222222",
+      "code": "invalid_request",
+      "name": "delete_resource_proof_32_bytes",
+      "note": "a 32-byte value where the proof is 64"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": ""
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f6640",
+      "code": "invalid_request",
+      "name": "delete_resource_proof_empty",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a36468617368784031313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131313131656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_hash_is_text",
+      "note": "a byte string is not text"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": [
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3,
+            3
+          ]
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66984003030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303",
+      "code": "invalid_request",
+      "name": "delete_resource_proof_is_64_ints",
+      "note": "a byte string is never an array of integers (section 5 rule 7)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": null
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66f6",
+      "code": "invalid_request",
+      "name": "delete_resource_proof_is_null",
+      "note": "a required field is not optional"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a2656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_without_hash",
+      "note": "all three fields are required (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a26468617368582011111111111111111111111111111111111111111111111111111111111111116570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_without_owner",
+      "note": "all three fields are required (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a2646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e657258202222222222222222222222222222222222222222222222222222222222222222",
+      "code": "invalid_request",
+      "name": "delete_resource_without_proof",
+      "note": "all three fields are required (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "extra": 1,
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a464686173685820111111111111111111111111111111111111111111111111111111111111111165657874726101656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "code": "invalid_request",
+      "name": "delete_resource_extra_field",
+      "note": "a command's fields are a closed map (section 5 rule 8)"
+    },
+    {
+      "body": "delete_resource",
+      "body_hex": "6f64656c6574655f7265736f75726365",
+      "code": "invalid_request",
+      "name": "delete_resource_bare_name",
+      "note": "a command with fields is not a bare name (section 12.1)"
+    },
+    {
+      "body": {
+        "delete_resource": [
+          {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ]
+      },
+      "body_hex": "a16f64656c6574655f7265736f757263658158201111111111111111111111111111111111111111111111111111111111111111",
+      "code": "invalid_request",
+      "name": "delete_resource_fields_not_a_map"
+    },
+    {
+      "body": {
+        "delete_knowledge": {
+          "key": 1
+        }
+      },
+      "body_hex": "a17064656c6574655f6b6e6f776c65646765a1636b657901",
+      "code": "invalid_request",
+      "name": "delete_knowledge_key_is_int",
+      "note": "the key is text"
+    },
+    {
+      "body": {
+        "delete_knowledge": {
+          "key": {
+            "$bytes": "6b"
+          }
+        }
+      },
+      "body_hex": "a17064656c6574655f6b6e6f776c65646765a1636b6579416b",
+      "code": "invalid_request",
+      "name": "delete_knowledge_key_is_bytes",
+      "note": "the key is text"
+    },
+    {
+      "body": {
+        "delete_knowledge": {
+          "key": null
+        }
+      },
+      "body_hex": "a17064656c6574655f6b6e6f776c65646765a1636b6579f6",
+      "code": "invalid_request",
+      "name": "delete_knowledge_key_is_null"
+    },
+    {
+      "body": {
+        "delete_knowledge": {}
+      },
+      "body_hex": "a17064656c6574655f6b6e6f776c65646765a0",
+      "code": "invalid_request",
+      "name": "delete_knowledge_without_key"
+    },
+    {
+      "body": {
+        "delete_knowledge": {
+          "key": "k",
+          "tags": []
+        }
+      },
+      "body_hex": "a17064656c6574655f6b6e6f776c65646765a2636b6579616b647461677380",
+      "code": "invalid_request",
+      "name": "delete_knowledge_extra_field",
+      "note": "no tag filter: the key is matched exactly"
+    },
+    {
+      "body": "delete_knowledge",
+      "body_hex": "7064656c6574655f6b6e6f776c65646765",
+      "code": "invalid_request",
+      "name": "delete_knowledge_bare_name"
+    },
+    {
+      "body": {
+        "read_resource": {
+          "hash": {
+            "$bytes": "11111111111111111111111111111111111111111111111111111111111111"
+          },
+          "max_bytes": 16,
+          "offset": 0
+        }
+      },
+      "body_hex": "a16d726561645f7265736f75726365a36468617368581f11111111111111111111111111111111111111111111111111111111111111666f666673657400696d61785f627974657310",
+      "code": "invalid_request",
+      "name": "read_resource_hash_31_bytes",
+      "note": "a byte field of the wrong length is invalid_request (section 12.2)"
+    },
+    {
+      "body": {
+        "delete_everything": {}
+      },
+      "body_hex": "a17164656c6574655f65766572797468696e67a0",
+      "code": "unknown_command",
+      "name": "unknown_command_delete_everything",
+      "note": "a name outside the 21 commands (section 7.4)"
+    },
+    {
+      "body": "delete_name",
+      "body_hex": "6b64656c6574655f6e616d65",
+      "code": "unknown_command",
+      "name": "unknown_command_delete_name",
+      "note": "no such command: a name record is not deleted by these commands"
     }
   ],
   "invalid_frames": [
@@ -16438,6 +17280,70 @@
     },
     {
       "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "1111111111111111111111111111111111111111111111111111111111111111"
+          },
+          "owner": {
+            "$bytes": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          "proof": {
+            "$bytes": "33333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "flags": 0,
+      "hex": "000000b40110000000000000000011a16f64656c6574655f7265736f75726365a3646861736858201111111111111111111111111111111111111111111111111111111111111111656f776e6572582022222222222222222222222222222222222222222222222222222222222222226570726f6f66584033333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333",
+      "name": "request_delete_resource",
+      "note": "three byte strings of 32, 32 and 64 bytes (section 12.2); the proof here is filler",
+      "request_id": 17,
+      "type": "REQUEST",
+      "type_code": 16,
+      "typed": "command"
+    },
+    {
+      "body": {
+        "delete_resource": {
+          "hash": {
+            "$bytes": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+          },
+          "owner": {
+            "$bytes": "884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b"
+          },
+          "proof": {
+            "$bytes": "8ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be925644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005"
+          }
+        }
+      },
+      "body_hex": "a16f64656c6574655f7265736f75726365a364686173685820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f656f776e65725820884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b6570726f6f6658408ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be925644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005",
+      "flags": 0,
+      "hex": "000000b40110000000000000000012a16f64656c6574655f7265736f75726365a364686173685820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f656f776e65725820884b8857f4eaa1613c61504db34d4beaf346517a0e31de3cddd4d9b4201d9d0b6570726f6f6658408ece89da3e7eb03e56a658dd962040ec5b783732802424ad5796752614a431e05f1f6255369f5be925644486c7623aa9df737fe3a51a5419ab2cd46b5ed62005",
+      "name": "request_delete_resource_signed",
+      "note": "the proof of the first valid vector of delete_proofs, on the connection whose binding is 42 repeated",
+      "request_id": 18,
+      "type": "REQUEST",
+      "type_code": 16,
+      "typed": "command"
+    },
+    {
+      "body": {
+        "delete_knowledge": {
+          "key": "k"
+        }
+      },
+      "body_hex": "a17064656c6574655f6b6e6f776c65646765a1636b6579616b",
+      "flags": 0,
+      "hex": "000000240110000000000000000013a17064656c6574655f6b6e6f776c65646765a1636b6579616b",
+      "name": "request_delete_knowledge",
+      "note": "one text field (section 12.2)",
+      "request_id": 19,
+      "type": "REQUEST",
+      "type_code": 16,
+      "typed": "command"
+    },
+    {
+      "body": {
         "store_knowledge": {
           "key": "k",
           "tags": [],
@@ -16672,6 +17578,103 @@
       "type": "RESPONSE",
       "type_code": 17,
       "typed": "none"
+    },
+    {
+      "body": {
+        "ok": {
+          "deleted": true
+        }
+      },
+      "body_hex": "a1626f6ba16764656c65746564f5",
+      "flags": 0,
+      "hex": "00000019011100000000000000000ca1626f6ba16764656c65746564f5",
+      "name": "response_ok_deleted_true",
+      "note": "the ok value of delete_resource (section 12.4)",
+      "request_id": 12,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
+    },
+    {
+      "body": {
+        "ok": {
+          "deleted": 2
+        }
+      },
+      "body_hex": "a1626f6ba16764656c6574656402",
+      "flags": 0,
+      "hex": "00000019011100000000000000000da1626f6ba16764656c6574656402",
+      "name": "response_ok_deleted_count",
+      "note": "the ok value of delete_knowledge (section 12.4)",
+      "request_id": 13,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
+    },
+    {
+      "body": {
+        "err": {
+          "code": "delete_refused",
+          "message": "the delete proof does not verify"
+        }
+      },
+      "body_hex": "a163657272a264636f64656e64656c6574655f72656675736564676d65737361676578207468652064656c6574652070726f6f6620646f6573206e6f7420766572696679",
+      "flags": 0,
+      "hex": "0000004f011100000000000000000ea163657272a264636f64656e64656c6574655f72656675736564676d65737361676578207468652064656c6574652070726f6f6620646f6573206e6f7420766572696679",
+      "name": "response_err_delete_refused",
+      "note": "the one refusal of delete_resource (section 12.2 and 13)",
+      "request_id": 14,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
+    },
+    {
+      "body": {
+        "err": {
+          "code": "knowledge_capacity",
+          "message": "m"
+        }
+      },
+      "body_hex": "a163657272a264636f6465726b6e6f776c656467655f6361706163697479676d657373616765616d",
+      "flags": 0,
+      "hex": "00000033011100000000000000000fa163657272a264636f6465726b6e6f776c656467655f6361706163697479676d657373616765616d",
+      "name": "response_err_knowledge_capacity",
+      "request_id": 15,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
+    },
+    {
+      "body": {
+        "err": {
+          "code": "knowledge_entry_too_large",
+          "message": "m"
+        }
+      },
+      "body_hex": "a163657272a264636f646578196b6e6f776c656467655f656e7472795f746f6f5f6c61726765676d657373616765616d",
+      "flags": 0,
+      "hex": "0000003b0111000000000000000010a163657272a264636f646578196b6e6f776c656467655f656e7472795f746f6f5f6c61726765676d657373616765616d",
+      "name": "response_err_knowledge_entry_too_large",
+      "request_id": 16,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
+    },
+    {
+      "body": {
+        "err": {
+          "code": "action_unsupported",
+          "message": "m"
+        }
+      },
+      "body_hex": "a163657272a264636f646572616374696f6e5f756e737570706f72746564676d657373616765616d",
+      "flags": 0,
+      "hex": "000000330111000000000000000011a163657272a264636f646572616374696f6e5f756e737570706f72746564676d657373616765616d",
+      "name": "response_err_action_unsupported",
+      "request_id": 17,
+      "type": "RESPONSE",
+      "type_code": 17,
+      "typed": "reply"
     },
     {
       "body": {

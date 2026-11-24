@@ -28,8 +28,11 @@ decoder (C.1, C.3, C.4, the request-id rules that hold whatever the
 connection state, the close codes of C.7), HELLO, HELLO_ACK (with `binding`,
 `authority` and `time`) and CLOSE bodies, the IDENTIFY body and its signed
 message (section 6.6), a model of the server's IDENTIFY state rules,
-and `negotiate` (C.6, C.10), and builders for REQUEST and RESPONSE bodies
-(C.5 rule 7, D).
+and `negotiate` (C.6, C.10), builders for REQUEST and RESPONSE bodies
+(C.5 rule 7, D), the `delete_resource` proof and its signed message
+(section 12.2), the shapes of the two delete replies (section 12.4) and the
+list of error codes (section 13), which is also compared with the table of the
+specification text.
 
 What it does not cover:
 
@@ -76,6 +79,9 @@ U32_MAX = 2**32 - 1
 JSON_SAFE_INT = 2**53
 AUTHORITY_MODES = ["off", "audit", "required"]
 IDENTIFY_DOMAIN = b"spine-wire-identify-v1\x00"
+DELETE_RESOURCE_DOMAIN = b"spine-wire-delete-resource-v1\x00"
+# The fixed test key of every delete-proof vector.
+DELETE_SEED = bytes([0x21]) * 32
 # The fixed test key of every IDENTIFY vector (Ed25519 signatures are deterministic).
 IDENTIFY_SEED = bytes([0x11]) * 32
 DEFAULT_BINDING = bytes([0x42]) * 32
@@ -108,7 +114,8 @@ CLOSE_CODES = [
     "shutting_down",
 ]
 
-# D.1 and D.2: the 17 kept commands plus tool_call and capability_query.
+# D.1 and D.2: the 17 kept commands plus tool_call and capability_query, and
+# the two delete commands of the 2026-11-24 revision (section 12).
 COMMAND_NAMES = [
     "navigate",
     "get_ur",
@@ -129,6 +136,8 @@ COMMAND_NAMES = [
     "mesh_call",
     "tool_call",
     "capability_query",
+    "delete_resource",
+    "delete_knowledge",
 ]
 
 # Field names of each command: (required, optional); None for a unit command.
@@ -153,7 +162,40 @@ COMMAND_FIELDS = {
     "mesh_call": (["peer_id", "peer_key", "payload"], []),
     "tool_call": (["name", "args"], ["trace"]),
     "capability_query": (["selector"], []),
+    "delete_resource": (["hash", "owner", "proof"], []),
+    "delete_knowledge": (["key"], []),
 }
+
+# Byte-string fields of a command and their exact lengths (section 12.2: a byte
+# field of the wrong length is invalid_request), and the fields that must be text.
+BYTE_FIELDS = {
+    "resolve_name": {"if_none_match": 32},
+    "fetch_name": {"if_none_match": 32},
+    "read_resource": {"hash": 32},
+    "mesh_call": {"peer_key": 32},
+    "delete_resource": {"hash": 32, "owner": 32, "proof": 64},
+}
+TEXT_FIELDS = {"delete_knowledge": ["key"]}
+
+# Section 13: every error code a v1 daemon produces, in the order of the table
+# there. `check` compares this list with that table.
+ERROR_CODES = [
+    "overloaded", "unknown_command", "invalid_request", "internal", "rate_limit",
+    "session_capacity", "session_not_found", "session_expired", "no_page_loaded",
+    "capability_denied", "execution_failed", "knowledge_entry_too_large", "knowledge_capacity",
+    "action_unsupported", "namespace_unavailable", "invalid_peer_id", "mesh_call_failed",
+    "batch_too_large", "lookup_failed", "lookup_unavailable", "record_expired",
+    "malformed_record", "record_rejected", "publish_failed", "resource_not_found",
+    "delete_refused", "invalid_seed", "invalid_args", "unsupported_tool", "parse_error",
+    "outbound_disabled", "outbound_address_denied", "outbound_scheme_denied",
+    "outbound_credentials_denied", "outbound_fragment_denied", "outbound_redirect_denied",
+    "outbound_encoding_denied", "outbound_response_limit", "outbound_busy", "outbound_timeout",
+    "outbound_invalid_url", "outbound_invalid_host", "outbound_invalid_port",
+    "outbound_dns_failed", "outbound_client_failed", "outbound_request_failed",
+    "outbound_body_failed", "outbound_invalid_utf8", "outbound_url_limit", "outbound_dns_limit",
+    "outbound_http_status",
+]
+PROTOCOL_ERROR_CODES = ["overloaded", "unknown_command", "invalid_request"]
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +1021,12 @@ def validate_request_value(value):
         raise ValueError("invalid_request: %s missing=%s unknown=%s" % (name, missing, unknown))
     if any(fields[k] is None for k in optional if k in fields):
         raise ValueError("invalid_request: a present null for an optional field")
+    for field, length in BYTE_FIELDS.get(name, {}).items():
+        if field in fields and not (isinstance(fields[field], bytes) and len(fields[field]) == length):
+            raise ValueError("invalid_request: %s.%s must be a byte string of %d bytes" % (name, field, length))
+    for field in TEXT_FIELDS.get(name, []):
+        if field in fields and not isinstance(fields[field], str):
+            raise ValueError("invalid_request: %s.%s must be text" % (name, field))
     return name
 
 
@@ -1059,6 +1107,12 @@ CONVENTIONS = [
     "not a name resolution a decoder accepts). Entries of a succession log are checked for shape only: their signatures are not part of the wire layer.",
     "ed25519_strict: 'public', 'message' and 'signature' (hex) with the verdict of plain RFC 8032 verification ('plain') and of verify_strict ('strict'); "
     "a conforming server uses the strict one (section 6.6).",
+    "delete_proofs: the proof of a delete_resource request (section 12.2). 'owner', 'hash', 'binding' (the connection's HELLO_ACK binding) and 'proof' are hex; "
+    "'expect' is 'valid' when strict Ed25519 verification of the message \"spine-wire-delete-resource-v1\" 00 || hash || binding under 'owner' accepts, else 'invalid'. "
+    "A valid vector also gives the test 'seed' (signatures are deterministic) and the signed 'message'. The daemon's order is: verify the proof first (a failure is delete_refused), then look the blob up under 'owner'.",
+    "invalid_commands: REQUEST bodies ('body_hex', described by 'body') that a daemon answers with the error code 'code' (invalid_request or unknown_command, sections 7.4, 12.1, 12.2).",
+    "delete_results: the ok value of a delete reply (section 12.4), 'body_hex' described by 'body', for the command named in 'command'. 'expect' is 'ok' or 'invalid' (a closed map {deleted}: a boolean for delete_resource, an unsigned integer for delete_knowledge).",
+    "error_codes: the closed list of codes a v1 daemon produces (section 13) in the order of its table, with their 'count' and the three 'protocol' codes. check also compares it with the table in docs/spec/00-wire.md.",
     "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
     "Not covered: connection state other than the IDENTIFY window (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression.",
 ]
@@ -1494,6 +1548,15 @@ def make_valid_frames():
         command("mesh_call", {"peer_id": "p", "peer_key": key32, "payload": {"n": [1, 2]}}), "command")
     add("request_capability_query_unit_selector", "REQUEST", 12, command("capability_query", {"selector": "all"}), "command")
     add("request_capability_query_exact", "REQUEST", 13, command("capability_query", {"selector": {"exact": "spine:cap/x"}}), "command")
+    add("request_delete_resource", "REQUEST", 17,
+        command("delete_resource", {"hash": b"\x11" * 32, "owner": b"\x22" * 32, "proof": b"\x33" * 64}), "command",
+        note="three byte strings of 32, 32 and 64 bytes (section 12.2); the proof here is filler")
+    add("request_delete_resource_signed", "REQUEST", 18,
+        command("delete_resource", {"hash": DELETE_HASH, "owner": names_v1.ed25519_public(DELETE_SEED),
+                                    "proof": names_v1.ed25519_sign(DELETE_SEED, delete_message(DELETE_HASH, DEFAULT_BINDING))}),
+        "command", note="the proof of the first valid vector of delete_proofs, on the connection whose binding is 42 repeated")
+    add("request_delete_knowledge", "REQUEST", 19, command("delete_knowledge", {"key": "k"}), "command",
+        note="one text field (section 12.2)")
     add("request_store_knowledge", "REQUEST", 14,
         command("store_knowledge", {"key": "k", "value": {"b": [1, 2.5], "a": None}, "tags": []}), "command")
     add("request_tool_call_with_trace", "REQUEST", 15,
@@ -1517,6 +1580,15 @@ def make_valid_frames():
     add("response_ok_floats", "RESPONSE", 4, reply_ok({"relevance": 0.92, "half": 0.5}), "reply")
     add("response_ok_byte_string", "RESPONSE", 5, reply_ok({"data": b"\x01\x02", "n": 2}), "none",
         note="a byte string cannot be read into a JSON-shaped value, so this body is checked for determinism only")
+    add("response_ok_deleted_true", "RESPONSE", 12, reply_ok({"deleted": True}), "reply",
+        note="the ok value of delete_resource (section 12.4)")
+    add("response_ok_deleted_count", "RESPONSE", 13, reply_ok({"deleted": 2}), "reply",
+        note="the ok value of delete_knowledge (section 12.4)")
+    add("response_err_delete_refused", "RESPONSE", 14, reply_err("delete_refused", "the delete proof does not verify"), "reply",
+        note="the one refusal of delete_resource (section 12.2 and 13)")
+    add("response_err_knowledge_capacity", "RESPONSE", 15, reply_err("knowledge_capacity", "m"), "reply")
+    add("response_err_knowledge_entry_too_large", "RESPONSE", 16, reply_err("knowledge_entry_too_large", "m"), "reply")
+    add("response_err_action_unsupported", "RESPONSE", 17, reply_err("action_unsupported", "m"), "reply")
     add("response_err_without_details", "RESPONSE", 6, reply_err("no_page_loaded", "no page"), "reply")
     add("response_err_with_details", "RESPONSE", 7, reply_err("rate_limit", "slow down", {"retry_ms": 250, "scope": ["session"]}), "reply")
     add("response_err_details_array", "RESPONSE", 8, reply_err("c", "m", [1, "two", [3]]), "reply")
@@ -2116,6 +2188,194 @@ def make_identify():
     return out
 
 
+DELETE_HASH = bytes(range(32))
+
+
+def delete_message(hash_, binding):
+    """The message a delete_resource proof signs (section 12.2):
+    "spine-wire-delete-resource-v1" 00 || hash (32) || binding (32)."""
+    if len(hash_) != 32 or len(binding) != 32:
+        raise ValueError("the hash and the binding are 32 bytes each")
+    return DELETE_RESOURCE_DOMAIN + bytes(hash_) + bytes(binding)
+
+
+def delete_proof_valid(owner, hash_, binding, proof):
+    """What the daemon does first with a delete_resource request: strict
+    Ed25519 verification of the message against the `owner` the request names."""
+    return names_v1.ed25519_verify(bytes(owner), delete_message(hash_, binding), bytes(proof), strict=True)
+
+
+def make_delete_proofs():
+    """Vectors for the proof of delete_resource and the message it signs."""
+    out = []
+    seed = DELETE_SEED
+    owner = names_v1.ed25519_public(seed)
+    other_seed = bytes([0x22]) * 32
+    other_owner = names_v1.ed25519_public(other_seed)
+    binding = DEFAULT_BINDING
+    other_binding = bytes([0x43]) * 32
+    hash_ = DELETE_HASH
+    good = names_v1.ed25519_sign(seed, delete_message(hash_, binding))
+
+    def add(name, owner_key, hash_value, binding_value, proof, expect, note, seed_value=None):
+        v = {"name": name, "owner": owner_key.hex(), "hash": hash_value.hex(), "binding": binding_value.hex(),
+             "proof": proof.hex(), "expect": expect, "note": note}
+        if expect == "valid":
+            v["seed"] = seed_value.hex()
+            v["message"] = delete_message(hash_value, binding_value).hex()
+        out.append(v)
+
+    add("valid", owner, hash_, binding, good, "valid",
+        "the signature by the owner over the domain, the hash and the connection's binding (section 12.2)", seed)
+    add("valid_another_blob_and_connection", owner, bytes([0xaa]) * 32, other_binding,
+        names_v1.ed25519_sign(seed, delete_message(bytes([0xaa]) * 32, other_binding)), "valid",
+        "another hash and another binding sign another message", seed)
+    add("valid_another_owner", other_owner, hash_, binding, names_v1.ed25519_sign(other_seed, delete_message(hash_, binding)),
+        "valid", "the check is against the owner the request names; whether that key owns the blob is the next step", other_seed)
+    add("invalid_proof_for_another_connection", owner, hash_, binding,
+        names_v1.ed25519_sign(seed, delete_message(hash_, other_binding)), "invalid",
+        "signed for a connection with another binding: a captured proof does not verify elsewhere (section 12.2)")
+    add("invalid_proof_for_another_hash", owner, hash_, binding,
+        names_v1.ed25519_sign(seed, delete_message(bytes([0xbb]) * 32, binding)), "invalid",
+        "the signature covers the hash")
+    add("invalid_signed_by_another_key", owner, hash_, binding,
+        names_v1.ed25519_sign(other_seed, delete_message(hash_, binding)), "invalid",
+        "a proof by another key for the owner the request names")
+    add("invalid_owner_is_another_key", other_owner, hash_, binding, good, "invalid",
+        "the proof verifies only under the key that made it")
+    flipped = bytearray(good)
+    flipped[0] ^= 1
+    add("invalid_signature_bit_flip_in_r", owner, hash_, binding, bytes(flipped), "invalid", "one bit of R changed")
+    flipped = bytearray(good)
+    flipped[40] ^= 1
+    add("invalid_signature_bit_flip_in_s", owner, hash_, binding, bytes(flipped), "invalid", "one bit of S changed")
+    s_plus_l = int.from_bytes(good[32:], "little") + names_v1._Q
+    add("invalid_non_canonical_s", owner, hash_, binding, good[:32] + int.to_bytes(s_plus_l, 32, "little"), "invalid",
+        "S + L: S is not below the group order, refused by strict verification")
+    identity_point = bytes([1]) + bytes(31)
+    add("invalid_small_order_owner", identity_point, hash_, binding, identity_point + bytes(32), "invalid",
+        "the identity point as owner with R = identity and S = 0 verifies under plain RFC 8032 and is refused by strict verification")
+    add("invalid_all_zero_owner_and_proof", bytes(32), hash_, binding, bytes(64), "invalid",
+        "the key of an ownerless blob is all zeros: no proof can be made for it, so such a blob cannot be deleted through the wire")
+    add("invalid_signed_with_the_identify_domain", owner, hash_, binding,
+        names_v1.ed25519_sign(seed, IDENTIFY_DOMAIN + hash_ + binding), "invalid",
+        "the domain string is unique to this message: a signature over another domain does not verify")
+    add("invalid_message_without_the_domain", owner, hash_, binding,
+        names_v1.ed25519_sign(seed, hash_ + binding), "invalid", "the domain is part of the message")
+    add("invalid_hash_and_binding_swapped", owner, hash_, binding,
+        names_v1.ed25519_sign(seed, DELETE_RESOURCE_DOMAIN + binding + hash_), "invalid", "the layout is hash then binding")
+    return out
+
+
+def make_invalid_commands():
+    """REQUEST bodies of the delete commands (and byte fields of others) that a
+    daemon answers with invalid_request or unknown_command (sections 7.4, 12.1, 12.2)."""
+    out = []
+    key32, key64 = b"\x22" * 32, b"\x33" * 64
+
+    def add(name, value, code, note=None):
+        body = encode(value)
+        v = {"name": name, "body": to_desc(value), "body_hex": body.hex(), "code": code}
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    good = {"hash": b"\x11" * 32, "owner": key32, "proof": key64}
+
+    def with_(**changes):
+        fields = dict(good)
+        fields.update(changes)
+        return {"delete_resource": fields}
+
+    wrong = "a byte field of the wrong length is invalid_request (section 12.2)"
+    add("delete_resource_hash_31_bytes", with_(hash=b"\x11" * 31), "invalid_request", wrong)
+    add("delete_resource_hash_33_bytes", with_(hash=b"\x11" * 33), "invalid_request", wrong)
+    add("delete_resource_owner_31_bytes", with_(owner=b"\x22" * 31), "invalid_request", wrong)
+    add("delete_resource_owner_64_bytes", with_(owner=b"\x22" * 64), "invalid_request", wrong)
+    add("delete_resource_proof_63_bytes", with_(proof=b"\x33" * 63), "invalid_request", wrong)
+    add("delete_resource_proof_65_bytes", with_(proof=b"\x33" * 65), "invalid_request", wrong)
+    add("delete_resource_proof_32_bytes", with_(proof=key32), "invalid_request", "a 32-byte value where the proof is 64")
+    add("delete_resource_proof_empty", with_(proof=b""), "invalid_request", wrong)
+    add("delete_resource_hash_is_text", with_(hash="11" * 32), "invalid_request", "a byte string is not text")
+    add("delete_resource_proof_is_64_ints", with_(proof=[3] * 64), "invalid_request",
+        "a byte string is never an array of integers (section 5 rule 7)")
+    add("delete_resource_proof_is_null", with_(proof=None), "invalid_request", "a required field is not optional")
+    for missing in ("hash", "owner", "proof"):
+        fields = dict(good)
+        del fields[missing]
+        add("delete_resource_without_%s" % missing, {"delete_resource": fields}, "invalid_request",
+            "all three fields are required (section 12.2)")
+    add("delete_resource_extra_field", with_(extra=1), "invalid_request", "a command's fields are a closed map (section 5 rule 8)")
+    add("delete_resource_bare_name", "delete_resource", "invalid_request", "a command with fields is not a bare name (section 12.1)")
+    add("delete_resource_fields_not_a_map", {"delete_resource": [b"\x11" * 32]}, "invalid_request")
+    add("delete_knowledge_key_is_int", {"delete_knowledge": {"key": 1}}, "invalid_request", "the key is text")
+    add("delete_knowledge_key_is_bytes", {"delete_knowledge": {"key": b"k"}}, "invalid_request", "the key is text")
+    add("delete_knowledge_key_is_null", {"delete_knowledge": {"key": None}}, "invalid_request")
+    add("delete_knowledge_without_key", {"delete_knowledge": {}}, "invalid_request")
+    add("delete_knowledge_extra_field", {"delete_knowledge": {"key": "k", "tags": []}}, "invalid_request",
+        "no tag filter: the key is matched exactly")
+    add("delete_knowledge_bare_name", "delete_knowledge", "invalid_request")
+    add("read_resource_hash_31_bytes", {"read_resource": {"hash": b"\x11" * 31, "offset": 0, "max_bytes": 16}},
+        "invalid_request", wrong)
+    add("unknown_command_delete_everything", {"delete_everything": {}}, "unknown_command",
+        "a name outside the 21 commands (section 7.4)")
+    add("unknown_command_delete_name", "delete_name", "unknown_command", "no such command: a name record is not deleted by these commands")
+    return out
+
+
+def delete_result_problem(command_name, value):
+    """Why `value` is not the ok value of `command_name`'s reply (section 12.4), or None."""
+    if not isinstance(value, dict) or set(value) != {"deleted"}:
+        return "the ok value is the map {deleted}"
+    deleted = value["deleted"]
+    if command_name == "delete_resource":
+        return None if isinstance(deleted, bool) else "deleted is a boolean"
+    if command_name == "delete_knowledge":
+        if isinstance(deleted, bool) or not isinstance(deleted, int) or deleted < 0 or deleted > U64_MAX:
+            return "deleted is an unsigned integer"
+        return None
+    return "no such command"
+
+
+def make_delete_results():
+    out = []
+
+    def add(name, command_name, value, expect, note=None):
+        body = encode(value)
+        v = {"name": name, "command": command_name, "body": to_desc(value), "body_hex": body.hex(), "expect": expect}
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    r, k = "delete_resource", "delete_knowledge"
+    add("resource_true", r, {"deleted": True}, "ok", "a blob was deleted")
+    add("resource_false", r, {"deleted": False}, "ok",
+        "no blob, or a blob that is not the proven key's: a success, so a probe learns nothing (section 12.2)")
+    add("resource_one", r, {"deleted": 1}, "invalid", "a boolean, not an integer")
+    add("resource_text", r, {"deleted": "true"}, "invalid")
+    add("resource_null", r, {"deleted": None}, "invalid")
+    add("resource_extra_key", r, {"deleted": True, "name": "n"}, "invalid", "the ok value is a closed map")
+    add("resource_empty_map", r, {}, "invalid")
+    add("resource_not_a_map", r, True, "invalid")
+    add("resource_array", r, [True], "invalid")
+    add("knowledge_zero", k, {"deleted": 0}, "ok", "nothing held the key: a success (section 12.2)")
+    add("knowledge_two", k, {"deleted": 2}, "ok")
+    add("knowledge_u64_max", k, {"deleted": U64_MAX}, "ok", "the count is an unsigned 64-bit integer")
+    add("knowledge_true", k, {"deleted": True}, "invalid", "an integer, not a boolean")
+    add("knowledge_negative", k, {"deleted": -1}, "invalid")
+    add("knowledge_float", k, {"deleted": 1.5}, "invalid")
+    add("knowledge_float_integral", k, {"deleted": 2.0}, "invalid", "a float is not an integer (section 5 rule 2)")
+    add("knowledge_text", k, {"deleted": "2"}, "invalid")
+    add("knowledge_extra_key", k, {"deleted": 2, "kept": 1}, "invalid")
+    add("knowledge_empty_map", k, {}, "invalid")
+    add("knowledge_not_a_map", k, 2, "invalid")
+    return out
+
+
+def make_error_codes():
+    return {"count": len(ERROR_CODES), "codes": list(ERROR_CODES), "protocol": list(PROTOCOL_ERROR_CODES)}
+
+
 def make_ed25519_strict():
     """Verification verdicts, strict and plain, over the same inputs."""
     out = []
@@ -2283,6 +2543,10 @@ def build_document():
         "identify_sessions": make_identify_sessions(),
         "ed25519_strict": make_ed25519_strict(),
         "name_results": make_name_results(),
+        "delete_proofs": make_delete_proofs(),
+        "invalid_commands": make_invalid_commands(),
+        "delete_results": make_delete_results(),
+        "error_codes": make_error_codes(),
     }
     return doc
 
@@ -2481,6 +2745,105 @@ def check_name_result(v):
     return None
 
 
+def check_delete_proof(v):
+    owner, hash_, binding, proof = (bytes.fromhex(v[k]) for k in ("owner", "hash", "binding", "proof"))
+    verdict = "valid" if delete_proof_valid(owner, hash_, binding, proof) else "invalid"
+    if verdict != v["expect"]:
+        return "judged %s, expected %s" % (verdict, v["expect"])
+    if verdict == "valid":
+        seed = bytes.fromhex(v["seed"])
+        message = delete_message(hash_, binding)
+        if message.hex() != v["message"]:
+            return "message is %s, not the stored one" % message.hex()[:80]
+        if not message.startswith(DELETE_RESOURCE_DOMAIN) or len(message) != 30 + 32 + 32:
+            return "the message is not domain || hash || binding"
+        if names_v1.ed25519_public(seed) != owner:
+            return "owner differs from the key of the seed"
+        if names_v1.ed25519_sign(seed, message) != proof:
+            return "proof differs from the deterministic signature of the message"
+    return None
+
+
+def check_invalid_command(v):
+    body = bytes.fromhex(v["body_hex"])
+    if encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    validate(body)
+    try:
+        validate_request_value(decode(body))
+    except ValueError as e:
+        answer = str(e).split(":")[0]
+        return None if answer == v["code"] else "answered %s, expected %s" % (answer, v["code"])
+    return "accepted, expected %s" % v["code"]
+
+
+def check_delete_result(v):
+    body = bytes.fromhex(v["body_hex"])
+    if encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    validate(body)
+    problem = delete_result_problem(v["command"], decode(body))
+    verdict = "invalid" if problem else "ok"
+    if verdict != v["expect"]:
+        return "judged %s (%s), expected %s" % (verdict, problem, v["expect"])
+    return None
+
+
+SPEC_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "spec", "00-wire.md")
+
+
+def spec_error_codes(text):
+    """The codes of the table of section 13 of the specification, in order."""
+    start = text.index("## 13. Error codes")
+    end = text.index("## 14.", start)
+    codes = []
+    for line in text[start:end].splitlines():
+        line = line.strip()
+        if line.startswith("| `"):
+            codes.append(line[3:].split("`", 1)[0])
+    return codes
+
+
+def check_error_codes(doc):
+    """The code list of the vector file against this script's list and the
+    specification's table. A missing specification file skips that part."""
+    problems = []
+    section = doc.get("error_codes")
+    if not isinstance(section, dict):
+        return ["error_codes: missing"]
+    codes = section.get("codes")
+    if codes != ERROR_CODES:
+        problems.append("error_codes: the list differs from the reference list")
+    if section.get("count") != len(ERROR_CODES) or not isinstance(codes, list) or len(codes) != section.get("count"):
+        problems.append("error_codes: count is %r, the list has %d" % (section.get("count"), len(ERROR_CODES)))
+    if section.get("protocol") != PROTOCOL_ERROR_CODES:
+        problems.append("error_codes: the protocol codes differ")
+    if len(set(ERROR_CODES)) != len(ERROR_CODES):
+        problems.append("error_codes: a code appears twice")
+    for code in ERROR_CODES:
+        if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
+            problems.append("error_codes: %r is not snake_case" % code)
+    if os.path.exists(SPEC_PATH):
+        with open(SPEC_PATH, "rb") as f:
+            text = f.read().decode("utf-8").replace("\r\n", "\n")
+        table = spec_error_codes(text)
+        if table != ERROR_CODES:
+            only_spec = [c for c in table if c not in ERROR_CODES]
+            only_list = [c for c in ERROR_CODES if c not in table]
+            problems.append("error_codes: the table of section 13 differs (only in the text: %s; only in the list: %s; "
+                            "or the order differs)" % (only_spec, only_list))
+        expected = "A `REQUEST` body is one of %d commands" % len(COMMAND_NAMES)
+        if expected not in text:
+            problems.append("section 12.1 does not say %r" % expected)
+        for name in COMMAND_NAMES:
+            if "`%s`" % name not in text:
+                problems.append("the specification never mentions the command `%s`" % name)
+        count_text = "%d codes" % len(ERROR_CODES)
+        if count_text not in text:
+            problems.append("section 13 does not say %r" % count_text)
+    return problems
+
+
 def check_ed25519_strict(v):
     public, message, signature = (bytes.fromhex(v[k]) for k in ("public", "message", "signature"))
     plain = names_v1.ed25519_verify(public, message, signature, strict=False)
@@ -2507,6 +2870,9 @@ CHECKS = [
     ("identify_sessions", check_identify_session, 15),
     ("ed25519_strict", check_ed25519_strict, 6),
     ("name_results", check_name_result, 60),
+    ("delete_proofs", check_delete_proof, 12),
+    ("invalid_commands", check_invalid_command, 25),
+    ("delete_results", check_delete_result, 18),
 ]
 
 
@@ -2543,6 +2909,18 @@ def check_document(doc):
     for r in REJECT_REASONS:
         if r not in reasons:
             failures.append("invalid_bodies: no vector for %s" % r)
+    failures.extend(check_error_codes(doc))
+    # The two delete commands have a valid REQUEST vector.
+    seen = set()
+    for v in doc.get("valid_frames", []):
+        if isinstance(v, dict) and v.get("type") == "REQUEST":
+            try:
+                seen.add(validate_request_value(from_desc(v["body"])))
+            except Exception:  # noqa: BLE001 - reported by the section check
+                pass
+    for name in ("delete_resource", "delete_knowledge"):
+        if name not in seen:
+            failures.append("valid_frames: no REQUEST vector for the command %s" % name)
     failures.extend("cross-check: " + f for f in _safe_cross_checks(doc))
     return failures
 
