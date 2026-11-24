@@ -511,7 +511,7 @@ fn parse_key_hex(text: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+    for (slot, pair) in out.iter_mut().zip(bytes.as_chunks::<2>().0) {
         *slot = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Some(out)
