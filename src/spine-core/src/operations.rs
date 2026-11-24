@@ -472,6 +472,16 @@ pub fn render_metrics(m: &MetricsSnapshot) -> String {
                 "Equivocation proofs recorded.",
                 r.equivocations_found,
             ),
+            (
+                "namespace_log_store_failures_total",
+                "Succession logs or proofs refused or rows left undeleted because the durable log book could not be written.",
+                r.log_store_failures,
+            ),
+            (
+                "namespace_log_rows_dropped_total",
+                "Durable log book rows dropped at load: undecodable, not verifying, or over a bound.",
+                r.log_rows_dropped,
+            ),
         ] {
             counter(out, name, help, value);
         }
@@ -571,6 +581,8 @@ mod tests {
             records_need_log: 2,
             records_refused_by_succession: 3,
             logs_fetched: 1,
+            log_store_failures: 4,
+            log_rows_dropped: 5,
             ..Default::default()
         };
         MeshSnapshot {
@@ -646,6 +658,8 @@ mod tests {
             "spine_namespace_records_refused_total{reason=\"need_log\"} 2\n",
             "spine_namespace_records_refused_total{reason=\"succession\"} 3\n",
             "spine_namespace_log_fetches_total{outcome=\"adopted\"} 1\n",
+            "# TYPE spine_namespace_log_store_failures_total counter\nspine_namespace_log_store_failures_total 4\n",
+            "# TYPE spine_namespace_log_rows_dropped_total counter\nspine_namespace_log_rows_dropped_total 5\n",
         ] {
             assert!(text.contains(line), "missing {line:?} in\n{text}");
         }
