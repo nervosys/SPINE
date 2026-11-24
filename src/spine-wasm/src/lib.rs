@@ -533,6 +533,8 @@ impl HlbToWatCompiler {
         wat.push_str("  (import \"env\" \"update_state_from_stack\" (func $update_state_from_stack (param i32 i32)))\n");
         wat.push_str("  (import \"env\" \"navigate_from_stack\" (func $navigate_from_stack))\n");
         wat.push_str("  (import \"env\" \"search_from_stack\" (func $search_from_stack))\n");
+        wat.push_str("  (import \"env\" \"store_knowledge_from_stack\" (func $store_knowledge_from_stack (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"query_knowledge_from_stack\" (func $query_knowledge_from_stack (param i32 i32 i32)))\n");
         wat.push('\n');
 
         // Memory for string data
@@ -691,6 +693,22 @@ impl HlbToWatCompiler {
                         escape_wat_string(name)
                     ));
                     data_offset += len + 1;
+                }
+                // The tag list is string data like any other: it is registered
+                // here, before the data section is written into the module.
+                Instruction::StoreKnowledgeFromStack { tags }
+                | Instruction::QueryKnowledgeFromStack { tags, .. } => {
+                    let tags_json = serde_json::json!(tags).to_string();
+                    if !string_offsets.contains_key(&tags_json) {
+                        let len = tags_json.len() as u32;
+                        string_offsets.insert(tags_json.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(&tags_json)
+                        ));
+                        data_offset += len + 1;
+                    }
                 }
                 _ => {}
             }
@@ -2199,6 +2217,32 @@ mod tests {
         let binary = empty_binary(vec![Instruction::NavigateFromStack]);
         let wat = HlbToWatCompiler::compile(&binary).unwrap();
         assert!(wat.contains("navigate_from_stack"));
+    }
+
+    #[test]
+    fn test_knowledge_instructions_compile_to_a_module_that_parses() {
+        // Both instructions call host functions and carry their tag list as
+        // string data: the module must import the functions and hold the data.
+        let binary = empty_binary(vec![
+            Instruction::Push(serde_json::json!("key")),
+            Instruction::Push(serde_json::json!({"v": 1})),
+            Instruction::StoreKnowledgeFromStack {
+                tags: vec!["t".into()],
+            },
+            Instruction::Push(serde_json::json!("question")),
+            Instruction::QueryKnowledgeFromStack {
+                tags: vec!["u".into()],
+                limit: 3,
+            },
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("$store_knowledge_from_stack (param i32 i32)"));
+        assert!(wat.contains("$query_knowledge_from_stack (param i32 i32 i32)"));
+        assert!(
+            wat.matches("(data ").count() >= 5,
+            "three pushed values and two tag lists"
+        );
+        wat::parse_str(&wat).expect("the module parses");
     }
 
     #[test]
