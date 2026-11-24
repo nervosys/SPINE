@@ -971,7 +971,7 @@ async fn handle_command(
         },
 
         BrowserCommand::Navigate { url } => {
-            match state.fetcher.fetch_text(&url).await {
+            match state.fetcher.fetch_text_for(session_id, &url).await {
                 Ok(html) => {
                     // Transpile HTML to HLB for agentic interaction
                     #[cfg(feature = "research")]
@@ -1230,7 +1230,11 @@ async fn handle_command(
                         let url_clone = url.clone();
                         let sid_clone = session_id.to_string();
                         tokio::spawn(async move {
-                            if let Ok(html) = state_clone.fetcher.fetch_text(&url_clone).await {
+                            if let Ok(html) = state_clone
+                                .fetcher
+                                .fetch_text_for(&sid_clone, &url_clone)
+                                .await
+                            {
                                 if let Some(mut session) = state_clone.sessions.get_mut(&sid_clone)
                                 {
                                     session.current_url = Some(url_clone);

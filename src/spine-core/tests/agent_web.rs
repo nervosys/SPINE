@@ -55,7 +55,7 @@ async fn native_navigation_enforces_outbound_policy() {
         std::fs::write(dir.path().join("spine.toml"), toml::to_string(&config).unwrap()).unwrap();
         let mut node = launch(dir.path());
         let mut client = connect(&mut node, dir.path(), origin).await;
-        assert_eq!(code_of(&client.navigate("http://127.0.0.1:1/").await.unwrap_err()), "outbound_address_denied");
+        assert_eq!(code_of(&client.navigate("http://127.0.0.1/").await.unwrap_err()), "outbound_address_denied");
         client.navigate(&allowed).await.unwrap();
         assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
         assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_redirect_denied");
