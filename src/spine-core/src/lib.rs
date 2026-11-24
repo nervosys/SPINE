@@ -8,6 +8,7 @@
 //! not call it, because spine-wire v1 cannot carry a grant chain.
 
 pub mod authority;
+pub mod authority_ledger;
 pub mod config;
 pub mod connections;
 pub mod operations;

@@ -41,18 +41,20 @@
 //! also name a `did:`-rooted resource owned by the record's key; that
 //! resource is not extracted or checked here.
 
-use std::sync::{Mutex, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 use spine_authority::{
     verify_encoded_with_invocation, Action, ChargeError, Decision, Denial, Effect, Grant, GrantId,
     GrantSpec, Invocation, IssueError, LedgerConfig, Limits, MemoryLedger, PublicKey, Receipt,
-    ReceiptError, ResourceName, ResourcePattern, RevocationBounds, RevocationSet, VerifyContext,
-    MAX_CHAIN_DEPTH, MAX_CLOCK_SKEW_SECS,
+    ReceiptError, ResourceName, ResourcePattern, RevocationBounds, RevocationSet, Spent,
+    UsageLedger, VerifyContext, MAX_CHAIN_DEPTH, MAX_CLOCK_SKEW_SECS,
 };
 use spine_protocol::BrowserCommand;
+use spine_storage::StorageBackend;
 
+use crate::authority_ledger::{DurableChargeError, DurableLedger, LedgerOpenError};
 use crate::config::AuthorityConfig;
 
 /// First path segment of every node resource.
@@ -282,7 +284,8 @@ pub enum RefusalCause {
     Charge(ChargeError),
     /// The revocation set could not be read (its lock is poisoned).
     RevocationsUnavailable,
-    /// The usage ledger could not be used (its lock is poisoned).
+    /// The usage ledger could not be used: its lock is poisoned, or a durable
+    /// ledger could not write the charge to its backend.
     LedgerUnavailable,
 }
 
@@ -397,6 +400,42 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// The ledger a gate holds: in memory only, or mirrored in a backend. Private
+/// so that the gate's checks and their order do not depend on which.
+#[derive(Debug)]
+enum GateLedger {
+    Memory(MemoryLedger),
+    Durable(Box<DurableLedger>),
+}
+
+impl GateLedger {
+    fn charge(&mut self, decision: &Decision) -> Result<(), RefusalCause> {
+        match self {
+            GateLedger::Memory(ledger) => ledger.charge(decision).map_err(RefusalCause::Charge),
+            GateLedger::Durable(ledger) => ledger.charge(decision).map_err(|error| match error {
+                DurableChargeError::Charge(error) => RefusalCause::Charge(error),
+                DurableChargeError::Storage => RefusalCause::LedgerUnavailable,
+            }),
+        }
+    }
+}
+
+impl UsageLedger for GateLedger {
+    fn nonce_seen(&self, invoker: &PublicKey, nonce: &[u8; 16]) -> bool {
+        match self {
+            GateLedger::Memory(ledger) => ledger.nonce_seen(invoker, nonce),
+            GateLedger::Durable(ledger) => ledger.nonce_seen(invoker, nonce),
+        }
+    }
+
+    fn spent(&self, id: &GrantId, now: u64) -> Option<Spent> {
+        match self {
+            GateLedger::Memory(ledger) => ledger.spent(id, now),
+            GateLedger::Durable(ledger) => ledger.spent(id, now),
+        }
+    }
+}
+
 /// An invocation the gate accepted and charged. The command may now run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Authorized {
@@ -418,7 +457,7 @@ pub struct AuthorityGate {
     trusted_roots: Vec<PublicKey>,
     settings: GateSettings,
     revocations: RwLock<RevocationSet>,
-    ledger: Mutex<MemoryLedger>,
+    ledger: Mutex<GateLedger>,
 }
 
 impl AuthorityGate {
@@ -436,12 +475,52 @@ impl AuthorityGate {
             skew_secs: settings.skew_secs.min(MAX_CLOCK_SKEW_SECS),
             ..settings
         };
+        AuthorityGate::with_ledger(
+            recipient,
+            trusted_roots,
+            settings,
+            GateLedger::Memory(MemoryLedger::with_config(settings.ledger)),
+        )
+    }
+
+    /// Like [`AuthorityGate::new`], with a usage ledger that survives a
+    /// restart: charges are written to `backend` before they count, and the
+    /// ledger found there is restored (`now` is the node's clock, Unix
+    /// seconds). A charge whose write fails is refused at step 11. It refuses
+    /// to open on a row that cannot be tied to a nonce or a grant
+    /// ([`LedgerOpenError`]). See [`crate::authority_ledger`].
+    pub fn new_durable(
+        recipient: PublicKey,
+        trusted_roots: Vec<PublicKey>,
+        settings: GateSettings,
+        backend: Arc<dyn StorageBackend>,
+        now: u64,
+    ) -> Result<AuthorityGate, LedgerOpenError> {
+        let settings = GateSettings {
+            skew_secs: settings.skew_secs.min(MAX_CLOCK_SKEW_SECS),
+            ..settings
+        };
+        let ledger = DurableLedger::open(backend, settings.ledger, now)?;
+        Ok(AuthorityGate::with_ledger(
+            recipient,
+            trusted_roots,
+            settings,
+            GateLedger::Durable(Box::new(ledger)),
+        ))
+    }
+
+    fn with_ledger(
+        recipient: PublicKey,
+        trusted_roots: Vec<PublicKey>,
+        settings: GateSettings,
+        ledger: GateLedger,
+    ) -> AuthorityGate {
         AuthorityGate {
             recipient,
             trusted_roots,
             settings,
             revocations: RwLock::new(RevocationSet::default()),
-            ledger: Mutex::new(MemoryLedger::with_config(settings.ledger)),
+            ledger: Mutex::new(ledger),
         }
     }
 
@@ -620,9 +699,7 @@ impl AuthorityGate {
             return Err(RefusalCause::OperationMismatch.into());
         }
 
-        ledger
-            .charge(&decision)
-            .map_err(|error| Refusal::from(RefusalCause::Charge(error)))?;
+        ledger.charge(&decision).map_err(Refusal::from)?;
 
         Ok(Authorized {
             invocation,
@@ -1623,5 +1700,257 @@ mod tests {
             },
         );
         assert_eq!(clamped.settings().skew_secs, MAX_CLOCK_SKEW_SECS);
+    }
+
+    // The same gate over a ledger that is kept in a backend.
+
+    use crate::authority_ledger::FlakyBackend;
+
+    fn durable_gate_with(
+        world: &World,
+        backend: &Arc<FlakyBackend>,
+        settings: GateSettings,
+        now: u64,
+    ) -> AuthorityGate {
+        let as_dyn: Arc<dyn StorageBackend> = backend.clone();
+        let gate = AuthorityGate::new_durable(
+            public(&world.node),
+            vec![public(&world.node)],
+            settings,
+            as_dyn,
+            now,
+        )
+        .unwrap();
+        gate.refresh_revocations(NOW);
+        gate
+    }
+
+    fn durable_gate(world: &World, backend: &Arc<FlakyBackend>, now: u64) -> AuthorityGate {
+        durable_gate_with(world, backend, GateSettings::default(), now)
+    }
+
+    #[test]
+    fn a_durable_gate_authorizes_and_refuses_replays_like_the_memory_gate() {
+        let world = World::new();
+        let backend = Arc::new(FlakyBackend::new());
+        let gate = durable_gate(&world, &backend, NOW);
+        let command = resolve();
+        assert!(world
+            .attempt_on(&gate, &command, world.body(&command, 1))
+            .is_ok());
+        let refusal = world
+            .attempt_on(&gate, &command, world.body(&command, 1))
+            .unwrap_err();
+        assert_eq!(
+            refusal.cause(),
+            RefusalCause::Verification(Denial::NonceReplayed)
+        );
+        assert_eq!(refusal.step(), 9);
+        assert!(world
+            .attempt_on(&gate, &command, world.body(&command, 2))
+            .is_ok());
+    }
+
+    #[test]
+    fn a_durable_gate_enforces_a_call_limit_and_a_refusal_charges_nothing() {
+        let world = World::with_leaf_limits(Limits {
+            calls: Some(2),
+            ..Limits::default()
+        });
+        let backend = Arc::new(FlakyBackend::new());
+        let gate = durable_gate(&world, &backend, NOW);
+        let command = navigate();
+        let mut weak = world.body(&command, 1);
+        weak.effect = Effect::Read;
+        assert!(world.attempt_on(&gate, &command, weak).is_err());
+        assert!(world
+            .attempt_on(&gate, &command, world.body(&command, 2))
+            .is_ok());
+        assert!(world
+            .attempt_on(&gate, &command, world.body(&command, 3))
+            .is_ok());
+        let refusal = world
+            .attempt_on(&gate, &command, world.body(&command, 4))
+            .unwrap_err();
+        assert_eq!(
+            refusal.cause(),
+            RefusalCause::Verification(Denial::LimitExhausted)
+        );
+        assert_eq!(refusal.step(), 11);
+    }
+
+    #[test]
+    fn a_restarted_gate_remembers_spent_limits_and_nonces() {
+        let world = World::with_leaf_limits(Limits {
+            calls: Some(2),
+            ..Limits::default()
+        });
+        let backend = Arc::new(FlakyBackend::new());
+        let command = resolve();
+        {
+            let gate = durable_gate(&world, &backend, NOW);
+            assert!(world
+                .attempt_on(&gate, &command, world.body(&command, 1))
+                .is_ok());
+            assert!(world
+                .attempt_on(&gate, &command, world.body(&command, 2))
+                .is_ok());
+        }
+        let restarted = durable_gate(&world, &backend, NOW + 1);
+        let exhausted = world
+            .attempt_on(&restarted, &command, world.body(&command, 3))
+            .unwrap_err();
+        assert_eq!(
+            exhausted.cause(),
+            RefusalCause::Verification(Denial::LimitExhausted)
+        );
+        let replay = world
+            .attempt_on(&restarted, &command, world.body(&command, 1))
+            .unwrap_err();
+        assert_eq!(
+            replay.cause(),
+            RefusalCause::Verification(Denial::NonceReplayed)
+        );
+
+        // A memory gate forgets both, which is why the durable one exists.
+        let forgetful = AuthorityGate::single_user(public(&world.node), GateSettings::default());
+        forgetful.refresh_revocations(NOW);
+        assert!(world
+            .attempt_on(&forgetful, &command, world.body(&command, 1))
+            .is_ok());
+    }
+
+    #[test]
+    fn a_durable_gate_that_cannot_write_refuses_at_step_11_and_charges_nothing() {
+        let world = World::with_leaf_limits(Limits {
+            calls: Some(1),
+            ..Limits::default()
+        });
+        let backend = Arc::new(FlakyBackend::new());
+        let gate = durable_gate(&world, &backend, NOW);
+        let command = resolve();
+        backend.allow_puts(0);
+        let refusal = world
+            .attempt_on(&gate, &command, world.body(&command, 1))
+            .unwrap_err();
+        assert_eq!(refusal.cause(), RefusalCause::LedgerUnavailable);
+        assert_eq!(refusal.step(), 11);
+        assert_eq!(refusal.to_string(), "authority refused at step 11");
+
+        // Neither the nonce nor the single call was used up.
+        backend.allow_puts(usize::MAX);
+        assert!(world
+            .attempt_on(&gate, &command, world.body(&command, 1))
+            .is_ok());
+        assert_eq!(
+            world
+                .attempt_on(&gate, &command, world.body(&command, 2))
+                .unwrap_err()
+                .step(),
+            11
+        );
+    }
+
+    #[test]
+    fn a_full_durable_ledger_refuses_instead_of_forgetting() {
+        let world = World::new();
+        let backend = Arc::new(FlakyBackend::new());
+        let gate = durable_gate_with(
+            &world,
+            &backend,
+            GateSettings {
+                ledger: LedgerConfig {
+                    max_nonces: 1,
+                    max_grants: 16,
+                },
+                ..GateSettings::default()
+            },
+            NOW,
+        );
+        let command = BrowserCommand::NamespaceStatus;
+        assert!(world
+            .attempt_on(&gate, &command, world.body(&command, 1))
+            .is_ok());
+        let refusal = world
+            .attempt_on(&gate, &command, world.body(&command, 2))
+            .unwrap_err();
+        assert_eq!(
+            refusal.cause(),
+            RefusalCause::Charge(ChargeError::LedgerFull)
+        );
+    }
+
+    #[test]
+    fn of_threads_racing_a_call_limit_a_durable_gate_lets_only_the_limit_pass() {
+        let world = World::with_leaf_limits(Limits {
+            calls: Some(3),
+            ..Limits::default()
+        });
+        let backend = Arc::new(FlakyBackend::new());
+        let gate = durable_gate(&world, &backend, NOW);
+        let command = BrowserCommand::NamespaceStatus;
+        let chain = world.chain();
+        let op = op_of(&command);
+        const THREADS: u8 = 8;
+        let invocations: Vec<Vec<u8>> = (1..=THREADS)
+            .map(|nonce| world.sign(world.body(&command, nonce)))
+            .collect();
+        let barrier = Barrier::new(usize::from(THREADS));
+        let results: Vec<Result<Authorized, Refusal>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = invocations
+                .iter()
+                .map(|invocation| {
+                    let barrier = &barrier;
+                    let chain = &chain;
+                    let command = &command;
+                    let gate = &gate;
+                    scope.spawn(move || {
+                        barrier.wait();
+                        gate.authorize(
+                            chain.as_slice(),
+                            invocation.as_slice(),
+                            command,
+                            op,
+                            SESSION,
+                            NOW,
+                        )
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect()
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 3);
+
+        // What the winners spent is in the backend.
+        drop(gate);
+        let restarted = durable_gate(&world, &backend, NOW);
+        let refusal = world
+            .attempt_on(&restarted, &command, world.body(&command, 100))
+            .unwrap_err();
+        assert_eq!(
+            refusal.cause(),
+            RefusalCause::Verification(Denial::LimitExhausted)
+        );
+    }
+
+    #[test]
+    fn a_gate_refuses_to_open_over_a_row_it_cannot_place() {
+        let world = World::new();
+        let backend = Arc::new(FlakyBackend::new());
+        backend
+            .put(crate::authority_ledger::USAGE_NAMESPACE, &[0u8; 5], &[])
+            .unwrap();
+        let as_dyn: Arc<dyn StorageBackend> = backend;
+        let opened = AuthorityGate::new_durable(
+            public(&world.node),
+            vec![public(&world.node)],
+            GateSettings::default(),
+            as_dyn,
+            NOW,
+        );
+        assert!(opened.is_err());
     }
 }

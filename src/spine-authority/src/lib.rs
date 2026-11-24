@@ -62,8 +62,8 @@ pub use revocation::{
 };
 pub use scope::{ResourceName, ResourcePattern, ScopeError, MAX_PATH_SEGMENTS, MAX_SEGMENT_LEN};
 pub use state::{
-    ChargeError, LedgerConfig, MemoryLedger, NoLedger, NoRevocationData, RevocationSet,
-    RevocationView, Spent, UsageLedger, RATE_WINDOW_SECS,
+    ChargeError, ChargePlan, Expired, LedgerConfig, MemoryLedger, NoLedger, NoRevocationData,
+    NonceRecord, RevocationSet, RevocationView, Spent, UsageLedger, UsageRecord, RATE_WINDOW_SECS,
 };
 pub use verification::{
     verify, verify_encoded, verify_encoded_with_invocation, Decision, Denial, RevocationBounds,
