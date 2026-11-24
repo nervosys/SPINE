@@ -62,6 +62,35 @@ pub const QUORUM: usize = 3;
 /// log is verified.
 pub const MAX_RESPONSE_LOGS: usize = K + 1;
 
+/// Most names this node is waiting to fetch a succession log for at once (spec
+/// 02, 10.11). A name that does not fit is not fetched for until a place frees
+/// (see [`WANTED_LOG_HORIZON_SECS`]); it costs nothing but that.
+pub const MAX_WANTED_LOGS: usize = 64;
+
+/// Least time between two log fetches for the same name, in seconds of the
+/// service's clock. A second `NeedLog` announcement for the name inside the
+/// window sends nothing.
+pub const LOG_FETCH_INTERVAL_SECS: u64 = 60;
+
+/// How long a sent log fetch may stay unanswered, in seconds, before its
+/// lookup state is dropped. The mesh resolver's own lookup timeout does not
+/// apply to a fetch (nothing waits on it), so this is what frees the state of a
+/// peer that never answers.
+pub const LOG_FETCH_TIMEOUT_SECS: u64 = 30;
+
+/// How long a name stays in the wanted table, in seconds, after the first
+/// `NeedLog` that put it there. Past it the entry is dropped, so a name whose
+/// log never arrives does not hold a place for ever.
+pub const WANTED_LOG_HORIZON_SECS: u64 = 300;
+
+/// Most log fetches sent to one peer in one [`LOG_FETCH_PEER_WINDOW_SECS`]. The
+/// per-name interval limits repeats of one name; this limits a peer that
+/// announces many different names it has no logs for.
+pub const MAX_LOG_FETCHES_PER_PEER: usize = 8;
+
+/// The window, in seconds, [`MAX_LOG_FETCHES_PER_PEER`] is counted over.
+pub const LOG_FETCH_PEER_WINDOW_SECS: u64 = 60;
+
 /// Most endpoints kept per referred or announced node; the rest are dropped.
 pub const MAX_NODE_ENDPOINTS: usize = 8;
 
@@ -360,6 +389,10 @@ pub struct Lookup {
     /// Records dropped because key succession refused them: a superseded key, a
     /// retired or compromised name, or a stale or conflicting claim.
     succession_refused: u64,
+    /// Whether peers a response refers to are added to the walk. A log fetch
+    /// (see [`NameService::want_log`]) asks one peer and nobody else, so it
+    /// ignores referrals.
+    follow_referrals: bool,
 }
 
 impl Lookup {
@@ -381,8 +414,17 @@ impl Lookup {
             awaiting: HashSet::new(),
             need_log: 0,
             succession_refused: 0,
+            follow_referrals: true,
         };
         lookup.absorb_nodes(seeds);
+        lookup
+    }
+
+    /// A lookup that asks `peer` and no one else: the response's referrals are
+    /// never added to the walk, so it sends exactly one request.
+    fn for_single_peer(query: ResolveQuery, peer: NodeInfo) -> Self {
+        let mut lookup = Self::new(query, vec![peer]);
+        lookup.follow_referrals = false;
         lookup
     }
 
@@ -620,12 +662,14 @@ impl Lookup {
             }
         }
 
-        self.absorb_nodes(
-            bound_referrals(&response.closer)
-                .into_iter()
-                .map(|p| p.info)
-                .collect(),
-        );
+        if self.follow_referrals {
+            self.absorb_nodes(
+                bound_referrals(&response.closer)
+                    .into_iter()
+                    .map(|p| p.info)
+                    .collect(),
+            );
+        }
     }
 
     /// Mark a node as unreachable so the lookup stops waiting on it.
@@ -746,6 +790,60 @@ pub struct SuccessionStats {
     /// Records refused by key succession: a superseded key, a retired or
     /// compromised name, or a stale or conflicting claim.
     pub records_refused: u64,
+    /// Log fetches sent: one request to the announcer of a record refused for
+    /// want of its log (see [`NameService::want_log`]).
+    pub log_fetches_sent: u64,
+    /// Log fetches not sent because a bound held: the name was fetched for
+    /// less than [`LOG_FETCH_INTERVAL_SECS`] ago, the wanted table was full, or
+    /// the announcer had had [`MAX_LOG_FETCHES_PER_PEER`] fetches in the window.
+    pub log_fetches_suppressed: u64,
+    /// Logs adopted from the response to a log fetch (a subset of
+    /// `logs_adopted`).
+    pub logs_fetched: u64,
+}
+
+/// What [`NameService::want_log`] decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogFetch {
+    /// Send the request of lookup `request_id` to the nodes of `wave` (always
+    /// the one announcer).
+    Send {
+        request_id: u64,
+        wave: Vec<NodeInfo>,
+    },
+    /// A bound held; counted in [`SuccessionStats::log_fetches_suppressed`].
+    Suppressed,
+    /// Nothing to fetch: the name has no inception key, so it has no log.
+    Skipped,
+}
+
+/// A name whose log this node has asked for.
+#[derive(Debug, Clone, Copy)]
+struct WantedLog {
+    /// When the entry was made (the first `NeedLog` it was made for).
+    first_wanted: u64,
+    /// When the last fetch for it was sent.
+    last_fetch: u64,
+    /// The fetch's lookup, while it is unanswered.
+    request_id: Option<u64>,
+}
+
+/// The bounded record of which logs are wanted and who has been asked.
+#[derive(Debug, Default)]
+struct LogWants {
+    /// By inception key. At most [`MAX_WANTED_LOGS`].
+    names: HashMap<[u8; 32], WantedLog>,
+    /// Times of recent fetches, by the peer asked. Pruned to the window on
+    /// every use, so it holds at most [`MAX_LOG_FETCHES_PER_PEER`] times for
+    /// each peer fetched from in the last window.
+    peers: HashMap<NameKey, Vec<u64>>,
+}
+
+/// Whether `then` is no more than `span` seconds before `now`. A `then` after
+/// `now` (the clock stepped back) counts as long ago, so a bound never holds
+/// on a stale future stamp.
+fn within(now: u64, then: u64, span: u64) -> bool {
+    then <= now && now - then < span
 }
 
 /// A node's naming service: the records it serves, the keyspace peers it knows,
@@ -772,6 +870,8 @@ pub struct NameService {
     next_request_id: u64,
     /// Counters for succession logs received and records they refused.
     succession: SuccessionStats,
+    /// Names whose log was fetched for, for the rate bound.
+    wants: LogWants,
 }
 
 impl NameService {
@@ -788,6 +888,7 @@ impl NameService {
             lookups: HashMap::new(),
             next_request_id: 1,
             succession: SuccessionStats::default(),
+            wants: LogWants::default(),
         }
     }
 
@@ -870,9 +971,128 @@ impl NameService {
             let wanted: HashSet<[u8; 32]> = record.name.public_key().copied().into_iter().collect();
             let _ = Self::take_log(&mut self.store, &mut self.succession, log, Some(&wanted));
         }
+        let key = record.name.public_key().copied();
         let outcome = self.store.put(record, now);
         Self::count_refusal(&mut self.succession, &outcome);
+        // The record is held, so its log is: nothing is wanted for the name.
+        if outcome.is_ok() {
+            if let Some(key) = key {
+                self.wants.names.remove(&key);
+            }
+        }
         outcome
+    }
+
+    /// Decide whether to fetch the succession log of `name` from `from`, the
+    /// peer that announced a record of it which was refused for want of the log
+    /// ([`NameError::NeedSuccessionLog`]), and if so start the fetch.
+    ///
+    /// A fetch is an ordinary name lookup for `name` whose only candidate is
+    /// `from`: the answer to a name request already carries the name's log
+    /// ([`NameService::handle_request`]), also when the name has no record. It
+    /// is tracked as a pending lookup, so the response is accepted by exactly
+    /// the rule every response is: it must come from the peer asked, once, with
+    /// the envelope verified against that peer's key
+    /// ([`NameService::on_response_from_keys`]). Nothing unsolicited is
+    /// accepted. The announced record is not kept; the publisher's next
+    /// announcement, or the fetch's own answer, brings it again.
+    ///
+    /// `from` must be a peer whose envelope signature the caller has verified.
+    /// The caller sends the request of the returned [`LogFetch::Send`] (the
+    /// mesh resolver's `dispatch`), and nothing else.
+    ///
+    /// # Bounds, and why a hostile peer cannot use this to amplify
+    ///
+    /// One refused announcement causes at most one request, and it goes to the
+    /// announcer itself: the fetch has one candidate, it ignores the referrals
+    /// in the answer, and it is never retried, so no third party is ever
+    /// contacted because of what a peer said. The request is small (a name) and
+    /// the answer is bounded already ([`MAX_RESPONSE_LOGS`] logs, 64 entries
+    /// each). The number of requests is bounded three ways, all in the
+    /// service's own clock and none controlled by a peer: one per name per
+    /// [`LOG_FETCH_INTERVAL_SECS`]; at most [`MAX_WANTED_LOGS`] names tracked at
+    /// once, each for at most [`WANTED_LOG_HORIZON_SECS`]; and at most
+    /// [`MAX_LOG_FETCHES_PER_PEER`] to one peer per
+    /// [`LOG_FETCH_PEER_WINDOW_SECS`]. So a peer that floods `NeedLog`
+    /// announcements gets at most [`MAX_LOG_FETCHES_PER_PEER`] requests a
+    /// minute from this node, to itself, and every other refused announcement
+    /// is counted in [`SuccessionStats::log_fetches_suppressed`] and costs
+    /// nothing. An announcement is refused for `NeedLog` only after the
+    /// record's size, lifetime and publication time were checked and only if
+    /// this node is responsible for the name, and the fetch is made only to a
+    /// peer whose envelope signature verified against a key this node holds
+    /// for it.
+    pub fn want_log(&mut self, name: &SpineUri, from: NameKey, now: u64) -> LogFetch {
+        let Some(key) = name.public_key().copied() else {
+            return LogFetch::Skipped;
+        };
+        self.expire_log_wants(now);
+
+        let held = self.wants.names.get(&key).copied();
+        let recent_for_name =
+            held.is_some_and(|w| within(now, w.last_fetch, LOG_FETCH_INTERVAL_SECS));
+        let table_full = held.is_none() && self.wants.names.len() >= MAX_WANTED_LOGS;
+        let asked_of_peer = self.wants.peers.get(&from).map_or(0, Vec::len);
+        if recent_for_name || table_full || asked_of_peer >= MAX_LOG_FETCHES_PER_PEER {
+            self.succession.log_fetches_suppressed += 1;
+            return LogFetch::Suppressed;
+        }
+
+        let request_id = self.next_request_id;
+        self.next_request_id += 1;
+        let mut lookup = Lookup::for_single_peer(
+            ResolveQuery::Name(name.clone()),
+            NodeInfo::new(from, Vec::new(), now),
+        );
+        lookup.set_clock(now);
+        let wave = lookup.next_wave();
+        self.lookups.insert(request_id, lookup);
+
+        self.wants.names.insert(
+            key,
+            WantedLog {
+                first_wanted: held.map_or(now, |w| w.first_wanted),
+                last_fetch: now,
+                request_id: Some(request_id),
+            },
+        );
+        self.wants.peers.entry(from).or_default().push(now);
+        self.succession.log_fetches_sent += 1;
+        LogFetch::Send { request_id, wave }
+    }
+
+    /// Whether lookup `request_id` is a log fetch: one that asks a single peer
+    /// and ignores the referrals in its answer.
+    pub fn is_log_fetch(&self, request_id: u64) -> bool {
+        self.lookups
+            .get(&request_id)
+            .is_some_and(|l| !l.follow_referrals)
+    }
+
+    /// Names a log is currently wanted for.
+    pub fn wanted_logs(&self) -> usize {
+        self.wants.names.len()
+    }
+
+    /// Drop what has aged out: entries past [`WANTED_LOG_HORIZON_SECS`], fetches
+    /// unanswered for [`LOG_FETCH_TIMEOUT_SECS`] (their lookups are abandoned),
+    /// and per-peer times past the window.
+    fn expire_log_wants(&mut self, now: u64) {
+        let mut abandoned = Vec::new();
+        self.wants.names.retain(|_, want| {
+            let alive = within(now, want.first_wanted, WANTED_LOG_HORIZON_SECS);
+            if !alive || !within(now, want.last_fetch, LOG_FETCH_TIMEOUT_SECS) {
+                abandoned.extend(want.request_id.take());
+            }
+            alive
+        });
+        for request_id in abandoned {
+            self.lookups.remove(&request_id);
+        }
+        self.wants.peers.retain(|_, times| {
+            times.retain(|t| within(now, *t, LOG_FETCH_PEER_WINDOW_SECS));
+            !times.is_empty()
+        });
     }
 
     /// Offer a succession log this node learned out of band (its operator's, or
@@ -1356,13 +1576,28 @@ impl NameService {
             return None;
         }
         let target = Self::name_target(lookup.query());
+        let fetch = !lookup.follow_referrals;
+        let adopted_before = self.succession.logs_adopted;
         Self::absorb_response_logs(&mut self.store, &mut self.succession, target, response);
+        if fetch {
+            self.succession.logs_fetched += self.succession.logs_adopted - adopted_before;
+        }
         let before = lookup.succession_refusals();
         if !lookup.on_response_from_with(keys, response, self.store.logs()) {
             return None;
         }
         Self::count_lookup_refusals(&mut self.succession, before, lookup.succession_refusals());
-        self.learn_referrals(&response.closer);
+        if fetch {
+            // Answered: the entry stays (it paces the next fetch for the name)
+            // but no longer owns a lookup to abandon.
+            if let Some(want) = target.and_then(|k| self.wants.names.get_mut(&k)) {
+                if want.request_id == Some(response.request_id) {
+                    want.request_id = None;
+                }
+            }
+        } else {
+            self.learn_referrals(&response.closer);
+        }
         Some(
             self.lookups
                 .get_mut(&response.request_id)
@@ -1454,6 +1689,7 @@ impl NameService {
 
     /// Drop expired records.
     pub fn sweep(&mut self, now: u64) -> usize {
+        self.expire_log_wants(now);
         self.store.sweep_expired(now)
     }
 
@@ -2877,5 +3113,127 @@ mod tests {
         let stats = svc.succession_stats();
         assert_eq!(stats.logs_rejected, 1);
         assert!(svc.logs().state(&pk_of(2)).is_none());
+    }
+
+    // ---- fetching a missing log (spec 02, 10.11) ----------------------------
+
+    fn sent(decision: LogFetch) -> (u64, Vec<NodeInfo>) {
+        match decision {
+            LogFetch::Send { request_id, wave } => (request_id, wave),
+            other => panic!("expected a fetch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_wanted_log_is_fetched_from_the_announcer_once_per_interval() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        let name = SpineUri::did(pk_of(1));
+        let peer = NameKey::of(b"peer");
+
+        let (id, wave) = sent(svc.want_log(&name, peer, 1_000));
+        assert_eq!(wave.iter().map(|n| n.id).collect::<Vec<_>>(), vec![peer]);
+        assert!(svc.is_log_fetch(id));
+        assert_eq!(svc.wanted_logs(), 1);
+
+        // Inside the window nothing is sent, however often it is asked.
+        for now in [1_000, 1_001, 1_059] {
+            assert_eq!(svc.want_log(&name, peer, now), LogFetch::Suppressed);
+        }
+        let stats = svc.succession_stats();
+        assert_eq!(
+            (stats.log_fetches_sent, stats.log_fetches_suppressed),
+            (1, 3)
+        );
+
+        // After it, one more; the first fetch went unanswered and its lookup
+        // state is gone.
+        let (next, _) = sent(svc.want_log(&name, peer, 1_060));
+        assert_ne!(next, id);
+        assert_eq!(svc.active_lookups(), 1);
+        assert_eq!(svc.succession_stats().log_fetches_sent, 2);
+    }
+
+    #[test]
+    fn the_wanted_table_and_the_per_peer_rate_are_bounded() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        // Distinct names from distinct announcers fill the table, and no more.
+        for seed in 1..=MAX_WANTED_LOGS as u8 {
+            let from = NameKey::of(&[seed, 1]);
+            sent(svc.want_log(&SpineUri::did(pk_of(seed)), from, 1_000));
+        }
+        assert_eq!(svc.wanted_logs(), MAX_WANTED_LOGS);
+        let over = SpineUri::did(pk_of(MAX_WANTED_LOGS as u8 + 1));
+        assert_eq!(
+            svc.want_log(&over, NameKey::of(b"another"), 1_000),
+            LogFetch::Suppressed
+        );
+        assert_eq!(svc.wanted_logs(), MAX_WANTED_LOGS);
+        assert_eq!(svc.active_lookups(), MAX_WANTED_LOGS);
+        assert_eq!(svc.succession_stats().log_fetches_suppressed, 1);
+
+        // Past the horizon the table is empty again, and so is the lookup state.
+        svc.sweep(1_000 + WANTED_LOG_HORIZON_SECS);
+        assert_eq!(svc.wanted_logs(), 0);
+        assert_eq!(svc.active_lookups(), 0);
+        sent(svc.want_log(
+            &over,
+            NameKey::of(b"another"),
+            1_000 + WANTED_LOG_HORIZON_SECS,
+        ));
+
+        // One announcer of many names is asked at most MAX_LOG_FETCHES_PER_PEER
+        // times in a window, and again once the window has passed.
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        let noisy = NameKey::of(b"noisy");
+        for seed in 1..=MAX_LOG_FETCHES_PER_PEER as u8 {
+            sent(svc.want_log(&SpineUri::did(pk_of(seed)), noisy, 2_000));
+        }
+        let ninth = SpineUri::did(pk_of(MAX_LOG_FETCHES_PER_PEER as u8 + 1));
+        assert_eq!(svc.want_log(&ninth, noisy, 2_059), LogFetch::Suppressed);
+        sent(svc.want_log(&ninth, noisy, 2_000 + LOG_FETCH_PEER_WINDOW_SECS));
+    }
+
+    #[test]
+    fn a_fetch_answer_is_taken_only_from_the_peer_asked_and_only_for_its_name() {
+        let mut svc = NameService::new(NameKey::of(b"local"));
+        let name = SpineUri::did(pk_of(1));
+        let peer = NameKey::of(b"peer");
+        let (id, _) = sent(svc.want_log(&name, peer, 1_000));
+
+        // Not the peer asked: nothing is taken.
+        let mut answer = ResolveResponse::empty(id);
+        answer.logs = vec![rotation(1)];
+        assert!(svc
+            .on_response_from_keys(&[NameKey::of(b"other")], &answer)
+            .is_none());
+        assert!(svc.logs().is_empty());
+
+        // The peer asked, with a log of another name: not adopted.
+        let mut foreign = ResolveResponse::empty(id);
+        foreign.logs = vec![rotation(2)];
+        assert_eq!(
+            svc.on_response_from_keys(&[peer], &foreign),
+            Some(Vec::new())
+        );
+        assert!(svc.logs().is_empty());
+        let stats = svc.succession_stats();
+        assert_eq!((stats.logs_rejected, stats.logs_fetched), (1, 0));
+
+        // It answered once; a second answer, with the right log, is dropped.
+        assert!(svc.on_response_from_keys(&[peer], &answer).is_none());
+        assert!(svc.logs().is_empty());
+        assert_eq!(svc.finish_lookup(id), Some(LookupOutcome::NotFound));
+
+        // The right log from the peer asked is adopted and attributed.
+        let (id, _) = sent(svc.want_log(&name, peer, 1_060));
+        let mut answer = ResolveResponse::empty(id);
+        answer.logs = vec![rotation(1)];
+        assert_eq!(
+            svc.on_response_from_keys(&[peer], &answer),
+            Some(Vec::new())
+        );
+        assert!(svc.logs().state(&pk_of(1)).is_some());
+        let stats = svc.succession_stats();
+        assert_eq!((stats.logs_adopted, stats.logs_fetched), (1, 1));
     }
 }

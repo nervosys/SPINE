@@ -59,8 +59,8 @@ impl Drop for RpcGuard<'_> {
     }
 }
 use crate::naming::{
-    bound_endpoints, bound_referrals, capability_placement_keys, KeyspacePeer, LookupOutcome,
-    NameService, ResolveQuery, ResolveResponse, K,
+    bound_endpoints, bound_referrals, capability_placement_keys, KeyspacePeer, LogFetch,
+    LookupOutcome, NameService, ResolveQuery, ResolveResponse, K,
 };
 use crate::AgentId;
 
@@ -230,6 +230,20 @@ pub struct ResolverMetrics {
     /// Records refused by key succession (a superseded key, a retired or
     /// compromised name, a stale or conflicting claim).
     pub records_refused_by_succession: u64,
+    /// Requests sent to the announcer of a record refused for want of its
+    /// succession log (`records_need_log`), at most one per refused
+    /// announcement, to the announcer alone.
+    pub log_fetches_sent: u64,
+    /// Refused announcements that did not cause a request because a bound
+    /// held: the name was fetched for in the last
+    /// `naming::LOG_FETCH_INTERVAL_SECS`, the wanted table was full, or the
+    /// announcer had had `naming::MAX_LOG_FETCHES_PER_PEER` requests in the
+    /// last `naming::LOG_FETCH_PEER_WINDOW_SECS`. An announcement from a peer
+    /// this node holds no key for is in neither count.
+    pub log_fetches_suppressed: u64,
+    /// Succession logs adopted from the answer to such a request (a subset of
+    /// `succession_logs_adopted`).
+    pub logs_fetched: u64,
 }
 
 /// A peer learned by dialing a seed address.
@@ -1308,11 +1322,23 @@ impl MeshNameResolver {
                     announced.log.clone(),
                     now,
                 );
-                let mut m = self.metrics.lock().await;
-                match outcome {
-                    Ok(spine_name::PutOutcome::Rejected) => m.announcements_declined += 1,
-                    Ok(_) => m.announcements_accepted += 1,
-                    Err(_) => m.announcements_rejected += 1,
+                {
+                    let mut m = self.metrics.lock().await;
+                    match &outcome {
+                        Ok(spine_name::PutOutcome::Rejected) => m.announcements_declined += 1,
+                        Ok(_) => m.announcements_accepted += 1,
+                        Err(_) => m.announcements_rejected += 1,
+                    }
+                }
+                // A record ahead of the log this node holds is refused, not
+                // kept. Ask the peer that sent it, once and within the bounds
+                // of `NameService::want_log`, for the log.
+                if matches!(
+                    outcome,
+                    Err(spine_name::NameError::NeedSuccessionLog { .. })
+                ) {
+                    self.fetch_log_from_announcer(envelope, peer, &announced.record.name, now)
+                        .await;
                 }
                 true
             }
@@ -1460,13 +1486,45 @@ impl MeshNameResolver {
         }
     }
 
+    /// Ask the sender of an announcement refused with `NeedLog` for the name's
+    /// succession log, if the bounds allow.
+    ///
+    /// The request is an ordinary name resolve request to the announcer alone,
+    /// tracked as a pending lookup so that its answer goes through the same
+    /// path, and the same checks, as any response (see
+    /// [`NameService::want_log`], which also argues why this cannot be used to
+    /// amplify). An announcer this node has no recorded, verified key for is
+    /// not asked: there is no one to bind the answer to.
+    async fn fetch_log_from_announcer(
+        &self,
+        envelope: &MeshEnvelope,
+        peer: Option<[u8; 32]>,
+        name: &SpineUri,
+        now: u64,
+    ) {
+        let Some(announcer) = self.authenticate_sender(envelope, peer).await else {
+            return;
+        };
+        let decision = self.service.lock().await.want_log(name, announcer, now);
+        if let LogFetch::Send { request_id, wave } = decision {
+            self.dispatch(request_id, wave).await;
+        }
+    }
+
     /// Feed a response into its lookup and continue or finish it.
     async fn absorb_response(&self, signer: NameKey, response: &ResolveResponse) {
         let request_id = response.request_id;
         // Referrals are unsigned (id, key) pairs: only those whose id derives from
-        // their key are used, by the lookup and by the routing table alike.
+        // their key are used, by the lookup and by the routing table alike. The
+        // answer to a log fetch is not about the keyspace at all, so what it
+        // refers to is not learned.
         let mut filtered = response.clone();
-        filtered.closer = self.derived_referrals(&response.closer).await;
+        let fetch = self.service.lock().await.is_log_fetch(request_id);
+        filtered.closer = if fetch {
+            Vec::new()
+        } else {
+            self.derived_referrals(&response.closer).await
+        };
         let response = &filtered;
 
         let (next_wave, done) = {
@@ -1544,6 +1602,9 @@ impl MeshNameResolver {
         metrics.equivocations_found = stats.equivocations_found;
         metrics.records_need_log = stats.records_need_log;
         metrics.records_refused_by_succession = stats.records_refused;
+        metrics.log_fetches_sent = stats.log_fetches_sent;
+        metrics.log_fetches_suppressed = stats.log_fetches_suppressed;
+        metrics.logs_fetched = stats.logs_fetched;
         metrics
     }
 
@@ -3166,6 +3227,10 @@ mod tests {
         assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
         let m = h.nodes[1].metrics().await;
         assert_eq!((m.records_need_log, m.announcements_rejected), (1, 1));
+        // Node 0 is not a peer node 1 has a key for, so there is no one to bind
+        // an answer to and nothing is asked.
+        assert_eq!((m.log_fetches_sent, m.log_fetches_suppressed), (0, 0));
+        assert!(h.board.is_empty());
 
         // With the log, it is accepted and the log is adopted.
         let with_log = h.nodes[0]
@@ -3275,10 +3340,186 @@ mod tests {
                     m.equivocations_found,
                     m.records_need_log,
                     m.records_refused_by_succession,
+                    m.log_fetches_sent,
+                    m.log_fetches_suppressed,
+                    m.logs_fetched,
                 ),
-                (0, 0, 0, 0, 0, 0)
+                (0, 0, 0, 0, 0, 0, 0, 0, 0)
             );
             assert!(node.succession_log(&pk_of(1)).await.is_none());
         }
+    }
+
+    // ---- fetching a missing log (spec 02, 10.11, decision 33) ---------------
+
+    /// `record`, announced by node `from` with no log attached, to everyone.
+    fn announced_without_log(h: &Harness, from: usize, record: &NameRecord) -> MeshEnvelope {
+        h.nodes[from]
+            .node
+            .create_envelope(
+                crate::mesh::MeshTarget::Broadcast,
+                MeshPayload::NameAnnounce(Box::new(crate::naming::AnnouncedRecord::new(
+                    record.clone(),
+                ))),
+            )
+            .unwrap()
+    }
+
+    async fn pump_bounded(h: &Harness) {
+        tokio::time::timeout(Duration::from_secs(5), h.pump())
+            .await
+            .expect("the mesh goes quiet");
+    }
+
+    /// How many envelopes are queued, and for whom.
+    fn queued(h: &Harness) -> Vec<(AgentId, usize)> {
+        h.board
+            .queues
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, q)| !q.is_empty())
+            .map(|(a, q)| (*a, q.len()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_record_ahead_of_its_log_makes_the_receiver_fetch_from_the_announcer() {
+        let h = Harness::new(3);
+        h.introduce(1, 0).await;
+        let log = rotation_log(1);
+        let fresh = record_under(1, &log, 101, 2);
+        h.nodes[0].offer_log(log.clone()).await.unwrap();
+        h.nodes[0].publish_local(fresh.clone()).await.unwrap();
+        let announcer = *h.nodes[0].node.agent_id();
+
+        let envelope = announced_without_log(&h, 0, &fresh);
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (
+                m.records_need_log,
+                m.announcements_rejected,
+                m.log_fetches_sent
+            ),
+            (1, 1, 1)
+        );
+        assert_eq!(h.nodes[1].record_count().await, 0, "the record is not kept");
+        // One request, to the announcer, and to nobody else.
+        assert_eq!(queued(&h), vec![(announcer, 1)]);
+
+        pump_bounded(&h).await;
+        assert_eq!(h.nodes[1].succession_log(&pk_of(1)).await, Some(log));
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (
+                m.logs_fetched,
+                m.succession_logs_adopted,
+                m.log_fetches_suppressed
+            ),
+            (1, 1, 0)
+        );
+        assert_eq!(h.nodes[1].service.lock().await.active_lookups(), 0);
+        assert_eq!(h.nodes[1].pending_lookups(), 0);
+
+        // With the log held, the same announcement is accepted.
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert_eq!(h.nodes[1].record_count().await, 1);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!((m.announcements_accepted, m.log_fetches_sent), (1, 1));
+        assert!(h.board.is_empty(), "no further request was sent");
+    }
+
+    #[tokio::test]
+    async fn a_second_refused_announcement_inside_the_window_sends_no_second_fetch() {
+        let h = Harness::new(2);
+        h.introduce(1, 0).await;
+        let log = rotation_log(1);
+        let fresh = record_under(1, &log, 101, 2);
+        // Node 0 holds no log, so its answer will not settle the matter.
+        let announcer = *h.nodes[0].node.agent_id();
+        let envelope = announced_without_log(&h, 0, &fresh);
+
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW + 10).await);
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW + 59).await);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (
+                m.records_need_log,
+                m.log_fetches_sent,
+                m.log_fetches_suppressed
+            ),
+            (3, 1, 2)
+        );
+        assert_eq!(h.board.drain(&announcer).len(), 1);
+
+        // The window passes: one more, and the unanswered first fetch's state
+        // is gone.
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW + 60).await);
+        let m = h.nodes[1].metrics().await;
+        assert_eq!((m.log_fetches_sent, m.log_fetches_suppressed), (2, 2));
+        assert_eq!(h.board.drain(&announcer).len(), 1);
+        assert_eq!(h.nodes[1].service.lock().await.active_lookups(), 1);
+        assert_eq!(m.logs_fetched, 0);
+    }
+
+    #[tokio::test]
+    async fn a_fetch_answer_is_bound_to_the_peer_asked_and_to_the_name() {
+        let h = Harness::new(3);
+        h.introduce(1, 0).await;
+        h.introduce(1, 2).await;
+        let log = rotation_log(1);
+        let fresh = record_under(1, &log, 101, 2);
+        let asker = *h.nodes[1].node.agent_id();
+        let announcer = *h.nodes[0].node.agent_id();
+        let bystander = *h.nodes[2].node.agent_id();
+        let peers_before = h.nodes[1].peer_count().await;
+
+        let envelope = announced_without_log(&h, 0, &fresh);
+        assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
+        let request = next_for(&h, &announcer).await;
+        let MeshPayload::NameResolveRequest(req) = &request.payload else {
+            panic!("expected a request, got {:?}", request.payload);
+        };
+
+        // A peer that was not asked cannot answer, however good its log.
+        let mut unasked = ResolveResponse::empty(req.request_id);
+        unasked.logs = vec![log.clone()];
+        let from_bystander = h.nodes[2]
+            .node
+            .name_resolve_response(asker, unasked)
+            .unwrap();
+        assert!(h.nodes[1].handle_envelope(&from_bystander, NOW).await);
+        assert!(h.nodes[1].succession_log(&pk_of(1)).await.is_none());
+        assert_eq!(h.nodes[1].service.lock().await.active_lookups(), 1);
+
+        // The peer asked answers with the log of another name, and refers us on.
+        let mut wrong = ResolveResponse::empty(req.request_id);
+        wrong.logs = vec![rotation_log(2)];
+        wrong.closer = vec![KeyspacePeer::new(
+            NodeInfo::new(h.nodes[2].local_key(), vec!["node2:9440".into()], NOW),
+            bystander,
+        )];
+        let answer = h.nodes[0].node.name_resolve_response(asker, wrong).unwrap();
+        assert!(h.nodes[1].handle_envelope(&answer, NOW).await);
+
+        let m = h.nodes[1].metrics().await;
+        assert_eq!(
+            (
+                m.logs_fetched,
+                m.succession_logs_adopted,
+                m.succession_logs_rejected
+            ),
+            (0, 0, 1)
+        );
+        assert!(h.nodes[1].succession_log(&pk_of(2)).await.is_none());
+        assert!(h.nodes[1].succession_log(&pk_of(1)).await.is_none());
+        // The fetch is over, asked nobody else, and learned nothing from the
+        // referral.
+        assert_eq!(h.nodes[1].service.lock().await.active_lookups(), 0);
+        assert!(h.board.is_empty());
+        assert!(h.board.drain(&bystander).is_empty());
+        assert_eq!(h.nodes[1].peer_count().await, peers_before);
     }
 }
