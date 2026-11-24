@@ -62,6 +62,28 @@
 //! - **Who sent an envelope**: its own signature, plus (for `Application`
 //!   messages) equality of the signing key with the connection's key.
 //!
+//! ## Bounds
+//!
+//! The listener applies the same [`ConnectionLimits`] as the TCP listener
+//! (defaults unless [`QuicListener::with_limits`] is used):
+//!
+//! - **`max_connections`**: a semaphore taken when a connection arrives. Over
+//!   the limit the attempt is refused immediately, before any TLS work, with
+//!   `Incoming::refuse`. The permit is held until the connection ends.
+//! - **`handshake_timeout`**: the QUIC (and, when authenticating, the mesh)
+//!   handshake of an incoming connection must finish within it.
+//! - **`frame_timeout`**: each stream must deliver a complete envelope within
+//!   it, or the stream is dropped; a connection that opens no stream for that
+//!   long is closed, so idle connections cannot hold admission slots.
+//! - **Concurrent streams per connection**: at most [`MAX_SERVED_STREAMS`] are
+//!   served at once. The permit is taken *before* the next stream is accepted,
+//!   so further streams wait in quinn's own bounded buffers (the transport
+//!   limit on open streams is enforced by QUIC flow control) and no more than
+//!   that many tasks exist per connection.
+//! - **Frame size**: [`crate::mesh_tcp::read_envelope`] refuses a frame over
+//!   `MAX_FRAME_BYTES` before reading it and allocates in proportion to the
+//!   bytes that arrive.
+//!
 //! ## Channel binding: not provided
 //!
 //! The handshake is **not bound to the TLS channel**. `spine-session`'s
@@ -78,7 +100,7 @@
 use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 
 use ed25519_dalek::SigningKey;
 use quinn::{Connection, Endpoint};
@@ -89,8 +111,8 @@ use spine_transport::websocket::QuicStream;
 
 use crate::mesh::MeshEnvelope;
 use crate::mesh_tcp::{
-    client_handshake, hex_prefix, pin_if_absent, server_handshake, Inbound, PinBook, ReplyPath,
-    SocketTransport, INBOUND_QUEUE, MAX_FRAME_BYTES,
+    client_handshake, hex_prefix, pin_if_absent, server_handshake, ConnectionLimits, Inbound,
+    PinBook, ReplyPath, SocketTransport, INBOUND_QUEUE,
 };
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
 use crate::AgentId;
@@ -99,6 +121,10 @@ use async_trait::async_trait;
 
 /// How long to wait for a QUIC handshake before giving up on a peer.
 pub const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Most streams served at once on one accepted connection. Further streams wait
+/// for a slot; see the module notes on bounds.
+pub const MAX_SERVED_STREAMS: usize = 64;
 
 /// Install the process-wide rustls crypto provider, once.
 ///
@@ -592,6 +618,7 @@ impl NameTransport for QuicNameTransport {
 pub struct QuicListener {
     endpoint: Endpoint,
     certificate: CertificateDer<'static>,
+    limits: ConnectionLimits,
 }
 
 impl std::fmt::Debug for QuicListener {
@@ -610,7 +637,16 @@ impl QuicListener {
         Ok(Self {
             endpoint,
             certificate,
+            limits: ConnectionLimits::default(),
         })
+    }
+
+    /// Use explicit admission and deadline limits instead of the defaults.
+    /// Invalid limits fail closed, as for the TCP listener.
+    pub fn with_limits(mut self, limits: ConnectionLimits) -> Result<Self, NameMeshError> {
+        limits.validate()?;
+        self.limits = limits;
+        Ok(self)
     }
 
     /// The self-signed certificate this listener presents, for peers to
@@ -631,13 +667,33 @@ impl QuicListener {
     /// first stream before any envelope on it is read; the key it proves is
     /// attached to every later stream's reply path.
     pub async fn serve(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
+        let admission = Arc::new(Semaphore::new(self.limits.max_connections));
         while let Some(incoming) = self.endpoint.accept().await {
+            let Ok(permit) = admission.clone().try_acquire_owned() else {
+                // Refuse immediately, before any handshake work; never queue
+                // unbounded connection tasks.
+                incoming.refuse();
+                continue;
+            };
             let inbound = inbound.clone();
             let signing = signing.clone();
+            let limits = self.limits;
             tokio::spawn(async move {
-                match incoming.await {
-                    Ok(connection) => serve_connection(connection, inbound, signing).await,
-                    Err(e) => tracing::debug!("quic connection failed: {e}"),
+                // Held until the connection (or its failed handshake) is done.
+                let _permit = permit;
+                let connecting = match incoming.accept() {
+                    Ok(connecting) => connecting,
+                    Err(e) => {
+                        tracing::debug!("quic connection failed: {e}");
+                        return;
+                    }
+                };
+                match tokio::time::timeout(limits.handshake_timeout, connecting).await {
+                    Ok(Ok(connection)) => {
+                        serve_connection(connection, inbound, signing, limits).await
+                    }
+                    Ok(Err(e)) => tracing::debug!("quic connection failed: {e}"),
+                    Err(_) => tracing::debug!("quic handshake deadline exceeded"),
                 }
             });
         }
@@ -649,26 +705,33 @@ async fn serve_connection(
     connection: Connection,
     inbound: mpsc::Sender<Inbound>,
     signing: Option<SigningKey>,
+    limits: ConnectionLimits,
 ) {
     // If authentication is on, the first stream is the handshake and carries no
     // envelope. Every stream after it belongs to the same proven connection,
     // and the key it proved is the identity of all of them. A connection that
     // does not complete it is closed without reading anything else.
     let peer: Option<[u8; 32]> = if let Some(key) = &signing {
-        match connection.accept_bi().await {
-            Ok((send, recv)) => {
-                let mut stream = QuicStream::new(send, recv);
-                match server_handshake(&mut stream, key).await {
-                    Ok(session) => Some(*session.peer_identity()),
-                    Err(e) => {
-                        tracing::debug!("quic peer failed authentication: {e}");
-                        connection.close(1u32.into(), b"authentication failed");
-                        return;
-                    }
-                }
+        // The control stream and the handshake on it share one deadline.
+        let control = tokio::time::timeout(limits.handshake_timeout, async {
+            let (send, recv) = connection.accept_bi().await.map_err(|e| {
+                NameMeshError::Transport(format!("quic control stream never arrived: {e}"))
+            })?;
+            let mut stream = QuicStream::new(send, recv);
+            let session = server_handshake(&mut stream, key).await?;
+            Ok::<_, NameMeshError>(*session.peer_identity())
+        })
+        .await;
+        match control {
+            Ok(Ok(identity)) => Some(identity),
+            Ok(Err(e)) => {
+                tracing::debug!("quic peer failed authentication: {e}");
+                connection.close(1u32.into(), b"authentication failed");
+                return;
             }
-            Err(e) => {
-                tracing::debug!("quic control stream never arrived: {e}");
+            Err(_) => {
+                tracing::debug!("quic authentication deadline exceeded");
+                connection.close(1u32.into(), b"authentication timed out");
                 return;
             }
         }
@@ -676,26 +739,48 @@ async fn serve_connection(
         None
     };
 
+    // The slot is taken before the next stream is accepted, so the number of
+    // stream tasks on this connection never exceeds MAX_SERVED_STREAMS.
+    let slots = Arc::new(Semaphore::new(MAX_SERVED_STREAMS));
     loop {
-        let (send, recv) = match connection.accept_bi().await {
-            Ok(pair) => pair,
-            Err(_) => return, // connection closed
+        let Ok(slot) = slots.clone().acquire_owned().await else {
+            return;
         };
+        let (send, recv) =
+            match tokio::time::timeout(limits.frame_timeout, connection.accept_bi()).await {
+                Ok(Ok(pair)) => pair,
+                Ok(Err(_)) => return, // connection closed
+                Err(_) => {
+                    // No stream for a whole frame deadline: an idle connection
+                    // must not hold an admission slot (TCP drops these too).
+                    connection.close(2u32.into(), b"idle");
+                    return;
+                }
+            };
         let inbound = inbound.clone();
         tokio::spawn(async move {
+            let _slot = slot;
             let mut stream = QuicStream::new(send, recv);
-            match crate::mesh_tcp::read_envelope(&mut stream).await {
-                Ok(Some(envelope)) => {
+            match tokio::time::timeout(
+                limits.frame_timeout,
+                crate::mesh_tcp::read_envelope(&mut stream),
+            )
+            .await
+            {
+                Ok(Ok(Some(envelope))) => {
                     let path = stream_path(stream, peer);
-                    let _ = inbound
-                        .send(Inbound {
+                    let _ = tokio::time::timeout(
+                        limits.queue_timeout,
+                        inbound.send(Inbound {
                             envelope,
                             reply: path,
-                        })
-                        .await;
+                        }),
+                    )
+                    .await;
                 }
-                Ok(None) => {}
-                Err(e) => tracing::debug!("quic stream dropped: {e}"),
+                Ok(Ok(None)) => {}
+                Ok(Err(e)) => tracing::debug!("quic stream dropped: {e}"),
+                Err(_) => tracing::debug!("quic stream dropped: frame deadline exceeded"),
             }
         });
     }
@@ -719,9 +804,6 @@ pub async fn serve_quic_node(
     tokio::spawn(crate::mesh_tcp::pump(inbound, resolver));
     Ok((addr, certificate))
 }
-
-/// Largest envelope this transport will accept, mirroring the others.
-pub const MAX_QUIC_FRAME: usize = MAX_FRAME_BYTES;
 
 #[cfg(test)]
 mod tests {
@@ -811,6 +893,141 @@ mod tests {
         a.resolver
             .register_peer(&b.mesh.public_identity(), vec![b.addr.to_string()], NOW)
             .await;
+    }
+
+    /// A bare QUIC client endpoint and a connection to `addr` that trusts only
+    /// `certificate`, with the dial itself under a timeout.
+    async fn raw_connect(
+        endpoint: &Endpoint,
+        certificate: &CertificateDer<'static>,
+        addr: SocketAddr,
+    ) -> Result<Connection, String> {
+        let mut roots = RootCertStore::empty();
+        roots.add(certificate.clone()).map_err(|e| e.to_string())?;
+        let config =
+            QuicEndpointBuilder::client_config_with_roots(roots).map_err(|e| e.to_string())?;
+        let connecting = endpoint
+            .connect_with(config, addr, "localhost")
+            .map_err(|e| e.to_string())?;
+        tokio::time::timeout(Duration::from_secs(10), connecting)
+            .await
+            .map_err(|_| "dial timed out".to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    fn raw_endpoint() -> Endpoint {
+        install_crypto_provider();
+        Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap()
+    }
+
+    /// A listener with `limits`, serving into the returned receiver.
+    fn spawn_limited(
+        limits: ConnectionLimits,
+    ) -> (SocketAddr, CertificateDer<'static>, mpsc::Receiver<Inbound>) {
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap())
+            .unwrap()
+            .with_limits(limits)
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let certificate = listener.certificate();
+        let (tx, rx) = mpsc::channel(INBOUND_QUEUE);
+        tokio::spawn(listener.serve(tx, None));
+        (addr, certificate, rx)
+    }
+
+    #[test]
+    fn invalid_limits_are_refused_by_the_builder() {
+        install_crypto_provider();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let zero = ConnectionLimits {
+            max_connections: 0,
+            ..ConnectionLimits::default()
+        };
+        assert!(listener.with_limits(zero).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stream_is_dropped_and_the_listener_keeps_serving() {
+        let limits = ConnectionLimits {
+            frame_timeout: Duration::from_millis(200),
+            ..ConnectionLimits::default()
+        };
+        let (addr, certificate, mut rx) = spawn_limited(limits);
+        let endpoint = raw_endpoint();
+
+        // Two bytes of a four-byte length prefix, then silence. (A stream the
+        // peer never writes to is invisible to the server, so it must send
+        // something to be accepted at all.)
+        let stalled = raw_connect(&endpoint, &certificate, addr).await.unwrap();
+        let (mut send, _recv) = stalled.open_bi().await.unwrap();
+        send.write_all(&[0, 0]).await.unwrap();
+        let stopped = send.stopped();
+
+        // The server gives up on the stream (STOP_SENDING) or closes the idle
+        // connection; either way it releases the stalled peer.
+        let released = tokio::time::timeout(Duration::from_secs(10), stopped)
+            .await
+            .expect("the server never released a stalled stream");
+        assert!(
+            matches!(released, Ok(Some(_)) | Err(_)),
+            "a stalled stream must be stopped, got {released:?}"
+        );
+
+        // A well-behaved peer is still served afterwards.
+        let probe = MeshNode::new(
+            SigningIdentity::from_seed("stall-probe", [32u8; 32]),
+            MeshConfig::default(),
+        );
+        let good = raw_connect(&endpoint, &certificate, addr).await.unwrap();
+        let (send, recv) = good.open_bi().await.unwrap();
+        let mut stream = QuicStream::new(send, recv);
+        crate::mesh_tcp::write_envelope(&mut stream, &request_to(&probe, *probe.agent_id()))
+            .await
+            .unwrap();
+        let delivered = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the listener stopped serving after a stalled stream");
+        assert!(delivered.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_idle_connection_is_closed_after_the_frame_timeout() {
+        let limits = ConnectionLimits {
+            frame_timeout: Duration::from_millis(200),
+            ..ConnectionLimits::default()
+        };
+        let (addr, certificate, _rx) = spawn_limited(limits);
+        let endpoint = raw_endpoint();
+        let idle = raw_connect(&endpoint, &certificate, addr).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), idle.closed())
+            .await
+            .expect("an idle connection was never closed");
+    }
+
+    #[tokio::test]
+    async fn connections_over_the_limit_are_refused_and_admission_recovers() {
+        let limits = ConnectionLimits {
+            max_connections: 1,
+            ..ConnectionLimits::default()
+        };
+        let (addr, certificate, _rx) = spawn_limited(limits);
+        let endpoint = raw_endpoint();
+
+        let first = raw_connect(&endpoint, &certificate, addr).await.unwrap();
+        let refused = raw_connect(&endpoint, &certificate, addr).await;
+        assert!(refused.is_err(), "a second connection must be refused");
+
+        first.close(0u32.into(), b"done");
+        let mut admitted = false;
+        for _ in 0..50 {
+            if let Ok(second) = raw_connect(&endpoint, &certificate, addr).await {
+                second.close(0u32.into(), b"done");
+                admitted = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(admitted, "admission did not recover after a close");
     }
 
     #[tokio::test]

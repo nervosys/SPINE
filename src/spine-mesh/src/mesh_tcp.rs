@@ -184,6 +184,31 @@ where
         .map_err(|e| NameMeshError::Transport(format!("flush: {e}")))
 }
 
+/// Largest buffer reserved before any body byte has arrived.
+const BODY_PREALLOC: usize = 16 * 1024;
+
+/// Read exactly `len` bytes, allocating in proportion to what has arrived.
+///
+/// A peer controls `len` (up to the caller's frame limit) before it has sent a
+/// single body byte, so reserving `len` up front would let each idle connection
+/// pin a full frame buffer. This reserves a small amount and lets the buffer
+/// grow as bytes are actually received. A stream that ends early is an
+/// `UnexpectedEof` error, as with `read_exact`.
+async fn read_body<R>(r: &mut R, len: usize) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncReadExt + Unpin,
+{
+    let mut body = Vec::with_capacity(len.min(BODY_PREALLOC));
+    let got = (&mut *r).take(len as u64).read_to_end(&mut body).await?;
+    if got != len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("stream ended after {got} of {len} bytes"),
+        ));
+    }
+    Ok(body)
+}
+
 /// Read one length-prefixed envelope.
 ///
 /// `Ok(None)` is a clean end-of-stream — an ordinary disconnect, not an error.
@@ -209,8 +234,7 @@ where
         return Err(NameMeshError::Transport("zero-length frame".into()));
     }
 
-    let mut body = vec![0u8; len];
-    r.read_exact(&mut body)
+    let body = read_body(r, len)
         .await
         .map_err(|e| NameMeshError::Transport(format!("read body: {e}")))?;
     serde_json::from_slice(&body)
@@ -395,7 +419,7 @@ where
     attach_bounded(stream, inbound, ConnectionLimits::default(), None)
 }
 
-fn attach_bounded<S>(
+pub(crate) fn attach_bounded<S>(
     stream: S,
     inbound: mpsc::Sender<Inbound>,
     limits: ConnectionLimits,
@@ -640,8 +664,7 @@ where
             "frame of {len} bytes is outside the accepted range (1..={max})"
         )));
     }
-    let mut body = vec![0u8; len];
-    r.read_exact(&mut body)
+    let body = read_body(r, len)
         .await
         .map_err(|e| NameMeshError::Transport(format!("read body: {e}")))?;
     Ok(Some(body))
@@ -783,7 +806,7 @@ where
     attach_secure_bounded(stream, session, inbound, ConnectionLimits::default(), None)
 }
 
-fn attach_secure_bounded<S>(
+pub(crate) fn attach_secure_bounded<S>(
     stream: S,
     session: Session,
     inbound: mpsc::Sender<Inbound>,
@@ -1883,6 +1906,38 @@ mod tests {
         assert!(read_envelope(&mut std::io::Cursor::new(vec![0, 0, 0, 0]))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_large_announced_frame_with_no_body_is_a_truncation() {
+        // Exactly the limit: accepted by the size check, then the stream ends.
+        let header = (MAX_FRAME_BYTES as u32).to_be_bytes().to_vec();
+        let err = read_envelope(&mut std::io::Cursor::new(header))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("read body"),
+            "expected a truncation error, got: {err}"
+        );
+
+        // The same for the handshake and encrypted-frame reader.
+        let header = (MAX_FRAME_BYTES as u32).to_be_bytes().to_vec();
+        let err = read_frame(&mut std::io::Cursor::new(header), MAX_FRAME_BYTES)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("read body"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_short_body_is_a_truncation_and_a_full_body_round_trips() {
+        let mut empty = std::io::Cursor::new(Vec::<u8>::new());
+        let err = read_body(&mut empty, MAX_FRAME_BYTES).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+
+        // A body larger than the initial reservation still arrives intact.
+        let data: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        let mut cursor = std::io::Cursor::new(data.clone());
+        assert_eq!(read_body(&mut cursor, data.len()).await.unwrap(), data);
     }
 
     // ── Addressing ──

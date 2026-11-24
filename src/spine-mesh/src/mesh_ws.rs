@@ -1,7 +1,7 @@
 //! WebSocket transport for the mesh.
 //!
 //! The same framing, encryption, reply plumbing, and pooling as
-//! [`crate::mesh_tcp`] — [`attach`] and [`attach_secure`] are generic over the
+//! [`crate::mesh_tcp`] — `attach` and `attach_secure` are generic over the
 //! stream, so only connection establishment differs. What WebSocket buys is
 //! reach: it traverses the corporate proxies and firewalls that drop a bare TCP
 //! connection to port 9440, and it is the only transport a browser-resident
@@ -13,11 +13,16 @@
 //! redundant. It is kept anyway: sharing one framing path with TCP and QUIC
 //! means a frame that parses on one transport parses identically on all of
 //! them, and a bug found in one is fixed for all three. The cost is four bytes.
+//!
+//! The listener applies the TCP listener's [`ConnectionLimits`]: a semaphore
+//! of `max_connections` with immediate refusal over the limit, the upgrade and
+//! any mesh handshake under `handshake_timeout`, and a read loop that holds the
+//! connection to `frame_timeout`, `queue_timeout` and `write_timeout`.
 
 use dashmap::DashMap;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use ed25519_dalek::SigningKey;
 use spine_transport::websocket::{
@@ -26,8 +31,8 @@ use spine_transport::websocket::{
 
 use crate::mesh::MeshEnvelope;
 use crate::mesh_tcp::{
-    attach, attach_secure, client_handshake, pin_if_absent, server_handshake, Inbound, PinBook,
-    ReplyPath, Security, INBOUND_QUEUE,
+    attach_bounded, attach_secure_bounded, client_handshake, pin_if_absent, server_handshake,
+    ConnectionLimits, Inbound, PinBook, ReplyPath, Security, INBOUND_QUEUE,
 };
 use crate::naming_mesh::{MeshNameResolver, NameMeshError, NameTransport};
 use crate::AgentId;
@@ -289,6 +294,7 @@ impl NameTransport for WsNameTransport {
 #[derive(Debug)]
 pub struct WsListener {
     listener: TcpListener,
+    limits: ConnectionLimits,
 }
 
 impl WsListener {
@@ -297,7 +303,18 @@ impl WsListener {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| NameMeshError::Transport(format!("bind {addr}: {e}")))?;
-        Ok(Self { listener })
+        Ok(Self {
+            listener,
+            limits: ConnectionLimits::default(),
+        })
+    }
+
+    /// Use explicit admission and deadline limits instead of the defaults.
+    /// Invalid limits fail closed, as for the TCP listener.
+    pub fn with_limits(mut self, limits: ConnectionLimits) -> Result<Self, NameMeshError> {
+        limits.validate()?;
+        self.limits = limits;
+        Ok(self)
     }
 
     pub fn local_addr(&self) -> Result<std::net::SocketAddr, NameMeshError> {
@@ -311,20 +328,28 @@ impl WsListener {
     /// The upgrade and any handshake run on the connection's own task, so a peer
     /// that stalls mid-negotiation cannot hold up the accept loop.
     pub async fn serve(self, inbound: mpsc::Sender<Inbound>, signing: Option<SigningKey>) {
+        let admission = Arc::new(Semaphore::new(self.limits.max_connections));
         loop {
             let (tcp, peer) = match self.listener.accept().await {
                 Ok(pair) => pair,
                 Err(e) => {
                     tracing::warn!("ws accept failed: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     continue;
                 }
+            };
+            let Ok(permit) = admission.clone().try_acquire_owned() else {
+                // Refuse immediately; never queue unbounded upgrade tasks.
+                drop(tcp);
+                continue;
             };
             let _ = tcp.set_nodelay(true);
             let inbound = inbound.clone();
             let signing = signing.clone();
+            let limits = self.limits;
 
             tokio::spawn(async move {
-                match upgrade(tcp, inbound, signing).await {
+                match upgrade(tcp, inbound, signing, limits, permit).await {
                     Ok(()) => {}
                     Err(e) => tracing::debug!("ws connection from {peer} rejected: {e}"),
                 }
@@ -334,23 +359,37 @@ impl WsListener {
 }
 
 /// Upgrade one accepted TCP connection and attach it.
+///
+/// The upgrade and the mesh handshake each run under `handshake_timeout`, and
+/// the connection's read loop is bounded by `limits`. `permit` is held until
+/// the connection ends, or until this returns an error.
 async fn upgrade(
     tcp: TcpStream,
     inbound: mpsc::Sender<Inbound>,
     signing: Option<SigningKey>,
+    limits: ConnectionLimits,
+    permit: OwnedSemaphorePermit,
 ) -> Result<(), NameMeshError> {
-    let bridge = WebSocketServerBridge::accept(tcp)
+    let bridge = tokio::time::timeout(limits.handshake_timeout, WebSocketServerBridge::accept(tcp))
         .await
+        .map_err(|_| NameMeshError::Transport("ws upgrade deadline exceeded".into()))?
         .map_err(|e| NameMeshError::Transport(format!("ws upgrade: {e}")))?;
     let mut stream = WebSocketStream::new(bridge);
 
     match signing {
         None => {
-            attach(stream, inbound);
+            attach_bounded(stream, inbound, limits, Some(permit));
         }
         Some(key) => {
-            let session = server_handshake(&mut stream, &key).await?;
-            attach_secure(stream, session, inbound);
+            let session = tokio::time::timeout(
+                limits.handshake_timeout,
+                server_handshake(&mut stream, &key),
+            )
+            .await
+            .map_err(|_| {
+                NameMeshError::Transport("ws mesh handshake deadline exceeded".into())
+            })??;
+            attach_secure_bounded(stream, session, inbound, limits, Some(permit));
         }
     }
     Ok(())
@@ -444,6 +483,93 @@ mod tests {
         a.resolver
             .register_peer(&b.mesh.public_identity(), vec![b.url.clone()], NOW)
             .await;
+    }
+
+    /// A listener with `limits`, serving into the returned receiver.
+    async fn spawn_limited(
+        limits: ConnectionLimits,
+    ) -> (std::net::SocketAddr, mpsc::Receiver<Inbound>) {
+        let listener = WsListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap()
+            .with_limits(limits)
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = mpsc::channel(INBOUND_QUEUE);
+        tokio::spawn(listener.serve(tx, None));
+        (addr, rx)
+    }
+
+    /// A real WebSocket upgrade against `addr`, under a timeout.
+    async fn upgrade_to(addr: std::net::SocketAddr) -> Result<WebSocketBridge, String> {
+        let url = format!("ws://{addr}/");
+        tokio::time::timeout(Duration::from_secs(10), WebSocketBridge::connect(&url))
+            .await
+            .map_err(|_| "upgrade timed out".to_string())?
+            .map_err(|e| e.to_string())
+    }
+
+    #[tokio::test]
+    async fn invalid_limits_are_refused_by_the_builder() {
+        let listener = WsListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let zero = ConnectionLimits {
+            handshake_timeout: Duration::ZERO,
+            ..ConnectionLimits::default()
+        };
+        assert!(listener.with_limits(zero).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_upgrades_is_dropped_after_the_handshake_timeout() {
+        use tokio::io::AsyncReadExt;
+        let limits = ConnectionLimits {
+            handshake_timeout: Duration::from_millis(200),
+            ..ConnectionLimits::default()
+        };
+        let (addr, _rx) = spawn_limited(limits).await;
+
+        // TCP only: no upgrade request is ever sent.
+        let mut silent = TcpStream::connect(addr).await.unwrap();
+        let mut byte = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(10), silent.read(&mut byte))
+            .await
+            .expect("the listener never dropped a client that did not upgrade");
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "the server must close, not answer: {read:?}"
+        );
+
+        // The listener is still serving a real upgrade.
+        assert!(upgrade_to(addr).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn connections_over_the_limit_are_refused_and_admission_recovers() {
+        let limits = ConnectionLimits {
+            max_connections: 1,
+            ..ConnectionLimits::default()
+        };
+        let (addr, _rx) = spawn_limited(limits).await;
+
+        let first = upgrade_to(addr).await.expect("the first upgrade");
+        assert!(
+            upgrade_to(addr).await.is_err(),
+            "a second connection must be refused"
+        );
+
+        // Closing the first frees its slot (its read loop sees the close).
+        drop(first);
+        let mut admitted = false;
+        for _ in 0..50 {
+            if upgrade_to(addr).await.is_ok() {
+                admitted = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(admitted, "admission did not recover after a close");
     }
 
     #[tokio::test]
