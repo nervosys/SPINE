@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,7 +181,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
-<p>SPINE uses layered configuration: <code>spine.toml</code> → environment variables → defaults.</p>
+<p>SPINE uses layered configuration. From highest priority to lowest: environment variables, <code>spine.toml</code>, built-in defaults.</p>
 <h2 id="configuration-file"><a class="header" href="#configuration-file">Configuration File</a></h2>
 <p>Create <code>spine.toml</code> in your project root:</p>
 <pre><code class="language-toml">[server]
@@ -193,17 +193,20 @@ metrics_port = 9090
 max_sessions = 1000
 max_connections_per_ip = 50
 idle_timeout_secs = 300
+hello_timeout_secs = 10
 session_watchdog_secs = 600
 persistence_interval_secs = 60
 shutdown_timeout_secs = 30
+allow_unauthenticated_remote = false
 
 [tls]
 enabled = false
-cert_path = "certs/server.crt"
-key_path = "certs/server.key"
-ca_path = "certs/ca.crt"
+cert_path = "certs/cert.pem"
+key_path = "certs/key.pem"
+ca_path = "certs/ca.pem"
+mutual_tls = false
 
-[cluster]
+[cluster]            # used only when built with the `research` feature
 port_offset = 100
 region = "us-east"
 skills = ["search", "analysis"]
@@ -213,12 +216,21 @@ format = "pretty"   # "json" or "pretty"
 level = "info"      # trace, debug, info, warn, error
 </code></pre>
 <h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
-<p>Override any setting via environment variables prefixed with <code>SPINE_</code>:</p>
-<pre><code class="language-bash">export SPINE_SERVER_HOST=0.0.0.0
-export SPINE_SERVER_PORT=9000
-export SPINE_TLS_ENABLED=true
-export SPINE_LOGGING_LEVEL=debug
+<p>Common settings can be overridden with environment variables:</p>
+<pre><code class="language-bash">export SPINE_HOST=0.0.0.0
+export SPINE_PORT=9000
+export SPINE_TLS=true
+export SPINE_TLS_MTLS=true
+export SPINE_LOG_LEVEL=debug
 </code></pre>
+<p>Others include <code>SPINE_METRICS_PORT</code>, <code>SPINE_MAX_SESSIONS</code>, <code>SPINE_TLS_CERT</code>, <code>SPINE_TLS_KEY</code>, <code>SPINE_TLS_CA</code>, <code>SPINE_HELLO_TIMEOUT</code>, <code>SPINE_IDLE_TIMEOUT</code>, <code>SPINE_SHUTDOWN_TIMEOUT</code> and <code>SPINE_CONFIG_PATH</code> (an alternative config file path). See <code>src/spine-core/src/config.rs</code> for the full list.</p>
+<h2 id="exposing-the-daemon"><a class="header" href="#exposing-the-daemon">Exposing the Daemon</a></h2>
+<p>The native server has no per-client authorization: any connected client can
+publish names and resources and call tools. A non-loopback <code>server.host</code> is
+refused at startup unless <code>tls.mutual_tls</code> is on or
+<code>server.allow_unauthenticated_remote</code> is set, which states that the network
+itself is trusted. TLS is the only source of confidentiality and
+authentication on the native wire.</p>
 <h2 id="loading-config-in-code"><a class="header" href="#loading-config-in-code">Loading Config in Code</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -238,6 +250,8 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><td><code>server.port</code></td><td><code>8080</code></td></tr>
 <tr><td><code>server.max_sessions</code></td><td><code>1000</code></td></tr>
 <tr><td><code>server.idle_timeout_secs</code></td><td><code>300</code></td></tr>
+<tr><td><code>server.hello_timeout_secs</code></td><td><code>10</code></td></tr>
+<tr><td><code>server.allow_unauthenticated_remote</code></td><td><code>false</code></td></tr>
 <tr><td><code>tls.enabled</code></td><td><code>false</code></td></tr>
 <tr><td><code>logging.format</code></td><td><code>pretty</code></td></tr>
 <tr><td><code>logging.level</code></td><td><code>info</code></td></tr>

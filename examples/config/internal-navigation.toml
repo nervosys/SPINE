@@ -1,0 +1,19 @@
+# Only clients trusted to access this internal origin should reach the native core.
+[server]
+host = "127.0.0.1"
+port = 8080
+metrics_port = 9090
+
+[outbound]
+enabled = true
+# Exact scheme, host and port. All paths at this origin are allowed.
+internal_origins = ["http://127.0.0.1:8088"]
+max_response_bytes = 2097152
+timeout_secs = 30
+max_concurrent = 16
+# Ports a URL may use; the exception origin above is exempt and names its own port.
+allowed_ports = [80, 443]
+read_timeout_secs = 10
+max_concurrent_per_caller = 4
+# Required to name a literal link-local or unspecified address as an exception.
+allow_link_local_exceptions = false

@@ -1,7 +1,6 @@
 [package]
 name = "spine-cli"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -16,8 +15,11 @@ name = "spine"
 path = "src/main.rs"
 
 [dependencies]
+spine-name = { path = "../spine-name", version = "2.0.2" }
+ed25519-dalek.workspace = true
+rand.workspace = true
 spine-agent = { path = "../spine-agent", version = "2.0.2" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-features = false }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-core = { path = "../spine-core", version = "2.0.2" }
 spine-transport = { path = "../spine-transport", version = "2.0.2" }
@@ -30,11 +32,18 @@ env_logger.workspace = true
 log.workspace = true
 toml = "0.8"
 colored = "2"
-indicatif = "0.17"
 uuid = { version = "1", features = ["v4"] }
 reqwest = { workspace = true }
-rustls-pemfile = "2"
 tokio-rustls = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+[features]
+default = []
+# `spine deploy` and `spine-core` run the sibling `spine-core` binary, which is
+# research-free unless it is built with `research`. This feature forwards it, so
+# `cargo build --release -p spine-core -p spine-cli --features spine-cli/research`
+# builds both against one research-enabled `spine-core` (workspace resolver 2
+# unifies the feature across the selected packages). Off by default.
+research = ["spine-core/research"]

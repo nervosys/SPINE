@@ -1,7 +1,6 @@
 [package]
 name = "spine-grpc"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -13,7 +12,6 @@ description = "gRPC/protobuf bridge for SPINE's agentic surface — exposes Tool
 
 [dependencies]
 tonic = "0.12"
-tonic-reflection = "0.12"
 prost = "0.13"
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["net"] }
@@ -32,3 +30,4 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true }
+tonic-reflection = "0.12"

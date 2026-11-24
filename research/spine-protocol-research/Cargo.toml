@@ -1,0 +1,50 @@
+[package]
+name = "spine-protocol-research"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Experimental, unreviewed protocol research for SPINE: the Chameleon latent-space key, SpineConnection, protocol evolution and the Titans latent codec. Not on the native wire."
+
+[dependencies]
+# Default features on: SpineConnection and `connect_auto` use the QUIC transport.
+spine-protocol = { path = "../../src/spine-protocol", version = "2.0.2" }
+spine-neural = { path = "../spine-neural", version = "2.0.2" }
+spine-crypto = { path = "../spine-crypto", version = "2.0.2" }
+anyhow.workspace = true
+thiserror.workspace = true
+bincode = "1.3"
+bytemuck = { version = "1.14", features = ["derive"] }
+serde.workspace = true
+serde_bytes = "0.11"
+tokio.workspace = true
+tracing.workspace = true
+rand.workspace = true
+sha2.workspace = true
+uuid = { version = "1", features = ["v4", "serde"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+zstd = "0.13"
+parking_lot = "0.12"
+
+[dev-dependencies]
+criterion = { version = "0.8", features = ["html_reports"] }
+# The frame-header and fixed-point interop tests that used to sit in
+# spine-protocol/tests/e2e_protocol.rs. They do not touch spine-protocol; the
+# root crate may not depend on research/, so they live here.
+spine-nostd = { path = "../spine-nostd" }
+spine-embedded = { path = "../spine-embedded" }
+proptest = "1.4"
+serde_json.workspace = true
+
+[[bench]]
+name = "neural_codec_bench"
+harness = false
+
+[[example]]
+name = "chameleon_demo"
+path = "examples/chameleon_demo.rs"

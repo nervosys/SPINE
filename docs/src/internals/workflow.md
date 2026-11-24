@@ -2,6 +2,8 @@
 
 SPINE provides DAG-based multi-step agent pipelines for coordinating complex tasks.
 
+**Research.** This code is in `research/spine-agentic` (`workflow.rs`), a separate workspace, and is not part of the native wire.
+
 ## Overview
 
 A **Workflow** is a directed acyclic graph of **WorkflowSteps**, where each step performs an action (fetch, extract, transform, call another agent, run a script, etc.). The `WorkflowEngine` executes workflows, tracking step status, emitting events, and enforcing dependency ordering.

@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,19 +181,41 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="cli-commands"><a class="header" href="#cli-commands">CLI Commands</a></h1>
-<p>The <code>spine</code> CLI provides project management, interactive connections, and operations.</p>
-<h2 id="spine-init-name"><a class="header" href="#spine-init-name"><code>spine init &lt;name&gt;</code></a></h2>
+<p>The <code>spine</code> CLI provides project management, interactive connections, and operations. The default server address is <code>127.0.0.1:8080</code>. <code>--verbose</code> is a global flag.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine mcp</code></td><td>Serve the core’s read-only tools over MCP stdio</td></tr>
+<tr><td><code>spine task</code></td><td>Submit and inspect durable work over the signed mesh</td></tr>
+<tr><td><code>spine name</code></td><td>Publish, discover, renew and retrieve signed agent-web resources</td></tr>
+<tr><td><code>spine init</code></td><td>Scaffold a project</td></tr>
+<tr><td><code>spine connect</code></td><td>Interactive REPL</td></tr>
+<tr><td><code>spine query</code></td><td>One-shot queries</td></tr>
+<tr><td><code>spine deploy</code></td><td>Start a server</td></tr>
+<tr><td><code>spine benchmark</code></td><td>Performance benchmarks</td></tr>
+<tr><td><code>spine status</code></td><td>Check server health</td></tr>
+<tr><td><code>spine cert</code></td><td>Development certificates</td></tr>
+</tbody>
+</table>
+</div>
+<p>There are no <code>morph</code>, <code>stats</code> or <code>search</code> commands; the protocol morphing,
+statistics and search commands they used no longer exist.</p>
+<h2 id="spine-init-path"><a class="header" href="#spine-init-path"><code>spine init [path]</code></a></h2>
 <p>Scaffold a new SPINE agent project:</p>
 <pre><code class="language-bash">spine init my-agent
-spine init my-agent --tls    # With TLS configuration
+spine init my-agent --name my-agent --tls    # With TLS configuration
 </code></pre>
-<p>Creates: <code>Cargo.toml</code>, <code>spine.toml</code>, <code>src/main.rs</code>, <code>examples/</code>, <code>.gitignore</code></p>
-<h2 id="spine-connect-addr"><a class="header" href="#spine-connect-addr"><code>spine connect &lt;addr&gt;</code></a></h2>
+<p><code>--examples</code> (on by default) includes example agent code.</p>
+<h2 id="spine-connect-addr"><a class="header" href="#spine-connect-addr"><code>spine connect [addr]</code></a></h2>
 <p>Interactive REPL connected to a SPINE server:</p>
 <pre><code class="language-bash">spine connect 127.0.0.1:8080
-spine connect 127.0.0.1:8080 --tls --domain spine.example.com
+spine connect 127.0.0.1:8080 --tls --domain spine.example.com --ca certs/ca.crt
 spine connect ws://127.0.0.1:8081 --ws
 </code></pre>
+<p>Flags: <code>--ws</code>, <code>--tls</code>, <code>--ca</code>, <code>--domain</code>, <code>--client-cert</code>, <code>--client-key</code>.</p>
 <p>REPL commands:</p>
 <div class="table-wrapper">
 <table>
@@ -201,49 +223,77 @@ spine connect ws://127.0.0.1:8081 --ws
 <tr><th>Command</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>nav &lt;url&gt;</code></td><td>Navigate to URL</td></tr>
-<tr><td><code>ur</code></td><td>Get Unified Representation</td></tr>
-<tr><td><code>html</code></td><td>Get raw HTML</td></tr>
-<tr><td><code>search &lt;query&gt;</code></td><td>Search</td></tr>
+<tr><td><code>nav &lt;url&gt;</code> (also <code>navigate</code>, <code>go</code>)</td><td>Navigate to URL</td></tr>
+<tr><td><code>ur</code> (also <code>get</code>)</td><td>Get Unified Representation</td></tr>
+<tr><td><code>html</code> (also <code>raw</code>)</td><td>Get raw HTML</td></tr>
 <tr><td><code>ping</code></td><td>Measure latency</td></tr>
-<tr><td><code>exec &lt;script&gt;</code></td><td>Execute HLS script</td></tr>
-<tr><td><code>stats</code></td><td>Speculation stats</td></tr>
-<tr><td><code>morph</code></td><td>Trigger protocol morphing</td></tr>
-<tr><td><code>caps</code></td><td>List server capabilities</td></tr>
+<tr><td><code>exec &lt;script&gt;</code> (also <code>run</code>)</td><td>Execute HLS script</td></tr>
+<tr><td><code>caps</code> (also <code>capabilities</code>)</td><td>List binary capabilities</td></tr>
 <tr><td><code>help</code></td><td>Show commands</td></tr>
 <tr><td><code>quit</code></td><td>Disconnect</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="spine-query-addr-subcommand"><a class="header" href="#spine-query-addr-subcommand"><code>spine query &lt;addr&gt; &lt;subcommand&gt;</code></a></h2>
-<p>One-shot queries:</p>
-<pre><code class="language-bash">spine query 127.0.0.1:8080 navigate --url https://example.com
-spine query 127.0.0.1:8080 search --query "rust async"
-spine query 127.0.0.1:8080 ping --count 5
-spine query 127.0.0.1:8080 html --url https://example.com --format text
-spine query 127.0.0.1:8080 exec --script "let x = 42; x"
+<h2 id="spine-query-subcommand"><a class="header" href="#spine-query-subcommand"><code>spine query &lt;subcommand&gt;</code></a></h2>
+<p>One-shot queries. The server address is the <code>-a</code>/<code>--addr</code> option of each
+subcommand, not a positional argument:</p>
+<pre><code class="language-bash">spine query navigate https://example.com -a 127.0.0.1:8080 -f json
+spine query store my-key '{"a": 1}' -t tag1,tag2
+spine query knowledge "programming languages" -t language -l 10
+spine query html https://example.com
+spine query exec "let x = 42; x"
+spine query ping -n 5
 </code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Subcommand</th><th>Arguments and options</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigate &lt;url&gt;</code></td><td><code>-a</code>, <code>-f text|json|compact</code></td></tr>
+<tr><td><code>store &lt;key&gt; &lt;json&gt;</code></td><td><code>-t</code> tags (comma-separated), <code>-a</code></td></tr>
+<tr><td><code>knowledge &lt;query&gt;</code></td><td><code>-t</code> tags, <code>-l</code> limit (default 10), <code>-a</code></td></tr>
+<tr><td><code>html &lt;url&gt;</code></td><td><code>-a</code></td></tr>
+<tr><td><code>exec &lt;script or file&gt;</code></td><td><code>-a</code></td></tr>
+<tr><td><code>ping</code></td><td><code>-a</code>, <code>-n</code> count (default 5)</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="spine-deploy"><a class="header" href="#spine-deploy"><code>spine deploy</code></a></h2>
 <p>Start a SPINE server using configuration:</p>
 <pre><code class="language-bash">spine deploy
-spine deploy --config custom.toml
+spine deploy -c custom.toml -p 9000 --host 0.0.0.0
 </code></pre>
-<h2 id="spine-benchmark-addr"><a class="header" href="#spine-benchmark-addr"><code>spine benchmark &lt;addr&gt;</code></a></h2>
+<h2 id="spine-benchmark-addr"><a class="header" href="#spine-benchmark-addr"><code>spine benchmark [addr]</code></a></h2>
 <p>Performance benchmarks:</p>
-<pre><code class="language-bash">spine benchmark 127.0.0.1:8080 --iterations 100
-spine benchmark 127.0.0.1:8080 --concurrent 10 --iterations 50
+<pre><code class="language-bash">spine benchmark 127.0.0.1:8080 -n 100
+spine benchmark 127.0.0.1:8080 -c 10 -n 50
 </code></pre>
-<h2 id="spine-status-addr"><a class="header" href="#spine-status-addr"><code>spine status &lt;addr&gt;</code></a></h2>
+<h2 id="spine-status-addr"><a class="header" href="#spine-status-addr"><code>spine status [addr]</code></a></h2>
 <p>Check server health:</p>
 <pre><code class="language-bash">spine status 127.0.0.1:8080
-spine status 127.0.0.1:8080 --metrics-port 9090
 </code></pre>
+<h2 id="spine-cert"><a class="header" href="#spine-cert"><code>spine cert</code></a></h2>
+<pre><code class="language-bash">spine cert generate -o certs   # CA, server and client certificates for development
+spine cert info certs/ca.crt   # Show a PEM certificate
+</code></pre>
+<h2 id="spine-name---addr-addr-action"><a class="header" href="#spine-name---addr-addr-action"><code>spine name --addr &lt;addr&gt; &lt;action&gt;</code></a></h2>
+<p>Actions: <code>status</code>, <code>create</code>, <code>resolve &lt;name&gt;</code>, <code>providers &lt;capability&gt;</code>,
+<code>publish &lt;record&gt;</code>, <code>renew &lt;record&gt;</code>, <code>upload &lt;record&gt; &lt;resource&gt;</code> and
+<code>fetch &lt;name&gt; --output &lt;file&gt;</code>. Run <code>spine name --help</code> for each action’s options.</p>
+<h2 id="spine-task---addr-addr---peer-id---peer-key-hex-action"><a class="header" href="#spine-task---addr-addr---peer-id---peer-key-hex-action"><code>spine task --addr &lt;addr&gt; --peer &lt;id&gt; --peer-key &lt;hex&gt; &lt;action&gt;</code></a></h2>
+<p>Sends a <code>mesh_call</code> through the daemon to a pinned peer (a 64-hex-character
+Ed25519 key). Actions: <code>capabilities</code>, <code>submit &lt;spec file&gt;</code>, <code>status &lt;id&gt;</code>,
+<code>cancel &lt;id&gt;</code>, <code>knowledge-put &lt;key&gt; &lt;file&gt;</code> and <code>knowledge-get &lt;key&gt;</code>.</p>
+<h2 id="spine-mcp"><a class="header" href="#spine-mcp"><code>spine mcp</code></a></h2>
+<p>Serves the core’s read-only tools over MCP stdio, connecting to the daemon with
+<code>--addr</code>, and <code>--tls</code>, <code>--ca</code>, <code>--domain</code>, <code>--client-cert</code>, <code>--client-key</code> for TLS.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../sdk/neural.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../sdk/knowledge.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
@@ -257,7 +307,7 @@ spine status 127.0.0.1:8080 --metrics-port 9090
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../sdk/neural.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../sdk/knowledge.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 

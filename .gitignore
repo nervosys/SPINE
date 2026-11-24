@@ -1,5 +1,13 @@
 # Build artifacts
 /target/
+/research/target/
+/build_completion*.log
+/build_completion*.json
+/build_completion_checks/
+/build_completion*_checks/
+__pycache__/
+/sessions/
+/knowledge/
 # Cargo.lock is committed for reproducible builds (workspace has binaries)
 
 # IDE
@@ -62,4 +70,7 @@ dump.*
 # Local crates.io publish helper + run log (kept local, not committed)
 /scripts/publish_crates.sh
 /publish.log
+
+# Local candidate archives and private clean-install state
+/artifacts/
 

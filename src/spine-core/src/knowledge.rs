@@ -1,0 +1,414 @@
+//! Bounds on a session's knowledge entries, as the daemon applies them to the
+//! direct `store_knowledge` and `query_knowledge` commands. Pure functions, so
+//! the daemon (a binary) and the tests share one definition.
+//!
+//! The per-session entry count is `MAX_KNOWLEDGE_ENTRIES_PER_SESSION` in
+//! `main.rs`, which the daemon passes in; `execute_binary` applies the same
+//! count to the entries a program stores.
+
+/// Largest knowledge entry the direct command stores: the length of the key,
+/// of the compact JSON text of the value, and of every tag, summed. It equals
+/// the 64 KiB a program may hold in one host value.
+pub const MAX_KNOWLEDGE_ENTRY_BYTES: usize = 64 * 1024;
+
+/// Most entries one `query_knowledge` returns, whatever `limit` asks. At the
+/// entry size above this keeps the reply near 8 MiB, under the 16 MiB frame
+/// limit.
+pub const MAX_KNOWLEDGE_QUERY_RESULTS: usize = 128;
+
+/// Why a knowledge entry was refused, and so which wire code answers.
+///
+/// An entry too large is `knowledge_entry_too_large`; a session already at its
+/// entry cap, or a daemon whose knowledge budget is spent, is
+/// `knowledge_capacity`. Each carries the reason text for the message. Neither
+/// is `execution_failed`, which stays for a program that failed to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The entry is over [`MAX_KNOWLEDGE_ENTRY_BYTES`].
+    EntryTooLarge(String),
+    /// The session holds its most entries, or the daemon-wide budget is spent.
+    Capacity(String),
+}
+
+impl Refusal {
+    /// The wire code of this refusal (`spine_protocol::body`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            Refusal::EntryTooLarge(_) => spine_protocol::body::ERR_KNOWLEDGE_ENTRY_TOO_LARGE,
+            Refusal::Capacity(_) => spine_protocol::body::ERR_KNOWLEDGE_CAPACITY,
+        }
+    }
+
+    /// The reason, for the message of the refusal.
+    pub fn reason(&self) -> &str {
+        match self {
+            Refusal::EntryTooLarge(reason) | Refusal::Capacity(reason) => reason,
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason())
+    }
+}
+
+/// The size of an entry as bounded by [`MAX_KNOWLEDGE_ENTRY_BYTES`].
+pub fn entry_bytes(key: &str, value: &serde_json::Value, tags: &[String]) -> usize {
+    let value_len = serde_json::to_vec(value).map_or(usize::MAX, |text| text.len());
+    tags.iter()
+        .fold(key.len().saturating_add(value_len), |total, tag| {
+            total.saturating_add(tag.len())
+        })
+}
+
+/// Whether a session already holding `held` entries may store one more of
+/// `size` bytes, against a cap of `max_entries`. The error is the reason and
+/// the code that answers it.
+pub fn admit_entry(held: usize, max_entries: usize, size: usize) -> Result<(), Refusal> {
+    if size > MAX_KNOWLEDGE_ENTRY_BYTES {
+        return Err(Refusal::EntryTooLarge(format!(
+            "a knowledge entry may hold at most {MAX_KNOWLEDGE_ENTRY_BYTES} bytes"
+        )));
+    }
+    if held >= max_entries {
+        return Err(Refusal::Capacity(format!(
+            "a session may hold at most {max_entries} knowledge entries"
+        )));
+    }
+    Ok(())
+}
+
+/// What one stored entry costs the daemon-wide budget beyond the bytes of
+/// [`entry_bytes`]: the JSON field names, quotes, timestamp and separators the
+/// snapshot writes around every entry, rounded up. It keeps a million tiny
+/// entries from costing nothing.
+pub const KNOWLEDGE_ENTRY_OVERHEAD_BYTES: u64 = 128;
+
+/// Bytes of knowledge, summed over every session and the cluster buckets, the
+/// daemon holds at most.
+///
+/// Per session the bounds are 1024 entries of 64 KiB, 64 MiB; with the default
+/// `max_sessions` of 1000 (and detached sessions kept for 3600 s) that is
+/// about 1000 x 1024 x 64 KiB = 62.5 GiB of memory and of snapshot. The
+/// snapshot (`session_store::MAX_SNAPSHOT_BYTES`) is 64 MiB and holds the
+/// sessions as well as the knowledge: a save that would pass it fails, the
+/// previous snapshot stays, the daemon logs the error and reports
+/// persistence as failing, and a start-up that finds a larger file refuses
+/// to read it. This budget is half the snapshot bound, so the entries'
+/// counted bytes, the per-entry overhead above and the JSON escaping of
+/// typical text fit with room left for the sessions.
+pub const MAX_KNOWLEDGE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The charge of one entry of `size` bytes (as [`entry_bytes`] measures it).
+pub fn entry_cost(size: usize) -> u64 {
+    (size as u64).saturating_add(KNOWLEDGE_ENTRY_OVERHEAD_BYTES)
+}
+
+/// The daemon-wide byte budget for knowledge. Charges are reserved before an
+/// entry is stored and released when it is removed, so the total never passes
+/// the limit, however many threads reserve at once.
+#[derive(Debug)]
+pub struct KnowledgeBudget {
+    used: std::sync::atomic::AtomicU64,
+    limit: u64,
+}
+
+impl KnowledgeBudget {
+    /// An empty budget of `limit` bytes.
+    pub fn new(limit: u64) -> Self {
+        Self {
+            used: std::sync::atomic::AtomicU64::new(0),
+            limit,
+        }
+    }
+
+    /// Bytes charged now.
+    pub fn used(&self) -> u64 {
+        self.used.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Reserves `cost` bytes, or refuses with the reason when that would pass
+    /// the limit. Nothing is reserved on a refusal.
+    pub fn reserve(&self, cost: u64) -> Result<(), String> {
+        self.update(|used| used.checked_add(cost).filter(|total| *total <= self.limit))
+            .map_err(|()| {
+                format!(
+                    "the daemon may hold at most {} bytes of knowledge",
+                    self.limit
+                )
+            })
+    }
+
+    /// Charges `cost` bytes without a limit check, for state already held
+    /// (loaded from a snapshot): later reservations are refused until enough
+    /// is released.
+    pub fn charge(&self, cost: u64) {
+        let _ = self.update(|used| Some(used.saturating_add(cost)));
+    }
+
+    /// Returns `cost` bytes, never below zero.
+    pub fn release(&self, cost: u64) {
+        let _ = self.update(|used| Some(used.saturating_sub(cost)));
+    }
+
+    /// Replaces the counter with `next(current)` atomically, retrying when
+    /// another thread changed it in between; `Err` when `next` declines. A
+    /// plain compare-and-swap loop: `fetch_update` is deprecated on current
+    /// toolchains and its replacement is newer than the minimum supported one.
+    fn update(&self, next: impl Fn(u64) -> Option<u64>) -> Result<(), ()> {
+        use std::sync::atomic::Ordering;
+        let mut current = self.used.load(Ordering::Acquire);
+        loop {
+            let Some(wanted) = next(current) else {
+                return Err(());
+            };
+            match self.used.compare_exchange_weak(
+                current,
+                wanted,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(seen) => current = seen,
+            }
+        }
+    }
+}
+
+/// Removes from `entries` every entry that `matches` and returns how many were
+/// removed and what they were charged (`cost`, as [`entry_cost`] gives it for an
+/// entry). Pure: the budget is not touched here.
+pub fn remove_matching<T>(
+    entries: &mut Vec<T>,
+    matches: impl Fn(&T) -> bool,
+    cost: impl Fn(&T) -> u64,
+) -> (usize, u64) {
+    let mut removed = 0usize;
+    let mut freed = 0u64;
+    entries.retain(|entry| {
+        if matches(entry) {
+            removed += 1;
+            freed = freed.saturating_add(cost(entry));
+            false
+        } else {
+            true
+        }
+    });
+    (removed, freed)
+}
+
+/// Deletes the entries of one session that `matches`, releases exactly what
+/// they were charged from `budget`, and returns how many there were. Zero for
+/// nothing to delete, so the call is idempotent. It touches the entries it is
+/// given and no others: the caller passes one session's list.
+pub fn delete_matching<T>(
+    entries: &mut Vec<T>,
+    matches: impl Fn(&T) -> bool,
+    cost: impl Fn(&T) -> u64,
+    budget: &KnowledgeBudget,
+) -> usize {
+    let (removed, freed) = remove_matching(entries, matches, cost);
+    budget.release(freed);
+    removed
+}
+
+/// The number of results a query returns for a requested `limit`.
+pub fn query_limit(limit: usize) -> usize {
+    limit.min(MAX_KNOWLEDGE_QUERY_RESULTS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn entry_size_counts_key_value_and_tags() {
+        let value = serde_json::json!("abc");
+        // 3 (key) + 5 (`"abc"` with quotes) + 2 + 3 (tags).
+        assert_eq!(
+            entry_bytes("key", &value, &["ab".to_string(), "cde".to_string()]),
+            13
+        );
+        assert_eq!(entry_bytes("", &serde_json::Value::Null, &[]), 4);
+    }
+
+    #[test]
+    fn an_entry_is_refused_over_the_size_or_the_count() {
+        assert!(admit_entry(0, 3, MAX_KNOWLEDGE_ENTRY_BYTES).is_ok());
+        assert!(admit_entry(2, 3, 1).is_ok());
+        let full = admit_entry(3, 3, 1).unwrap_err();
+        assert!(full.reason().contains("at most 3"));
+        assert_eq!(full.code(), "knowledge_capacity");
+        let large = admit_entry(0, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1).unwrap_err();
+        assert!(large.to_string().contains("65536 bytes"));
+        assert_eq!(large.code(), "knowledge_entry_too_large");
+        // The size is judged before the count, so one refusal names one cause.
+        let both = admit_entry(9, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1).unwrap_err();
+        assert!(both.reason().contains("bytes"));
+        assert_eq!(both.code(), "knowledge_entry_too_large");
+    }
+
+    #[test]
+    fn the_two_refusals_have_distinct_listed_codes() {
+        let all = spine_protocol::body::ALL_ERROR_CODES;
+        for refusal in [
+            Refusal::EntryTooLarge(String::new()),
+            Refusal::Capacity(String::new()),
+        ] {
+            assert!(all.contains(&refusal.code()), "{}", refusal.code());
+        }
+        assert_ne!(
+            Refusal::EntryTooLarge(String::new()).code(),
+            Refusal::Capacity(String::new()).code()
+        );
+    }
+
+    /// A stand-in entry: a key and what it is charged.
+    fn held(key: &str, size: usize) -> (String, usize) {
+        (key.to_string(), size)
+    }
+
+    #[test]
+    fn deleting_a_key_removes_its_entries_and_returns_exactly_their_budget() {
+        let budget = KnowledgeBudget::new(10_000);
+        let mut entries = vec![held("a", 10), held("b", 20), held("a", 30)];
+        for (_, size) in &entries {
+            budget.reserve(entry_cost(*size)).unwrap();
+        }
+        let before = budget.used();
+        // An unrelated reservation, as another session's entries would hold.
+        budget.reserve(500).unwrap();
+        let removed = delete_matching(
+            &mut entries,
+            |(key, _)| key == "a",
+            |(_, size)| entry_cost(*size),
+            &budget,
+        );
+        assert_eq!(removed, 2);
+        assert_eq!(entries, vec![held("b", 20)]);
+        // What `a` held is back; the other reservation and `b` are untouched.
+        assert_eq!(
+            budget.used(),
+            before - entry_cost(10) - entry_cost(30) + 500
+        );
+        // Deleting what is gone is a no-op that releases nothing.
+        let used = budget.used();
+        assert_eq!(
+            delete_matching(
+                &mut entries,
+                |(key, _)| key == "a",
+                |(_, size)| entry_cost(*size),
+                &budget
+            ),
+            0
+        );
+        assert_eq!(budget.used(), used);
+        // Removing the rest returns the budget to what it was before any entry.
+        assert_eq!(
+            delete_matching(
+                &mut entries,
+                |(key, _)| key == "b",
+                |(_, size)| entry_cost(*size),
+                &budget
+            ),
+            1
+        );
+        budget.release(500);
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn a_key_matches_exactly_and_not_as_a_prefix() {
+        let mut entries = vec![held("ab", 1), held("a", 1), held("A", 1)];
+        let (removed, freed) = remove_matching(
+            &mut entries,
+            |(key, _)| key == "a",
+            |(_, size)| entry_cost(*size),
+        );
+        assert_eq!((removed, freed), (1, entry_cost(1)));
+        assert_eq!(entries, vec![held("ab", 1), held("A", 1)]);
+    }
+
+    #[test]
+    fn the_budget_refuses_past_its_limit_and_release_restores_it() {
+        let budget = KnowledgeBudget::new(100);
+        assert!(budget.reserve(60).is_ok());
+        assert!(budget.reserve(40).is_ok());
+        assert_eq!(budget.used(), 100);
+        let reason = budget.reserve(1).unwrap_err();
+        assert!(reason.contains("at most 100 bytes"), "{reason}");
+        // A refusal reserves nothing.
+        assert_eq!(budget.used(), 100);
+        budget.release(60);
+        assert_eq!(budget.used(), 40);
+        assert!(budget.reserve(60).is_ok());
+        budget.release(100);
+        assert_eq!(budget.used(), 0);
+        // Release never goes below zero; a huge reservation does not wrap.
+        budget.release(5);
+        assert_eq!(budget.used(), 0);
+        assert!(budget.reserve(u64::MAX).is_err());
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn loaded_state_over_the_limit_blocks_reservations_until_released() {
+        let budget = KnowledgeBudget::new(100);
+        budget.charge(150);
+        assert_eq!(budget.used(), 150);
+        assert!(budget.reserve(1).is_err());
+        budget.release(100);
+        assert!(budget.reserve(50).is_ok());
+        assert_eq!(budget.used(), 100);
+    }
+
+    #[test]
+    fn concurrent_reservations_never_pass_the_limit() {
+        let budget = std::sync::Arc::new(KnowledgeBudget::new(1000));
+        let granted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let budget = budget.clone();
+                let granted = granted.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        if budget.reserve(7).is_ok() {
+                            granted.fetch_add(7, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        assert!(budget.used() <= 1000);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        // 1000 / 7 = 142 reservations fit; every one that did was counted.
+        assert_eq!(
+            budget.used(),
+            granted.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert_eq!(budget.used(), 142 * 7);
+        // Releasing exactly what was granted restores an empty budget.
+        for _ in 0..142 {
+            budget.release(7);
+        }
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn an_entry_costs_its_bytes_plus_the_overhead() {
+        assert_eq!(entry_cost(0), KNOWLEDGE_ENTRY_OVERHEAD_BYTES);
+        assert_eq!(entry_cost(10), 10 + KNOWLEDGE_ENTRY_OVERHEAD_BYTES);
+        const { assert!(MAX_KNOWLEDGE_BYTES <= crate::session_store::MAX_SNAPSHOT_BYTES / 2) };
+    }
+
+    #[test]
+    fn a_query_is_bounded_whatever_the_limit() {
+        assert_eq!(query_limit(0), 0);
+        assert_eq!(query_limit(10), 10);
+        assert_eq!(query_limit(MAX_KNOWLEDGE_QUERY_RESULTS), 128);
+        assert_eq!(query_limit(usize::MAX), MAX_KNOWLEDGE_QUERY_RESULTS);
+    }
+}

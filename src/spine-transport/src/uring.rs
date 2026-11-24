@@ -1,7 +1,12 @@
-//! io_uring-based I/O for Linux kernel bypass.
+//! io_uring I/O types for Linux. **io_uring is not implemented.**
 //!
-//! This module provides high-performance I/O using Linux's io_uring interface,
-//! enabling efficient batched syscalls and true async I/O.
+//! This module defines the operation, completion and buffer-pool types an
+//! io_uring backend would use, and a [`UringRing`] that only queues the
+//! operations it is given. It never calls `io_uring_setup` or `io_uring_enter`
+//! and performs no I/O: [`UringRing::submit_and_wait`] returns an
+//! `Unsupported` error rather than report an operation complete. The module is
+//! behind the non-default `io-uring` feature, which no daemon, test or CI job
+//! builds.
 
 use std::collections::VecDeque;
 use std::io::{self, IoSlice, IoSliceMut};
@@ -371,7 +376,9 @@ impl RegisteredBufferPool {
 // IO_URING STUB (requires io-uring crate)
 // =============================================================================
 
-/// Stub for io_uring ring (actual implementation would use io-uring crate)
+/// A queue of operations that no kernel ring serves: a placeholder for an
+/// io_uring ring (a real one would use the `io-uring` crate). Operations
+/// submitted stay queued; nothing performs them.
 pub struct UringRing {
     config: UringConfig,
     /// Buffer pool
@@ -426,30 +433,17 @@ impl UringRing {
         Ok(user_datas)
     }
 
-    /// Submit and wait for completions
-    pub fn submit_and_wait(&mut self, wait_nr: u32) -> TransportResult<Vec<IoCompletion>> {
-        // Stub: In real implementation, this would:
-        // 1. Copy pending ops to submission queue
-        // 2. Call io_uring_enter()
-        // 3. Process completion queue
-
-        let mut completions = Vec::new();
-
-        // Simulate processing
-        while let Some(op) = self.pending.pop_front() {
-            completions.push(IoCompletion {
-                user_data: op.user_data,
-                result: op.len as i32, // Simulate success
-                flags: 0,
-                buffer: op.buffer,
-            });
-
-            if completions.len() >= wait_nr as usize {
-                break;
-            }
-        }
-
-        Ok(completions)
+    /// Would submit the queued operations and wait for `wait_nr` completions.
+    ///
+    /// io_uring is not implemented (it would copy the queue to the submission
+    /// ring, call `io_uring_enter` and reap the completion ring), so this
+    /// always fails with an `Unsupported` I/O error and leaves the queue
+    /// untouched. It never reports an operation as done.
+    pub fn submit_and_wait(&mut self, _wait_nr: u32) -> TransportResult<Vec<IoCompletion>> {
+        Err(TransportError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "io_uring is not implemented: no operation was performed",
+        )))
     }
 
     /// Get completions without blocking
@@ -708,8 +702,12 @@ mod tests {
         let user_data = ring.submit(op).unwrap();
         assert_eq!(user_data, 0);
 
-        let completions = ring.submit_and_wait(1).unwrap();
-        assert_eq!(completions.len(), 1);
+        // Nothing performs the operation: waiting fails, it is not reported done.
+        let error = ring.submit_and_wait(1).unwrap_err();
+        assert!(
+            matches!(&error, TransportError::Io(e) if e.kind() == io::ErrorKind::Unsupported),
+            "{error}"
+        );
     }
 
     #[test]

@@ -1,0 +1,3212 @@
+//! Acceptance test over separate core processes and real encrypted mesh sockets.
+use ed25519_dalek::SigningKey;
+use spine_agent::AgentClient;
+use spine_name::{
+    content_hash, publication_value, resource_id, Endpoint, NameRecord, SpineUri, SuccessionLog,
+    SUCCESSION_META_KEY,
+};
+use spine_protocol::native::remote_code;
+use spine_protocol::ToolOutcome;
+use std::{
+    path::Path,
+    process::{Child, Command, Stdio},
+};
+use tokio::net::TcpStream;
+
+/// The stable `err.code` of a failed call. Assertions are on this, never on
+/// the human-readable message.
+fn code_of(error: &anyhow::Error) -> &str {
+    remote_code(error).unwrap_or_else(|| panic!("not a remote error: {error:#}"))
+}
+
+// Core startup and semantic encoding are CPU-intensive. Keep process tests
+// independent of one another while still exercising real sockets/restarts.
+static PROCESS_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn native_navigation_enforces_outbound_policy() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let allowed = format!("http://{}", http.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for reply in [
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n<h1>hello</h1>"[..],
+                &b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n"[..],
+                &b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+            ] {
+                let (mut socket, _) = http.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                socket.write_all(reply).await.unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        let metrics_port = config.server.metrics_port;
+        config.outbound.internal_origins = vec![allowed.clone()];
+        config.outbound.max_response_bytes = 128;
+        std::fs::write(dir.path().join("spine.toml"), toml::to_string(&config).unwrap()).unwrap();
+        let mut node = launch(dir.path());
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        assert_eq!(code_of(&client.navigate("http://127.0.0.1/").await.unwrap_err()), "outbound_address_denied");
+        client.navigate(&allowed).await.unwrap();
+        assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
+        assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_redirect_denied");
+        assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_response_limit");
+        // A status that is not success has one code, with the status in details.
+        assert_eq!(code_of(&client.navigate(&allowed).await.unwrap_err()), "outbound_http_status");
+        let long_url = format!("http://127.0.0.1:1/{}", "a".repeat(9000));
+        assert_eq!(code_of(&client.navigate(&long_url).await.unwrap_err()), "outbound_url_limit");
+        assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
+        server.await.unwrap();
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let health: serde_json::Value = http.get(format!("http://127.0.0.1:{metrics_port}/health")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(health["outbound"]["started"], 6);
+        assert_eq!(health["outbound"]["succeeded"], 1);
+        assert_eq!(health["outbound"]["failed"], 5);
+        assert_eq!(health["outbound"]["denied"], 2);
+        assert_eq!(health["outbound"]["response_limit_failures"], 1);
+        assert_eq!(health["outbound"]["active"], 0);
+        let text = http.get(format!("http://127.0.0.1:{metrics_port}/metrics")).send().await.unwrap().text().await.unwrap();
+        assert!(text.contains("spine_outbound_calls_started_total 6\n"));
+        assert!(text.contains("spine_outbound_calls_denied_total 2\n"));
+        assert!(!text.contains(&allowed));
+    }).await.expect("native outbound acceptance deadline exceeded");
+}
+
+/// `execute_binary` confinement: an action needs the capability it names, a
+/// program that exceeds the host budgets is refused and the daemon keeps
+/// serving, and a program's knowledge write lands under its own session.
+#[tokio::test]
+async fn execute_binary_is_confined() {
+    use spine_protocol::{Instruction, ProtocolBinOp, SpineBinary};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn program(instructions: Vec<Instruction>, capabilities: &[&str]) -> SpineBinary {
+        SpineBinary {
+            instructions,
+            data: Vec::new(),
+            render_start: 0,
+            exported_functions: std::collections::BTreeMap::new(),
+            capabilities: capabilities.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+    let step = std::time::Duration::from_secs(30);
+
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        // A listener that counts the connections that reach it.
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let allowed = format!("http://{}", http.local_addr().unwrap());
+        let hits = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = http.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0; 4096];
+                let _ = socket.read(&mut request).await;
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n<h1>hello</h1>")
+                    .await;
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.outbound.internal_origins = vec![allowed.clone()];
+        std::fs::write(dir.path().join("spine.toml"), toml::to_string(&config).unwrap()).unwrap();
+        let mut node = launch(dir.path());
+        let mut client = connect(&mut node, dir.path(), origin).await;
+
+        // A navigate action without the "network" capability is refused, and
+        // nothing is fetched.
+        let navigate = vec![
+            Instruction::Push(serde_json::json!(allowed)),
+            Instruction::NavigateFromStack,
+        ];
+        let denied = tokio::time::timeout(step, client.execute_binary(program(navigate.clone(), &["search"])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap_err();
+        assert_eq!(code_of(&denied), "capability_denied");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "a refused program reached the network");
+        // The same program with the capability declared does fetch.
+        tokio::time::timeout(step, client.execute_binary(program(navigate, &["network"])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap();
+        wait_until("the declared navigation to reach the listener", || {
+            hits.load(Ordering::SeqCst) >= 1
+        })
+        .await;
+
+        // A program whose strings double is refused with the execution
+        // failure code, quickly, and the daemon still answers.
+        let mut doubling = vec![
+            Instruction::Push(serde_json::json!("a")),
+            Instruction::Store("x".into()),
+        ];
+        for _ in 0..40 {
+            doubling.push(Instruction::Load("x".into()));
+            doubling.push(Instruction::Load("x".into()));
+            doubling.push(Instruction::BinOp(ProtocolBinOp::Concat));
+            doubling.push(Instruction::Store("x".into()));
+        }
+        let refused = tokio::time::timeout(step, client.execute_binary(program(doubling, &[])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap_err();
+        assert_eq!(code_of(&refused), "execution_failed");
+        let caps = tokio::time::timeout(step, client.get_binary_capabilities())
+            .await
+            .expect("get_binary_capabilities deadline")
+            .unwrap();
+        assert_eq!(
+            caps,
+            vec!["network".to_string()],
+            "a refused program must not replace the session's binary"
+        );
+
+        // An action the daemon does not perform is refused with the program,
+        // not dropped: `search` is performed only in a research build.
+        if !cfg!(feature = "research") {
+            let search = vec![
+                Instruction::Push(serde_json::json!("rust")),
+                Instruction::SearchFromStack,
+            ];
+            let unsupported = tokio::time::timeout(step, client.execute_binary(program(search, &["search"])))
+                .await
+                .expect("execute_binary deadline")
+                .unwrap_err();
+            // Stage 3 of the wire revision: not `execution_failed`, which stays
+            // for a program that failed to run.
+            assert_eq!(code_of(&unsupported), "action_unsupported");
+            assert!(format!("{unsupported:#}").contains("search"), "{unsupported:#}");
+        }
+
+        // A program's knowledge write lands under its own session: the other
+        // connection does not see it, whatever key the program chose.
+        let store = vec![
+            Instruction::Push(serde_json::json!("shared-key")),
+            Instruction::Push(serde_json::json!({"v": 1})),
+            Instruction::StoreKnowledgeFromStack { tags: vec!["t".into()] },
+        ];
+        tokio::time::timeout(step, client.execute_binary(program(store, &["storage"])))
+            .await
+            .expect("execute_binary deadline")
+            .unwrap();
+        let mine = tokio::time::timeout(step, client.query_knowledge("", vec![], 10))
+            .await
+            .expect("query_knowledge deadline")
+            .unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0]["key"], "shared-key");
+        // The direct command is bounded as well: an oversized entry is refused
+        // and not stored.
+        let oversized = serde_json::json!("x".repeat(70_000));
+        let refused = tokio::time::timeout(step, client.store_knowledge("big", oversized, vec![]))
+            .await
+            .expect("store_knowledge deadline")
+            .unwrap_err();
+        assert_eq!(code_of(&refused), "knowledge_entry_too_large");
+        let mut other = connect(&mut node, dir.path(), origin).await;
+        for query in ["", "shared-key"] {
+            let theirs = tokio::time::timeout(step, other.query_knowledge(query, vec![], 10))
+                .await
+                .expect("query_knowledge deadline")
+                .unwrap();
+            assert!(theirs.is_empty(), "another session saw the program's entry");
+        }
+        server.abort();
+    })
+    .await
+    .expect("execute_binary confinement deadline exceeded");
+}
+
+/// Stage 3 of the wire revision, `delete_resource` (`00-wire.md` 12.2): only a
+/// proof by the key that published the blob, made for this connection's
+/// `binding`, deletes it. A proof that does not verify is `delete_refused`; a
+/// valid proof by a key that does not own the blob answers as a hash nobody
+/// holds does (`deleted: false`); a repeat is `deleted: false`; the name record
+/// is not touched, and a read of the bytes then fails like any missing blob.
+#[tokio::test]
+async fn delete_resource_needs_the_publishers_proof_made_for_this_connection() {
+    use spine_protocol::resource::sign_delete_proof;
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut node = start(dir.path(), origin, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        let mut other = connect(&mut node, dir.path(), origin).await;
+        assert_ne!(client.binding(), other.binding());
+
+        let now = unix_now();
+        let publisher = SigningKey::from_bytes(&[0x71; 32]);
+        let stranger = SigningKey::from_bytes(&[0x72; 32]);
+        let owner = publisher.verifying_key().to_bytes();
+        let bytes = b"bytes the publisher will delete".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let mut record = NameRecord::new(SpineUri::did(owner), 1, now)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"))
+            .with_content_hash(id);
+        record.sign(&publisher).unwrap();
+        let name = record.name.to_string();
+
+        let report = within(
+            "publish_resource",
+            client.publish_resource(&record, "text/plain", bytes.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report["stored"], true);
+
+        // A proof by another key, for the publisher's `owner` field.
+        let forged = sign_delete_proof(&stranger, &id, &client.binding());
+        let refused = within(
+            "forged proof",
+            client.delete_resource_with_proof(id, owner, forged),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&refused), "delete_refused");
+        // The publisher's own proof, made for the other connection's binding.
+        let elsewhere = sign_delete_proof(&publisher, &id, &other.binding());
+        let refused = within(
+            "proof for another connection",
+            client.delete_resource_with_proof(id, owner, elsewhere),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&refused), "delete_refused");
+        // A valid proof by a key that does not own the blob, and a valid proof
+        // for a hash nobody holds, answer the same: nothing was deleted.
+        assert!(!within(
+            "a stranger's own proof",
+            client.delete_resource(id, &stranger)
+        )
+        .await
+        .unwrap());
+        assert!(!within(
+            "an absent hash",
+            client.delete_resource([0x99; 32], &publisher)
+        )
+        .await
+        .unwrap());
+        // Nothing above removed the blob.
+        let read = within(
+            "read before the delete",
+            client.read_resource(record.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(read.data, bytes);
+
+        // The publisher's proof for this connection deletes it.
+        assert!(within("delete", client.delete_resource(id, &publisher))
+            .await
+            .unwrap());
+        let gone = within(
+            "read after the delete",
+            client.read_resource(record.clone()),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&gone), "resource_not_found");
+        // A repeat is a success that says nothing was deleted.
+        assert!(
+            !within("repeat delete", client.delete_resource(id, &publisher))
+                .await
+                .unwrap()
+        );
+        // The name record that bound the resource is not deleted.
+        let resolution = within("resolve_name", client.resolve_name(&name, None))
+            .await
+            .unwrap();
+        assert!(
+            matches!(resolution, spine_protocol::NameResolution::Resolved { .. }),
+            "{resolution:?}"
+        );
+        // And the publisher can store the bytes again.
+        let report = within(
+            "publish again",
+            other.publish_resource(&record, "text/plain", bytes.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report["stored"], true);
+        let read = within("read again", other.read_resource(record.clone()))
+            .await
+            .unwrap();
+        assert_eq!(read.data, bytes);
+    })
+    .await
+    .expect("delete_resource acceptance deadline exceeded");
+}
+
+/// Stage 3 of the wire revision, `delete_knowledge` (`00-wire.md` 12.2): the
+/// entries of one key of this connection's session go, the count is reported,
+/// the rest stay, a repeat deletes nothing, and another session's entries with
+/// the same key are not touched.
+#[tokio::test]
+async fn delete_knowledge_removes_one_key_of_this_session_only() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut node = start(dir.path(), origin, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        let mut other = connect(&mut node, dir.path(), origin).await;
+        let mut fresh = connect(&mut node, dir.path(), origin).await;
+
+        for (key, value) in [("a", 1), ("b", 2), ("a", 3)] {
+            within(
+                "store_knowledge",
+                client.store_knowledge(key, serde_json::json!(value), vec![]),
+            )
+            .await
+            .unwrap();
+        }
+        within(
+            "the other session's store",
+            other.store_knowledge("a", serde_json::json!("theirs"), vec![]),
+        )
+        .await
+        .unwrap();
+
+        // A key that is only a prefix, or another case, matches nothing.
+        for near in ["", "A", "a ", "ab"] {
+            assert_eq!(
+                within("a near miss", client.delete_knowledge(near))
+                    .await
+                    .unwrap(),
+                0,
+                "{near:?}"
+            );
+        }
+        assert_eq!(
+            within("delete a", client.delete_knowledge("a"))
+                .await
+                .unwrap(),
+            2
+        );
+        let left = within("query", client.query_knowledge("", vec![], 10))
+            .await
+            .unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0]["key"], "b");
+        assert_eq!(left[0]["value"], 2);
+        // A repeat is a success that deletes nothing.
+        assert_eq!(
+            within("repeat", client.delete_knowledge("a"))
+                .await
+                .unwrap(),
+            0
+        );
+        // The other session still has its entry under the same key.
+        let theirs = within("the other query", other.query_knowledge("", vec![], 10))
+            .await
+            .unwrap();
+        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs[0]["value"], "theirs");
+        // A connection that has stored nothing deletes nothing, and can still
+        // store afterwards.
+        assert_eq!(
+            within("no session", fresh.delete_knowledge("a"))
+                .await
+                .unwrap(),
+            0
+        );
+        within(
+            "store after",
+            fresh.store_knowledge("a", serde_json::json!(4), vec![]),
+        )
+        .await
+        .unwrap();
+        // The deleted room can be stored into again.
+        within(
+            "store a again",
+            client.store_knowledge("a", serde_json::json!(5), vec![]),
+        )
+        .await
+        .unwrap();
+        let again = within("query again", client.query_knowledge("a", vec![], 10))
+            .await
+            .unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0]["value"], 5);
+    })
+    .await
+    .expect("delete_knowledge acceptance deadline exceeded");
+}
+
+/// Shutdown is announced: an idle established connection receives
+/// `CLOSE(shutting_down)` instead of a bare end of stream.
+#[tokio::test]
+async fn shutdown_sends_close_to_an_established_connection() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.server.idle_timeout_secs = 120;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        // Returns once the daemon accepts; the probe client is not needed.
+        drop(connect(&mut node, dir.path(), origin).await);
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut conn = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            spine_protocol::native::client_connect(stream),
+        )
+        .await
+        .expect("handshake deadline")
+        .unwrap();
+        // One byte on the managed child's control pipe requests draining.
+        {
+            use std::io::Write;
+            let mut control = node.0.stdin.take().unwrap();
+            control.write_all(&[1]).unwrap();
+        }
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(30), conn.recv())
+            .await
+            .expect("no CLOSE within 30 seconds")
+            .unwrap_err();
+        match closed {
+            spine_protocol::connection::ConnectionError::Closed(close) => {
+                assert_eq!(close.code, "shutting_down");
+            }
+            other => panic!("expected CLOSE(shutting_down), got {other}"),
+        }
+    })
+    .await
+    .expect("shutdown acceptance deadline exceeded");
+}
+
+struct Node(Child);
+impl Drop for Node {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn port() -> u16 {
+    static USED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u16>>> =
+        std::sync::OnceLock::new();
+    let mut used = USED.get_or_init(Default::default).lock().unwrap();
+    loop {
+        let p = 20000 + rand::random::<u16>() % 30000;
+        if [p, p + 1, p + 1000].iter().any(|v| used.contains(v)) {
+            continue;
+        }
+        if let (Ok(_a), Ok(_b), Ok(_c)) = (
+            std::net::TcpListener::bind(("127.0.0.1", p)),
+            std::net::TcpListener::bind(("127.0.0.1", p + 1)),
+            std::net::TcpListener::bind(("127.0.0.1", p + 1000)),
+        ) {
+            used.extend([p, p + 1, p + 1000]);
+            return p;
+        }
+    }
+}
+
+fn origin_port() -> u16 {
+    loop {
+        let p = port();
+        if p > 64000 {
+            continue;
+        }
+        if let (Ok(_ws), Ok(_cluster)) = (
+            std::net::TcpListener::bind(("127.0.0.1", p + 1)),
+            std::net::TcpListener::bind(("127.0.0.1", p + 1000)),
+        ) {
+            return p;
+        }
+    }
+}
+
+fn start(dir: &Path, origin: u16, mesh: u16, seeds: &[String]) -> Node {
+    start_with_tasks(dir, origin, mesh, seeds, &[])
+}
+
+fn start_with_tasks(
+    dir: &Path,
+    origin: u16,
+    mesh: u16,
+    seeds: &[String],
+    allowed: &[String],
+) -> Node {
+    let config = format!("[server]\nhost = \"127.0.0.1\"\nport = {origin}\nmetrics_port = {}\n[namespace]\nenabled = true\nport = {mesh}\nseeds = {}\nmaintain_secs = 1\ntasks_enabled = {}\ntask_peers = {}\n", port(), serde_json::to_string(seeds).unwrap(),!allowed.is_empty(),serde_json::to_string(allowed).unwrap());
+    std::fs::write(dir.join("spine.toml"), config).unwrap();
+    launch(dir)
+}
+
+fn launch(dir: &Path) -> Node {
+    let log = std::fs::File::create(dir.join("server.log")).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_spine-core"));
+    command
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .env("SPINE_MANAGED_CHILD", "1")
+        .stdout(log.try_clone().unwrap())
+        .stderr(log);
+    for key in [
+        "PORT",
+        "SPINE_PORT",
+        "SPINE_HOST",
+        "SPINE_METRICS_PORT",
+        "SPINE_SEEDS",
+        "SPINE_TLS",
+        "SPINE_CONFIG_PATH",
+    ] {
+        command.env_remove(key);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    Node(command.spawn().unwrap())
+}
+
+#[tokio::test]
+async fn managed_shutdown_drains_and_keeps_published_bytes() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mesh_port = port();
+        eprintln!("managed acceptance: starting origin");
+        let mut node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let key = SigningKey::from_bytes(&[44; 32]);
+        let mut record = NameRecord::new(
+            SpineUri::did(key.verifying_key().to_bytes()),
+            1,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap()
+        .with_content_hash(resource_id("text/plain", b"graceful bytes").unwrap());
+        record.sign(&key).unwrap();
+        client
+            .publish_resource(&record, "text/plain", b"graceful bytes".to_vec())
+            .await
+            .unwrap();
+        eprintln!("managed acceptance: publication acknowledged; requesting drain");
+        drop(client);
+        use std::io::Write;
+        node.0.stdin.take().unwrap().write_all(&[1]).unwrap();
+        loop {
+            if let Some(status) = node.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let log = std::fs::read_to_string(dir.path().join("server.log")).unwrap();
+        assert!(log.contains("All connections drained"));
+        eprintln!("managed acceptance: drained; restarting origin");
+        node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        assert_eq!(
+            client.read_resource(record).await.unwrap().data,
+            b"graceful bytes"
+        );
+    })
+    .await
+    .expect("managed shutdown acceptance deadline exceeded");
+}
+
+#[tokio::test]
+async fn signed_mesh_tasks_dependencies_knowledge_restart_and_authorization() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use spine_protocol::tasks::{TaskInput, TaskOperation, TaskRecord, TaskSpec, TaskState};
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let caller_dir = tempfile::tempdir().unwrap();
+        let worker_dir = tempfile::tempdir().unwrap();
+        let outsider_dir = tempfile::tempdir().unwrap();
+        for (dir, seed) in [
+            (&caller_dir, 21u8),
+            (&worker_dir, 22u8),
+            (&outsider_dir, 23u8),
+        ] {
+            std::fs::write(
+                dir.path().join("spine-node.key"),
+                format!("{seed:02x}").repeat(32),
+            )
+            .unwrap();
+        }
+        let caller_key = SigningKey::from_bytes(&[21; 32]).verifying_key().to_bytes();
+        let worker_key = SigningKey::from_bytes(&[22; 32]).verifying_key().to_bytes();
+        let allowed = vec![caller_key
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()];
+        let (worker_port, worker_mesh, caller_port, caller_mesh) =
+            (origin_port(), port(), origin_port(), port());
+        let mut worker =
+            start_with_tasks(worker_dir.path(), worker_port, worker_mesh, &[], &allowed);
+        let mut origin = connect(&mut worker, worker_dir.path(), worker_port).await;
+        let status = origin.namespace_status().await.unwrap();
+        let worker_id = status["agent_id"].as_str().unwrap().to_owned();
+        let mut caller_node = start(
+            caller_dir.path(),
+            caller_port,
+            caller_mesh,
+            &[format!("127.0.0.1:{worker_mesh}")],
+        );
+        let mut caller = connect(&mut caller_node, caller_dir.path(), caller_port).await;
+        let metadata = caller
+            .mesh_call(
+                &worker_id,
+                worker_key,
+                serde_json::to_value(TaskOperation::Capabilities).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(metadata["version"], 1);
+        assert_eq!(metadata["tools"].as_array().unwrap().len(), 2);
+        let first = TaskSpec {
+            id: uuid::Uuid::new_v4(),
+            tool: "spine.content/hash".into(),
+            args: serde_json::json!({"text":"artifact source"}),
+            dependencies: vec![],
+            input_from: None,
+            timeout_secs: 300,
+        };
+        let second = TaskSpec {
+            id: uuid::Uuid::new_v4(),
+            tool: "spine.content/hash".into(),
+            args: serde_json::json!({"text":""}),
+            dependencies: vec![first.id],
+            input_from: Some(TaskInput {
+                task_id: first.id,
+                pointer: "/sha256".into(),
+            }),
+            timeout_secs: 300,
+        };
+        let submit = serde_json::to_value(TaskOperation::Submit {
+            spec: first.clone(),
+        })
+        .unwrap();
+        assert!(
+            caller
+                .mesh_call(&worker_id, [0; 32], submit.clone())
+                .await
+                .is_err(),
+            "mismatched pin must refuse delivery"
+        );
+        caller
+            .mesh_call(&worker_id, worker_key, submit.clone())
+            .await
+            .unwrap();
+        caller
+            .mesh_call(&worker_id, worker_key, submit.clone())
+            .await
+            .unwrap();
+        caller
+            .mesh_call(
+                &worker_id,
+                worker_key,
+                serde_json::to_value(TaskOperation::Submit {
+                    spec: second.clone(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let record = loop {
+            let value = caller
+                .mesh_call(
+                    &worker_id,
+                    worker_key,
+                    serde_json::to_value(TaskOperation::Status { id: second.id }).unwrap(),
+                )
+                .await
+                .unwrap();
+            let record: TaskRecord = serde_json::from_value(value).unwrap();
+            if record.state == TaskState::Completed {
+                break record;
+            }
+            assert_eq!(record.error, None);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        let ToolOutcome::Ok { content } = record.result.unwrap() else {
+            panic!("dependent task failed")
+        };
+        let first_hex: String = content_hash(b"artifact source")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let second_hex: String = content_hash(first_hex.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(content["sha256"], second_hex);
+        caller
+            .mesh_call(
+                &worker_id,
+                worker_key,
+                serde_json::to_value(TaskOperation::KnowledgePut {
+                    key: "artifact".into(),
+                    value: content.clone(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let outsider_port = origin_port();
+        let mut outsider_node = start(
+            outsider_dir.path(),
+            outsider_port,
+            port(),
+            &[format!("127.0.0.1:{worker_mesh}")],
+        );
+        let mut outsider = connect(&mut outsider_node, outsider_dir.path(), outsider_port).await;
+        assert_eq!(
+            code_of(
+                &outsider
+                    .mesh_call(
+                        &worker_id,
+                        worker_key,
+                        serde_json::to_value(TaskOperation::Status { id: first.id }).unwrap()
+                    )
+                    .await
+                    .unwrap_err()
+            ),
+            "not_authorized"
+        );
+        drop(origin);
+        drop(worker);
+        worker = start_with_tasks(
+            worker_dir.path(),
+            worker_port,
+            worker_mesh,
+            &[format!("127.0.0.1:{caller_mesh}")],
+            &allowed,
+        );
+        origin = connect(&mut worker, worker_dir.path(), worker_port).await;
+        assert_eq!(
+            origin.namespace_status().await.unwrap()["agent_id"],
+            worker_id
+        );
+        let restored = caller
+            .mesh_call(
+                &worker_id,
+                worker_key,
+                serde_json::to_value(TaskOperation::Status { id: second.id }).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored["state"], "Completed");
+        assert_eq!(
+            caller
+                .mesh_call(
+                    &worker_id,
+                    worker_key,
+                    serde_json::to_value(TaskOperation::KnowledgeGet {
+                        key: "artifact".into()
+                    })
+                    .unwrap()
+                )
+                .await
+                .unwrap(),
+            content
+        );
+        caller
+            .mesh_call(&worker_id, worker_key, submit)
+            .await
+            .unwrap();
+        let mut conflict = first;
+        conflict.args = serde_json::json!({"text":"conflicting mutation"});
+        assert!(caller
+            .mesh_call(
+                &worker_id,
+                worker_key,
+                serde_json::to_value(TaskOperation::Submit { spec: conflict }).unwrap()
+            )
+            .await
+            .is_err());
+    })
+    .await
+    .expect("signed coordination acceptance deadline exceeded");
+}
+
+async fn connect(node: &mut Node, dir: &Path, port: u16) -> AgentClient<TcpStream> {
+    // A debug-build daemon on a loaded CI runner can take well over ten seconds
+    // to start listening; seven of these tests start daemons at once.
+    //
+    // `AgentClient::connect` returns only after the spine-wire handshake, so a
+    // returned client means the daemon's accept loop is running. An attempt is
+    // not cut short early: a connection that sits in the listener's backlog
+    // while the daemon starts must be the one that completes, or abandoned
+    // probes would be accepted later and counted against `max_connections`.
+    for _ in 0..600 {
+        if let Some(status) = node.0.try_wait().unwrap() {
+            panic!(
+                "core exited {status}: {}",
+                std::fs::read_to_string(dir.join("server.log")).unwrap()
+            );
+        }
+        if let Ok(Ok(client)) = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{port}")),
+        )
+        .await
+        {
+            return client;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!(
+        "core did not become ready: {}",
+        std::fs::read_to_string(dir.join("server.log")).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn discover_fetch_restart_and_renew_over_independent_nodes() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let (first_port, first_mesh, second_port, second_mesh) =
+            (origin_port(), port(), origin_port(), port());
+        eprintln!("resource acceptance: starting two nodes");
+        let mut first = start(first_dir.path(), first_port, first_mesh, &[]);
+        let mut origin = connect(&mut first, first_dir.path(), first_port).await;
+        let mut second = start(
+            second_dir.path(),
+            second_port,
+            second_mesh,
+            &[format!("127.0.0.1:{first_mesh}")],
+        );
+        let mut agent = connect(&mut second, second_dir.path(), second_port).await;
+        assert_eq!(agent.capabilities().await.unwrap().capabilities.len(), 2);
+        eprintln!("resource acceptance: native operations connected");
+        let parsed = agent
+            .call_tool(
+                "spine.html/parse",
+                serde_json::json!({"text":"<p>independent agent</p>"}),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(parsed, spine_protocol::ToolOutcome::Ok { .. }));
+        let rejected = agent
+            .call_tool("shell", serde_json::json!({"text":"test"}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            rejected,
+            spine_protocol::ToolOutcome::Err { ref code, .. } if code == "unsupported_tool"
+        ));
+        // The tool name is checked before the arguments.
+        let rejected = agent
+            .call_tool("shell", serde_json::json!({"text": 7}))
+            .await
+            .unwrap();
+        assert!(matches!(
+            rejected,
+            spine_protocol::ToolOutcome::Err { ref code, .. } if code == "unsupported_tool"
+        ));
+        let key = SigningKey::from_bytes(&[77; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes()).with_path("/documents/example");
+        let bytes = vec![37; 150_000];
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut record = NameRecord::new(name.clone(), 1, now)
+            .unwrap()
+            .with_capability("test.documents")
+            .with_endpoint(Endpoint::new("tcp", format!("127.0.0.1:{first_port}")))
+            .with_content_hash(resource_id("application/octet-stream", &bytes).unwrap());
+        record.sign(&key).unwrap();
+        origin
+            .publish_resource(&record, "application/octet-stream", bytes.clone())
+            .await
+            .unwrap();
+        let providers = agent.find_providers("test.documents", None).await.unwrap();
+        assert_eq!(
+            providers["count"],
+            1,
+            "first: {}\nsecond: {}",
+            std::fs::read_to_string(first_dir.path().join("server.log")).unwrap(),
+            std::fs::read_to_string(second_dir.path().join("server.log")).unwrap()
+        );
+        assert_eq!(
+            agent
+                .fetch_resource_with(
+                    &name.to_string(),
+                    spine_agent::resources::FetchPolicy::allow_private(),
+                )
+                .await
+                .unwrap()
+                .data,
+            bytes
+        );
+        eprintln!("resource acceptance: remote resource fetched; restarting publisher");
+        drop(origin);
+        drop(first);
+        first = start(
+            first_dir.path(),
+            first_port,
+            first_mesh,
+            &[format!("127.0.0.1:{second_mesh}")],
+        );
+        origin = connect(&mut first, first_dir.path(), first_port).await;
+        assert_eq!(
+            origin.read_resource(record.clone()).await.unwrap().data,
+            bytes
+        );
+        eprintln!("resource acceptance: publisher resource restored; renewing record");
+        let renewed = record.renewed(&key, now + 1, 3600).unwrap();
+        origin
+            .publish_name(serde_json::to_value(&renewed).unwrap())
+            .await
+            .unwrap();
+        let resolved = origin.resolve_name(&name.to_string(), None).await.unwrap();
+        let spine_protocol::NameResolution::Resolved {
+            record: restored, ..
+        } = resolved
+        else {
+            panic!("renewed name did not resolve");
+        };
+        assert_eq!(restored["seq"], 2);
+        assert_eq!(
+            agent
+                .fetch_resource_with(
+                    &name.to_string(),
+                    spine_agent::resources::FetchPolicy::allow_private(),
+                )
+                .await
+                .unwrap()
+                .data,
+            bytes
+        );
+        let unrelated = NameRecord::new(
+            SpineUri::did(SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes()),
+            1,
+            now,
+        )
+        .unwrap();
+        assert!(origin
+            .publish_resource(&unrelated, "text/plain", vec![1])
+            .await
+            .is_err());
+    })
+    .await
+    .expect("agent-web acceptance test exceeded its deadline");
+}
+
+#[tokio::test]
+async fn native_idle_connections_release_global_admission() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let metrics_port = port();
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let config = format!("[server]\nhost = \"127.0.0.1\"\nport = {origin}\nmetrics_port = {metrics_port}\nmax_connections = 1\nmax_connections_per_ip = 1\nidle_timeout_secs = 6\n");
+        std::fs::write(dir.path().join("spine.toml"), config).unwrap();
+        let mut node = launch(dir.path());
+        let mut first = connect(&mut node, dir.path(), origin).await;
+        assert_eq!(first.capabilities().await.unwrap().capabilities.len(), 2);
+        let response = http.get(format!("http://127.0.0.1:{metrics_port}/ready")).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 503);
+        let readiness: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(readiness["reasons"], serde_json::json!(["connection_capacity"]));
+        assert_eq!(readiness["active_connections"], 1);
+        assert_eq!(readiness["namespace"], "disabled");
+        assert_eq!(http.get(format!("http://127.0.0.1:{metrics_port}/health")).send().await.unwrap().status().as_u16(), 200);
+        first.ping().await.unwrap();
+        // The daemon refuses an excess connection at admission, before any
+        // frame is read, so the client's handshake fails instead of its first
+        // request (it used to connect and fail on the first message).
+        let excess = tokio::time::timeout(Duration::from_secs(15), AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}"))).await.expect("excess handshake deadline exceeded");
+        assert!(excess.is_err(), "an excess connection must not complete the handshake");
+        drop(excess);
+        let metrics = http.get(format!("http://127.0.0.1:{metrics_port}/metrics")).send().await.unwrap();
+        assert_eq!(metrics.status().as_u16(), 200);
+        let text = metrics.text().await.unwrap();
+        assert!(text.contains("spine_native_connections_rejected_global_total 1\n"));
+        assert!(text.contains("spine_native_connections_active 1\n"));
+        assert!(text.contains("# TYPE spine_sessions_active gauge"));
+        assert!(text.contains("# TYPE spine_namespace_enabled gauge"));
+        for line in text.lines().filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            let (series, value) = line.rsplit_once(' ').expect("sample line has a value");
+            assert!(value.parse::<f64>().is_ok(), "bad metric value: {line}");
+            let name = series.split('{').next().unwrap();
+            assert!(!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':'), "bad metric name: {line}");
+        }
+        // No further traffic from first. Its complete-message idle deadline
+        // releases the shared connection budget even if the client stays open.
+        tokio::time::sleep(Duration::from_millis(6500)).await;
+        let response = http.get(format!("http://127.0.0.1:{metrics_port}/ready")).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        let readiness: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(readiness["active_connections"], 0);
+        assert_eq!(readiness["reasons"], serde_json::json!([]));
+        let mut next = AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}")).await.unwrap();
+        assert_eq!(next.capabilities().await.unwrap().capabilities.len(), 2);
+    }).await.expect("native admission acceptance deadline exceeded");
+}
+
+#[tokio::test]
+async fn configured_mutual_tls_protects_tcp_and_websocket_origins() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use std::{sync::Arc, time::Duration};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_rustls::{
+        rustls::{pki_types::ServerName, ClientConfig, RootCertStore},
+        TlsConnector,
+    };
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let dir = tempfile::tempdir().unwrap();
+        let certs = dir.path().join("certs");
+        spine_core::tls::generate_dev_certs(&certs).unwrap();
+        let origin = origin_port();
+        let config = format!("[server]\nhost = \"127.0.0.1\"\nport = {origin}\nmetrics_port = {}\n[tls]\nenabled = true\nmutual_tls = true\n", port());
+        std::fs::write(dir.path().join("spine.toml"), config).unwrap();
+        let mut node = launch(dir.path());
+        // The `connect` helper speaks plaintext spine-wire, which a TLS origin
+        // refuses by design, so readiness here is only that the port accepts.
+        let mut listening = false;
+        for _ in 0..600 {
+            if let Some(status) = node.0.try_wait().unwrap() {
+                panic!("core exited {status}: {}", std::fs::read_to_string(dir.path().join("server.log")).unwrap());
+            }
+            if TcpStream::connect(("127.0.0.1", origin)).await.is_ok() {
+                listening = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(listening, "core did not start listening");
+        let mut roots = RootCertStore::empty();
+        for cert in spine_core::tls::load_certs(&certs.join("ca.pem")).unwrap() { roots.add(cert).unwrap(); }
+        let anonymous = TlsConnector::from(Arc::new(ClientConfig::builder().with_root_certificates(roots.clone()).with_no_client_auth()));
+        let authorized = TlsConnector::from(Arc::new(ClientConfig::builder().with_root_certificates(roots)
+            .with_client_auth_cert(spine_core::tls::load_certs(&certs.join("client-cert.pem")).unwrap(),
+                spine_core::tls::load_private_key(&certs.join("client-key.pem")).unwrap()).unwrap()));
+        let mut agent = AgentClient::<tokio_rustls::client::TlsStream<TcpStream>>::connect_tls(
+            &format!("127.0.0.1:{origin}"), "localhost", Some(&certs.join("ca.pem")),
+            Some((&certs.join("client-cert.pem"), &certs.join("client-key.pem"))),
+        ).await.unwrap_or_else(|error| panic!("TLS origin failed: {error}; {}",
+            std::fs::read_to_string(dir.path().join("server.log")).unwrap()));
+        assert_eq!(agent.capabilities().await.unwrap().capabilities.len(), 2);
+        agent.ping().await.unwrap();
+        drop(agent);
+        // A TLS 1.3 connector may finish its local handshake before the server
+        // rejects its missing certificate; a successful application reply is
+        // the authorization criterion.
+        if let Ok(tls) = anonymous.connect(ServerName::try_from("localhost").unwrap(), TcpStream::connect(("127.0.0.1", origin)).await.unwrap()).await {
+            // A client without a certificate must not complete a spine-wire
+            // handshake, whatever its local TLS handshake said.
+            let handshake = spine_protocol::connection::Connection::client_handshake(
+                tls,
+                spine_protocol::native::client_hello(),
+                Duration::from_secs(5),
+            )
+            .await;
+            assert!(handshake.is_err());
+        }
+        let upgrade = b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        let mut tls = authorized.connect(ServerName::try_from("localhost").unwrap(), TcpStream::connect(("127.0.0.1", origin + 1)).await.unwrap()).await.unwrap();
+        tls.write_all(upgrade).await.unwrap();
+        let mut response = Vec::new();
+        while !response.ends_with(b"\r\n\r\n") { response.push(tls.read_u8().await.unwrap()); assert!(response.len() <= 4096); }
+        assert!(response.starts_with(b"HTTP/1.1 101"));
+        drop(tls);
+        if let Ok(mut tls) = anonymous.connect(ServerName::try_from("localhost").unwrap(), TcpStream::connect(("127.0.0.1", origin + 1)).await.unwrap()).await {
+            let _ = tls.write_all(upgrade).await;
+            let mut response = [0; 256];
+            let read = tls.read(&mut response).await;
+            assert!(read.is_err() || matches!(read, Ok(0)), "missing client identity cannot upgrade WSS");
+        }
+        let mut plain = TcpStream::connect(("127.0.0.1", origin + 1)).await.unwrap();
+        plain.write_all(upgrade).await.unwrap();
+        let mut response = [0; 256];
+        let read = plain.read(&mut response).await;
+        assert!(read.is_err() || !response.starts_with(b"HTTP/1.1 101"), "TLS-enabled origin cannot accept a plaintext WebSocket upgrade");
+    }).await.expect("mutual TLS origin acceptance deadline exceeded");
+}
+
+#[tokio::test]
+async fn detached_session_retention_recovers_capacity_and_does_not_resurrect() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.server.max_sessions = 1;
+        config.server.session_retention_secs = 2;
+        config.server.session_watchdog_secs = 1;
+        config.server.persistence_interval_secs = 1;
+        config.server.idle_timeout_secs = 60;
+        std::fs::write(dir.path().join("spine.toml"), toml::to_string(&config).unwrap()).unwrap();
+        let manifest = dir.path().join("spine-sessions-v1.json");
+        let mut node = launch(dir.path());
+        let mut first = connect(&mut node, dir.path(), origin).await;
+        let mut second = connect(&mut node, dir.path(), origin).await;
+        let (a, b) = tokio::join!(first.get_raw_html(), second.get_raw_html());
+        let a_busy = code_of(&a.unwrap_err()) == "session_capacity";
+        let b_busy = code_of(&b.unwrap_err()) == "session_capacity";
+        assert_ne!(a_busy, b_busy, "exactly one racing client must obtain the last session slot");
+        let mut live = if a_busy { drop(first); second } else { drop(second); first };
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Connected sessions remain usable even after the retention interval.
+        // The session is alive and has no page: not `session_expired`.
+        assert_eq!(code_of(&live.get_raw_html().await.unwrap_err()), "no_page_loaded");
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let ready = format!("http://127.0.0.1:{}/ready", config.server.metrics_port);
+        let pressure = http.get(&ready).send().await.unwrap();
+        assert_eq!(pressure.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let pressure: serde_json::Value = pressure.json().await.unwrap();
+        assert_eq!(pressure["sessions"], 1);
+        assert!(pressure["reasons"].as_array().unwrap().iter().any(|v| v == "session_capacity"));
+        let original: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        let (id, session) = original["sessions"].as_object().unwrap().iter().next().unwrap();
+        let id = id.clone();
+        let mut legacy = session.clone();
+        legacy.as_object_mut().unwrap().remove("retained_at");
+        drop(live);
+        // Allow expiry plus the next watchdog tick, without depending on precise scheduler timing.
+        for _ in 0..100 {
+            let response = http.get(&ready).send().await.unwrap();
+            if response.status().is_success() { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let recovered: serde_json::Value = http.get(&ready).send().await.unwrap().json().await.unwrap();
+        assert_eq!(recovered["sessions"], 0);
+        let mut replacement = connect(&mut node, dir.path(), origin).await;
+        assert_eq!(code_of(&replacement.get_raw_html().await.unwrap_err()), "no_page_loaded");
+        drop(replacement);
+        // Expiry, the watchdog tick and the next snapshot are three timers: wait
+        // for the empty snapshot instead of assuming how long they take together.
+        let mut expired = serde_json::Value::Null;
+        for _ in 0..200 {
+            if let Ok(bytes) = std::fs::read(&manifest) {
+                // A read can land between truncation and the write; retry it.
+                if let Ok(snapshot) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let empty = snapshot["sessions"].as_object().is_some_and(|sessions| sessions.is_empty());
+                    expired = snapshot;
+                    if empty {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        drop(node);
+        assert!(
+            expired["sessions"].as_object().is_some_and(|sessions| sessions.is_empty()),
+            "the snapshot still lists a session after 20 s: {expired}"
+        );
+        // A stale pre-migration file must never override the authoritative empty snapshot.
+        std::fs::create_dir(dir.path().join("sessions")).unwrap();
+        std::fs::write(dir.path().join("sessions").join(format!("{id}.json")), serde_json::to_vec(&legacy).unwrap()).unwrap();
+        node = launch(dir.path());
+        let probe = connect(&mut node, dir.path(), origin).await;
+        let restored: serde_json::Value = http.get(&ready).send().await.unwrap().json().await.unwrap();
+        assert_eq!(restored["sessions"], 0);
+        drop(probe);
+        drop(node);
+        // Startup also expires a detached record saved before the watchdog had time to reap it.
+        legacy["retained_at"] = serde_json::json!(1);
+        let snapshot = serde_json::json!({"version":1,"sessions":{id.clone():legacy},"knowledge":{id:[],"cluster_shared":[]}});
+        std::fs::write(&manifest, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        node = launch(dir.path());
+        let _probe = connect(&mut node, dir.path(), origin).await;
+        let restored: serde_json::Value = http.get(&ready).send().await.unwrap().json().await.unwrap();
+        assert_eq!(restored["sessions"], 0);
+        let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        assert!(stored["sessions"].as_object().unwrap().is_empty());
+        assert_eq!(stored["knowledge"].as_object().unwrap().len(), 1);
+        assert!(stored["knowledge"].get("cluster_shared").is_some());
+    }).await.expect("session retention acceptance deadline exceeded");
+}
+
+// ---- the daemon reads while a command runs ----
+
+/// A loopback HTTP origin whose responses are held back. Each request it
+/// receives counts in `accepted` and then waits for a permit; a permit lets one
+/// held response go. Navigating to it is a deterministic slow command.
+async fn slow_origin() -> (
+    String,
+    std::sync::Arc<tokio::sync::Semaphore>,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let permits = Arc::new(tokio::sync::Semaphore::new(0));
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let (held, counted) = (Arc::clone(&permits), Arc::clone(&accepted));
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
+            let (held, counted) = (Arc::clone(&held), Arc::clone(&counted));
+            tokio::spawn(async move {
+                let mut request = [0u8; 4096];
+                let _ = socket.read(&mut request).await;
+                counted.fetch_add(1, Ordering::SeqCst);
+                if let Ok(permit) = held.acquire().await {
+                    permit.forget();
+                }
+                let _ = socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n<h1>hello</h1>")
+                    .await;
+            });
+        }
+    });
+    (url, permits, accepted)
+}
+
+/// Waits, for at most 30 seconds, until `condition` holds.
+async fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+    for _ in 0..600 {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("timed out waiting for {what}");
+}
+
+/// The daemon's count of open native connections, from its metrics endpoint.
+async fn active_connections(metrics_port: u16) -> Option<u64> {
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let text = http
+        .get(format!("http://127.0.0.1:{metrics_port}/metrics"))
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    text.lines()
+        .find_map(|line| line.strip_prefix("spine_native_connections_active "))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Waits until the daemon reports exactly `expected` open native connections.
+async fn wait_for_active_connections(metrics_port: u16, expected: u64) {
+    for _ in 0..600 {
+        if active_connections(metrics_port).await == Some(expected) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!(
+        "the daemon still reports {:?} open connections, expected {expected}",
+        active_connections(metrics_port).await
+    );
+}
+
+type RawConnection = spine_protocol::connection::Connection<TcpStream>;
+
+/// A spine-wire client that is driven frame by frame.
+async fn raw_connect(port: u16) -> RawConnection {
+    let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        spine_protocol::native::client_connect(stream),
+    )
+    .await
+    .expect("handshake deadline")
+    .unwrap()
+}
+
+async fn send_navigate(conn: &mut RawConnection, url: &str) -> u64 {
+    let body = spine_protocol::native::encode_command(&spine_protocol::BrowserCommand::Navigate {
+        url: url.to_string(),
+    })
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(30), conn.request(body))
+        .await
+        .expect("send deadline")
+        .unwrap()
+}
+
+async fn next_frame(conn: &mut RawConnection) -> spine_protocol::frame::Frame {
+    tokio::time::timeout(std::time::Duration::from_secs(30), conn.recv())
+        .await
+        .expect("no frame within 30 seconds")
+        .unwrap()
+        .expect("end of stream")
+}
+
+fn reply_of(frame: &spine_protocol::frame::Frame) -> Result<serde_json::Value, String> {
+    assert_eq!(frame.frame_type, spine_protocol::frame::FrameType::Response);
+    spine_protocol::native::decode_reply::<serde_json::Value>(&frame.body)
+        .unwrap()
+        .into_result()
+        .map_err(|error| error.code)
+}
+
+fn slow_node_config(origin: u16, metrics_port: u16, internal_origin: &str) -> String {
+    let mut config = spine_core::SpineConfig::default();
+    config.server.host = "127.0.0.1".into();
+    config.server.port = origin;
+    config.server.metrics_port = metrics_port;
+    config.server.idle_timeout_secs = 120;
+    config.outbound.internal_origins = vec![internal_origin.to_string()];
+    toml::to_string(&config).unwrap()
+}
+
+/// While a command runs the daemon keeps reading: a `PING` is answered before
+/// the command's `RESPONSE`, requests beyond `max_inflight` are refused with
+/// `overloaded` at once, queued commands are answered in order with their own
+/// ids, and a connection that goes away mid-command leaves nothing behind.
+#[tokio::test]
+async fn daemon_reads_while_a_command_runs() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use spine_protocol::frame::{Frame, FrameType};
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (origin_url, permits, accepted) = slow_origin().await;
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let metrics_port = port();
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            slow_node_config(origin, metrics_port, &origin_url),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        // Returns once the daemon accepts; the probe client is not needed.
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let mut conn = raw_connect(origin).await;
+        let max = spine_protocol::native::DAEMON_MAX_INFLIGHT;
+        assert_eq!(conn.max_inflight(), max);
+
+        // The first navigate is now running: the origin holds its response.
+        let first = send_navigate(&mut conn, &origin_url).await;
+        wait_until("the first navigate to reach the origin", || {
+            accepted.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        // A PING sent meanwhile is answered, and nothing else has arrived: the
+        // PONG is the first frame, not the response of the running command.
+        let token = spine_protocol::native::ping_body(5).unwrap();
+        conn.send(Frame {
+            frame_type: FrameType::Ping,
+            request_id: 77,
+            body: token.clone(),
+        })
+        .await
+        .unwrap();
+        let pong = next_frame(&mut conn).await;
+        assert_eq!(pong.frame_type, FrameType::Pong);
+        assert_eq!(pong.request_id, 77);
+        assert_eq!(pong.body, token);
+
+        // Fill the connection to max_inflight with further navigates, which
+        // queue behind the running one.
+        let mut ids = vec![first];
+        for _ in 1..max {
+            ids.push(send_navigate(&mut conn, &origin_url).await);
+        }
+        assert_eq!(ids.len(), max as usize);
+        // One more is refused at once, while the first is still running.
+        let refused = send_navigate(&mut conn, &origin_url).await;
+        let frame = next_frame(&mut conn).await;
+        assert_eq!(frame.request_id, refused);
+        assert_eq!(reply_of(&frame).unwrap_err(), "overloaded");
+        assert_eq!(
+            accepted.load(Ordering::SeqCst),
+            1,
+            "the queue must not run ahead"
+        );
+
+        // Let everything go: the answers come in arrival order with their ids.
+        permits.add_permits(max as usize);
+        for id in &ids {
+            let frame = next_frame(&mut conn).await;
+            assert_eq!(frame.request_id, *id, "responses must keep arrival order");
+            reply_of(&frame).unwrap();
+        }
+        assert_eq!(conn.in_flight_len(), 0);
+
+        // The sequential SDK flow is unchanged.
+        permits.add_permits(1);
+        let mut client = AgentClient::<TcpStream>::connect(&format!("127.0.0.1:{origin}"))
+            .await
+            .unwrap();
+        client.navigate(&origin_url).await.unwrap();
+        assert_eq!(client.get_raw_html().await.unwrap(), "<h1>hello</h1>");
+        client.ping().await.unwrap();
+        drop(client);
+        drop(conn);
+        wait_for_active_connections(metrics_port, 0).await;
+
+        // A peer that disconnects mid-command: the origin never answers this
+        // one, so the command is still running when the client leaves.
+        let before = accepted.load(Ordering::SeqCst);
+        let mut abandoned = raw_connect(origin).await;
+        send_navigate(&mut abandoned, &origin_url).await;
+        wait_until("the abandoned navigate to reach the origin", || {
+            accepted.load(Ordering::SeqCst) == before + 1
+        })
+        .await;
+        wait_for_active_connections(metrics_port, 1).await;
+        drop(abandoned);
+        // Admission is released only when the session has ended and its reader,
+        // writer and command loop have all stopped.
+        wait_for_active_connections(metrics_port, 0).await;
+    })
+    .await
+    .expect("concurrent connection acceptance deadline exceeded");
+}
+
+/// A shutdown that starts while a command runs lets the command finish and
+/// answers it, then sends `CLOSE(shutting_down)`.
+#[tokio::test]
+async fn shutdown_during_a_command_answers_it_then_closes() {
+    let _isolated = PROCESS_TEST.lock().await;
+    use std::time::Duration;
+    tokio::time::timeout(Duration::from_secs(180), async {
+        let (origin_url, permits, accepted) = slow_origin().await;
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let metrics_port = port();
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            slow_node_config(origin, metrics_port, &origin_url),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let mut conn = raw_connect(origin).await;
+        let running = send_navigate(&mut conn, &origin_url).await;
+        wait_until("the navigate to reach the origin", || {
+            accepted.load(std::sync::atomic::Ordering::SeqCst) == 1
+        })
+        .await;
+
+        // Ask the daemon to drain. A new connection is answered with
+        // CLOSE(shutting_down) once the drain has begun, which says it has;
+        // the running command keeps the daemon alive meanwhile.
+        {
+            use std::io::Write;
+            let mut control = node.0.stdin.take().unwrap();
+            control.write_all(&[1]).unwrap();
+        }
+        let mut draining = false;
+        for _ in 0..600 {
+            let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+            let attempt = tokio::time::timeout(
+                Duration::from_secs(30),
+                spine_protocol::native::client_connect(stream),
+            )
+            .await
+            .expect("probe handshake deadline");
+            // The daemon completes the handshake and then sends the CLOSE, so
+            // the probe reads one frame to see it. Before the drain begins the
+            // daemon simply waits for a request and the read times out.
+            let mut probe = match attempt {
+                Ok(probe) => probe,
+                Err(error) => {
+                    assert!(
+                        format!("{error:#}").contains("shutting_down"),
+                        "unexpected probe failure: {error:#}"
+                    );
+                    draining = true;
+                    break;
+                }
+            };
+            if let Ok(Err(spine_protocol::connection::ConnectionError::Closed(close))) =
+                tokio::time::timeout(Duration::from_millis(500), probe.recv()).await
+            {
+                assert_eq!(close.code, "shutting_down");
+                draining = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(draining, "the daemon never began draining");
+
+        // The command was running throughout. Release it: its answer arrives,
+        // then the CLOSE.
+        permits.add_permits(1);
+        let frame = next_frame(&mut conn).await;
+        assert_eq!(frame.request_id, running);
+        reply_of(&frame).unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(30), conn.recv())
+            .await
+            .expect("no CLOSE within 30 seconds")
+            .unwrap_err();
+        match closed {
+            spine_protocol::connection::ConnectionError::Closed(close) => {
+                assert_eq!(close.code, "shutting_down");
+            }
+            other => panic!("expected CLOSE(shutting_down), got {other}"),
+        }
+    })
+    .await
+    .expect("shutdown during a command acceptance deadline exceeded");
+}
+
+// ---- key succession through a running daemon (spec 02, section 10.11) ----
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// A name whose inception key has been rotated once: `log` holds the one
+/// `rotate` entry, signed by `inception`, that makes `current` the signing key.
+struct RotatedName {
+    name: SpineUri,
+    inception: SigningKey,
+    current: SigningKey,
+    log: SuccessionLog,
+}
+
+impl RotatedName {
+    /// Keys are derived from `seed`, `seed + 1` (current) and `seed + 2` (the
+    /// key the rotation commits to).
+    fn new(seed: u8, now: u64) -> Self {
+        Self::with_keys(seed, seed + 1, seed + 2, now)
+    }
+
+    /// The name of inception seed `seed`, rotated once to the key of seed
+    /// `current`, which commits to the key of seed `next`. Two names with one
+    /// inception seed and different `current` seeds are two branches of one name.
+    fn with_keys(seed: u8, current: u8, next: u8, now: u64) -> Self {
+        let inception = SigningKey::from_bytes(&[seed; 32]);
+        let current = SigningKey::from_bytes(&[current; 32]);
+        let next = SigningKey::from_bytes(&[next; 32]);
+        let inception_key = inception.verifying_key().to_bytes();
+        let log = SuccessionLog::default()
+            .rotated(
+                &inception_key,
+                &inception,
+                &current.verifying_key().to_bytes(),
+                &next.verifying_key().to_bytes(),
+                now.saturating_sub(60),
+            )
+            .unwrap();
+        Self {
+            name: SpineUri::did(inception_key),
+            inception,
+            current,
+            log,
+        }
+    }
+
+    fn unsigned(&self, seq: u64, now: u64) -> NameRecord {
+        NameRecord::new(self.name.clone(), seq, now)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"))
+    }
+
+    /// The log's entries as the resolve answer carries them (`02-names.md` 10.1).
+    fn entries(log: &SuccessionLog) -> Vec<serde_json::Value> {
+        match serde_json::to_value(log).unwrap() {
+            serde_json::Value::Array(entries) => entries,
+            other => panic!("a log is a JSON array, not {other}"),
+        }
+    }
+
+    /// A record signed by the current key, carrying the log's head claim.
+    fn by_current_key(&self, seq: u64, now: u64) -> NameRecord {
+        let state = self
+            .log
+            .verify(&self.inception.verifying_key().to_bytes())
+            .unwrap();
+        let mut record = self.unsigned(seq, now);
+        record.sign_current(&self.current, &state).unwrap();
+        assert!(record.meta.contains_key(SUCCESSION_META_KEY));
+        record
+    }
+
+    /// A record signed by the inception key, which the log has superseded.
+    fn by_superseded_key(&self, seq: u64, now: u64) -> NameRecord {
+        let mut record = self.unsigned(seq, now);
+        record.sign(&self.inception).unwrap();
+        record
+    }
+}
+
+/// The `err.code` and message of a refused call.
+fn refusal(error: &anyhow::Error) -> (&str, &str) {
+    spine_protocol::native::remote_error(error)
+        .unwrap_or_else(|| panic!("not a remote error: {error:#}"))
+}
+
+/// Resolve `name`, which must resolve, into its record and provenance.
+async fn resolved(
+    client: &mut AgentClient<TcpStream>,
+    name: &SpineUri,
+) -> (NameRecord, spine_protocol::NameProvenance) {
+    match client.resolve_name(&name.to_string(), None).await.unwrap() {
+        spine_protocol::NameResolution::Resolved {
+            record, provenance, ..
+        } => (serde_json::from_value(record).unwrap(), provenance),
+        other => panic!("{name} did not resolve: {other:?}"),
+    }
+}
+
+/// A rotated name through one daemon: its current-key record is refused
+/// without the succession log and admitted with it, the superseded key can no
+/// longer publish, and all of that still holds after a restart.
+#[tokio::test]
+async fn rotated_name_publishes_with_its_log_and_survives_a_restart() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin_port, mesh_port) = (origin_port(), port());
+        let mut node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let now = unix_now();
+        let rotated = RotatedName::new(111, now);
+        let record = rotated.by_current_key(2, now);
+
+        // Without the log the daemon cannot judge the record's head claim.
+        let error = client
+            .publish_name(serde_json::to_value(&record).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(
+            message.contains("succession"),
+            "the refusal must say the succession log is needed: {message}"
+        );
+        let unpublished = client
+            .resolve_name(&rotated.name.to_string(), None)
+            .await
+            .unwrap();
+        assert!(
+            !matches!(unpublished, spine_protocol::NameResolution::Resolved { .. }),
+            "a refused record must not resolve: {unpublished:?}"
+        );
+
+        // With the log beside it the same record is admitted, by the local
+        // resolver and by the mesh store.
+        let report = client
+            .publish_name(publication_value(&record, &rotated.log).unwrap())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "publication with the log failed: {error:#}\n{}",
+                    std::fs::read_to_string(dir.path().join("server.log")).unwrap()
+                )
+            });
+        assert_eq!(report["stored"], true);
+        assert_eq!(report["name"], rotated.name.to_string());
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store refused the record: {report}"
+        );
+        let (held, provenance) = resolved(&mut client, &rotated.name).await;
+        assert_eq!(held, record);
+        assert!(held.meta.contains_key(SUCCESSION_META_KEY));
+        held.verify_with(&rotated.current.verifying_key().to_bytes())
+            .unwrap();
+        assert!(
+            matches!(
+                provenance,
+                spine_protocol::NameProvenance::Local | spine_protocol::NameProvenance::Cache
+            ),
+            "a name this node publishes is answered from {provenance:?}"
+        );
+
+        // The log is held now: the superseded key cannot publish, whatever seq.
+        let stale = rotated.by_superseded_key(9, now);
+        let error = client
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        // Sending the log again does not help it.
+        let error = client
+            .publish_name(publication_value(&stale, &rotated.log).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, record);
+
+        // Restart: the log and the record come back from the records file, and
+        // the mesh store is given the log before the record.
+        drop(client);
+        drop(node);
+        node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let (held, _) = resolved(&mut client, &rotated.name).await;
+        assert_eq!(held, record);
+        let error = client
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        // The restored log admits the current key's next record with no log
+        // sent, in the local resolver and in the mesh store.
+        let next = rotated.by_current_key(3, now);
+        let report = client
+            .publish_name(serde_json::to_value(&next).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store lost the log over the restart: {report}"
+        );
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, next);
+    })
+    .await
+    .expect("rotated name acceptance deadline exceeded");
+}
+
+/// A rotated name published on one node resolves on another with its
+/// current-key record, and the succession log reaches the second node's own
+/// resolver: the record is cached there and the superseded key is refused.
+#[tokio::test]
+async fn rotated_name_resolves_on_another_node_with_its_log() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let (first_port, first_mesh, second_port, second_mesh) =
+            (origin_port(), port(), origin_port(), port());
+        let mut first = start(first_dir.path(), first_port, first_mesh, &[]);
+        let mut origin = connect(&mut first, first_dir.path(), first_port).await;
+        let mut second = start(
+            second_dir.path(),
+            second_port,
+            second_mesh,
+            &[format!("127.0.0.1:{first_mesh}")],
+        );
+        let mut agent = connect(&mut second, second_dir.path(), second_port).await;
+        let logs = || {
+            format!(
+                "first: {}\nsecond: {}",
+                std::fs::read_to_string(first_dir.path().join("server.log")).unwrap(),
+                std::fs::read_to_string(second_dir.path().join("server.log")).unwrap()
+            )
+        };
+
+        let now = unix_now();
+        let rotated = RotatedName::new(121, now);
+        let record = rotated.by_current_key(2, now);
+        let report = origin
+            .publish_name(publication_value(&record, &rotated.log).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            report["replication_error"].is_null(),
+            "{report}\n{}",
+            logs()
+        );
+
+        // The second node does not hold the name: the answer comes over the
+        // mesh. A node that has not yet met its seed says so and is asked again.
+        let name = rotated.name.to_string();
+        let mut answer = agent.resolve_name(&name, None).await.unwrap();
+        for _ in 0..100 {
+            if !matches!(answer, spine_protocol::NameResolution::Unavailable { .. }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            answer = agent.resolve_name(&name, None).await.unwrap();
+        }
+        // The log that came with the record over the mesh goes into the
+        // answer, and the client verifies it from the name's inception key.
+        let verified = spine_agent::names::verify_resolution(&name, answer.clone())
+            .unwrap_or_else(|error| panic!("{error:#}\n{}", logs()));
+        let (remote, provenance) = match answer {
+            spine_protocol::NameResolution::Resolved {
+                record,
+                provenance,
+                log,
+            } => {
+                assert_eq!(log, RotatedName::entries(&rotated.log), "{}", logs());
+                (record, provenance)
+            }
+            other => panic!(
+                "{name} did not resolve over the mesh: {other:?}\n{}",
+                logs()
+            ),
+        };
+        assert!(
+            matches!(
+                verified,
+                spine_agent::names::VerifiedResolution::Resolved { ref log, .. }
+                    if *log == rotated.log
+            ),
+            "{verified:?}"
+        );
+        let remote: NameRecord = serde_json::from_value(remote).unwrap();
+        assert_eq!(remote, record);
+        remote
+            .verify_with(&rotated.current.verifying_key().to_bytes())
+            .unwrap();
+        assert_eq!(provenance, spine_protocol::NameProvenance::Network);
+
+        // The second node's own resolver admits the record only against the
+        // log, so an answer from its cache says the log arrived with it.
+        let (cached, provenance) = resolved(&mut agent, &rotated.name).await;
+        assert_eq!(cached, record);
+        assert!(
+            matches!(
+                provenance,
+                spine_protocol::NameProvenance::Cache | spine_protocol::NameProvenance::Local
+            ),
+            "the second resolve was answered from {provenance:?}: the log did not reach the local resolver\n{}",
+            logs()
+        );
+
+        // And with the log held there, the superseded key cannot publish there.
+        let stale = rotated.by_superseded_key(9, now);
+        let error = agent
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "record_rejected", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+
+        // Stop both nodes and restart only the second, with the first gone, so
+        // nobody can send it the log again. The second never published this
+        // name, so nothing at start-up offers the log to its mesh store: only a
+        // persisted mesh log book still holds it. Without it the mesh store
+        // would refuse the current key's next record for want of the log.
+        drop(agent);
+        drop(second);
+        drop(origin);
+        drop(first);
+        second = start(
+            second_dir.path(),
+            second_port,
+            second_mesh,
+            &[format!("127.0.0.1:{first_mesh}")],
+        );
+        let mut agent = connect(&mut second, second_dir.path(), second_port).await;
+        let error = agent
+            .publish_name(serde_json::to_value(&stale).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+        let next = rotated.by_current_key(3, now);
+        let report = agent
+            .publish_name(serde_json::to_value(&next).unwrap())
+            .await
+            .unwrap_or_else(|error| panic!("{error:#}\n{}", logs()));
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store forgot the log over the restart: {report}\n{}",
+            logs()
+        );
+    })
+    .await
+    .expect("rotated name mesh acceptance deadline exceeded");
+}
+
+/// `publish_resource` sent as a raw command. `AgentClient::publish_resource`
+/// first verifies the record under the key in the name (spec 02, 10.11), which
+/// a rotated name's current-key record does not pass, so the SDK cannot send it.
+async fn publish_resource_raw(
+    conn: &mut RawConnection,
+    record: serde_json::Value,
+    content_type: &str,
+    data: &[u8],
+) -> anyhow::Result<serde_json::Value> {
+    let command = spine_protocol::BrowserCommand::PublishResource {
+        record,
+        content_type: content_type.to_string(),
+        data: data.to_vec(),
+    };
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        spine_protocol::native::call::<_, serde_json::Value>(conn, &command),
+    )
+    .await
+    .expect("no reply to publish_resource within 60 seconds");
+    Ok(reply?)
+}
+
+/// The first chunk of a stored resource, by a raw `read_resource`.
+async fn read_resource_raw(
+    conn: &mut RawConnection,
+    hash: [u8; 32],
+) -> anyhow::Result<spine_protocol::resource::ResourceChunk> {
+    let command = spine_protocol::BrowserCommand::ReadResource {
+        hash,
+        offset: 0,
+        max_bytes: spine_protocol::resource::MAX_RESOURCE_CHUNK,
+    };
+    let reply = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        spine_protocol::native::call::<_, spine_protocol::resource::ResourceChunk>(conn, &command),
+    )
+    .await
+    .expect("no reply to read_resource within 60 seconds");
+    Ok(reply?)
+}
+
+/// A resource of a rotated name through one daemon: the binding signed by the
+/// current key is refused until the succession log comes with it, then the
+/// bytes are stored and read back and the name resolves to the binding; the
+/// same publication signed by the superseded key is refused, with or without
+/// the log, before and after a restart.
+#[tokio::test]
+async fn rotated_name_publishes_a_resource_with_its_log() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin_port, mesh_port) = (origin_port(), port());
+        let mut node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let mut conn = raw_connect(origin_port).await;
+        let server_log = || std::fs::read_to_string(dir.path().join("server.log")).unwrap();
+
+        let now = unix_now();
+        let rotated = RotatedName::new(131, now);
+        let bytes = b"bytes of a rotated name".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let state = rotated
+            .log
+            .verify(&rotated.inception.verifying_key().to_bytes())
+            .unwrap();
+        let mut record = rotated.unsigned(2, now).with_content_hash(id);
+        record.sign_current(&rotated.current, &state).unwrap();
+        assert!(
+            record.verify().is_err(),
+            "not signed by the key in the name"
+        );
+
+        // Without the log the resource store cannot judge the head claim, and
+        // nothing is stored.
+        let error = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&record).unwrap(),
+            "text/plain",
+            &bytes,
+        )
+        .await
+        .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "publish_failed", "{message}");
+        assert!(
+            message.contains("succession"),
+            "the refusal must say the succession log is needed: {message}"
+        );
+        let error = read_resource_raw(&mut conn, id).await.unwrap_err();
+        assert_eq!(code_of(&error), "resource_not_found");
+
+        // With the log beside the record the bytes are stored and the binding
+        // is published, locally and in the mesh store.
+        let report = publish_resource_raw(
+            &mut conn,
+            publication_value(&record, &rotated.log).unwrap(),
+            "text/plain",
+            &bytes,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "publication with the log failed: {error:#}\n{}",
+                server_log()
+            )
+        });
+        assert_eq!(report["stored"], true);
+        assert_eq!(report["name"], rotated.name.to_string());
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store refused the record: {report}"
+        );
+        let chunk = read_resource_raw(&mut conn, id).await.unwrap();
+        assert!(chunk.complete);
+        assert_eq!(chunk.content_type, "text/plain");
+        assert_eq!(chunk.data, bytes);
+        assert_eq!(
+            resource_id(&chunk.content_type, &chunk.data).unwrap(),
+            id,
+            "the bytes are those the current key signed for"
+        );
+        let (held, _) = resolved(&mut client, &rotated.name).await;
+        assert_eq!(held, record);
+        assert_eq!(held.content_hash, Some(id));
+
+        // The same publication signed by the superseded key is refused, and
+        // sending the log again does not help it.
+        let mut stale = rotated.unsigned(9, now).with_content_hash(id);
+        stale.sign(&rotated.inception).unwrap();
+        stale.verify().unwrap();
+        for publication in [
+            serde_json::to_value(&stale).unwrap(),
+            publication_value(&stale, &rotated.log).unwrap(),
+        ] {
+            let error = publish_resource_raw(&mut conn, publication, "text/plain", &bytes)
+                .await
+                .unwrap_err();
+            let (code, message) = refusal(&error);
+            assert_eq!(code, "publish_failed", "{message}");
+            assert!(message.contains("superseded"), "{message}");
+        }
+        // Nor can the superseded key store other bytes under the name.
+        let other = b"bytes the superseded key signed".to_vec();
+        let other_id = resource_id("text/plain", &other).unwrap();
+        let mut forged = rotated.unsigned(9, now).with_content_hash(other_id);
+        forged.sign(&rotated.inception).unwrap();
+        let error = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&forged).unwrap(),
+            "text/plain",
+            &other,
+        )
+        .await
+        .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "publish_failed", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        let error = read_resource_raw(&mut conn, other_id).await.unwrap_err();
+        assert_eq!(code_of(&error), "resource_not_found");
+        // The refusals changed nothing.
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, record);
+        assert_eq!(read_resource_raw(&mut conn, id).await.unwrap().data, bytes);
+
+        // Restart: the log comes back from the records file, so the resource
+        // store still judges by the current key with no log sent.
+        drop(conn);
+        drop(client);
+        drop(node);
+        node = start(dir.path(), origin_port, mesh_port, &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let mut conn = raw_connect(origin_port).await;
+        assert_eq!(read_resource_raw(&mut conn, id).await.unwrap().data, bytes);
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, record);
+        let error = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&forged).unwrap(),
+            "text/plain",
+            &other,
+        )
+        .await
+        .unwrap_err();
+        let (code, message) = refusal(&error);
+        assert_eq!(code, "publish_failed", "{message}");
+        assert!(message.contains("superseded"), "{message}");
+        let next_bytes = b"the next bytes of a rotated name".to_vec();
+        let next_id = resource_id("text/plain", &next_bytes).unwrap();
+        let mut next = rotated.unsigned(3, now).with_content_hash(next_id);
+        next.sign_current(&rotated.current, &state).unwrap();
+        let report = publish_resource_raw(
+            &mut conn,
+            serde_json::to_value(&next).unwrap(),
+            "text/plain",
+            &next_bytes,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "publication after the restart failed: {error:#}\n{}",
+                std::fs::read_to_string(dir.path().join("server.log")).unwrap()
+            )
+        });
+        assert!(
+            report["replication_error"].is_null(),
+            "the mesh store lost the log over the restart: {report}"
+        );
+        assert_eq!(
+            read_resource_raw(&mut conn, next_id).await.unwrap().data,
+            next_bytes
+        );
+        assert_eq!(resolved(&mut client, &rotated.name).await.0, next);
+    })
+    .await
+    .expect("rotated name resource acceptance deadline exceeded");
+}
+
+fn is_need_log(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<spine_name::NameError>(),
+        Some(spine_name::NameError::NeedSuccessionLog { .. })
+    )
+}
+
+/// The agent client's own check of a record, with no daemon: an unrotated
+/// name is judged as before with or without a log, a current-key record of a
+/// rotated name needs its log, and a superseded key is refused even with it.
+#[test]
+fn agent_client_judges_records_with_and_without_the_log() {
+    use spine_agent::resources::{authorise_with_log, authorise_without_log};
+    use spine_name::NameError;
+    let now = unix_now();
+
+    let plain_key = SigningKey::from_bytes(&[151; 32]);
+    let mut plain = NameRecord::new(SpineUri::did(plain_key.verifying_key().to_bytes()), 1, now)
+        .unwrap()
+        .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"));
+    plain.sign(&plain_key).unwrap();
+    authorise_without_log(&plain).unwrap();
+    authorise_with_log(&plain, &SuccessionLog::default()).unwrap();
+
+    let rotated = RotatedName::new(153, now);
+    let current = rotated.by_current_key(2, now);
+    authorise_with_log(&current, &rotated.log).unwrap();
+    assert!(matches!(
+        authorise_without_log(&current),
+        Err(NameError::NeedSuccessionLog { .. })
+    ));
+    let stale = rotated.by_superseded_key(3, now);
+    assert!(matches!(
+        authorise_with_log(&stale, &rotated.log),
+        Err(NameError::SupersededKey(_))
+    ));
+}
+
+/// A rotated name's resource through the agent client alone: no raw calls. The
+/// client refuses the current-key record until it is given the log, publishes
+/// it with the log, refuses the superseded key, and reads the bytes back.
+#[tokio::test]
+async fn rotated_name_publishes_and_reads_a_resource_through_the_agent_client() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let rotated = RotatedName::new(161, now);
+        let bytes = b"bytes of a rotated name, by the agent client".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let state = rotated
+            .log
+            .verify(&rotated.inception.verifying_key().to_bytes())
+            .unwrap();
+        let mut record = rotated.unsigned(2, now).with_content_hash(id);
+        record.sign_current(&rotated.current, &state).unwrap();
+
+        let error = client
+            .publish_resource(&record, "text/plain", bytes.clone())
+            .await
+            .unwrap_err();
+        assert!(is_need_log(&error), "{error:#}");
+
+        let mut stale = rotated.unsigned(9, now).with_content_hash(id);
+        stale.sign(&rotated.inception).unwrap();
+        let error = client
+            .publish_resource_with_log(&stale, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<spine_name::NameError>(),
+                Some(spine_name::NameError::SupersededKey(_))
+            ),
+            "{error:#}"
+        );
+
+        let report = client
+            .publish_resource_with_log(&record, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap();
+        assert_eq!(report["stored"], true);
+
+        // Changed in stage 2 of the wire revision (`00-wire.md` 12.5): the
+        // resolve answer carries the name's succession log, so `read_resource`
+        // with no log no longer refuses a rotated name's record for want of one
+        // (it was `is_need_log` before). It asks the node it is connected to,
+        // verifies the log it gets and judges the record against it.
+        let read = client
+            .read_resource(record.clone())
+            .await
+            .unwrap_or_else(|error| panic!("{error:#}"));
+        assert_eq!(read.data, bytes);
+        // A log the caller already holds still works, and agrees with the node.
+        let read = client
+            .read_resource_with_log(record.clone(), Some(&rotated.log))
+            .await
+            .unwrap();
+        assert_eq!(read.data, bytes);
+        assert_eq!(read.content_type, "text/plain");
+    })
+    .await
+    .expect("rotated name agent client acceptance deadline exceeded");
+}
+
+/// A record of `rotated`'s name signed by its current key, binding `bytes` and
+/// pointing at the origin on `origin_port`: what a publisher of a resource sends.
+fn resource_binding(
+    rotated: &RotatedName,
+    seq: u64,
+    now: u64,
+    origin_port: u16,
+    id: [u8; 32],
+) -> NameRecord {
+    let state = rotated
+        .log
+        .verify(&rotated.inception.verifying_key().to_bytes())
+        .unwrap();
+    let mut record = NameRecord::new(rotated.name.clone(), seq, now)
+        .unwrap()
+        .with_endpoint(Endpoint::new("tcp", format!("127.0.0.1:{origin_port}")))
+        .with_content_hash(id);
+    record.sign_current(&rotated.current, &state).unwrap();
+    record
+}
+
+/// Stage 2 of the wire revision, the acceptance test of the log in the resolve
+/// answer: a client that holds NO log resolves a rotated name, reads its
+/// resource and fetches it by name, all through the daemon. The answer carries
+/// the log and the client replays it from the name's inception key.
+#[tokio::test]
+async fn a_client_with_no_log_resolves_a_rotated_name_and_reads_its_resource() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut publisher = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let rotated = RotatedName::new(191, now);
+        let bytes = b"bytes of a rotated name, read by a client with no log".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let record = resource_binding(&rotated, 2, now, origin_port, id);
+        publisher
+            .publish_resource_with_log(&record, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap();
+
+        // Another connection: it has the name and nothing else.
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+        let name = rotated.name.to_string();
+
+        // The raw answer carries the log in the JSON form of 02-names 10.1.
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Resolved {
+                record: held, log, ..
+            } => {
+                assert_eq!(serde_json::from_value::<NameRecord>(held).unwrap(), record);
+                assert_eq!(log, RotatedName::entries(&rotated.log));
+            }
+            other => panic!("{name} did not resolve: {other:?}"),
+        }
+        // And the client verifies it.
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Resolved {
+                record: held, log, ..
+            } => {
+                assert_eq!(held, record);
+                assert_eq!(log, rotated.log);
+            }
+            other => panic!("{name} did not verify: {other:?}"),
+        }
+
+        // A client with no log reads the resource: it asks the node for the
+        // log, verifies it and judges the record. Before stage 2 this was the
+        // need-log refusal.
+        let read = client.read_resource(record.clone()).await.unwrap();
+        assert_eq!(read.data, bytes);
+        // And fetches it by name alone.
+        let fetched = client
+            .fetch_resource_with(&name, spine_agent::resources::FetchPolicy::allow_private())
+            .await
+            .unwrap();
+        assert_eq!(fetched.data, bytes);
+        assert_eq!(fetched.content_type, "text/plain");
+
+        // The verified `fetch_name`: the same answer, and the endpoints to dial.
+        let (verified, endpoints) = client.fetch_name_verified(&name, None).await.unwrap();
+        assert!(matches!(
+            verified,
+            spine_agent::names::VerifiedResolution::Resolved { .. }
+        ));
+        assert_eq!(endpoints, vec![format!("tcp://127.0.0.1:{origin_port}")]);
+
+        // A batch is answered per name, each verified on its own.
+        let batch = client
+            .resolve_names_verified(&[name.clone(), "spine://did:nobody/".to_string()])
+            .await
+            .unwrap();
+        assert!(matches!(
+            batch[0].as_ref().unwrap(),
+            spine_agent::names::VerifiedResolution::Resolved { .. }
+        ));
+        assert_eq!(batch.len(), 2);
+    })
+    .await
+    .expect("a client with no log acceptance deadline exceeded");
+}
+
+/// Stage 2: a retired name answers `retired` with a log the client verifies, and
+/// a client with no log cannot read the resource of a retired name.
+#[tokio::test]
+async fn a_retired_name_answers_retired_with_a_log_the_client_verifies() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let rotated = RotatedName::new(201, now);
+        let bytes = b"bytes of a name that is then retired".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let record = resource_binding(&rotated, 2, now, origin_port, id);
+        client
+            .publish_resource_with_log(&record, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap();
+        let name = rotated.name.to_string();
+        assert_eq!(
+            client.read_resource(record.clone()).await.unwrap().data,
+            bytes
+        );
+
+        // The owner retires the name: the entry reveals the key the rotation
+        // committed to (seed 203) and is signed by the current key.
+        let retired = rotated
+            .log
+            .retired(
+                &rotated.inception.verifying_key().to_bytes(),
+                &rotated.current,
+                &SigningKey::from_bytes(&[203; 32])
+                    .verifying_key()
+                    .to_bytes(),
+                now,
+            )
+            .unwrap();
+        // The node learns it from the log sent beside a record. The record is
+        // refused (the name is retired) and the log is kept, because it is true
+        // on its own (02-names 10.11).
+        let error = client
+            .publish_name(publication_value(&record, &retired).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+
+        // The answer is `retired` and carries the log that retires the name.
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Retired { name: said, log } => {
+                assert_eq!(said, name);
+                assert_eq!(log, RotatedName::entries(&retired));
+                assert_eq!(log.last().unwrap()["kind"], "retire");
+            }
+            other => panic!("{name} is not retired: {other:?}"),
+        }
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Retired { log, .. } => {
+                assert_eq!(log, retired);
+            }
+            other => panic!("{name} is not verified retired: {other:?}"),
+        }
+
+        // The resource paths say why, as a typed error, not "not found".
+        let is_retired = |error: &anyhow::Error| {
+            matches!(
+                error.downcast_ref::<spine_agent::names::NameOutcomeError>(),
+                Some(spine_agent::names::NameOutcomeError::Retired { .. })
+            )
+        };
+        let error = client.read_resource(record.clone()).await.unwrap_err();
+        assert!(is_retired(&error), "{error:#}");
+        let error = client
+            .fetch_resource_with(&name, spine_agent::resources::FetchPolicy::allow_private())
+            .await
+            .unwrap_err();
+        assert!(is_retired(&error), "{error:#}");
+        // A log the caller holds does not make a retired name readable. The
+        // record was signed before the retirement, so its head claim is behind
+        // the log and the refusal is the succession one (`stale_claim`), not
+        // `Retired`; either way it is the name layer that refuses.
+        let error = client
+            .read_resource_with_log(record.clone(), Some(&retired))
+            .await
+            .unwrap_err();
+        assert!(
+            error.downcast_ref::<spine_name::NameError>().is_some(),
+            "{error:#}"
+        );
+    })
+    .await
+    .expect("a retired name acceptance deadline exceeded");
+}
+
+/// Stage 2: a name with two conflicting logs answers `compromised` with both,
+/// and the client derives the proof from them.
+#[tokio::test]
+async fn an_equivocated_name_answers_compromised_with_two_logs() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        // One inception key (seed 211), two rotations of it to different keys:
+        // the same key signed two entries at one position.
+        let first = RotatedName::with_keys(211, 212, 213, now);
+        let second = RotatedName::with_keys(211, 214, 215, now);
+        assert_eq!(first.name, second.name);
+        let name = first.name.to_string();
+        client
+            .publish_name(publication_value(&first.by_current_key(2, now), &first.log).unwrap())
+            .await
+            .unwrap();
+        // The second branch is refused, and the node keeps the proof it makes.
+        let error = client
+            .publish_name(publication_value(&second.by_current_key(3, now), &second.log).unwrap())
+            .await
+            .unwrap_err();
+        assert_eq!(code_of(&error), "record_rejected");
+
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Compromised { name: said, logs } => {
+                assert_eq!(said, name);
+                assert_eq!(logs.len(), 2);
+                let sent = [
+                    RotatedName::entries(&first.log),
+                    RotatedName::entries(&second.log),
+                ];
+                assert!(
+                    logs[0] != logs[1] && logs.iter().all(|log| sent.contains(log)),
+                    "the two logs are the two branches: {logs:?}"
+                );
+            }
+            other => panic!("{name} is not compromised: {other:?}"),
+        }
+        // The client verifies both from the inception key and derives the proof.
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Compromised { proof, .. } => {
+                proof
+                    .verify(&first.inception.verifying_key().to_bytes())
+                    .unwrap();
+            }
+            other => panic!("{name} is not verified compromised: {other:?}"),
+        }
+        let error = client
+            .fetch_resource_with(&name, spine_agent::resources::FetchPolicy::allow_private())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<spine_agent::names::NameOutcomeError>(),
+                Some(spine_agent::names::NameOutcomeError::Compromised { .. })
+            ),
+            "{error:#}"
+        );
+        // A caller's log that conflicts with the node's is a compromise too.
+        let error = client
+            .fetch_resource_with_log(
+                &name,
+                spine_agent::resources::FetchPolicy::allow_private(),
+                Some(&first.log),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<spine_agent::names::NameOutcomeError>()
+                .is_some(),
+            "{error:#}"
+        );
+    })
+    .await
+    .expect("an equivocated name acceptance deadline exceeded");
+}
+
+/// Stage 2: a name whose owner withdrew it answers `revoked` with the tombstone
+/// (it was `invalid` with a reason) and the client verifies the tombstone.
+#[tokio::test]
+async fn a_revoked_name_answers_revoked_with_its_tombstone() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let signing = SigningKey::from_bytes(&[221; 32]);
+        let uri = SpineUri::did(signing.verifying_key().to_bytes());
+        let mut live = NameRecord::new(uri.clone(), 1, now)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"));
+        live.sign(&signing).unwrap();
+        client
+            .publish_name(serde_json::to_value(&live).unwrap())
+            .await
+            .unwrap();
+        let mut tombstone = NameRecord::tombstone(uri.clone(), 2, now).unwrap();
+        tombstone.sign(&signing).unwrap();
+        client
+            .publish_name(serde_json::to_value(&tombstone).unwrap())
+            .await
+            .unwrap();
+
+        let name = uri.to_string();
+        match client.resolve_name(&name, None).await.unwrap() {
+            spine_protocol::NameResolution::Revoked { record, log, .. } => {
+                assert_eq!(
+                    serde_json::from_value::<NameRecord>(record).unwrap(),
+                    tombstone
+                );
+                assert!(log.is_empty(), "a name that never rotated has no log");
+            }
+            other => panic!("{name} is not revoked: {other:?}"),
+        }
+        match client.resolve_name_verified(&name, None).await.unwrap() {
+            spine_agent::names::VerifiedResolution::Revoked { record, .. } => {
+                assert!(record.is_tombstone());
+            }
+            other => panic!("{name} is not verified revoked: {other:?}"),
+        }
+        // `fetch_name` carries the same outcome, and no endpoints.
+        let (verified, endpoints) = client.fetch_name_verified(&name, None).await.unwrap();
+        assert_eq!(verified.outcome(), "revoked");
+        assert!(endpoints.is_empty());
+    })
+    .await
+    .expect("a revoked name acceptance deadline exceeded");
+}
+
+// ---- client identity (docs/spec/00-wire.md 6.6) ----
+
+/// Runs `future` under a 30-second deadline.
+async fn within<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(30), future)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: no answer within 30 seconds"))
+}
+
+/// The body of the `RESPONSE` the daemon sends to `command` on `conn`.
+async fn answer_body(conn: &mut RawConnection, command: spine_protocol::BrowserCommand) -> Vec<u8> {
+    let body = spine_protocol::native::encode_command(&command).unwrap();
+    let id = within("request", conn.request(body)).await.unwrap();
+    let frame = next_frame(conn).await;
+    assert_eq!(frame.frame_type, spine_protocol::frame::FrameType::Response);
+    assert_eq!(frame.request_id, id);
+    frame.body
+}
+
+/// A stream on which the handshake was done by hand, so that a test can write
+/// frames the connection layer would refuse to send. Returns the transcript
+/// that an `IDENTIFY` signs.
+async fn handshaken_stream(port: u16) -> (TcpStream, spine_protocol::identify::Transcript) {
+    use spine_protocol::frame::{read_frame, write_frame, FrameType, PRE_HELLO_MAX_FRAME};
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let hello = spine_protocol::native::client_hello();
+    let hello_frame = hello.to_frame().unwrap();
+    within(
+        "write HELLO",
+        write_frame(&mut stream, &hello_frame, PRE_HELLO_MAX_FRAME, false),
+    )
+    .await
+    .unwrap();
+    let ack = within(
+        "read HELLO_ACK",
+        read_frame(&mut stream, PRE_HELLO_MAX_FRAME),
+    )
+    .await
+    .unwrap()
+    .expect("the daemon closed during the handshake");
+    assert_eq!(ack.frame_type, FrameType::HelloAck);
+    spine_protocol::hello::HelloAck::from_frame(&ack)
+        .unwrap()
+        .validate_against(&hello)
+        .unwrap();
+    let transcript = spine_protocol::identify::Transcript::of_bodies(&hello_frame.body, &ack.body);
+    (stream, transcript)
+}
+
+/// Writes `frames`.
+async fn write_frames(stream: &mut TcpStream, frames: &[spine_protocol::frame::Frame]) {
+    use spine_protocol::frame::{encode_frame, MAX_FRAME};
+    use tokio::io::AsyncWriteExt;
+    for frame in frames {
+        let bytes = encode_frame(frame, MAX_FRAME, false).unwrap();
+        within("write", stream.write_all(&bytes)).await.unwrap();
+    }
+}
+
+/// Writes `frames` and returns the code of the `CLOSE` that follows; other
+/// frames (answers to requests) are skipped.
+async fn close_code_after(
+    stream: &mut TcpStream,
+    frames: &[spine_protocol::frame::Frame],
+) -> String {
+    use spine_protocol::frame::{read_frame, FrameType, MAX_FRAME};
+    write_frames(stream, frames).await;
+    loop {
+        let frame = within("read", read_frame(stream, MAX_FRAME))
+            .await
+            .unwrap()
+            .expect("the stream ended without a CLOSE");
+        if frame.frame_type == FrameType::Close {
+            return spine_protocol::hello::Close::from_frame(&frame)
+                .unwrap()
+                .code;
+        }
+    }
+}
+
+/// An `IDENTIFY` is recorded and grants nothing: the daemon answers an
+/// identified connection exactly as it answers an anonymous one. A second
+/// `IDENTIFY`, one after a request, and a bad proof each end the connection
+/// with `CLOSE(protocol_violation)`.
+#[tokio::test]
+async fn an_identified_client_gets_the_answers_an_anonymous_one_gets() {
+    use spine_protocol::frame::{read_frame, Frame, FrameType, MAX_FRAME};
+    use spine_protocol::hello::AuthorityMode;
+    use spine_protocol::identify::{Identify, Transcript};
+    use spine_protocol::{BrowserCommand, CapabilityQuery, CapabilitySelector};
+
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.server.idle_timeout_secs = 120;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let key = SigningKey::from_bytes(&[0x61; 32]);
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut anonymous = within(
+            "anonymous handshake",
+            spine_protocol::native::client_connect(stream),
+        )
+        .await
+        .unwrap();
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut identified = within(
+            "identified handshake",
+            spine_protocol::native::client_connect_with_identity(stream, Some(&key)),
+        )
+        .await
+        .unwrap();
+
+        // What HELLO_ACK told each of them: authority off, a binding of its
+        // own, the server's clock.
+        assert_eq!(anonymous.identity(), None);
+        assert_eq!(identified.identity(), Some(key.verifying_key().to_bytes()));
+        for conn in [&anonymous, &identified] {
+            assert_eq!(conn.authority(), AuthorityMode::Off);
+            assert_ne!(conn.binding(), [0u8; 32]);
+            assert!(conn.server_time() > 1_600_000_000);
+        }
+        assert_ne!(anonymous.binding(), identified.binding());
+
+        // The same commands, the same answers, byte for byte: a successful
+        // one, two that fail and a refusal.
+        let commands = vec![
+            BrowserCommand::CapabilityQuery(CapabilityQuery {
+                selector: CapabilitySelector::All,
+            }),
+            BrowserCommand::GetUR,
+            BrowserCommand::Navigate {
+                url: "http://127.0.0.1/".to_string(),
+            },
+            BrowserCommand::NamespaceStatus,
+        ];
+        for command in commands {
+            let a = answer_body(&mut anonymous, command.clone()).await;
+            let b = answer_body(&mut identified, command.clone()).await;
+            assert_eq!(a, b, "the answers to {command:?} differ");
+        }
+
+        // A bad proof, a proof for another connection, a second proof and a
+        // proof after a request are each `protocol_violation`.
+        let request = |id: u64| Frame {
+            frame_type: FrameType::Request,
+            request_id: id,
+            body: spine_protocol::native::encode_command(&BrowserCommand::GetUR).unwrap(),
+        };
+
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let mut bad = Identify::sign(&key, &transcript);
+        bad.sig[0] ^= 1;
+        let code = close_code_after(&mut stream, &[bad.to_frame().unwrap()]).await;
+        assert_eq!(code, "protocol_violation");
+
+        let (mut stream, _transcript) = handshaken_stream(origin).await;
+        let other = Transcript::of_bodies(b"x", b"y");
+        let wrong_binding = Identify::sign(&key, &other).to_frame().unwrap();
+        let code = close_code_after(&mut stream, &[wrong_binding]).await;
+        assert_eq!(code, "protocol_violation");
+
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let good = Identify::sign(&key, &transcript).to_frame().unwrap();
+        let code = close_code_after(&mut stream, &[good.clone(), good]).await;
+        assert_eq!(code, "protocol_violation");
+
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let late = Identify::sign(&key, &transcript).to_frame().unwrap();
+        let code = close_code_after(&mut stream, &[request(1), late]).await;
+        assert_eq!(code, "protocol_violation");
+
+        // A good proof pipelined with a request is served, with the answer
+        // an anonymous connection gets.
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let pipelined = Identify::sign(&key, &transcript).to_frame().unwrap();
+        write_frames(&mut stream, &[pipelined, request(1)]).await;
+        let answer = within("read", read_frame(&mut stream, MAX_FRAME))
+            .await
+            .unwrap()
+            .expect("the daemon closed the connection");
+        assert_eq!(answer.frame_type, FrameType::Response);
+        assert_eq!(
+            answer.body,
+            answer_body(&mut anonymous, BrowserCommand::GetUR).await
+        );
+    })
+    .await
+    .expect("identity acceptance deadline exceeded");
+}
+
+// ---- The authority carrier (`docs/spec/00-wire.md` 8.5, 8.6) in modes off and audit.
+
+/// The text of the node's metrics endpoint.
+async fn metrics_text(metrics_port: u16) -> String {
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    http.get(format!("http://127.0.0.1:{metrics_port}/metrics"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap()
+}
+
+/// The value of the unlabelled counter or gauge `name`, or of the series
+/// `name{labels}` when `series` gives the text between the braces.
+fn metric(text: &str, name: &str, series: Option<&str>) -> u64 {
+    let prefix = match series {
+        Some(labels) => format!("{name}{{{labels}}} "),
+        None => format!("{name} "),
+    };
+    text.lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str()))
+        .unwrap_or_else(|| panic!("no metric {prefix:?} in\n{text}"))
+        .trim()
+        .parse()
+        .unwrap()
+}
+
+/// What one `AUTH_REQUEST` was answered with: the receipt, if one came before
+/// the `RESPONSE`, and the `RESPONSE` body.
+struct AuthAnswer {
+    receipt: Option<Vec<u8>>,
+    response: Vec<u8>,
+}
+
+/// The authority parts of a test: the node's key, and an agent whose key holds
+/// the node's whole tree through the single-user root grant.
+struct Authority {
+    node_key: SigningKey,
+    chain: Vec<Vec<u8>>,
+    credentials: spine_agent::authority::Credentials,
+}
+
+impl Authority {
+    fn new() -> Authority {
+        let node_key = SigningKey::from_bytes(&[9; 32]);
+        let agent = SigningKey::from_bytes(&[3; 32]);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let root = spine_core::authority::AuthorityGate::issue_self_root(
+            &node_key,
+            agent.verifying_key().to_bytes(),
+            now - 100,
+            3_600,
+            [1; 16],
+        )
+        .unwrap();
+        let chain = vec![root.encode().unwrap()];
+        let credentials = spine_agent::authority::Credentials::new(
+            agent,
+            chain.clone(),
+            node_key.verifying_key().to_bytes(),
+        )
+        .unwrap();
+        Authority {
+            node_key,
+            chain,
+            credentials,
+        }
+    }
+
+    fn node(&self) -> [u8; 32] {
+        self.node_key.verifying_key().to_bytes()
+    }
+
+    /// The node's key, where the daemon reads it from (`[namespace] key_path`).
+    fn write_node_key(&self, dir: &Path) {
+        std::fs::write(dir.join("spine-node.key"), "09".repeat(32)).unwrap();
+    }
+
+    fn scope(&self, command: &spine_protocol::BrowserCommand) -> spine_agent::authority::Scope {
+        let need = spine_core::authority::classify(command);
+        spine_agent::authority::Scope {
+            action: need.action,
+            effect: need.effect,
+            resource: need.resource(self.node()),
+        }
+    }
+
+    /// The body of an `AUTH_REQUEST` for `command`, and the invocation in it.
+    fn request(
+        &self,
+        conn: &RawConnection,
+        command: &spine_protocol::BrowserCommand,
+        session: [u8; 32],
+        nonce: u8,
+    ) -> (Vec<u8>, spine_authority::Invocation) {
+        let command_bytes = spine_protocol::native::encode_command(command).unwrap();
+        let invocation = self
+            .credentials
+            .invocation(
+                &self.scope(command),
+                &command_bytes,
+                session,
+                conn.server_time(),
+                [nonce; 16],
+            )
+            .unwrap();
+        let body = spine_protocol::auth::encode_auth_request(
+            &self.chain,
+            &invocation.encode().unwrap(),
+            command,
+        )
+        .unwrap();
+        (body, invocation)
+    }
+}
+
+/// Sends `body` as an `AUTH_REQUEST` and reads until its `RESPONSE`.
+async fn send_auth_body(conn: &mut RawConnection, body: Vec<u8>) -> AuthAnswer {
+    use spine_protocol::frame::FrameType;
+    let id = within("send", conn.request_auth(body)).await.unwrap();
+    let mut receipt = None;
+    loop {
+        let frame = next_frame(conn).await;
+        assert_eq!(frame.request_id, id, "a frame for another request");
+        match frame.frame_type {
+            FrameType::Receipt => {
+                assert!(receipt.is_none(), "two receipts for one request");
+                receipt = Some(frame.body);
+            }
+            FrameType::Response => {
+                return AuthAnswer {
+                    receipt,
+                    response: frame.body,
+                }
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+}
+
+/// The error code of a `RESPONSE` body, or the empty text for an `ok`.
+fn code_in(body: &[u8]) -> String {
+    spine_protocol::native::decode_reply::<serde_json::Value>(body)
+        .unwrap()
+        .into_result()
+        .map(|_| String::new())
+        .unwrap_or_else(|error| error.code)
+}
+
+/// The `ok` value of a `RESPONSE` body.
+fn ok_in(body: &[u8]) -> serde_json::Value {
+    spine_protocol::native::decode_reply::<serde_json::Value>(body)
+        .unwrap()
+        .into_result()
+        .unwrap()
+}
+
+/// In mode `audit` every `AUTH_REQUEST` is checked and nothing is refused on
+/// the verdict: the command runs, the `RESPONSE` is the bytes a plain `REQUEST`
+/// gets, and only an invocation the gate authorised is answered with a receipt
+/// first. A refusal records nothing, the verdicts are counted by step, and a
+/// connection that proved another key than the invoker is refused at step 9.
+#[tokio::test]
+async fn audit_checks_every_auth_request_and_enforces_nothing() {
+    use spine_protocol::BrowserCommand;
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin, metrics) = (origin_port(), port());
+        let authority = Authority::new();
+        authority.write_node_key(dir.path());
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = metrics;
+        config.server.idle_timeout_secs = 120;
+        config.authority.mode = spine_core::config::AuthorityMode::Audit;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let mut conn = raw_connect(origin).await;
+        assert_eq!(
+            conn.authority(),
+            spine_protocol::hello::AuthorityMode::Audit
+        );
+        let navigate = BrowserCommand::Navigate {
+            url: "http://127.0.0.1/".to_string(),
+        };
+        let plain = answer_body(&mut conn, navigate.clone()).await;
+        assert_ne!(code_in(&plain), "", "the plain request is expected to fail");
+
+        // Authorised: a receipt first, then the bytes a REQUEST gets.
+        let (body, invocation) = authority.request(&conn, &navigate, conn.binding(), 1);
+        let answer = send_auth_body(&mut conn, body.clone()).await;
+        assert_eq!(answer.response, plain);
+        let receipt = answer.receipt.expect("a receipt for an authorised request");
+        spine_agent::authority::verify_receipt(&receipt, &authority.node(), &invocation, &plain)
+            .unwrap();
+
+        // The same bytes again: the nonce is spent, the gate refuses, the
+        // command runs all the same, and there is no receipt.
+        let again = send_auth_body(&mut conn, body).await;
+        assert!(again.receipt.is_none());
+        assert_eq!(again.response, plain);
+
+        // An invocation bound to another connection: step 9, runs, no receipt.
+        let (body, _) = authority.request(&conn, &navigate, [0x66; 32], 2);
+        let wrong = send_auth_body(&mut conn, body).await;
+        assert!(wrong.receipt.is_none());
+        assert_eq!(wrong.response, plain);
+
+        // A refused invocation still stores: nothing is enforced.
+        let store = BrowserCommand::StoreKnowledge {
+            key: "audit-key".to_string(),
+            value: serde_json::json!({"v": 1}),
+            tags: Vec::new(),
+        };
+        let (body, _) = authority.request(&conn, &store, [0x66; 32], 3);
+        let stored = send_auth_body(&mut conn, body).await;
+        assert!(stored.receipt.is_none());
+        assert_eq!(code_in(&stored.response), "");
+        let deleted = answer_body(
+            &mut conn,
+            BrowserCommand::DeleteKnowledge {
+                key: "audit-key".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(ok_in(&deleted), serde_json::json!({"deleted": 1}));
+
+        // A body that is not an AUTH_REQUEST body: refused before the gate.
+        let bare = spine_protocol::native::encode_command(&navigate).unwrap();
+        let malformed = send_auth_body(&mut conn, bare).await;
+        assert!(malformed.receipt.is_none());
+        assert_eq!(code_in(&malformed.response), "invalid_request");
+
+        // A connection that proved another key than the invoker.
+        let stranger = SigningKey::from_bytes(&[77; 32]);
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut identified = within(
+            "identified handshake",
+            spine_protocol::native::client_connect_with_identity(stream, Some(&stranger)),
+        )
+        .await
+        .unwrap();
+        let (body, _) = authority.request(&identified, &navigate, identified.binding(), 4);
+        let refused = send_auth_body(&mut identified, body).await;
+        assert!(refused.receipt.is_none());
+        assert_eq!(code_in(&refused.response), code_in(&plain));
+
+        // What the node counted.
+        let text = metrics_text(metrics).await;
+        assert_eq!(metric(&text, "spine_authority_enforcing", None), 0);
+        let verdict = |outcome: &str| {
+            metric(
+                &text,
+                "spine_authority_verdicts_total",
+                Some(&format!("outcome=\"{outcome}\"")),
+            )
+        };
+        assert_eq!(verdict("authorised"), 1);
+        assert_eq!(verdict("refused_step_9"), 4, "{text}");
+        for step in [1, 2, 3, 4, 5, 6, 7, 8, 10, 11] {
+            assert_eq!(verdict(&format!("refused_step_{step}")), 0, "step {step}");
+        }
+        assert_eq!(metric(&text, "spine_authority_receipts_total", None), 1);
+        assert_eq!(
+            metric(&text, "spine_authority_malformed_requests_total", None),
+            1
+        );
+        assert!(
+            metric(
+                &text,
+                "spine_authority_unauthenticated_requests_total",
+                None
+            ) >= 2
+        );
+        assert_eq!(metric(&text, "spine_authority_not_enabled_total", None), 0);
+    })
+    .await
+    .expect("audit acceptance deadline exceeded");
+}
+
+/// In mode `off` an `AUTH_REQUEST` is answered `authority_not_enabled` and its
+/// command does not run; the client library refuses to send one at all.
+#[tokio::test]
+async fn off_refuses_an_auth_request_and_does_not_run_its_command() {
+    use spine_protocol::BrowserCommand;
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let (origin, metrics) = (origin_port(), port());
+        let authority = Authority::new();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = metrics;
+        config.server.idle_timeout_secs = 120;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        let mut client = connect(&mut node, dir.path(), origin).await;
+        assert_eq!(
+            client.authority(),
+            spine_protocol::hello::AuthorityMode::Off
+        );
+
+        let store = BrowserCommand::StoreKnowledge {
+            key: "off-key".to_string(),
+            value: serde_json::json!(1),
+            tags: Vec::new(),
+        };
+        let (body, _) = authority.request(&client.conn, &store, client.binding(), 1);
+        let answer = send_auth_body(&mut client.conn, body).await;
+        assert!(answer.receipt.is_none());
+        assert_eq!(code_in(&answer.response), "authority_not_enabled");
+        let deleted = answer_body(
+            &mut client.conn,
+            BrowserCommand::DeleteKnowledge {
+                key: "off-key".to_string(),
+            },
+        )
+        .await;
+        assert_eq!(
+            ok_in(&deleted),
+            serde_json::json!({"deleted": 0}),
+            "the command ran although the node takes no authority"
+        );
+
+        // The library does not send one to a node that reports `off`.
+        let error = client
+            .request_authorized::<serde_json::Value>(
+                &authority.credentials,
+                &authority.scope(&store),
+                &store,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("off"), "{error}");
+
+        let text = metrics_text(metrics).await;
+        assert_eq!(metric(&text, "spine_authority_not_enabled_total", None), 1);
+        assert_eq!(metric(&text, "spine_authority_enforcing", None), 0);
+    })
+    .await
+    .expect("off acceptance deadline exceeded");
+}
+
+/// `required` is still refused at start-up, and the message says why.
+#[tokio::test]
+async fn required_is_refused_at_startup_until_stage_5() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin_port();
+        config.server.metrics_port = port();
+        config.authority.mode = spine_core::config::AuthorityMode::Required;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        let mut status = None;
+        for _ in 0..600 {
+            if let Some(s) = node.0.try_wait().unwrap() {
+                status = Some(s);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let status = status.expect("the node kept running with authority.mode = required");
+        assert!(!status.success());
+        let log = std::fs::read_to_string(dir.path().join("server.log")).unwrap();
+        assert!(log.contains("required"), "{log}");
+        assert!(log.contains("stage 5"), "{log}");
+    })
+    .await
+    .expect("startup acceptance deadline exceeded");
+}

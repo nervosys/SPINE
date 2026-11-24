@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -183,7 +183,7 @@
                         <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
 <h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
 <ul>
-<li><strong>Rust 1.75+</strong> (install via <a href="https://rustup.rs/">rustup</a>)</li>
+<li><strong>Rust 1.89+</strong> (install via <a href="https://rustup.rs/">rustup</a>)</li>
 <li><strong>OpenSSL</strong> (for TLS features)</li>
 <li><strong>pkg-config</strong> (Linux/macOS)</li>
 </ul>
@@ -202,10 +202,10 @@ cargo build --release
 <tr><td><code>spine</code></td><td>CLI tool for managing SPINE</td></tr>
 <tr><td><code>spine-core</code></td><td>Core server</td></tr>
 <tr><td><code>spine-gateway</code></td><td>REST API gateway</td></tr>
-<tr><td><code>spine-browser</code></td><td>GUI browser (egui)</td></tr>
 </tbody>
 </table>
 </div>
+<p>The GUI browser (<code>spine-browser</code>) is now in the separate <code>research/</code> workspace.</p>
 <h2 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h2>
 <pre><code class="language-bash"># Run tests
 cargo test --workspace
@@ -215,11 +215,17 @@ cargo run -p spine-cli -- --help
 </code></pre>
 <h2 id="optional-features"><a class="header" href="#optional-features">Optional Features</a></h2>
 <p>Enable additional features via Cargo feature flags:</p>
-<pre><code class="language-bash"># QUIC transport support
-cargo build --release --features quic
+<pre><code class="language-bash"># Native QUIC listener in the daemon (off by default)
+cargo build --release -p spine-core --features quic
 
-# io_uring (Linux only)
-cargo build --release --features io_uring
+# io_uring in the transport crate (Linux only)
+cargo build --release -p spine-transport --features io-uring
+
+# Research hooks in the daemon (cluster node, human transpiler)
+cargo build --release -p spine-core --features research
+
+# The experimental crates are a separate workspace
+cd research &amp;&amp; cargo build
 </code></pre>
 
                     </main>

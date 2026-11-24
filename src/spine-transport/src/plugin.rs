@@ -318,11 +318,19 @@ impl RateLimiterPlugin {
 
         if new_tokens > 0 {
             let max = self.burst * 1000;
-            let _ =
-                self.tokens_x1000
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                        Some(current.saturating_add(new_tokens).min(max))
-                    });
+            let mut current = self.tokens_x1000.load(Ordering::Relaxed);
+            loop {
+                let next = current.saturating_add(new_tokens).min(max);
+                match self.tokens_x1000.compare_exchange_weak(
+                    current,
+                    next,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => current = actual,
+                }
+            }
         }
     }
 }
@@ -336,21 +344,23 @@ impl TransportPlugin for RateLimiterPlugin {
         self.refill();
 
         // Try to consume one token (1000 in scaled units)
-        let result =
-            self.tokens_x1000
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    if current >= 1000 {
-                        Some(current - 1000)
-                    } else {
-                        None // No tokens available
-                    }
+        let mut current = self.tokens_x1000.load(Ordering::Relaxed);
+        loop {
+            if current < 1000 {
+                // No tokens available
+                return Err(crate::TransportError::ResourceExhausted {
+                    resource: format!("rate limit exceeded ({} frames/sec)", self.rate),
                 });
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(_) => Err(crate::TransportError::ResourceExhausted {
-                resource: format!("rate limit exceeded ({} frames/sec)", self.rate),
-            }),
+            }
+            match self.tokens_x1000.compare_exchange_weak(
+                current,
+                current - 1000,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(actual) => current = actual,
+            }
         }
     }
 

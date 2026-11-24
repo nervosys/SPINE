@@ -1,3 +1,5 @@
+# HISTORICAL one-shot patch script (checked 2026-11-21). Its edits were applied long ago;
+# re-running it can overwrite later changes to the files it targets. Not part of any build or CI job.
 """Apply remaining Phase 18 edits: metrics endpoint + agent instrumentation + tests."""
 import re
 

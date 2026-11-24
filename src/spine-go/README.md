@@ -7,12 +7,15 @@ Go bindings for the [SPINE](https://github.com/nervosys/SPINE) agentic web stack
 1. **Rust toolchain** — Install from <https://rustup.rs>
 2. **Go 1.21+** — Install from <https://go.dev/dl>
 
+## What this wraps
+
+This package calls the C ABI in `src/spine-ffi` (header `include/spine.h`) through cgo. The wire (spine-wire v1, `docs/spec/00-wire.md`) is spoken by the Rust SDK inside that library, not by Go code. `Connect` is plain TCP; the C ABI has no TLS entry point, and daemon errors come back as text only (the stable error code is not exposed). The daemon's default address is `127.0.0.1:8080`.
+
 ## Building the FFI Library
 
 ```bash
 # From the SPINE repository root:
-cd spine-ffi
-cargo build --release
+cargo build --release -p spine-ffi
 ```
 
 This produces `target/release/libspine_ffi.so` (Linux), `libspine_ffi.dylib` (macOS), or `spine_ffi.dll` (Windows).
@@ -97,11 +100,9 @@ go test -v ./...
 | `Client.Navigate(url)`                      | Navigate to a URL                  |
 | `Client.GetUR()`                            | Get Unified Representation         |
 | `Client.GetRawHTML()`                       | Get raw HTML                       |
-| `Client.Search(query)`                      | Search the web                     |
 | `Client.ExecuteHLS(script)`                 | Execute HLS script                 |
 | `Client.Ping()`                             | Ping server (returns RTT ms)       |
-| `Client.Morph()`                            | Trigger protocol morphing          |
-| `Client.GetCapabilities()`                  | Get server capabilities            |
+| `Client.GetCapabilities()`                  | Get binary-executor capabilities   |
 | `Client.StoreKnowledge(key, value, tags)`   | Store knowledge entry              |
 | `Client.QueryKnowledge(query, tags, limit)` | Query knowledge base               |
 | `Client.Close()`                            | Disconnect                         |

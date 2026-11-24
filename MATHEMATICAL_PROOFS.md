@@ -1,5 +1,7 @@
 # Mathematical Analysis of SPINE Architecture
 
+> **Note, 2026-11-21:** On this date the native client to daemon wire became spine-wire v1 (`docs/spec/00-wire.md`, `CHANGELOG.md` Unreleased). Removed since this text was written: the speculative layer, protocol morphing and padding, the Chameleon key and latent AEAD on the native path (research code is in `research/spine-protocol-research`), the pre-shared-key AES-GCM layer, `ProtocolHandler`, the `SP` header, and many commands. Results about speculative decoding (2.1, 7.2) and the Chameleon Protocol (6.1) are about designs that are no longer part of the native wire; they are retained as analysis only and say nothing about spine-wire v1 or the running daemon.
+
 ## Complexity and Security Properties
 
 This document provides mathematical analysis demonstrating properties of SPINE's multi-agent architecture and communication protocols.

@@ -13,6 +13,40 @@ what changed in this release.
 
 API documentation: <https://docs.rs/spine-wasm>
 
+## Limits
+
+`WasmRuntime::execute` runs untrusted programs, so every resource a program
+can use is bounded. Exceeding a host budget stops the program and returns an
+error that names the budget. All are `pub const` in the crate root.
+
+| Limit | Value | What it bounds |
+| --- | --- | --- |
+| `MAX_INSTRUCTIONS` | 65,536 | instructions per program, checked before any compiling |
+| `MAX_STRING_DATA_BYTES` | 64 KiB | string data a program carries (the guest memory is one page) |
+| `DEFAULT_FUEL_BUDGET` | 1,000,000,000 | guest instructions plus host work, per run |
+| `DEFAULT_EXECUTION_DEADLINE` | 2 s | wall-clock time of the guest, from its start, checked at every host call; `WasmRuntime::with_deadline` changes it |
+| `HOST_CALL_FUEL` | 64 | fuel charged per host call, plus one unit per byte it reads or scans |
+| `DEFAULT_MAX_MEMORY_PAGES` | 256 (16 MiB) | guest linear memory, enforced by a wasmtime `ResourceLimiter` |
+| `MAX_STACK_DEPTH` | 1,024 | host value stack |
+| `MAX_VALUE_BYTES` | 64 KiB | one host value, including a string built by concat or add |
+| `MAX_VALUE_DEPTH` | 64 | nesting of one value |
+| `MAX_LIVE_BYTES` | 1 MiB | all live host values together |
+| `MAX_ELEMENTS` / `MAX_EVENTS` / `MAX_ACTIONS` | 4,096 / 4,096 / 64 | elements, events and actions one run may produce |
+| `MAX_CALL_ARGS` | 32 | `num_args` of a call |
+| `MAX_LATENT_STREAMS` / `MAX_LATENT_DIMS` | 256 / 16,384 | latent vectors and their size |
+
+Sizes are checked before anything is allocated. Fuel bounds the work, and
+`DEFAULT_EXECUTION_DEADLINE` bounds the time: a run past it is stopped at its
+next host call with `host budget exceeded: deadline`. The deadline is checked
+in the host calls rather than with wasmtime epoch interruption, because the
+generated guest is one loop-free function that does its work through host
+calls, and epoch checks sit only at function entry and loop headers. It runs
+from the moment the guest starts: building, parsing and compiling the module
+come before it and are bounded by `MAX_INSTRUCTIONS`, and one host call is not
+interrupted (each is bounded by the byte and value budgets).
+`WasmStats::memory_used_bytes` is the guest's linear memory, not the host
+values.
+
 ## Workspace dependencies
 
 - `spine-compiler`

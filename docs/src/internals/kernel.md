@@ -2,6 +2,8 @@
 
 `spine-kernel` provides ultra-low-level hardware primitives for maximum performance.
 
+**Research.** The crate lives in the separate `research/` workspace (`research/spine-kernel`), not the root workspace, and nothing on the native wire uses it. The figures below were measured on earlier builds and have not been re-measured.
+
 ## SIMD Intrinsics
 
 AVX2 (x86_64) and NEON (aarch64) accelerated operations:

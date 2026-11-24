@@ -26,12 +26,11 @@
 
 use serde_json::json;
 use spine_protocol::mcp::{serve_stdio, McpServer};
-use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
+use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome};
 use std::io::{self, BufReader};
 
 fn demo_advertisement() -> CapabilityAdvertisement {
     CapabilityAdvertisement {
-        id: "stdio".into(),
         agent_id: "did:spine:demo".into(),
         capabilities: vec![
             Capability {
@@ -61,8 +60,8 @@ fn demo_advertisement() -> CapabilityAdvertisement {
 }
 
 /// Demo executor: routes a bridged [`ToolCall`] to a tiny in-process tool.
-fn execute(call: ToolCall) -> ToolResult {
-    let outcome = match call.name.as_str() {
+fn execute(call: ToolCall) -> ToolOutcome {
+    match call.name.as_str() {
         "agent.demo/echo" => ToolOutcome::Ok {
             content: json!({ "echo": call.args }),
         },
@@ -81,15 +80,10 @@ fn execute(call: ToolCall) -> ToolResult {
             }
         }
         other => ToolOutcome::Err {
-            code: "unknown_tool".into(),
+            code: "unsupported_tool".into(),
             message: format!("no such tool: {other}"),
             details: None,
         },
-    };
-    ToolResult {
-        id: call.id,
-        outcome,
-        trace: None,
     }
 }
 

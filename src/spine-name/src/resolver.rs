@@ -17,8 +17,10 @@ use async_trait::async_trait;
 use std::sync::Mutex;
 
 use crate::cache::{CacheLookup, CacheStats, ResolverCache};
+use crate::logbook::{LogChange, LogOffer};
 use crate::record::NameRecord;
 use crate::store::RecordStore;
+use crate::succession::{Equivocation, State as SuccessionState, SuccessionLog};
 use crate::uri::{Authority, SpineUri};
 use crate::NameError;
 
@@ -93,6 +95,18 @@ pub trait Resolver: Send + Sync {
     async fn find_providers(&self, term: &str) -> Result<Vec<NameRecord>, NameError>;
 }
 
+/// Storage namespace of the persisted succession logs: key is the 32-byte
+/// inception key, value the log as serde JSON. Validated at load: a row whose
+/// log does not verify from its key is dropped.
+#[cfg(feature = "storage")]
+pub const SUCCESSIONS_NAMESPACE: &str = "spine-name-successions-v1";
+
+/// Storage namespace of the persisted equivocation proofs: key is the 32-byte
+/// inception key, value the proof as serde JSON. Validated at load: a row whose
+/// proof does not verify is dropped.
+#[cfg(feature = "storage")]
+pub const EQUIVOCATIONS_NAMESPACE: &str = "spine-name-equivocations-v1";
+
 /// A resolver backed by a local [`RecordStore`], fronted by a [`ResolverCache`].
 ///
 /// This is the whole resolution path for a node serving its own names, and the
@@ -103,6 +117,8 @@ pub struct LocalResolver {
     /// Injected clock (seconds since epoch), so freshness is testable and this
     /// crate stays free of a time dependency.
     clock: Box<dyn Fn() -> u64 + Send + Sync>,
+    #[cfg(feature = "storage")]
+    persistence: Option<std::sync::Arc<dyn spine_storage::StorageBackend>>,
 }
 
 impl std::fmt::Debug for LocalResolver {
@@ -121,6 +137,8 @@ impl LocalResolver {
             store: Mutex::new(RecordStore::new()),
             cache: Mutex::new(ResolverCache::new(4096)),
             clock: Box::new(clock),
+            #[cfg(feature = "storage")]
+            persistence: None,
         }
     }
 
@@ -129,30 +147,364 @@ impl LocalResolver {
         Self::new(move || now)
     }
 
+    /// Restore publisher records from a durable backend. Signatures and keys
+    /// are checked before accepting the snapshot. Expired records retain their
+    /// sequence in storage for owner-driven renewal, but never resolve fresh.
+    /// Learned cache entries, replicas and negative results are not persisted.
+    #[cfg(feature = "storage")]
+    pub fn persistent(
+        clock: impl Fn() -> u64 + Send + Sync + 'static,
+        backend: std::sync::Arc<dyn spine_storage::StorageBackend>,
+    ) -> Result<Self, NameError> {
+        let mut resolver = Self::new(clock);
+        // Proofs and logs first, so that records of a rotated name are admitted
+        // against the log they were signed under. A row that does not verify,
+        // or that does not fit the bounds, is dropped.
+        {
+            let book = resolver.store.get_mut().unwrap();
+            let proofs = backend
+                .scan(EQUIVOCATIONS_NAMESPACE, None)
+                .map_err(|e| NameError::Storage(e.to_string()))?;
+            for (key, data) in proofs {
+                if let (Ok(key), Ok(proof)) = (
+                    <[u8; 32]>::try_from(key.as_slice()),
+                    serde_json::from_slice::<Equivocation>(&data),
+                ) {
+                    book.restore_proof(key, proof);
+                }
+            }
+            let logs = backend
+                .scan(SUCCESSIONS_NAMESPACE, None)
+                .map_err(|e| NameError::Storage(e.to_string()))?;
+            for (key, data) in logs {
+                if let (Ok(key), Ok(log)) = (
+                    <[u8; 32]>::try_from(key.as_slice()),
+                    serde_json::from_slice::<SuccessionLog>(&data),
+                ) {
+                    book.restore_log(key, log);
+                }
+            }
+        }
+        let records = backend
+            .scan("spine-name-publishers-v1", None)
+            .map_err(|e| NameError::Storage(e.to_string()))?;
+        if records.len() > crate::DEFAULT_CAPACITY {
+            return Err(NameError::Capacity);
+        }
+        for (key, data) in records {
+            let record: NameRecord =
+                serde_json::from_slice(&data).map_err(|e| NameError::Storage(e.to_string()))?;
+            if key != record.name.to_string().as_bytes() {
+                return Err(NameError::Storage(
+                    "stored key does not match record name".into(),
+                ));
+            }
+            // A record that no longer verifies (for example one signed under
+            // an older signing-bytes layout) must not stop the node starting.
+            // It is skipped here, never served, and replaced by the owner's
+            // next publication. The same goes for a record that breaks the
+            // lifetime rules (a `ttl_secs` over the maximum, written before the
+            // bound existed) or is post-dated against this node's clock.
+            let admitted = resolver.store.get_mut().unwrap().logs().authorise(&record);
+            if record.validate(resolver.now()).is_err() || admitted.is_err() {
+                continue;
+            }
+            if !record.is_expired(resolver.now()) {
+                resolver.publish(record)?;
+            }
+        }
+        resolver.persistence = Some(backend);
+        Ok(resolver)
+    }
+
+    /// All records owned by this publisher, including expired sequence markers.
+    #[cfg(feature = "storage")]
+    pub fn published_records(&self) -> Result<Vec<NameRecord>, NameError> {
+        let Some(backend) = &self.persistence else {
+            return Ok(Vec::new());
+        };
+        let store = self.store.lock().unwrap();
+        backend
+            .scan("spine-name-publishers-v1", None)
+            .map_err(|e| NameError::Storage(e.to_string()))?
+            .into_iter()
+            .map(|(_, bytes)| {
+                serde_json::from_slice::<NameRecord>(&bytes)
+                    .map_err(|e| NameError::Storage(e.to_string()))
+            })
+            .filter(|parsed| match parsed {
+                Ok(record) => store.logs().authorise(record).is_ok(),
+                Err(_) => true,
+            })
+            .collect()
+    }
+
     /// Current time according to the injected clock.
     pub fn now(&self) -> u64 {
         (self.clock)()
     }
 
     /// Publish a record into the local store. Verification happens in the store,
-    /// so an invalid record cannot be published.
+    /// so an invalid record cannot be published. A record that fails
+    /// [`NameRecord::validate`] against this resolver's clock (too large, a
+    /// `ttl_secs` over the maximum, a malformed tombstone, or `published_at`
+    /// past the allowed skew) is refused. Publishing a tombstone withdraws the
+    /// name: later resolutions fail with [`NameError::Revoked`] and a record of
+    /// the same or lower `seq` is refused with `StalePublication`.
     pub fn publish(&self, record: NameRecord) -> Result<(), NameError> {
+        record.validate(self.now())?;
         let mut store = self.store.lock().unwrap();
-        store.put(record)?;
+        // The admission check: exactly `verify` for a name with no succession
+        // log (see `LogBook::authorise`).
+        store.logs().authorise(&record)?;
+        if let Some(previous) = store.get(&record.name) {
+            if record != *previous && !record.supersedes(previous) {
+                return Err(NameError::StalePublication);
+            }
+        }
+        #[cfg(feature = "storage")]
+        if let Some(backend) = &self.persistence {
+            let name = record.name.to_string();
+            if let Some(bytes) = backend
+                .get("spine-name-publishers-v1", name.as_bytes())
+                .map_err(|e| NameError::Storage(e.to_string()))?
+            {
+                let previous: NameRecord = serde_json::from_slice(&bytes)
+                    .map_err(|e| NameError::Storage(e.to_string()))?;
+                // A stored predecessor that no longer verifies cannot hold the
+                // sequence number against a valid record.
+                if store.logs().authorise(&previous).is_ok() && !record.supersedes(&previous) {
+                    return if record == previous {
+                        Ok(())
+                    } else {
+                        Err(NameError::StalePublication)
+                    };
+                }
+            } else if backend
+                .count("spine-name-publishers-v1")
+                .map_err(|e| NameError::Storage(e.to_string()))?
+                >= crate::DEFAULT_CAPACITY
+            {
+                return Err(NameError::Capacity);
+            }
+            let mut candidate = store.clone();
+            if candidate.put(record.clone(), self.now())? == crate::PutOutcome::Rejected {
+                return Err(NameError::Capacity);
+            }
+            let bytes =
+                serde_json::to_vec(&record).map_err(|e| NameError::Storage(e.to_string()))?;
+            backend
+                .put("spine-name-publishers-v1", name.as_bytes(), &bytes)
+                .map_err(|e| NameError::Storage(e.to_string()))?;
+            *store = candidate;
+            drop(store);
+            self.cache.lock().unwrap().remove(&record.name);
+            return Ok(());
+        }
+        let name = record.name.clone();
+        if store.put(record, self.now())? == crate::PutOutcome::Rejected {
+            return Err(NameError::Capacity);
+        }
+        drop(store);
+        self.cache.lock().unwrap().remove(&name);
         Ok(())
     }
 
     /// Seed the cache with a record learned elsewhere (e.g. from the mesh).
+    /// The record is checked like a published one ([`NameRecord::validate`]
+    /// against this resolver's clock, then its signature). A tombstone is
+    /// cached too, so a revoked name stays revoked here.
     pub fn cache_record(&self, record: NameRecord) -> Result<(), NameError> {
-        record.verify()?;
+        record.validate(self.now())?;
+        let admitted = self.store.lock().unwrap().logs().authorise(&record);
+        admitted?;
         self.cache.lock().unwrap().put(record);
         Ok(())
+    }
+
+    /// Offer a succession log of a name (spec 02, section 10): learned from a
+    /// publisher, a peer or a file. The log is verified from its inception key;
+    /// the resolver keeps the best one per name, replaced only by a valid strict
+    /// extension, and a valid conflicting log is kept as an equivocation proof,
+    /// after which the name fails closed (`resolve` answers
+    /// [`NameError::Equivocated`]). A retired name resolves as
+    /// [`NameError::Retired`]. Stored and cached records the new log no longer
+    /// authorises are dropped. With a backend the log (or proof) is written to
+    /// the `spine-name-successions-v1` (or `-equivocations-v1`) namespace before
+    /// it takes effect. An empty log, one the resolver already holds or a prefix
+    /// of it changes nothing and does no signature work.
+    ///
+    /// Errors: [`NameError::InvalidSuccessionLog`] for a log that does not
+    /// verify, [`NameError::SuccessionCapacity`] when the table is full and
+    /// every held log has records held (or the proof table is full).
+    pub fn offer_log(&self, log: SuccessionLog) -> Result<LogChange, NameError> {
+        let mut store = self.store.lock().unwrap();
+        let offer = store.plan_log(log)?;
+        if matches!(offer, LogOffer::Full | LogOffer::ProofsFull) {
+            return Err(NameError::SuccessionCapacity);
+        }
+        #[cfg(feature = "storage")]
+        self.persist_offer(&offer)?;
+        let (change, _) = store.apply_log(offer);
+        drop(store);
+        if let LogChange::Adopted { inception_key } | LogChange::Compromised { inception_key } =
+            change
+        {
+            self.cache.lock().unwrap().remove_authority(&inception_key);
+        }
+        Ok(change)
+    }
+
+    /// Publish a record that arrived with its name's succession log (what
+    /// `spine name publish --log` sends): the log is offered first
+    /// ([`LocalResolver::offer_log`]), then the record is published against the
+    /// best log held. A log for another name than the record's is refused with
+    /// [`NameError::InvalidSuccessionLog`] and nothing changes. A valid log is
+    /// kept even when the record is then refused: it is true on its own.
+    pub fn publish_with_log(
+        &self,
+        record: NameRecord,
+        log: SuccessionLog,
+    ) -> Result<(), NameError> {
+        if let Some(key) = crate::logbook::log_inception_key(&log) {
+            if record.name.public_key() != Some(&key) {
+                return Err(NameError::InvalidSuccessionLog(
+                    "log is for another name".to_string(),
+                ));
+            }
+        }
+        self.offer_log(log)?;
+        self.publish(record)
+    }
+
+    #[cfg(feature = "storage")]
+    fn persist_offer(&self, offer: &LogOffer) -> Result<(), NameError> {
+        let Some(backend) = &self.persistence else {
+            return Ok(());
+        };
+        let storage = |e: &dyn std::fmt::Display| NameError::Storage(e.to_string());
+        match offer {
+            LogOffer::Adopt {
+                inception_key,
+                log,
+                evict,
+                ..
+            } => {
+                let bytes = serde_json::to_vec(log).map_err(|e| storage(&e))?;
+                backend
+                    .put(SUCCESSIONS_NAMESPACE, inception_key, &bytes)
+                    .map_err(|e| storage(&e))?;
+                if let Some(old) = evict {
+                    backend
+                        .delete(SUCCESSIONS_NAMESPACE, old)
+                        .map_err(|e| storage(&e))?;
+                }
+            }
+            LogOffer::Conflict(proof) => {
+                let key = proof.first.inception_key;
+                let bytes = serde_json::to_vec(proof.as_ref()).map_err(|e| storage(&e))?;
+                backend
+                    .put(EQUIVOCATIONS_NAMESPACE, &key, &bytes)
+                    .map_err(|e| storage(&e))?;
+                backend
+                    .delete(SUCCESSIONS_NAMESPACE, &key)
+                    .map_err(|e| storage(&e))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Judge `record` against the succession logs this resolver holds, for a
+    /// caller that keeps something else under the record (the daemon's resource
+    /// store). It is [`LogBook::authorise`](crate::LogBook::authorise) on the
+    /// resolver's book: exactly [`NameRecord::verify`] when no log or proof is
+    /// held for the name and the record carries no `spine.succession` claim,
+    /// and otherwise the record must be signed by the name's current key
+    /// ([`NameError::SupersededKey`], [`NameError::Retired`],
+    /// [`NameError::Equivocated`], [`NameError::NeedSuccessionLog`] or
+    /// [`NameError::SuccessionRefused`] if not).
+    ///
+    /// Read-only: nothing is stored, cached or dropped. The clock is not
+    /// consulted, so expiry and post-dating are not judged here (as they are
+    /// not by `verify`); the lifetime rules of `verify` are.
+    pub fn authorise(&self, record: &NameRecord) -> Result<(), NameError> {
+        self.store.lock().unwrap().logs().authorise(record)
+    }
+
+    /// The state of the best succession log held for the name whose inception
+    /// key is `inception_key`, if any (none: the inception key signs).
+    pub fn succession_state(&self, inception_key: &[u8; 32]) -> Option<SuccessionState> {
+        self.store
+            .lock()
+            .unwrap()
+            .logs()
+            .state(inception_key)
+            .cloned()
+    }
+
+    /// The best succession log held for a name, if any: what a publisher sends
+    /// with the name's records.
+    pub fn succession_log(&self, inception_key: &[u8; 32]) -> Option<SuccessionLog> {
+        self.store
+            .lock()
+            .unwrap()
+            .logs()
+            .log(inception_key)
+            .cloned()
+    }
+
+    /// The equivocation proof held for a name, if any.
+    pub fn equivocation(&self, inception_key: &[u8; 32]) -> Option<Equivocation> {
+        self.store
+            .lock()
+            .unwrap()
+            .logs()
+            .proof(inception_key)
+            .cloned()
+    }
+
+    /// Whether this node holds a fresh tombstone for `uri` in its store.
+    /// Owner renewal consults this so it never renews a revoked name.
+    pub fn is_revoked(&self, uri: &SpineUri) -> bool {
+        let now = self.now();
+        self.store.lock().unwrap().is_revoked(uri, now)
+    }
+
+    /// The fresh tombstone this node holds for `uri`, with where it came from:
+    /// the cache first, then the store, as [`Resolver::resolve`] looks. `None`
+    /// when the name has no fresh tombstone. A resolution of a withdrawn name is
+    /// [`NameError::Revoked`], which carries no record; the daemon needs the
+    /// signed tombstone to answer with it (`docs/spec/00-wire.md` 12.4).
+    pub fn tombstone(&self, uri: &SpineUri) -> Option<Resolution> {
+        let now = self.now();
+        let cached = self.cache.lock().unwrap().get(uri, now);
+        if let CacheLookup::Fresh(record) = cached {
+            return record
+                .is_tombstone()
+                .then(|| Resolution::new(record, Provenance::Cache));
+        }
+        self.store
+            .lock()
+            .unwrap()
+            .get_fresh(uri, now)
+            .filter(|record| record.is_tombstone())
+            .map(|record| Resolution::new(record.clone(), Provenance::Local))
     }
 
     /// Remember that a name did not resolve.
     pub fn cache_negative(&self, uri: &SpineUri) {
         let now = self.now();
         self.cache.lock().unwrap().put_negative(uri, now);
+    }
+
+    /// Whether a still-valid negative entry covers `uri`.
+    ///
+    /// Lets a caller tell a remembered absence from a plain miss, both of which
+    /// `resolve` reports as `NotFound`. Only the former may skip a mesh walk.
+    pub fn is_negative_cached(&self, uri: &SpineUri) -> bool {
+        let now = self.now();
+        self.cache.lock().unwrap().is_negative(uri, now)
     }
 
     /// Cache statistics.
@@ -205,8 +557,22 @@ impl Resolver for LocalResolver {
             return Ok(Resolution::new(record, Provenance::Address));
         }
 
+        // A name whose succession log retires it, or two of whose logs conflict,
+        // answers with that, whatever the cache or store holds. For a name with
+        // no log the book is empty and this is one comparison.
+        let status = self.store.lock().unwrap().logs().status_error(uri);
+        if let Some(error) = status {
+            return Err(error);
+        }
+
+        // A fresh tombstone, cached or stored, is a distinct answer: the name was
+        // withdrawn by its owner, which is not the same as nobody having heard
+        // of it.
         match self.cache.lock().unwrap().get(uri, now) {
             CacheLookup::Fresh(record) => {
+                if record.is_tombstone() {
+                    return Err(NameError::Revoked(uri.to_string()));
+                }
                 return Ok(Resolution::new(record, Provenance::Cache));
             }
             CacheLookup::NegativeHit => return Err(NameError::NotFound(uri.to_string())),
@@ -214,7 +580,14 @@ impl Resolver for LocalResolver {
             // store first, and only use it if nothing better exists.
             CacheLookup::Stale(record) => {
                 if let Some(local) = self.store.lock().unwrap().get_fresh(uri, now) {
+                    if local.is_tombstone() {
+                        return Err(NameError::Revoked(uri.to_string()));
+                    }
                     return Ok(Resolution::new(local.clone(), Provenance::Local));
+                }
+                // A lapsed tombstone is not an answer: the name is unknown again.
+                if record.is_tombstone() {
+                    return Err(NameError::NotFound(uri.to_string()));
                 }
                 return Ok(Resolution::new(record, Provenance::StaleCache));
             }
@@ -222,6 +595,9 @@ impl Resolver for LocalResolver {
         }
 
         if let Some(record) = self.store.lock().unwrap().get_fresh(uri, now) {
+            if record.is_tombstone() {
+                return Err(NameError::Revoked(uri.to_string()));
+            }
             return Ok(Resolution::new(record.clone(), Provenance::Local));
         }
         Err(NameError::NotFound(uri.to_string()))
@@ -258,6 +634,134 @@ mod tests {
         }
         rec.sign(&key).unwrap();
         rec
+    }
+
+    fn tombstone(seed: u8, seq: u64, at: u64) -> NameRecord {
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut rec = NameRecord::tombstone(name, seq, at).unwrap();
+        rec.sign(&key).unwrap();
+        rec
+    }
+
+    #[test]
+    fn publishing_refuses_an_over_long_or_post_dated_record() {
+        let r = LocalResolver::at_time(1_000);
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut over = NameRecord::new(name, 1, 1_000)
+            .unwrap()
+            .with_ttl(crate::MAX_RECORD_TTL_SECS + 1);
+        let sig: ed25519_dalek::Signature =
+            ed25519_dalek::Signer::sign(&key, &over.signing_bytes());
+        over.signature = sig.to_bytes().to_vec();
+        assert!(matches!(
+            r.publish(over.clone()),
+            Err(NameError::TtlTooLong(_))
+        ));
+        assert!(matches!(
+            r.cache_record(over),
+            Err(NameError::TtlTooLong(_))
+        ));
+
+        let ahead = signed(1, 1_000 + crate::MAX_CLOCK_SKEW_SECS + 1, 100, &[], 1);
+        assert!(matches!(
+            r.publish(ahead.clone()),
+            Err(NameError::PostDated { .. })
+        ));
+        assert!(matches!(
+            r.cache_record(ahead),
+            Err(NameError::PostDated { .. })
+        ));
+        assert_eq!(r.local_len(), 0);
+        r.publish(signed(1, 1_000 + crate::MAX_CLOCK_SKEW_SECS, 100, &[], 1))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_published_tombstone_resolves_as_revoked_not_not_found() {
+        let r = LocalResolver::at_time(1_000);
+        let rec = signed(1, 1_000, 100, &["web.search"], 1);
+        r.publish(rec.clone()).unwrap();
+        r.cache_record(rec.clone()).unwrap();
+        assert!(r.resolve(&rec.name).await.is_ok());
+
+        let t = tombstone(1, 2, 1_000);
+        r.publish(t.clone()).unwrap();
+        assert!(r.is_revoked(&rec.name));
+        assert!(matches!(
+            r.resolve(&rec.name).await,
+            Err(NameError::Revoked(_))
+        ));
+        assert!(r.find_providers("web.search").await.unwrap().is_empty());
+
+        // The old record, and a same-seq one, can neither replace it nor be
+        // re-published; a higher seq re-publishes the name.
+        assert_eq!(r.publish(rec.clone()), Err(NameError::StalePublication));
+        r.publish(t.clone()).unwrap();
+        let key = SigningKey::from_bytes(&[1u8; 32]);
+        let mut reborn = NameRecord::new(rec.name.clone(), 3, 1_000)
+            .unwrap()
+            .with_endpoint(Endpoint::new("tcp", "new:1"));
+        reborn.sign(&key).unwrap();
+        r.publish(reborn.clone()).unwrap();
+        assert!(!r.is_revoked(&rec.name));
+        assert_eq!(r.resolve(&rec.name).await.unwrap().record, reborn);
+    }
+
+    #[test]
+    fn the_held_tombstone_is_available_for_the_revoked_answer() {
+        let r = LocalResolver::at_time(1_000);
+        let rec = signed(1, 1_000, 100, &[], 1);
+        r.publish(rec.clone()).unwrap();
+        assert!(
+            r.tombstone(&rec.name).is_none(),
+            "a live record is no tombstone"
+        );
+
+        let t = tombstone(1, 2, 1_000);
+        r.publish(t.clone()).unwrap();
+        let held = r.tombstone(&rec.name).expect("the stored tombstone");
+        assert_eq!(held.record, t);
+        assert_eq!(held.provenance, Provenance::Local);
+
+        // A tombstone that is only cached is found there.
+        let cached = LocalResolver::at_time(1_000);
+        cached.cache_record(t.clone()).unwrap();
+        let held = cached.tombstone(&t.name).expect("the cached tombstone");
+        assert_eq!(held.record, t);
+        assert_eq!(held.provenance, Provenance::Cache);
+
+        // A lapsed one is not held: the name is unknown again.
+        let after = 1_000 + u64::from(crate::MAX_RECORD_TTL_SECS);
+        let lapsed = LocalResolver::at_time(after);
+        lapsed.cache_record(t.clone()).unwrap();
+        assert!(lapsed.tombstone(&t.name).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_cached_tombstone_blocks_an_older_cached_record() {
+        let r = LocalResolver::at_time(1_000);
+        let old = signed(1, 1_000, 100, &[], 1);
+        let t = tombstone(1, 2, 1_000);
+        r.cache_record(t).unwrap();
+        r.cache_record(old.clone()).unwrap();
+        assert!(matches!(
+            r.resolve(&old.name).await,
+            Err(NameError::Revoked(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_lapsed_tombstone_leaves_the_name_unknown_not_revoked() {
+        let t = tombstone(1, 2, 1_000);
+        let after = 1_000 + u64::from(crate::MAX_RECORD_TTL_SECS);
+        let r = LocalResolver::at_time(after);
+        r.cache_record(t.clone()).unwrap();
+        assert!(matches!(
+            r.resolve(&t.name).await,
+            Err(NameError::NotFound(_))
+        ));
     }
 
     /// The escape hatch: a `host:` name resolves with nothing published and no
@@ -380,6 +884,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_miss_is_distinguishable_from_a_remembered_absence() {
+        let r = LocalResolver::at_time(1_000);
+        let first = signed(1, 1_000, 100, &[], 1);
+        assert!(matches!(
+            r.resolve(&first.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        assert!(!r.is_negative_cached(&first.name), "a plain miss");
+
+        r.cache_negative(&first.name);
+        assert!(r.is_negative_cached(&first.name));
+
+        // Publishing invalidates the entry, so the walk-skipping path ends.
+        r.publish(first.clone()).unwrap();
+        assert!(!r.is_negative_cached(&first.name));
+    }
+
+    #[tokio::test]
     async fn a_capability_name_is_not_resolvable_as_a_single_record() {
         let r = LocalResolver::at_time(1_000);
         let err = r
@@ -454,5 +976,98 @@ mod tests {
     async fn resolver_is_usable_as_a_trait_object() {
         let r: Box<dyn Resolver> = Box::new(LocalResolver::at_time(1_000));
         assert!(r.find_providers("web.search").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn publishing_invalidates_negative_and_older_positive_cache_entries() {
+        let r = LocalResolver::at_time(1_000);
+        let first = signed(1, 1_000, 100, &[], 1);
+        r.cache_negative(&first.name);
+        r.publish(first.clone()).unwrap();
+        assert_eq!(r.resolve(&first.name).await.unwrap().record.seq, first.seq);
+        r.cache_record(first.clone()).unwrap();
+        let next = first
+            .renewed(&SigningKey::from_bytes(&[1; 32]), 1_001, 200)
+            .unwrap();
+        r.publish(next.clone()).unwrap();
+        assert_eq!(r.resolve(&first.name).await.unwrap().record.seq, next.seq);
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn publications_survive_restart_and_expiry_preserves_renewal_sequence() {
+        use spine_storage::sqlite::SqliteBackend;
+        use std::sync::Arc;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("names.sqlite");
+        let open = |now| {
+            LocalResolver::persistent(
+                move || now,
+                Arc::new(SqliteBackend::open(path.to_str().unwrap()).unwrap()),
+            )
+            .unwrap()
+        };
+        let first = signed(1, 1_000, 100, &["web.search"], 1);
+        {
+            let r = open(1_000);
+            r.publish(first.clone()).unwrap();
+        }
+        {
+            let r = open(1_010);
+            assert_eq!(r.resolve(&first.name).await.unwrap().record, first);
+        }
+        let r = open(1_200);
+        assert!(matches!(
+            r.resolve(&first.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        let owned = r.published_records().unwrap();
+        assert_eq!(owned, vec![first.clone()]);
+        let renewed = owned[0]
+            .renewed(&SigningKey::from_bytes(&[1; 32]), 1_200, 100)
+            .unwrap();
+        r.publish(renewed.clone()).unwrap();
+        assert_eq!(r.publish(first.clone()), Err(NameError::StalePublication));
+        r.publish(renewed.clone()).unwrap();
+        assert_eq!(r.resolve(&first.name).await.unwrap().record, renewed);
+    }
+
+    #[cfg(feature = "storage")]
+    #[test]
+    fn corrupt_publisher_state_is_rejected_on_restore() {
+        use spine_storage::{InMemoryBackend, StorageBackend};
+        use std::sync::Arc;
+        let backend = Arc::new(InMemoryBackend::new());
+        backend
+            .put("spine-name-publishers-v1", b"bad", b"{}")
+            .unwrap();
+        assert!(LocalResolver::persistent(|| 1_000, backend).is_err());
+    }
+
+    #[cfg(feature = "storage")]
+    #[tokio::test]
+    async fn a_stored_record_with_an_invalid_signature_is_skipped_not_fatal() {
+        use spine_storage::{InMemoryBackend, StorageBackend};
+        use std::sync::Arc;
+        let good = signed(1, 1_000, 100, &["web.search"], 1);
+        let mut bad = signed(2, 1_000, 100, &["web.search"], 1);
+        bad.seq += 1; // signature no longer matches the signed bytes
+        let backend = Arc::new(InMemoryBackend::new());
+        for rec in [&good, &bad] {
+            backend
+                .put(
+                    "spine-name-publishers-v1",
+                    rec.name.to_string().as_bytes(),
+                    &serde_json::to_vec(rec).unwrap(),
+                )
+                .unwrap();
+        }
+        let r = LocalResolver::persistent(|| 1_010, backend).unwrap();
+        assert_eq!(r.resolve(&good.name).await.unwrap().record, good);
+        assert!(matches!(
+            r.resolve(&bad.name).await,
+            Err(NameError::NotFound(_))
+        ));
+        assert_eq!(r.published_records().unwrap(), vec![good]);
     }
 }

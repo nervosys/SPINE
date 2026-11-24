@@ -2,6 +2,8 @@
 
 SPINE includes a rich ontology system for agent self-description and mutual discovery.
 
+**Research.** The ontology code is in `research/spine-agentic`, a separate workspace. The deployed discovery path is the `spine-name` crate and the `find_providers` and `capability_query` commands.
+
 ## Overview
 
 Every agent publishes an **AgentOntology** — a namespace-versioned vocabulary of capabilities, roles, and domain expertise. The ontology system enables:

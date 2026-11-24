@@ -41,7 +41,9 @@ pub fn encode(input: &[u8]) -> String {
 }
 
 /// Decode lowercase-or-uppercase unpadded base32. Returns `None` on any symbol
-/// outside the alphabet or on a length that no byte string could produce.
+/// outside the alphabet, on a length that no byte string could produce, and on
+/// non-zero trailing bits: only the spelling [`encode`] produces is accepted,
+/// so one byte string has exactly one spelling (up to letter case).
 pub fn decode(input: &str) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(input.len() * 5 / 8);
     for chunk in input.as_bytes().chunks(8) {
@@ -60,6 +62,13 @@ pub fn decode(input: &str) -> Option<Vec<u8>> {
             8 => 5,
             _ => return None,
         };
+        // The bits below the last whole byte are padding in the final chunk;
+        // `encode` writes them as zero, so anything else is a second spelling
+        // of the same bytes and is refused.
+        let spare = 40 - bytes * 8;
+        if n & ((1u64 << spare) - 1) != 0 {
+            return None;
+        }
         for i in 0..bytes {
             out.push(((n >> (32 - i * 8)) & 0xff) as u8);
         }
@@ -139,6 +148,23 @@ mod tests {
     fn decode_key_rejects_wrong_length() {
         assert_eq!(decode_key(&encode(&[1u8; 16])), None);
         assert_eq!(decode_key(&encode(&[1u8; 33])), None);
+    }
+
+    #[test]
+    fn rejects_non_zero_trailing_bits() {
+        // "my" is the canonical spelling of "f"; "mz" has the same data bits
+        // but non-zero padding bits.
+        assert_eq!(decode("my").as_deref(), Some(&b"f"[..]));
+        assert_eq!(decode("mz"), None);
+
+        // The 52nd symbol of a key carries one data bit and four padding bits.
+        let key = [0xABu8; 32];
+        let mut spelled = encode(&key);
+        let last = spelled.pop().unwrap();
+        let idx = ALPHABET.iter().position(|&a| a as char == last).unwrap();
+        assert!(idx == 0 || idx == 16, "canonical padding is zero");
+        spelled.push(ALPHABET[idx + 1] as char);
+        assert_eq!(decode_key(&spelled), None);
     }
 
     #[test]

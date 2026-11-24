@@ -13,7 +13,7 @@
 //! |-------------------------------|------------------------------------|
 //! | `ListCapabilities`            | [`CapabilityAdvertisement`]        |
 //! | `Capability`                  | [`Capability`]                     |
-//! | `CallTool`                    | [`ToolCall`] / [`ToolResult`]      |
+//! | `CallTool`                    | [`ToolCall`] / [`ToolOutcome`]     |
 //! | `StreamChat` (server stream)  | StreamStart / StreamToken / StreamEnd |
 //!
 //! JSON-shaped fields (tool args, schemas, results) travel as serialized JSON
@@ -24,12 +24,10 @@
 //! # // tonic mandates `Result<T, tonic::Status>` on every service method and
 //! # // stream item; `Status` is large, so `result_large_err` is unavoidable here.
 //! use spine_grpc::{SpineAgent, agent_service_server::AgentServiceServer};
-//! use spine_protocol::{CapabilityAdvertisement, ToolResult, ToolOutcome};
+//! use spine_protocol::{CapabilityAdvertisement, ToolOutcome};
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let ad = CapabilityAdvertisement { id: "g".into(), agent_id: "did:spine".into(), capabilities: vec![] };
-//! let svc = SpineAgent::new(ad, |call| ToolResult {
-//!     id: call.id, outcome: ToolOutcome::Ok { content: call.args }, trace: None,
-//! });
+//! let ad = CapabilityAdvertisement { agent_id: "did:spine".into(), capabilities: vec![] };
+//! let svc = SpineAgent::new(ad, |call| ToolOutcome::Ok { content: call.args });
 //! tonic::transport::Server::builder()
 //!     .add_service(AgentServiceServer::new(svc))
 //!     .serve("0.0.0.0:50051".parse()?)
@@ -47,7 +45,7 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use tonic::{Request, Response, Status};
 
-use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
+use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome};
 
 pub mod model;
 pub use model::{ChatDelta, ChatModel, ChatRequest, EchoModel, OpenAiChatModel};
@@ -132,18 +130,19 @@ fn selector_matches(selector: &str, uri: &str) -> bool {
 /// Build a SPINE [`ToolCall`] from a protobuf `CallTool` request.
 pub fn request_to_tool_call(req: &CallToolRequest) -> ToolCall {
     ToolCall {
-        id: req.id.clone(),
         name: req.name.clone(),
         args: string_to_json(&req.args_json),
         trace: None,
     }
 }
 
-/// Map a SPINE [`ToolResult`] to a protobuf `CallTool` response.
-pub fn tool_result_to_proto(result: &ToolResult) -> CallToolResponse {
-    match &result.outcome {
+/// Map a SPINE [`ToolOutcome`] to a protobuf `CallTool` response. `id` is the
+/// gRPC request id (a protobuf-level correlation field; the native wire has
+/// none in its bodies).
+pub fn tool_result_to_proto(id: &str, outcome: &ToolOutcome) -> CallToolResponse {
+    match outcome {
         ToolOutcome::Ok { content } => CallToolResponse {
-            id: result.id.clone(),
+            id: id.to_string(),
             ok: true,
             content_json: json_to_string(content),
             error_code: String::new(),
@@ -154,7 +153,7 @@ pub fn tool_result_to_proto(result: &ToolResult) -> CallToolResponse {
             message,
             details,
         } => CallToolResponse {
-            id: result.id.clone(),
+            id: id.to_string(),
             ok: false,
             content_json: details.as_ref().map(json_to_string).unwrap_or_default(),
             error_code: code.clone(),
@@ -167,9 +166,9 @@ pub fn tool_result_to_proto(result: &ToolResult) -> CallToolResponse {
 // tonic service
 // ---------------------------------------------------------------------------
 
-/// Tool executor: receives a bridged [`ToolCall`], returns a [`ToolResult`].
+/// Tool executor: receives a bridged [`ToolCall`], returns a [`ToolOutcome`].
 /// Shared across concurrent RPCs, so it must be `Send + Sync`.
-pub type ToolExecutor = Arc<dyn Fn(ToolCall) -> ToolResult + Send + Sync>;
+pub type ToolExecutor = Arc<dyn Fn(ToolCall) -> ToolOutcome + Send + Sync>;
 
 /// A tonic [`AgentService`] backed by a SPINE [`CapabilityAdvertisement`], a
 /// tool executor, and a [`ChatModel`] for `StreamChat`.
@@ -185,7 +184,7 @@ impl SpineAgent {
     /// [`SpineAgent::with_model`] to back it with a real model.
     pub fn new<F>(advertisement: CapabilityAdvertisement, executor: F) -> Self
     where
-        F: Fn(ToolCall) -> ToolResult + Send + Sync + 'static,
+        F: Fn(ToolCall) -> ToolOutcome + Send + Sync + 'static,
     {
         Self {
             advertisement,
@@ -233,8 +232,8 @@ impl AgentService for SpineAgent {
     ) -> Result<Response<CallToolResponse>, Status> {
         let req = request.into_inner();
         let call = request_to_tool_call(&req);
-        let result = (self.executor)(call);
-        Ok(Response::new(tool_result_to_proto(&result)))
+        let outcome = (self.executor)(call);
+        Ok(Response::new(tool_result_to_proto(&req.id, &outcome)))
     }
 
     type StreamChatStream = StreamChunkStream;
@@ -286,7 +285,6 @@ mod tests {
 
     fn sample_ad() -> CapabilityAdvertisement {
         CapabilityAdvertisement {
-            id: "g1".into(),
             agent_id: "did:spine:test".into(),
             capabilities: vec![
                 Capability {
@@ -308,12 +306,8 @@ mod tests {
     }
 
     fn echo_agent() -> SpineAgent {
-        SpineAgent::new(sample_ad(), |call: ToolCall| ToolResult {
-            id: call.id,
-            outcome: ToolOutcome::Ok {
-                content: json!({"echoed": call.args}),
-            },
-            trace: None,
+        SpineAgent::new(sample_ad(), |call: ToolCall| ToolOutcome::Ok {
+            content: json!({"echoed": call.args}),
         })
     }
 
@@ -350,31 +344,29 @@ mod tests {
             args_json: json!({"url": "https://x"}).to_string(),
         };
         let call = request_to_tool_call(&req);
-        assert_eq!(call.id, "c1");
         assert_eq!(call.args, json!({"url": "https://x"}));
     }
 
     #[test]
     fn ok_and_err_results_map_to_proto() {
-        let ok = tool_result_to_proto(&ToolResult {
-            id: "c1".into(),
-            outcome: ToolOutcome::Ok {
+        let ok = tool_result_to_proto(
+            "c1",
+            &ToolOutcome::Ok {
                 content: json!({"status": 200}),
             },
-            trace: None,
-        });
+        );
         assert!(ok.ok);
+        assert_eq!(ok.id, "c1");
         assert_eq!(ok.content_json, "{\"status\":200}");
 
-        let err = tool_result_to_proto(&ToolResult {
-            id: "c2".into(),
-            outcome: ToolOutcome::Err {
+        let err = tool_result_to_proto(
+            "c2",
+            &ToolOutcome::Err {
                 code: "timeout".into(),
                 message: "slow".into(),
                 details: None,
             },
-            trace: None,
-        });
+        );
         assert!(!err.ok);
         assert_eq!(err.error_code, "timeout");
         assert_eq!(err.error_message, "slow");
@@ -449,12 +441,8 @@ mod tests {
         }
 
         let produced = Arc::new(AtomicUsize::new(0));
-        let agent = SpineAgent::new(sample_ad(), |c: ToolCall| ToolResult {
-            id: c.id,
-            outcome: ToolOutcome::Ok {
-                content: serde_json::Value::Null,
-            },
-            trace: None,
+        let agent = SpineAgent::new(sample_ad(), |_: ToolCall| ToolOutcome::Ok {
+            content: serde_json::Value::Null,
         })
         .with_model(Arc::new(CountingModel {
             produced: produced.clone(),

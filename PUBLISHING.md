@@ -44,26 +44,28 @@ Then, strictly in this order (each line's deps are all already published):
 
 ```
  1. spine-parser      # depends on spine-name
- 2. spine-crypto
- 3. spine-embedded
- 4. spine-knowledge
- 5. spine-recursive
- 6. spine-protocol
- 7. spine-transport
- 8. spine-compiler
- 9. spine-grpc
-10. spine-cluster
-11. spine-wasm
-12. spine-stream
-13. spine-human
-14. spine-agentic     # depends on spine-name
-15. spine-mechgen
-16. spine-agent
-17. spine-core        # depends on spine-name
-18. spine-web         # umbrella facade — must come after every crate it re-exports
-19. spine-browser     # optional (egui app)
-20. spine-gateway     # optional (binary)
-21. spine-cli         # optional (binary)
+ 2. spine-session     # no workspace dependencies; before spine-crypto and spine-agentic
+ 2b. spine-mesh      # after spine-name, spine-session, spine-transport; before spine-agentic
+ 3. spine-crypto
+ 4. spine-embedded
+ 5. spine-knowledge
+ 6. spine-recursive
+ 7. spine-protocol
+ 8. spine-transport
+ 9. spine-compiler
+10. spine-grpc
+11. spine-cluster
+12. spine-wasm
+13. spine-stream
+14. spine-human
+15. spine-agentic     # depends on spine-name
+16. spine-mechgen
+17. spine-agent
+18. spine-core        # depends on spine-name
+19. spine-web         # umbrella facade — must come after every crate it re-exports
+20. spine-browser     # optional (egui app)
+21. spine-gateway     # optional (binary)
+22. spine-cli         # optional (binary)
 ```
 
 `spine-web` references its components through *optional* dependencies, but
@@ -78,8 +80,8 @@ resolve it, so publish sequentially and let each finish:
 ```bash
 for c in spine-nostd spine-kernel spine-gpu spine-cache spine-k8s \
          spine-storage spine-parser spine-neural \
-         spine-crypto spine-embedded spine-knowledge spine-recursive \
-         spine-protocol spine-transport spine-compiler spine-grpc \
+         spine-session spine-crypto spine-embedded spine-knowledge spine-recursive \
+         spine-protocol spine-transport spine-mesh spine-compiler spine-grpc \
          spine-cluster spine-wasm spine-stream spine-human spine-agentic \
          spine-mechgen spine-agent spine-core spine-web \
          spine-browser spine-gateway spine-cli; do
@@ -124,7 +126,7 @@ you would rather not maintain a script at all.
   dependency to a new major. A published version is immutable, so the fix is a
   new version rather than a re-publish — and a crate that is versioned
   independently still has to be *versioned*, not merely left alone.
-- **2.0.0 is a breaking release, and the break is on the wire rather than in
+- **2.0.0 is a breaking release (historical note: the Chameleon layer it refers to has since left the native wire, which is now spine-wire v1), and the break is on the wire rather than in
   any signature.** A peer running the Chameleon layer from 2.0.0 cannot talk to
   one running 1.x: the encoder's key derivation changed (Phases 47-48) and so
   did the AEAD nonce construction (Phase 45). Cargo's semver rules do not see

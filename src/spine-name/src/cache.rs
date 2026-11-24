@@ -137,11 +137,21 @@ impl ResolverCache {
     }
 
     /// Cache a resolved record. Clears any negative entry for the same name.
+    ///
+    /// A record never replaces a cached record for the same name that
+    /// supersedes it. Otherwise any peer could roll a name back by answering
+    /// with an older, still validly signed record.
     pub fn put(&mut self, record: NameRecord) {
         let key = record.name.key();
         let immutable = record.name.is_immutable();
         self.negative.remove(&key);
         self.counter += 1;
+        if let Some(existing) = self.entries.get_mut(&key) {
+            if existing.record.name == record.name && existing.record.supersedes(&record) {
+                existing.stamp = self.counter;
+                return;
+            }
+        }
         self.entries.insert(
             key,
             Entry {
@@ -157,6 +167,17 @@ impl ResolverCache {
     pub fn put_negative(&mut self, uri: &SpineUri, now: u64) {
         self.negative
             .insert(uri.key(), now.saturating_add(self.negative_ttl));
+    }
+
+    /// Whether a still-valid negative entry exists for `uri` at `now`.
+    ///
+    /// A read-only peek: it neither counts as a hit nor removes a lapsed entry.
+    /// An entry that also has a positive record does not count, matching
+    /// [`ResolverCache::get`], which answers from the record first.
+    pub fn is_negative(&self, uri: &SpineUri, now: u64) -> bool {
+        let key = uri.key();
+        !self.entries.contains_key(&key)
+            && self.negative.get(&key).is_some_and(|until| now < *until)
     }
 
     /// Whether a cached record still matches a content hash — the strong
@@ -179,7 +200,20 @@ impl ResolverCache {
     }
 
     pub fn remove(&mut self, uri: &SpineUri) -> Option<NameRecord> {
+        self.negative.remove(&uri.key());
         self.entries.remove(&uri.key()).map(|e| e.record)
+    }
+
+    /// Drop every cached record of the name whose inception key is `key`, at
+    /// any path, and its negative entries. Used when a succession log changes
+    /// what the name's records are allowed to be signed by; the next resolution
+    /// fetches again. Returns how many positive entries went.
+    pub fn remove_authority(&mut self, key: &[u8; 32]) -> usize {
+        let before = self.entries.len();
+        self.entries
+            .retain(|_, e| e.record.name.public_key() != Some(key));
+        self.negative.clear();
+        before - self.entries.len()
     }
 
     /// Drop expired positive and negative entries, returning how many went.
@@ -254,6 +288,30 @@ mod tests {
     }
 
     #[test]
+    fn an_older_record_does_not_replace_a_newer_one() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let name = SpineUri::did(key.verifying_key().to_bytes());
+        let mut old = NameRecord::new(name.clone(), 1, 1_000)
+            .unwrap()
+            .with_ttl(100);
+        old.sign(&key).unwrap();
+        let mut new = NameRecord::new(name.clone(), 2, 1_000)
+            .unwrap()
+            .with_ttl(100);
+        new.sign(&key).unwrap();
+
+        let mut c = ResolverCache::new(10);
+        c.put(new.clone());
+        c.put(old.clone());
+        assert_eq!(c.get(&name, 1_050), CacheLookup::Fresh(new.clone()));
+
+        let mut c = ResolverCache::new(10);
+        c.put(old);
+        c.put(new.clone());
+        assert_eq!(c.get(&name, 1_050), CacheLookup::Fresh(new));
+    }
+
+    #[test]
     fn a_fresh_entry_is_served_without_a_round_trip() {
         let mut c = ResolverCache::new(10);
         let rec = record(1, 1_000, 100);
@@ -296,6 +354,19 @@ mod tests {
         // After the TTL the name is retried.
         assert_eq!(c.get(&uri, 1_030), CacheLookup::Miss);
         assert_eq!(c.negative_len(), 0, "lapsed entry is cleaned up on read");
+    }
+
+    #[test]
+    fn peeking_at_a_negative_entry_is_read_only_and_honours_expiry() {
+        let mut c = ResolverCache::new(10).with_negative_ttl(30);
+        let uri = SpineUri::did([9u8; 32]);
+        assert!(!c.is_negative(&uri, 1_000));
+        c.put_negative(&uri, 1_000);
+        assert!(c.is_negative(&uri, 1_010));
+        assert_eq!(c.stats().negative_hits, 0, "a peek is not a hit");
+        assert!(!c.is_negative(&uri, 1_030), "lapsed");
+        c.remove(&uri);
+        assert!(!c.is_negative(&uri, 1_010), "invalidation clears it");
     }
 
     #[test]

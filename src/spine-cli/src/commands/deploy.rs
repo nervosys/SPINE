@@ -1,29 +1,18 @@
 //! `spine deploy` — Start a SPINE server
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 use std::path::PathBuf;
 
 pub async fn run(config_path: PathBuf, port: Option<u16>, host: Option<String>) -> Result<()> {
-    // Apply overrides via environment variables (SpineConfig::load reads these)
-    if let Some(p) = port {
-        std::env::set_var("SPINE_PORT", p.to_string());
+    let mut config = spine_core::SpineConfig::from_file(&config_path)?;
+    if let Some(port) = port {
+        config.server.port = port;
     }
-    if let Some(h) = &host {
-        std::env::set_var("SPINE_HOST", h);
+    if let Some(host) = host {
+        config.server.host = host;
     }
-
-    // Set config file path
-    if config_path.as_path() != std::path::Path::new("spine.toml") {
-        // Copy to spine.toml in current dir so SpineConfig::load() finds it
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)
-                .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
-            std::fs::write("spine.toml", content)?;
-        }
-    }
-
-    let config = spine_core::SpineConfig::load();
+    config.validate()?;
     eprintln!(
         "{} Starting SPINE server on {}:{}",
         "▸".green().bold(),

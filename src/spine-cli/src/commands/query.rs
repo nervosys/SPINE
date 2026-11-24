@@ -26,14 +26,6 @@ pub async fn navigate(addr: String, url: String, format: String) -> Result<()> {
     Ok(())
 }
 
-/// Search the semantic web.
-pub async fn search(addr: String, query: String) -> Result<()> {
-    let mut client = AgentClient::<TcpStream>::connect(&addr).await?;
-    let result = client.search(&query).await?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
-}
-
 /// Store a key-value pair in the knowledge base.
 pub async fn store(addr: String, key: String, value: String, tags: String) -> Result<()> {
     let val: serde_json::Value =
@@ -59,6 +51,14 @@ pub async fn knowledge(addr: String, query: String, tags: String, limit: usize) 
     let mut client = AgentClient::<TcpStream>::connect(&addr).await?;
     let results = client.query_knowledge(&query, tag_list, limit).await?;
     println!("{}", serde_json::to_string_pretty(&results)?);
+    Ok(())
+}
+
+/// Delete the knowledge entries of this connection's session with `key`.
+pub async fn delete_knowledge(addr: String, key: String) -> Result<()> {
+    let mut client = AgentClient::<TcpStream>::connect(&addr).await?;
+    let deleted = client.delete_knowledge(&key).await?;
+    println!("{deleted}");
     Ok(())
 }
 

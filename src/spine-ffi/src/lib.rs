@@ -214,39 +214,6 @@ pub unsafe extern "C" fn spine_get_raw_html(handle: *mut c_void) -> *mut c_char 
 }
 
 // ---------------------------------------------------------------------------
-// Search
-// ---------------------------------------------------------------------------
-
-/// Search across the web. Returns JSON results string, or NULL on error.
-///
-/// # Safety
-/// `handle` must be a valid client handle. `query` must be a null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn spine_search(handle: *mut c_void, query: *const c_char) -> *mut c_char {
-    let client = match (handle as *mut AgentClient<TcpStream>).as_mut() {
-        Some(c) => c,
-        None => {
-            set_error("spine_search: null handle");
-            return std::ptr::null_mut();
-        }
-    };
-    let query = match to_str(query) {
-        Some(q) => q,
-        None => {
-            set_error("spine_search: query is null or invalid UTF-8");
-            return std::ptr::null_mut();
-        }
-    };
-    match runtime().block_on(client.search(query)) {
-        Ok(result) => to_c_string(&result.to_string()),
-        Err(e) => {
-            set_error(&format!("spine_search: {e}"));
-            std::ptr::null_mut()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // HLS execution
 // ---------------------------------------------------------------------------
 
@@ -312,32 +279,6 @@ pub unsafe extern "C" fn spine_ping(handle: *mut c_void) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// Protocol morphing
-// ---------------------------------------------------------------------------
-
-/// Trigger protocol morphing. Returns 0 on success, -1 on error.
-///
-/// # Safety
-/// `handle` must be a valid client handle.
-#[no_mangle]
-pub unsafe extern "C" fn spine_morph(handle: *mut c_void) -> c_int {
-    let client = match (handle as *mut AgentClient<TcpStream>).as_mut() {
-        Some(c) => c,
-        None => {
-            set_error("spine_morph: null handle");
-            return -1;
-        }
-    };
-    match runtime().block_on(client.morph()) {
-        Ok(()) => 0,
-        Err(e) => {
-            set_error(&format!("spine_morph: {e}"));
-            -1
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------
 
@@ -354,7 +295,7 @@ pub unsafe extern "C" fn spine_get_capabilities(handle: *mut c_void) -> *mut c_c
             return std::ptr::null_mut();
         }
     };
-    match runtime().block_on(client.get_capabilities()) {
+    match runtime().block_on(client.get_binary_capabilities()) {
         Ok(caps) => {
             let json = serde_json::to_string(&caps).unwrap_or_default();
             to_c_string(&json)
@@ -608,22 +549,9 @@ mod tests {
     }
 
     #[test]
-    fn test_search_null_handle() {
-        let query = CString::new("test").unwrap();
-        let ptr = unsafe { spine_search(std::ptr::null_mut(), query.as_ptr()) };
-        assert!(ptr.is_null());
-    }
-
-    #[test]
     fn test_ping_null_handle() {
         let rtt = unsafe { spine_ping(std::ptr::null_mut()) };
         assert_eq!(rtt, -1);
-    }
-
-    #[test]
-    fn test_morph_null_handle() {
-        let rc = unsafe { spine_morph(std::ptr::null_mut()) };
-        assert_eq!(rc, -1);
     }
 
     #[test]
@@ -921,12 +849,6 @@ mod integration_tests {
     fn test_navigate_null_url() {
         let rc = unsafe { spine_navigate(std::ptr::null_mut(), std::ptr::null()) };
         assert_eq!(rc, -1);
-    }
-
-    #[test]
-    fn test_search_null_query() {
-        let ptr = unsafe { spine_search(std::ptr::null_mut(), std::ptr::null()) };
-        assert!(ptr.is_null());
     }
 
     #[test]

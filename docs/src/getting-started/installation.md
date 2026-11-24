@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Rust 1.88+** (install via [rustup](https://rustup.rs/))
+- **Rust 1.89+** (install via [rustup](https://rustup.rs/))
 - **OpenSSL** (for TLS features)
 - **pkg-config** (Linux/macOS)
 
@@ -21,8 +21,8 @@ The following binaries are produced in `target/release/`:
 | `spine`         | CLI tool for managing SPINE |
 | `spine-core`    | Core server                 |
 | `spine-gateway` | REST API gateway            |
-| `spine-browser` | GUI browser (egui)          |
 
+The GUI browser (`spine-browser`) is now in the separate `research/` workspace.
 ## Verify Installation
 
 ```bash
@@ -38,9 +38,15 @@ cargo run -p spine-cli -- --help
 Enable additional features via Cargo feature flags:
 
 ```bash
-# QUIC transport support
-cargo build --release --features quic
+# Native QUIC listener in the daemon (off by default)
+cargo build --release -p spine-core --features quic
 
-# io_uring (Linux only)
-cargo build --release --features io_uring
+# io_uring in the transport crate (Linux only)
+cargo build --release -p spine-transport --features io-uring
+
+# Research hooks in the daemon (cluster node, human transpiler)
+cargo build --release -p spine-core --features research
+
+# The experimental crates are a separate workspace
+cd research && cargo build
 ```

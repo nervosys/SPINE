@@ -1,0 +1,40 @@
+[package]
+name = "spine-mesh"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The SPINE agent mesh: Ed25519 identities, signed envelopes, signed name records, and authenticated TCP/WebSocket transports"
+
+[dependencies]
+tracing = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+rand.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+zeroize = { version = "1.8", features = ["derive"] }
+
+# Internal dependencies
+spine-cbor = { path = "../spine-cbor", version = "2.0.2" }
+spine-name = { path = "../spine-name", version = "2.0.2" }
+spine-session = { path = "../spine-session", version = "2.0.2" }
+spine-transport = { path = "../spine-transport", version = "2.0.2" }
+# Without the `research` feature: the wire types, codec and QUIC endpoint builder
+# only, so spine-mesh never reaches spine-neural or spine-crypto.
+spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-features = false, features = ["quic"] }
+
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap.workspace = true
+futures = "0.3"
+async-trait = "0.1"
+quinn = "0.11"
+rustls.workspace = true

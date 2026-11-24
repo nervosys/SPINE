@@ -1,37 +1,30 @@
+# NOTE: research/Cargo.toml is a second, independent workspace. Its
+# [workspace.package], [workspace.dependencies] and [profile.*] tables are
+# copies of the ones below and MUST be kept in sync by hand.
 [workspace]
 members = [
     "src/spine-core",
     "src/spine-parser",
+    "src/spine-cbor",
     "src/spine-protocol",
     "src/spine-grpc",
     "src/spine-agent",
     "src/spine-compiler",
     "src/spine-wasm",
-    "src/spine-cluster",
-    "src/spine-neural",
-    "src/spine-crypto",
-    "src/spine-human",
-    "src/spine-browser",
-    "src/spine-agentic",
+    "src/spine-session",
+    "src/spine-mesh",
     "src/spine-transport",
     "src/spine-stream",
-    "src/spine-recursive",
-    "src/spine-knowledge",
-    "src/spine-kernel",
     "src/spine-cli",
     "src/spine-gateway",
-    "src/spine-gpu",
     "src/spine-storage",
     "src/spine-cache",
-    "src/spine-k8s",
     "src/spine-ffi",
-    "src/spine-nostd",
-    "src/spine-embedded",
-    "src/spine-mechgen",
     "src/spine-name",
+    "src/spine-authority",
     "src/spine-web",
 ]
-exclude = ["src/spine-python", "src/spine-js"]
+exclude = ["src/spine-python", "src/spine-js", "research"]
 resolver = "2"
 
 [workspace.package]
@@ -41,7 +34,6 @@ authors = ["Nervosys LLC <opensource@nervosys.ai>"]
 description = "Agentic-first web stack for the 21st century — wire-level tool calling, token streaming, capability handshake, W3C tracing, and neural encoder-decoder protocols for LLM swarms"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/nervosys/SPINE"
-homepage = "https://github.com/nervosys/SPINE"
 readme = "README.md"
 keywords = ["agentic", "llm", "agents", "protocol", "web"]
 categories = ["network-programming", "web-programming", "asynchronous"]
@@ -70,11 +62,17 @@ debug = true         # Debug info for flamegraphs
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
+# float_roundtrip: a mesh envelope signature covers the CBOR form of every
+# serde_json::Value in its payload, and a Value crosses the JSON wire as text.
+# Without this feature serde_json's fast float parser can return an f64 one
+# ulp away from the one that was printed, so the receiver would re-encode
+# different bytes and reject a genuine signature. The cost is a slower, exact
+# float parse; no new dependency.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 anyhow = "1.0"
 thiserror = "1.0"
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11"
 reqwest = { version = "0.12", features = ["json"] }
 wasmtime = "36"
 wat = "1"
@@ -100,4 +98,3 @@ rustls = { version = "0.23", default-features = false, features = [
     "std",
 ] }
 tokio-rustls = "0.26"
-rustls-pemfile = "2"

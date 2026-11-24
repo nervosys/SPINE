@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -204,8 +204,8 @@
 </thead>
 <tbody>
 <tr><td>InMemory</td><td>(default)</td><td>Testing, ephemeral workloads</td><td>None</td></tr>
-<tr><td>SQLite</td><td><code>sqlite</code></td><td>Single-node production</td><td>WAL</td></tr>
-<tr><td>RocksDB</td><td><code>rocksdb</code></td><td>High-throughput workloads</td><td>LSM-tree</td></tr>
+<tr><td>SQLite</td><td><code>sqlite</code> (default)</td><td>Single-node production</td><td>WAL</td></tr>
+<tr><td>RocksDB</td><td><code>rocksdb-backend</code></td><td>High-throughput workloads</td><td>LSM-tree</td></tr>
 </tbody>
 </table>
 </div>
@@ -213,12 +213,13 @@
 <p>Generic wrapper providing <code>serde</code> serialization over any backend:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let typed: TypedStorage&lt;MyConfig&gt; = TypedStorage::new(backend, "configs");
+</span>let typed = TypedStorage::new(backend, "configs");
 typed.put("key1", &amp;my_config)?;
 let config: Option&lt;MyConfig&gt; = typed.get("key1")?;
 <span class="boring">}</span></code></pre>
 <h2 id="persistentknowledge"><a class="header" href="#persistentknowledge">PersistentKnowledge</a></h2>
-<p>Adapter integrating <code>StorageBackend</code> with <code>spine-knowledge</code>:</p>
+<p>Adapter integrating <code>StorageBackend</code> with <code>spine-knowledge</code> (research,
+<code>research/spine-knowledge</code>; <code>spine-storage</code> itself is in the root workspace):</p>
 <ul>
 <li>Episodes stored in <code>"episodes"</code> namespace</li>
 <li>Concepts in <code>"concepts"</code> namespace</li>

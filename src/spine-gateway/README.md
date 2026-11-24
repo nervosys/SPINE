@@ -13,6 +13,17 @@ what changed in this release.
 
 API documentation: <https://docs.rs/spine-gateway>
 
+## Features
+
+- `research` (off by default): serves `POST /v1/embeddings` and
+  `GET /v1/agentic/codecs` from a codec registry pre-populated with the Titans
+  neural codec (`spine:codec/titans/v1@dim=256,dtype=f32`, 256-dim f32), which is
+  the default `model` of `/v1/embeddings`. The codec comes from the optional
+  `research/spine-protocol-research` dependency (which pulls in `spine-neural` and
+  `spine-crypto`). Without it both routes stay registered and answer
+  `503 Service Unavailable` with a message to rebuild with the `research` feature.
+- `fips`: build against the FIPS-shaped rustls provider stack.
+
 ## Workspace dependencies
 
 - `spine-agent`

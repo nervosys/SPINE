@@ -22,12 +22,11 @@ use serde_json::json;
 use spine_grpc::{
     AgentServiceServer, ChatModel, EchoModel, OpenAiChatModel, SpineAgent, FILE_DESCRIPTOR_SET,
 };
-use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome, ToolResult};
+use spine_protocol::{Capability, CapabilityAdvertisement, ToolCall, ToolOutcome};
 use tonic::transport::Server;
 
 fn advertisement() -> CapabilityAdvertisement {
     CapabilityAdvertisement {
-        id: "grpc".into(),
         agent_id: "did:spine:grpc-demo".into(),
         capabilities: vec![Capability {
             uri: "agent.math/add".into(),
@@ -43,8 +42,8 @@ fn advertisement() -> CapabilityAdvertisement {
     }
 }
 
-fn execute(call: ToolCall) -> ToolResult {
-    let outcome = if call.name == "agent.math/add" {
+fn execute(call: ToolCall) -> ToolOutcome {
+    if call.name == "agent.math/add" {
         let a = call.args.get("a").and_then(|v| v.as_i64()).unwrap_or(0);
         let b = call.args.get("b").and_then(|v| v.as_i64()).unwrap_or(0);
         ToolOutcome::Ok {
@@ -56,11 +55,6 @@ fn execute(call: ToolCall) -> ToolResult {
             message: format!("no such tool: {}", call.name),
             details: None,
         }
-    };
-    ToolResult {
-        id: call.id,
-        outcome,
-        trace: None,
     }
 }
 

@@ -36,10 +36,10 @@
             const path_to_root = "";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="toc-476c3948.js"></script>
+        <script src="toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -179,32 +179,30 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="spine-documentation"><a class="header" href="#spine-documentation">SPINE Documentation</a></h1>
-<p><strong>SPINE</strong> is a headless semantic browser with adaptive encryption — an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.</p>
+<p><strong>SPINE</strong> is a headless semantic browser and agent web stack: a daemon that fetches pages and returns structured Unified Representations, a binary wire protocol (spine-wire v1) to talk to it, and a signed mesh and naming layer for agents to find each other.</p>
 <h2 id="what-is-spine"><a class="header" href="#what-is-spine">What is SPINE?</a></h2>
-<p>SPINE provides a complete agentic web stack:</p>
+<p>SPINE provides an agentic web stack:</p>
 <ul>
 <li><strong>Headless semantic browsing</strong> — Navigate web pages and extract structured Unified Representations instead of raw HTML</li>
-<li><strong>Adaptive encryption</strong> — X3DH key exchange, Chameleon latent-space cryptography, quantum-resistant RLWE</li>
-<li><strong>Swarm intelligence</strong> — Multi-agent coordination with capability discovery and task delegation</li>
-<li><strong>Neural protocols</strong> — Learned message encoding with Titans architecture for efficient communication</li>
+<li><strong>Native wire</strong> — spine-wire v1: length-prefixed binary frames, deterministic CBOR bodies, a <code>HELLO</code>/<code>HELLO_ACK</code> handshake and a closed set of 19 commands (see <a href="#protocol">Protocol</a>)</li>
+<li><strong>Confidentiality</strong> — On the native client wire, confidentiality and authentication come from TLS (optionally mutual TLS) and nothing else. The mesh path between nodes is a different protocol with its own ML-KEM-768 and Ed25519 handshake (<code>spine-session</code>)</li>
+<li><strong>Naming and mesh</strong> — <code>spine://</code> self-certifying names, signed name records, and an Ed25519-signed agent mesh</li>
 <li><strong>HLS scripting</strong> — Domain-specific language compiled to WebAssembly for server-side execution</li>
-<li><strong>Knowledge base</strong> — Distributed CRDT-based memory with episodic, semantic, working, and collective subsystems</li>
+<li><strong>Knowledge store</strong> — Per-session key/value entries with tags, through <code>store_knowledge</code> and <code>query_knowledge</code></li>
+<li><strong>Research (not shipped)</strong> — Swarm intelligence, neural codecs, latent-space encoding, the memory subsystems and other experiments live in the separate <code>research/</code> workspace and are not on the native wire</li>
 </ul>
 <h2 id="architecture-at-a-glance"><a class="header" href="#architecture-at-a-glance">Architecture at a Glance</a></h2>
-<pre><code>┌─────────────────────────────────────────────────┐
-│                  spine-agent                     │  High-level SDK
-├─────────────┬─────────────┬─────────────────────┤
-│ spine-cli   │ spine-gateway│ spine-browser       │  Interfaces
-├─────────────┴─────────────┴─────────────────────┤
-│                 spine-agentic                    │  Swarm / Neural
-├──────────┬──────────┬───────────┬───────────────┤
-│ protocol │ parser   │ compiler  │ knowledge     │  Core
-├──────────┴──────────┴───────────┴───────────────┤
-│  transport │ stream │ crypto │ neural │ wasm    │  Infrastructure
-├─────────────────────────────────────────────────┤
-│                  spine-kernel                    │  Hardware primitives
-└─────────────────────────────────────────────────┘
+<pre><code>┌───────────────────────────────────────────────────────┐
+│ spine-cli · spine-gateway · spine-agent (SDK)          │  Interfaces
+├───────────────────────────────────────────────────────┤
+│ spine-core (daemon)                                    │  Sessions, commands
+├───────────┬───────────┬───────────┬───────────────────┤
+│ protocol  │ parser    │ compiler  │ name · mesh       │  Core
+├───────────┴───────────┴───────────┴───────────────────┤
+│ transport · stream · session · storage · cache · wasm  │  Infrastructure
+└───────────────────────────────────────────────────────┘
 </code></pre>
+<p>The experimental crates in <code>research/</code> are a separate Cargo workspace and are not part of this stack.</p>
 <h2 id="quick-example"><a class="header" href="#quick-example">Quick Example</a></h2>
 <pre class="playground"><code class="language-rust">use spine_agent::AgentClient;
 
@@ -216,10 +214,6 @@ async fn main() -&gt; anyhow::Result&lt;()&gt; {
     client.navigate("https://example.com").await?;
     let ur = client.get_ur().await?;
     println!("Title: {}", ur.title);
-
-    // Search
-    let results = client.search("rust programming").await?;
-    println!("Results: {}", results);
 
     Ok(())
 }</code></pre>
@@ -236,7 +230,7 @@ async fn main() -&gt; anyhow::Result&lt;()&gt; {
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
 <h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
 <ul>
-<li><strong>Rust 1.75+</strong> (install via <a href="https://rustup.rs/">rustup</a>)</li>
+<li><strong>Rust 1.89+</strong> (install via <a href="https://rustup.rs/">rustup</a>)</li>
 <li><strong>OpenSSL</strong> (for TLS features)</li>
 <li><strong>pkg-config</strong> (Linux/macOS)</li>
 </ul>
@@ -255,10 +249,10 @@ cargo build --release
 <tr><td><code>spine</code></td><td>CLI tool for managing SPINE</td></tr>
 <tr><td><code>spine-core</code></td><td>Core server</td></tr>
 <tr><td><code>spine-gateway</code></td><td>REST API gateway</td></tr>
-<tr><td><code>spine-browser</code></td><td>GUI browser (egui)</td></tr>
 </tbody>
 </table>
 </div>
+<p>The GUI browser (<code>spine-browser</code>) is now in the separate <code>research/</code> workspace.</p>
 <h2 id="verify-installation"><a class="header" href="#verify-installation">Verify Installation</a></h2>
 <pre><code class="language-bash"># Run tests
 cargo test --workspace
@@ -268,11 +262,17 @@ cargo run -p spine-cli -- --help
 </code></pre>
 <h2 id="optional-features"><a class="header" href="#optional-features">Optional Features</a></h2>
 <p>Enable additional features via Cargo feature flags:</p>
-<pre><code class="language-bash"># QUIC transport support
-cargo build --release --features quic
+<pre><code class="language-bash"># Native QUIC listener in the daemon (off by default)
+cargo build --release -p spine-core --features quic
 
-# io_uring (Linux only)
-cargo build --release --features io_uring
+# io_uring in the transport crate (Linux only)
+cargo build --release -p spine-transport --features io-uring
+
+# Research hooks in the daemon (cluster node, human transpiler)
+cargo build --release -p spine-core --features research
+
+# The experimental crates are a separate workspace
+cd research &amp;&amp; cargo build
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="quick-start"><a class="header" href="#quick-start">Quick Start</a></h1>
@@ -328,11 +328,10 @@ async fn main() -&gt; anyhow::Result&lt;()&gt; {
 <li><a href="#configuration">Configuration</a> — Customize server settings</li>
 <li><a href="#navigation--unified-representations">Navigation &amp; URs</a> — Deep dive into web extraction</li>
 <li><a href="#hls-scripting">HLS Scripting</a> — Server-side scripting language</li>
-<li><a href="#swarm-intelligence">Swarm Intelligence</a> — Multi-agent coordination</li>
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="configuration"><a class="header" href="#configuration">Configuration</a></h1>
-<p>SPINE uses layered configuration: <code>spine.toml</code> → environment variables → defaults.</p>
+<p>SPINE uses layered configuration. From highest priority to lowest: environment variables, <code>spine.toml</code>, built-in defaults.</p>
 <h2 id="configuration-file"><a class="header" href="#configuration-file">Configuration File</a></h2>
 <p>Create <code>spine.toml</code> in your project root:</p>
 <pre><code class="language-toml">[server]
@@ -344,17 +343,20 @@ metrics_port = 9090
 max_sessions = 1000
 max_connections_per_ip = 50
 idle_timeout_secs = 300
+hello_timeout_secs = 10
 session_watchdog_secs = 600
 persistence_interval_secs = 60
 shutdown_timeout_secs = 30
+allow_unauthenticated_remote = false
 
 [tls]
 enabled = false
-cert_path = "certs/server.crt"
-key_path = "certs/server.key"
-ca_path = "certs/ca.crt"
+cert_path = "certs/cert.pem"
+key_path = "certs/key.pem"
+ca_path = "certs/ca.pem"
+mutual_tls = false
 
-[cluster]
+[cluster]            # used only when built with the `research` feature
 port_offset = 100
 region = "us-east"
 skills = ["search", "analysis"]
@@ -364,12 +366,21 @@ format = "pretty"   # "json" or "pretty"
 level = "info"      # trace, debug, info, warn, error
 </code></pre>
 <h2 id="environment-variables"><a class="header" href="#environment-variables">Environment Variables</a></h2>
-<p>Override any setting via environment variables prefixed with <code>SPINE_</code>:</p>
-<pre><code class="language-bash">export SPINE_SERVER_HOST=0.0.0.0
-export SPINE_SERVER_PORT=9000
-export SPINE_TLS_ENABLED=true
-export SPINE_LOGGING_LEVEL=debug
+<p>Common settings can be overridden with environment variables:</p>
+<pre><code class="language-bash">export SPINE_HOST=0.0.0.0
+export SPINE_PORT=9000
+export SPINE_TLS=true
+export SPINE_TLS_MTLS=true
+export SPINE_LOG_LEVEL=debug
 </code></pre>
+<p>Others include <code>SPINE_METRICS_PORT</code>, <code>SPINE_MAX_SESSIONS</code>, <code>SPINE_TLS_CERT</code>, <code>SPINE_TLS_KEY</code>, <code>SPINE_TLS_CA</code>, <code>SPINE_HELLO_TIMEOUT</code>, <code>SPINE_IDLE_TIMEOUT</code>, <code>SPINE_SHUTDOWN_TIMEOUT</code> and <code>SPINE_CONFIG_PATH</code> (an alternative config file path). See <code>src/spine-core/src/config.rs</code> for the full list.</p>
+<h2 id="exposing-the-daemon"><a class="header" href="#exposing-the-daemon">Exposing the Daemon</a></h2>
+<p>The native server has no per-client authorization: any connected client can
+publish names and resources and call tools. A non-loopback <code>server.host</code> is
+refused at startup unless <code>tls.mutual_tls</code> is on or
+<code>server.allow_unauthenticated_remote</code> is set, which states that the network
+itself is trusted. TLS is the only source of confidentiality and
+authentication on the native wire.</p>
 <h2 id="loading-config-in-code"><a class="header" href="#loading-config-in-code">Loading Config in Code</a></h2>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -389,6 +400,8 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><td><code>server.port</code></td><td><code>8080</code></td></tr>
 <tr><td><code>server.max_sessions</code></td><td><code>1000</code></td></tr>
 <tr><td><code>server.idle_timeout_secs</code></td><td><code>300</code></td></tr>
+<tr><td><code>server.hello_timeout_secs</code></td><td><code>10</code></td></tr>
+<tr><td><code>server.allow_unauthenticated_remote</code></td><td><code>false</code></td></tr>
 <tr><td><code>tls.enabled</code></td><td><code>false</code></td></tr>
 <tr><td><code>logging.format</code></td><td><code>pretty</code></td></tr>
 <tr><td><code>logging.level</code></td><td><code>info</code></td></tr>
@@ -397,42 +410,36 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
-<p>SPINE is a headless semantic browser with adaptive encryption. It is organized as a Rust workspace of 19 crates, each with a focused responsibility.</p>
+<p>SPINE is a headless semantic browser and agent web stack. The root Cargo workspace has 18 crates, each with a focused responsibility; experimental crates live in a separate <code>research/</code> workspace (see <a href="#crate-map">Crate Map</a>).</p>
 <h2 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h2>
 <ol>
 <li><strong>Semantic-first</strong> — All content is parsed into Unified Representations, not raw HTML</li>
 <li><strong>Agent-native</strong> — Built for programmatic access, not human browsing</li>
-<li><strong>Secure by default</strong> — Layered encryption from TLS to latent-space cryptography</li>
-<li><strong>Bioinspired</strong> — Memory, learning, and coordination modeled on biological systems</li>
-<li><strong>Zero-copy where possible</strong> — Kernel primitives and transport avoid unnecessary allocations</li>
+<li><strong>One wire</strong> — A single versioned binary protocol (spine-wire v1) with deterministic encoding, so every value has exactly one byte representation</li>
+<li><strong>Honest security claims</strong> — Native-path confidentiality comes from TLS; the mesh has its own signed and encrypted handshake; research code is labelled as such</li>
+<li><strong>Zero-copy where possible</strong> — Transport avoids unnecessary allocations</li>
 </ol>
 <h2 id="system-layers"><a class="header" href="#system-layers">System Layers</a></h2>
 <pre><code>┌─────────────────────────────────────────────────────────────┐
 │                      User Interfaces                         │
-│   spine-cli · spine-gateway · spine-browser                  │
+│   spine-cli · spine-gateway · spine-grpc                     │
 ├─────────────────────────────────────────────────────────────┤
 │                      Agent SDK                               │
-│   spine-agent (connect, navigate, search, execute, swarm)    │
-├─────────────────────────────────────────────────────────────┤
-│                   Agentic Intelligence                       │
-│   spine-agentic (neural protocols, swarm, social cognition)  │
+│   spine-agent (connect, navigate, execute, knowledge, names) │
 ├──────────┬──────────┬──────────┬──────────┬─────────────────┤
-│ Protocol │ Parser   │ Compiler │ Knowledge│ Core             │
-│ messages │ HTML→UR  │ HLS→WASM │ CRDT mem │ server+config    │
+│ Protocol │ Parser   │ Compiler │ Name     │ Core             │
+│ wire v1  │ HTML→UR  │ HLS→WASM │ + Mesh   │ daemon + config  │
 ├──────────┴──────────┴──────────┴──────────┴─────────────────┤
 │                    Infrastructure                            │
-│  transport · stream · crypto · neural · wasm · human         │
-├─────────────────────────────────────────────────────────────┤
-│                    spine-kernel                               │
-│  SIMD · allocators · atomics · ring buffers · RDTSC          │
+│  transport · stream · session · storage · cache · wasm       │
 └─────────────────────────────────────────────────────────────┘
 </code></pre>
 <h2 id="data-flow"><a class="header" href="#data-flow">Data Flow</a></h2>
 <ol>
-<li><strong>Agent connects</strong> via TCP, TLS, or WebSocket to spine-core server</li>
-<li><strong>Requests</strong> are serialized as <code>Message</code> enum through <code>ProtocolHandler</code></li>
-<li><strong>Server</strong> fetches web content, parses to <code>UnifiedRepresentation</code></li>
-<li><strong>Response</strong> flows back through optional compression, encryption, speculation</li>
+<li><strong>Agent connects</strong> via TCP, TLS, or WebSocket to the <code>spine-core</code> daemon and exchanges <code>HELLO</code> / <code>HELLO_ACK</code></li>
+<li><strong>Commands</strong> travel as <code>REQUEST</code> frames whose body is a <code>BrowserCommand</code> in deterministic CBOR, handled by <code>spine_protocol::connection::Connection</code></li>
+<li><strong>Daemon</strong> fetches web content under its outbound policy and parses it to a <code>UnifiedRepresentation</code></li>
+<li><strong>Reply</strong> is a <code>RESPONSE</code> frame with the same request id, whose body is <code>{ok: result}</code> or <code>{err: {code, message}}</code>, optionally zstd-compressed</li>
 <li><strong>Agent</strong> receives structured data for processing</li>
 </ol>
 <h2 id="security-layers"><a class="header" href="#security-layers">Security Layers</a></h2>
@@ -442,28 +449,32 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><th>Layer</th><th>Component</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td>Transport</td><td>TLS 1.3</td><td>Channel encryption</td></tr>
-<tr><td>Protocol</td><td>Chameleon keys</td><td>Moving-target defense</td></tr>
-<tr><td>Latent</td><td>Neural encoding</td><td>Latent-space cryptography</td></tr>
-<tr><td>Post-quantum</td><td>RLWE lattice</td><td>Future-proof key exchange</td></tr>
-<tr><td>Identity</td><td>X3DH</td><td>Initial trust establishment</td></tr>
-<tr><td>Anti-Sybil</td><td>Stake + PoW</td><td>Decentralized trust</td></tr>
+<tr><td>Transport</td><td>TLS, optional mutual TLS</td><td>Confidentiality and authentication on the native wire</td></tr>
+<tr><td>Wire</td><td>spine-wire v1 framing and strict CBOR</td><td>Bounded frames, one encoding per value; no encryption</td></tr>
+<tr><td>Mesh</td><td><code>spine-session</code> handshake, signed envelopes</td><td>Node-to-node authentication and encryption (a separate protocol)</td></tr>
+<tr><td>Identity</td><td>Ed25519 keys and signed name records</td><td>Self-certifying names and authorship</td></tr>
 </tbody>
 </table>
 </div>
+<p>There is no SPINE-level encryption, obfuscation, padding or traffic-analysis
+resistance on the native wire. See <a href="#security">Security</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="crate-map"><a class="header" href="#crate-map">Crate Map</a></h1>
-<h2 id="workspace-crates-26-total"><a class="header" href="#workspace-crates-26-total">Workspace Crates (26 total)</a></h2>
-<h3 id="user-facing"><a class="header" href="#user-facing">User-Facing</a></h3>
+<p>The repository has two Cargo workspaces. The root workspace (<code>src/*</code>) holds the
+18 crates that make up the stack. The <code>research/</code> workspace holds experimental
+crates that are not built with the root workspace and are not on the native wire.</p>
+<h2 id="root-workspace-18-crates"><a class="header" href="#root-workspace-18-crates">Root Workspace (18 crates)</a></h2>
+<h3 id="interfaces"><a class="header" href="#interfaces">Interfaces</a></h3>
 <div class="table-wrapper">
 <table>
 <thead>
 <tr><th>Crate</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>spine-cli</code></td><td>Binary</td><td>CLI tool (<code>spine</code> command) — init, connect, query, deploy, benchmark, status</td></tr>
+<tr><td><code>spine-cli</code></td><td>Binary</td><td>CLI tool (<code>spine</code> command): mcp, task, name, init, connect, query, deploy, benchmark, status, cert</td></tr>
 <tr><td><code>spine-gateway</code></td><td>Binary</td><td>OpenAPI REST gateway with Swagger UI</td></tr>
-<tr><td><code>spine-browser</code></td><td>Binary</td><td>Cross-platform GUI browser (egui)</td></tr>
+<tr><td><code>spine-grpc</code></td><td>Library</td><td>gRPC/protobuf bridge exposing tool calls, capabilities and streaming</td></tr>
+<tr><td><code>spine-web</code></td><td>Library</td><td>Umbrella facade; re-exports the component crates behind Cargo features</td></tr>
 </tbody>
 </table>
 </div>
@@ -474,18 +485,7 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><th>Crate</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>spine-agent</code></td><td>Library</td><td>High-level agent SDK with TCP/TLS/WebSocket transports</td></tr>
-</tbody>
-</table>
-</div>
-<h3 id="intelligence"><a class="header" href="#intelligence">Intelligence</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td><code>spine-agentic</code></td><td>Library</td><td>Swarm intelligence, neural protocols, social cognition, protocol evolution</td></tr>
+<tr><td><code>spine-agent</code></td><td>Library</td><td>Agent SDK (<code>AgentClient</code>) with TCP, TLS and WebSocket connections</td></tr>
 </tbody>
 </table>
 </div>
@@ -496,11 +496,14 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><th>Crate</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>spine-core</code></td><td>Binary+Lib</td><td>Multi-session orchestration server with config management</td></tr>
-<tr><td><code>spine-protocol</code></td><td>Library</td><td>Message types, frame encoding, protocol handler, speculation</td></tr>
-<tr><td><code>spine-parser</code></td><td>Library</td><td>Recursive semantic HTML to Unified Representation parser</td></tr>
+<tr><td><code>spine-core</code></td><td>Binary+Lib</td><td>The daemon: sessions, command dispatch, configuration, outbound fetch policy</td></tr>
+<tr><td><code>spine-protocol</code></td><td>Library</td><td>spine-wire v1: frames, deterministic CBOR, <code>HELLO</code>/<code>HELLO_ACK</code>, <code>Connection</code>, command and error types</td></tr>
+<tr><td><code>spine-parser</code></td><td>Library</td><td>Semantic HTML to Unified Representation parser, structured extraction</td></tr>
 <tr><td><code>spine-compiler</code></td><td>Library</td><td>HLS (SPINE Scripting) to SpineBinary compiler</td></tr>
-<tr><td><code>spine-knowledge</code></td><td>Library</td><td>Unified bioinspired memory (episodic, semantic, working, collective) with CRDTs</td></tr>
+<tr><td><code>spine-wasm</code></td><td>Library</td><td>WebAssembly runtime (wasmtime) for HLS execution</td></tr>
+<tr><td><code>spine-name</code></td><td>Library</td><td><code>spine://</code> URIs, self-certifying names, signed name records, DHT keyspace, resolver</td></tr>
+<tr><td><code>spine-mesh</code></td><td>Library</td><td>Agent mesh: Ed25519 identities, signed envelopes, name-record RPC, TCP/WebSocket/QUIC transports</td></tr>
+<tr><td><code>spine-session</code></td><td>Library</td><td>Authenticated, forward-secret mesh session handshake (ML-KEM-768, Ed25519, AES-256-GCM). Custom cryptography without external review</td></tr>
 </tbody>
 </table>
 </div>
@@ -511,31 +514,10 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><th>Crate</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>spine-transport</code></td><td>Library</td><td>Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin system</td></tr>
+<tr><td><code>spine-transport</code></td><td>Library</td><td>Zero-copy I/O, BBR congestion control, WebSocket bridge, plugin pipeline</td></tr>
 <tr><td><code>spine-stream</code></td><td>Library</td><td>Reactive streams, multiplexing, flow control, priority queuing</td></tr>
-<tr><td><code>spine-crypto</code></td><td>Library</td><td>Titans prediction, quantum cryptography, X3DH, MIRAS memory</td></tr>
-<tr><td><code>spine-neural</code></td><td>Library</td><td>VAE encoder, Titans memory, attention, learned projections</td></tr>
-<tr><td><code>spine-cluster</code></td><td>Library</td><td>Distributed coordination, Raft consensus, Sybil resistance, marketplace</td></tr>
-<tr><td><code>spine-wasm</code></td><td>Library</td><td>WebAssembly runtime (wasmtime) for HLS execution</td></tr>
-<tr><td><code>spine-human</code></td><td>Library</td><td>Legacy web bridge — realistic mouse/keyboard simulation</td></tr>
-<tr><td><code>spine-recursive</code></td><td>Library</td><td>Recursive Language Model for infinite context (10M+ chars)</td></tr>
-<tr><td><code>spine-gpu</code></td><td>Library</td><td>GPU compute abstraction (CPU SIMD fallback, wgpu Vulkan/Metal/DX12)</td></tr>
-<tr><td><code>spine-storage</code></td><td>Library</td><td>Persistent storage (InMemory, SQLite WAL, RocksDB LSM)</td></tr>
-<tr><td><code>spine-cache</code></td><td>Library</td><td>Tiered caching (L1 LRU, L2 file-backed, L3 remote)</td></tr>
-<tr><td><code>spine-k8s</code></td><td>Library</td><td>Kubernetes operator CRD, autoscaler, manifest generators</td></tr>
-</tbody>
-</table>
-</div>
-<h3 id="primitives"><a class="header" href="#primitives">Primitives</a></h3>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Crate</th><th>Type</th><th>Description</th></tr>
-</thead>
-<tbody>
-<tr><td><code>spine-kernel</code></td><td>Library</td><td>SIMD intrinsics, custom allocators, lock-free atomics, ring buffers, RDTSC</td></tr>
-<tr><td><code>spine-nostd</code></td><td>Library</td><td><code>#![no_std]</code> core primitives (Q8.8 fixed-point, FNV hashing, frame codec)</td></tr>
-<tr><td><code>spine-embedded</code></td><td>Library</td><td>Minimal agent runtime for embedded/IoT targets</td></tr>
+<tr><td><code>spine-storage</code></td><td>Library</td><td>Persistent storage backends (in-memory, SQLite, RocksDB)</td></tr>
+<tr><td><code>spine-cache</code></td><td>Library</td><td>Tiered caching (L1 LRU, L2 file-backed, L3 remote trait)</td></tr>
 </tbody>
 </table>
 </div>
@@ -546,78 +528,160 @@ println!("Listening on {}:{}", config.server.host, config.server.port);
 <tr><th>Crate</th><th>Type</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>spine-ffi</code></td><td>Library</td><td>C FFI bindings (cdylib/staticlib) for language interop</td></tr>
-<tr><td><code>spine-python</code></td><td>Library</td><td>Python bindings via PyO3 + maturin (excluded)</td></tr>
-<tr><td><code>spine-js</code></td><td>Library</td><td>TypeScript/WASM bindings via wasm-bindgen (excluded)</td></tr>
-<tr><td><code>spine-go</code></td><td>Go pkg</td><td>Go bindings via cgo + spine-ffi (non-Rust)</td></tr>
+<tr><td><code>spine-ffi</code></td><td>Library</td><td>C ABI (cdylib/staticlib), 15 functions in <code>spine.h</code>, wraps <code>AgentClient</code> over plain TCP</td></tr>
+<tr><td><code>spine-go</code></td><td>Go pkg</td><td>Go bindings over <code>spine-ffi</code> with cgo; does not speak the wire itself</td></tr>
+<tr><td><code>spine-python</code></td><td>Library</td><td>Python bindings (PyO3 + maturin), outside both workspaces; wraps <code>AgentClient</code> over plain TCP</td></tr>
+<tr><td><code>spine-js</code></td><td>Library</td><td>wasm-bindgen bindings, outside both workspaces; parses HTML and compiles HLS offline, no network</td></tr>
 </tbody>
 </table>
 </div>
+<h2 id="research-workspace-research"><a class="header" href="#research-workspace-research">Research Workspace (<code>research/</code>)</a></h2>
+<p>Experimental and unreviewed. Build with <code>cd research &amp;&amp; cargo build</code>. None of
+this is on the native wire.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Crate</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>spine-protocol-research</code></td><td>Neural codecs, Chameleon key and latent AEAD, Titans latent codec, protocol evolution</td></tr>
+<tr><td><code>spine-agentic</code></td><td>Swarm intelligence, social cognition, workflows, tracing and replay</td></tr>
+<tr><td><code>spine-knowledge</code></td><td>Bioinspired memory (episodic, semantic, working, collective) with CRDTs</td></tr>
+<tr><td><code>spine-crypto</code>, <code>spine-neural</code>, <code>spine-recursive</code></td><td>Transformer prediction and key-evolution, neural latent encoder, recursive long-context model</td></tr>
+<tr><td><code>spine-cluster</code>, <code>spine-human</code></td><td>Cluster node and human-input transpiler (behind <code>spine-core</code>’s <code>research</code> feature)</td></tr>
+<tr><td><code>spine-kernel</code>, <code>spine-nostd</code>, <code>spine-embedded</code>, <code>spine-gpu</code>, <code>spine-k8s</code></td><td>Low-level primitives, embedded runtime, GPU compute and Kubernetes operator</td></tr>
+<tr><td><code>spine-browser</code></td><td>egui GUI browser</td></tr>
+<tr><td><code>spine-mechgen</code></td><td>MechGen ABL bridge: deserializes ABL envelopes into <code>spine-agentic</code> types</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>spine-agent</code> has a <code>research</code> feature, but only to pull in <code>spine-agentic</code> for
+its examples; the SDK has no research-gated code. The <code>spine-protocol</code> crate has
+no <code>research</code> feature.</p>
 <h2 id="dependency-graph-simplified"><a class="header" href="#dependency-graph-simplified">Dependency Graph (simplified)</a></h2>
-<pre><code>spine-cli ------+
-spine-gateway --+
-spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
-                |                                   +-- spine-neural
-                |                                   +-- spine-crypto
-                |                                   +-- spine-knowledge -- spine-storage
-                |                                                          spine-cache
-                |
-                +-- spine-core -- spine-protocol --+-- spine-parser
-                                                    +-- spine-compiler
-                                                    +-- spine-transport -- spine-kernel
-                                                    +-- spine-stream
-                                                    +-- spine-cluster (Raft, Sybil)
-                                                    +-- spine-wasm
-                                                    +-- spine-gpu
+<pre><code>spine-cli, spine-gateway, spine-ffi -- spine-agent --+-- spine-protocol
+                                                     +-- spine-parser, spine-compiler, spine-wasm
+                                                     +-- spine-name
+                                                     +-- spine-transport
+
+spine-core -- spine-protocol, spine-parser, spine-wasm, spine-name,
+              spine-mesh, spine-storage, spine-transport, spine-agent
+
+spine-mesh -- spine-session, spine-name, spine-transport, spine-protocol
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="protocol"><a class="header" href="#protocol">Protocol</a></h1>
-<h2 id="message-format"><a class="header" href="#message-format">Message Format</a></h2>
-<p>All communication uses the <code>Message</code> enum, serialized with serde:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>pub enum Message {
-    Request(Request),
-    Response(Response),
-    Event(Event),
-    BinaryProgram(SpineBinary),
-    LatentMessage(LatentVector),
-    Sync(SyncPayload),
-    Speculative(SpeculativeFrame),
-    PreComputed(PreComputedResponse),
-    MorphRequest { seed: u64 },
-    Ping { timestamp: u64 },
-    Pong { timestamp: u64 },
-}
-<span class="boring">}</span></code></pre>
+<h2 id="bodies"><a class="header" href="#bodies">Bodies</a></h2>
+<p>The body of a frame is one deterministic CBOR item (<code>docs/spec/00-wire.md</code> C.3).
+The frame header’s request id is the only correlation id; no body carries one.</p>
+<p>A <code>REQUEST</code> body is a command from a closed set of 19. A command without
+fields is the text of its name (<code>"get_ur"</code>); a command with fields is a
+single-entry map <code>{name: fields}</code>. A name outside the set is <code>unknown_command</code>;
+a known name with a defect (an unknown field, a wrong type, a present <code>null</code>
+for an optional field, a non-deterministic encoding) is <code>invalid_request</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Name</th><th>Fields</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigate</code></td><td><code>url</code></td></tr>
+<tr><td><code>get_ur</code></td><td>none</td></tr>
+<tr><td><code>get_raw_html</code></td><td>none</td></tr>
+<tr><td><code>execute_binary</code></td><td>a <code>SpineBinary</code></td></tr>
+<tr><td><code>store_knowledge</code></td><td><code>key</code>, <code>value</code>, <code>tags</code></td></tr>
+<tr><td><code>query_knowledge</code></td><td><code>query</code>, <code>tags</code>, <code>limit</code></td></tr>
+<tr><td><code>get_binary_capabilities</code></td><td>none</td></tr>
+<tr><td><code>resolve_name</code></td><td><code>name</code>, <code>if_none_match</code> (optional byte string, 32 bytes)</td></tr>
+<tr><td><code>resolve_names</code></td><td><code>names</code></td></tr>
+<tr><td><code>find_providers</code></td><td><code>capability</code>, <code>limit</code> (optional)</td></tr>
+<tr><td><code>publish_name</code></td><td><code>record</code></td></tr>
+<tr><td><code>fetch_name</code></td><td><code>name</code>, <code>if_none_match</code> (optional byte string, 32 bytes)</td></tr>
+<tr><td><code>crawl_names</code></td><td><code>seed</code>, <code>max_depth</code> (optional), <code>max_visits</code> (optional)</td></tr>
+<tr><td><code>publish_resource</code></td><td><code>record</code>, <code>content_type</code>, <code>data</code> (byte string)</td></tr>
+<tr><td><code>read_resource</code></td><td><code>hash</code> (byte string, 32 bytes), <code>offset</code>, <code>max_bytes</code></td></tr>
+<tr><td><code>namespace_status</code></td><td>none</td></tr>
+<tr><td><code>mesh_call</code></td><td><code>peer_id</code>, <code>peer_key</code> (byte string, 32 bytes), <code>payload</code></td></tr>
+<tr><td><code>tool_call</code></td><td><code>name</code>, <code>args</code>, <code>trace</code> (optional)</td></tr>
+<tr><td><code>capability_query</code></td><td><code>selector</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>A <code>RESPONSE</code> body is a single-entry map: <code>{ok: result}</code> on success or
+<code>{err: {code, message[, details]}}</code> on failure. The result’s shape depends on
+the command; <code>read_resource</code> answers a <code>ResourceChunk</code> whose <code>hash</code> and <code>data</code>
+are byte strings, <code>capability_query</code> answers a capability advertisement
+(<code>agent_id</code>, <code>capabilities</code>) and <code>tool_call</code> answers the tool’s content.</p>
+<p>Every body struct rejects unknown fields. Optional fields are omitted when
+absent. Byte fields are CBOR byte strings, never arrays of integers. A
+<code>serde_json::Value</code> field stays a value and is encoded as CBOR, with integer and
+float widths as in C.5.</p>
+<h3 id="error-codes"><a class="header" href="#error-codes">Error codes</a></h3>
+<p><code>spine_protocol::body</code> holds the constants (<code>ERR_*</code>) and <code>ALL_ERROR_CODES</code>.
+Clients branch on <code>code</code>; <code>message</code> is for people.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Code</th><th>Raised when</th></tr>
+</thead>
+<tbody>
+<tr><td><code>overloaded</code></td><td>the connection already has <code>max_inflight</code> requests in flight</td></tr>
+<tr><td><code>unknown_command</code></td><td>the body names a command outside the set</td></tr>
+<tr><td><code>invalid_request</code></td><td>the body is a known command with a defect</td></tr>
+<tr><td><code>internal</code></td><td>the daemon failed in a way the client cannot fix</td></tr>
+<tr><td><code>rate_limit</code></td><td>the session’s or the connection’s request rate was exceeded</td></tr>
+<tr><td><code>session_capacity</code></td><td>the daemon holds its maximum number of sessions</td></tr>
+<tr><td><code>session_not_found</code>, <code>session_expired</code></td><td>the session is gone or timed out</td></tr>
+<tr><td><code>no_page_loaded</code></td><td>a page command arrived before <code>navigate</code></td></tr>
+<tr><td><code>navigation_failed</code></td><td>the page could not be loaded (see <code>outbound_*</code>)</td></tr>
+<tr><td><code>capability_denied</code></td><td>the session lacks a capability the command needs</td></tr>
+<tr><td><code>execution_failed</code></td><td>a binary failed to run</td></tr>
+<tr><td><code>namespace_unavailable</code></td><td>no namespace or mesh is configured</td></tr>
+<tr><td><code>invalid_peer_id</code>, <code>mesh_call_failed</code></td><td>a <code>mesh_call</code> target is malformed or the call failed</td></tr>
+<tr><td><code>batch_too_large</code></td><td><code>resolve_names</code> exceeded its limit</td></tr>
+<tr><td><code>lookup_failed</code>, <code>lookup_unavailable</code></td><td>provider lookup failed or is not configured</td></tr>
+<tr><td><code>record_expired</code>, <code>malformed_record</code>, <code>record_rejected</code>, <code>publish_failed</code></td><td>a published record or resource was refused</td></tr>
+<tr><td><code>resource_not_found</code></td><td>no resource has the requested hash</td></tr>
+<tr><td><code>invalid_seed</code></td><td>a crawl seed is not a valid name</td></tr>
+<tr><td><code>invalid_args</code>, <code>unsupported_tool</code>, <code>parse_error</code></td><td>a <code>tool_call</code> failed</td></tr>
+<tr><td><code>outbound_*</code></td><td>the daemon’s outbound HTTP policy refused or failed a fetch: <code>disabled</code>, <code>address_denied</code>, <code>scheme_denied</code>, <code>credentials_denied</code>, <code>fragment_denied</code>, <code>redirect_denied</code>, <code>encoding_denied</code>, <code>response_limit</code>, <code>busy</code>, <code>timeout</code>, <code>invalid_url</code>, <code>invalid_host</code>, <code>invalid_port</code>, <code>dns_failed</code>, <code>client_failed</code>, <code>request_failed</code>, <code>body_failed</code>, <code>invalid_utf8</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The SDK returns an error as <code>NativeError::Remote { code, message, details }</code>
+inside <code>anyhow::Error</code>; use <code>spine_protocol::native::remote_code</code>.</p>
 <h2 id="frame-format"><a class="header" href="#frame-format">Frame Format</a></h2>
-<p>Messages are framed with a 16-byte header:</p>
-<pre><code>┌──────────┬──────────┬───────────┬───────────┐
-│ Length(4) │ Type(1)  │ Flags(1)  │ Padding(10)│
-└──────────┴──────────┴───────────┴───────────┘
-│                 Payload                       │
-└───────────────────────────────────────────────┘
+<p>The native wire is spine-wire v1 (specified in <code>docs/spec/00-wire.md</code>). Every
+frame has a fixed 15-byte header, all integers big-endian:</p>
+<pre><code>┌────────────┬─────────┬──────────┬──────────┬────────────────┬──────┐
+│ Length (4) │ Ver (1) │ Type (1) │ Flags(1) │ Request id (8) │ Body │
+└────────────┴─────────┴──────────┴──────────┴────────────────┴──────┘
 </code></pre>
 <ul>
-<li><strong>Length</strong>: 4 bytes, big-endian, payload size</li>
-<li><strong>Type</strong>: Message discriminant</li>
-<li><strong>Flags</strong>: <code>0x01</code> = zstd compressed, <code>0x00</code> = raw</li>
+<li><strong>Length</strong>: bytes after this field, <code>11 + len(body)</code>, at most the negotiated
+maximum (16 MiB; 64 KiB before the handshake completes)</li>
+<li><strong>Ver</strong>: <code>1</code></li>
+<li><strong>Type</strong>: <code>HELLO</code>, <code>HELLO_ACK</code>, <code>CLOSE</code>, <code>PING</code>, <code>PONG</code>, <code>REQUEST</code>,
+<code>RESPONSE</code>, <code>STREAM_*</code> and <code>EXT</code></li>
+<li><strong>Flags</strong>: bit 0 means the body is zstd compressed; other bits must be zero</li>
+<li><strong>Request id</strong>: correlates a <code>RESPONSE</code> with its <code>REQUEST</code>; a <code>PING</code> and its
+<code>PONG</code> share one</li>
+<li><strong>Body</strong>: exactly one deterministic CBOR item</li>
 </ul>
+<p>A connection starts with <code>HELLO</code> from the client and <code>HELLO_ACK</code> from the
+server; nothing else may be sent first. The daemon closes a connection that has
+not sent <code>HELLO</code> within <code>server.hello_timeout_secs</code> (default 10 seconds) with
+<code>CLOSE(timeout)</code>. A violation ends the connection with a <code>CLOSE</code> code
+(<code>malformed_frame</code>, <code>frame_too_large</code>, <code>protocol_violation</code>, …).</p>
+<p>The current daemon runs one request per connection at a time
+(<code>max_inflight = 1</code>). A command travels as a <code>REQUEST</code>; the daemon’s reply
+travels as the <code>RESPONSE</code> with the same request id. <code>Ping</code> and <code>Pong</code> are the
+<code>PING</code> and <code>PONG</code> frames, whose body is an unsigned integer token.</p>
 <h2 id="compression"><a class="header" href="#compression">Compression</a></h2>
-<p>Adaptive compression using a 1-byte flag protocol:</p>
-<ul>
-<li>Payloads &lt; 64 bytes are sent raw (compression overhead exceeds savings)</li>
-<li>Larger payloads use zstd compression</li>
-<li>Stack-allocated <code>[u8; 16]</code> headers avoid heap allocation</li>
-</ul>
-<h2 id="speculation"><a class="header" href="#speculation">Speculation</a></h2>
-<p>The protocol supports speculative message prediction:</p>
-<ul>
-<li>Bidirectional prediction with Titans architecture</li>
-<li>Pre-computed responses sent before request arrives</li>
-<li>Surprise-gated learning adjusts predictions over time</li>
-<li>Speculation hits eliminate round-trip latency entirely</li>
-</ul>
+<p>Compression is off unless the sender turns it on. A body of at least 1 KiB is
+then compressed with zstd when that makes it smaller, and the compressed flag
+is set in the header. Smaller bodies are never compressed. The receiver needs
+no setting.</p>
 <h2 id="transport-options"><a class="header" href="#transport-options">Transport Options</a></h2>
 <div class="table-wrapper">
 <table>
@@ -626,60 +690,51 @@ spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
 </thead>
 <tbody>
 <tr><td>TCP</td><td>8080</td><td>Default, lowest latency</td></tr>
-<tr><td>TLS</td><td>8080</td><td>Encrypted, production</td></tr>
-<tr><td>WebSocket</td><td>8081</td><td>Browser/polyglot clients</td></tr>
-<tr><td>QUIC</td><td>8082</td><td>Feature-gated, UDP-based</td></tr>
+<tr><td>TLS</td><td>8080</td><td>Encrypted, production (optional mutual TLS)</td></tr>
+<tr><td>WebSocket</td><td>8081</td><td>Browser/polyglot clients (ws and wss)</td></tr>
+<tr><td>QUIC</td><td>8082</td><td>Only when <code>spine-core</code> is built with <code>--features quic</code> (off by default)</td></tr>
 </tbody>
 </table>
 </div>
+<p>The wire itself is not encrypted. Confidentiality and authentication on the
+native path come from TLS only; see <a href="#security">Security</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="security"><a class="header" href="#security">Security</a></h1>
 <p>See <a href="https://github.com/nervosys/SPINE/blob/master/THREAT_MODEL.md">THREAT_MODEL.md</a> for the full threat model.</p>
-<h2 id="security-levels"><a class="header" href="#security-levels">Security Levels</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Level</th><th>Key Exchange</th><th>Encryption</th><th>Use Case</th></tr>
-</thead>
-<tbody>
-<tr><td>Standard</td><td>X25519</td><td>AES-256-GCM</td><td>General use</td></tr>
-<tr><td>Hardened</td><td>X25519 + RLWE</td><td>AES-256-GCM + lattice</td><td>High security</td></tr>
-<tr><td>PostQuantum</td><td>RLWE-only</td><td>Lattice-based</td><td>Quantum adversaries</td></tr>
-</tbody>
-</table>
-</div>
-<h2 id="x3dh-key-exchange"><a class="header" href="#x3dh-key-exchange">X3DH Key Exchange</a></h2>
-<p>Initial trust establishment uses the Extended Triple Diffie-Hellman protocol:</p>
-<ol>
-<li>Identity keys (long-term)</li>
-<li>Signed pre-keys (medium-term)</li>
-<li>One-time pre-keys (single-use)</li>
-</ol>
-<p>No pre-shared secrets required.</p>
-<h2 id="chameleon-protocol"><a class="header" href="#chameleon-protocol">Chameleon Protocol</a></h2>
-<p>Moving-target defense using latent-space cryptography:</p>
-<ul>
-<li>Keys evolve per-message based on VAE-encoded traffic patterns</li>
-<li>Active attackers cannot distinguish protocol from background noise</li>
-<li>Forward secrecy via key evolution</li>
-</ul>
-<h2 id="sybil-resistance"><a class="header" href="#sybil-resistance">Sybil Resistance</a></h2>
-<p>Decentralized trust without central authority:</p>
-<ul>
-<li><strong>Stake-weighted voting</strong> — Influence proportional to commitment</li>
-<li><strong>Node reputation</strong> — Earned through honest behavior</li>
-<li><strong>Proof-of-work for identity</strong> — Computational cost prevents mass identity creation</li>
-</ul>
-<h2 id="rlwe-lattice-cryptography"><a class="header" href="#rlwe-lattice-cryptography">RLWE Lattice Cryptography</a></h2>
-<p>Post-quantum key exchange using Ring Learning With Errors:</p>
-<ul>
-<li>Based on hardness of shortest vector problem</li>
-<li>Forward-secure key evolution</li>
-<li>12 comprehensive security tests</li>
-</ul>
+<h2 id="native-client-wire"><a class="header" href="#native-client-wire">Native Client Wire</a></h2>
+<p>The native wire between an agent and the <code>spine-core</code> daemon is spine-wire v1
+(<a href="#protocol">Protocol</a>). It does no encryption of its own. <strong>Confidentiality
+and authentication on this path come from TLS only</strong>, with optional mutual TLS
+for client certificates. A plain TCP or WebSocket connection is plaintext.</p>
+<p>There is no SPINE-level encryption, obfuscation, morphing, padding,
+pre-shared-key AES-GCM, post-quantum protection or traffic-analysis resistance
+on the native wire. The wire’s contribution to security is structural: bounded
+frames (64 KiB before <code>HELLO</code>, 16 MiB after), strictly deterministic CBOR bodies
+that reject malformed input, and closed command and error sets.</p>
+<p>The daemon applies an outbound fetch policy to <code>navigate</code> (the <code>outbound_*</code>
+error codes), a per-IP connection limit, and a <code>HELLO</code> timeout.</p>
+<h2 id="mesh-path"><a class="header" href="#mesh-path">Mesh Path</a></h2>
+<p>Node-to-node mesh traffic is a different protocol. <code>spine-session</code> performs a
+signed ephemeral ML-KEM-768 exchange with Ed25519 identity signatures and
+derives AES-256-GCM session keys, giving forward secrecy per connection. Mesh
+envelopes and name records are independently signed with Ed25519, so authorship
+can be checked without trusting the transport. The session handshake is custom
+cryptography that has not had external cryptographic review. Details and limits
+are in the <code>spine-session</code> crate documentation and <code>THREAT_MODEL.md</code>.</p>
+<h2 id="research-not-deployed"><a class="header" href="#research-not-deployed">Research (not deployed)</a></h2>
+<p>The following exist only in the separate <code>research/</code> workspace and are not in the
+native wire or the mesh handshake: the Chameleon latent-space key and latent
+AEAD (<code>research/spine-protocol-research</code>), the custom RLWE key exchange
+(<code>research/spine-crypto</code>), an X3DH example (<code>research/spine-agentic</code>), and
+stake-weighted Sybil resistance (<code>research/spine-cluster</code>). They are
+experimental and unreviewed. The earlier “security levels” table (Standard,
+Hardened, PostQuantum) described this research code, not a deployed feature.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="connecting"><a class="header" href="#connecting">Connecting</a></h1>
 <h2 id="transport-options-1"><a class="header" href="#transport-options-1">Transport Options</a></h2>
+<p>Every constructor runs the spine-wire v1 handshake (<code>HELLO</code> / <code>HELLO_ACK</code>)
+before it returns, with a ten-second deadline. TLS is the only thing that
+protects the connection; plain TCP and <code>ws://</code> are plaintext.</p>
 <h3 id="tcp-plaintext"><a class="header" href="#tcp-plaintext">TCP (plaintext)</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -710,6 +765,7 @@ spine-browser --+-- spine-agent -- spine-agentic --+-- spine-protocol
 </span><span class="boring">fn main() {
 </span>let mut client = AgentClient::connect_ws("ws://127.0.0.1:8081").await?;
 <span class="boring">}</span></code></pre>
+<p>Use a <code>wss://</code> URL for a TLS WebSocket.</p>
 <h3 id="auto-reconnect"><a class="header" href="#auto-reconnect">Auto-Reconnect</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -721,13 +777,70 @@ let mut client = AgentClient::connect_with_retry(
     Duration::from_secs(1),     // base delay (exponential backoff)
 ).await?;
 <span class="boring">}</span></code></pre>
+<p><code>connect_tls_with_retry(addr, domain, ca_path, client_cert, max_retries)</code> does
+the same over TLS. <code>AgentClient::over(stream)</code> runs the handshake on a stream you
+already hold.</p>
 <h2 id="connection-lifecycle"><a class="header" href="#connection-lifecycle">Connection Lifecycle</a></h2>
 <ol>
-<li><strong>Connect</strong> — Establish TCP/TLS/WS connection</li>
-<li><strong>Use</strong> — Send commands, receive responses</li>
+<li><strong>Connect</strong> — Establish the TCP/TLS/WS connection and complete <code>HELLO</code> / <code>HELLO_ACK</code></li>
+<li><strong>Use</strong> — Send commands, receive responses; the daemon answers one request at a time (<code>max_inflight = 1</code>)</li>
 <li><strong>Drop</strong> — Connection closes when <code>AgentClient</code> is dropped</li>
 </ol>
-<p>The connection is stateful — the server maintains session state (navigation history, cached URs, knowledge) per connection.</p>
+<p>The connection is stateful — the server maintains session state (the loaded page, cached UR, knowledge) per connection.</p>
+<h2 id="methods"><a class="header" href="#methods">Methods</a></h2>
+<p>All methods are async and return <code>anyhow::Result</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Returns</th><th>Wire command</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigate(url)</code></td><td><code>()</code></td><td><code>navigate</code></td></tr>
+<tr><td><code>get_ur()</code></td><td><code>UnifiedRepresentation</code></td><td><code>get_ur</code></td></tr>
+<tr><td><code>get_raw_html()</code></td><td><code>String</code></td><td><code>get_raw_html</code></td></tr>
+<tr><td><code>execute_binary(SpineBinary)</code></td><td><code>Value</code></td><td><code>execute_binary</code></td></tr>
+<tr><td><code>execute_hls(script)</code></td><td><code>WasmExecutionResult</code></td><td><code>execute_binary</code> (compiles locally)</td></tr>
+<tr><td><code>store_knowledge(key, value, tags)</code></td><td><code>()</code></td><td><code>store_knowledge</code></td></tr>
+<tr><td><code>query_knowledge(query, tags, limit)</code></td><td><code>Vec&lt;Value&gt;</code></td><td><code>query_knowledge</code></td></tr>
+<tr><td><code>get_binary_capabilities()</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>get_binary_capabilities</code></td></tr>
+<tr><td><code>capabilities()</code></td><td><code>CapabilityAdvertisement</code></td><td><code>capability_query</code></td></tr>
+<tr><td><code>call_tool(name, args)</code></td><td><code>ToolOutcome</code></td><td><code>tool_call</code></td></tr>
+<tr><td><code>namespace_status()</code></td><td><code>Value</code></td><td><code>namespace_status</code></td></tr>
+<tr><td><code>mesh_call(peer_id, peer_key, payload)</code></td><td><code>Value</code></td><td><code>mesh_call</code></td></tr>
+<tr><td><code>resolve_name(name, if_none_match)</code></td><td><code>NameResolution</code></td><td><code>resolve_name</code></td></tr>
+<tr><td><code>resolve_names(&amp;[String])</code></td><td><code>Vec&lt;NameResolution&gt;</code></td><td><code>resolve_names</code></td></tr>
+<tr><td><code>find_providers(capability, limit)</code></td><td><code>Value</code></td><td><code>find_providers</code></td></tr>
+<tr><td><code>publish_name(record)</code></td><td><code>Value</code></td><td><code>publish_name</code></td></tr>
+<tr><td><code>fetch_name(name, if_none_match)</code></td><td><code>Value</code></td><td><code>fetch_name</code></td></tr>
+<tr><td><code>crawl_names(seed, max_depth, max_visits)</code></td><td><code>Value</code></td><td><code>crawl_names</code></td></tr>
+<tr><td><code>ping()</code></td><td><code>u64</code> (round trip, ms)</td><td><code>PING</code> frame</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>spine_agent::resources</code> adds <code>publish_resource(record, content_type, data)</code>,
+<code>read_resource(record)</code> and <code>fetch_resource(name)</code>, which verify signed records and
+content hashes end to end (<code>publish_resource</code> and <code>read_resource</code> are the
+<code>publish_resource</code> and <code>read_resource</code> wire commands). The public <code>conn</code> field is
+the underlying <code>Connection&lt;S&gt;</code> for direct frame access.</p>
+<h2 id="errors"><a class="header" href="#errors">Errors</a></h2>
+<p>When the daemon answers <code>{err: {code, message}}</code> the returned <code>anyhow::Error</code>
+holds <code>spine_protocol::native::NativeError::Remote { code, message, details }</code>.
+Branch on the code, never on the message:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_protocol::native::remote_code;
+
+if let Err(err) = client.get_ur().await {
+    match remote_code(&amp;err) {
+        Some("no_page_loaded") =&gt; { /* call navigate first */ }
+        Some(code) =&gt; eprintln!("daemon refused: {code}"),
+        None =&gt; eprintln!("connection problem: {err}"),
+    }
+}
+<span class="boring">}</span></code></pre>
+<p><code>call_tool</code> is different: a tool failure comes back as
+<code>Ok(ToolOutcome::Err { code, message, details })</code>; only protocol-level failures
+are <code>Err(..)</code>. The error codes are listed in <a href="#protocol">Protocol</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="navigation--unified-representations"><a class="header" href="#navigation--unified-representations">Navigation &amp; Unified Representations</a></h1>
 <h2 id="navigating"><a class="header" href="#navigating">Navigating</a></h2>
@@ -772,6 +885,7 @@ for element in &amp;ur.elements {
 <tr><td><code>Text(String)</code></td><td>Text content</td><td>Paragraph text</td></tr>
 <tr><td><code>Heading { level, text }</code></td><td><code>u8</code>, <code>String</code></td><td><code>&lt;h1&gt;</code> through <code>&lt;h6&gt;</code></td></tr>
 <tr><td><code>Link { text, url }</code></td><td><code>String</code>, <code>String</code></td><td>Hyperlinks</td></tr>
+<tr><td><code>AgentLink { text, target, rel, capabilities }</code></td><td><code>String</code>, <code>String</code>, <code>String</code>, <code>Vec&lt;String&gt;</code></td><td>Link to a <code>spine://</code> name</td></tr>
 <tr><td><code>Button { text, action_id }</code></td><td><code>String</code>, <code>String</code></td><td>Interactive buttons</td></tr>
 <tr><td><code>Input { label, input_type, id }</code></td><td><code>String</code> × 3</td><td>Form inputs</td></tr>
 <tr><td><code>Image { alt, src }</code></td><td><code>String</code>, <code>String</code></td><td>Images</td></tr>
@@ -785,22 +899,9 @@ for element in &amp;ur.elements {
 </span><span class="boring">fn main() {
 </span>let html = client.get_raw_html().await?;
 <span class="boring">}</span></code></pre>
-<h2 id="interaction"><a class="header" href="#interaction">Interaction</a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Click an element
-client.click("submit-button").await?;
-
-// Type into a field
-client.type_text("search-input", "hello world").await?;
-<span class="boring">}</span></code></pre>
-<h2 id="latent-vectors"><a class="header" href="#latent-vectors">Latent Vectors</a></h2>
-<p>Extract neural embeddings of page content:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let latent = client.get_latent_ur(256).await?;
-// latent: Vec&lt;f32&gt; of dimension 256
-<span class="boring">}</span></code></pre>
+<p>Both <code>get_ur</code> and <code>get_raw_html</code> need a loaded page. Without a prior
+<code>navigate</code> the daemon answers <code>no_page_loaded</code>; see
+<a href="#errors">Connecting</a> for how to read the code.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="hls-scripting"><a class="header" href="#hls-scripting">HLS Scripting</a></h1>
 <p>HLS (SPINE Scripting) is a domain-specific language for server-side execution.</p>
@@ -861,14 +962,14 @@ match Compiler::compile("let x = 1 + 2; x") {
 <tr><td><code>instructions</code></td><td><code>Vec&lt;Instruction&gt;</code></td><td>Compiled bytecode</td></tr>
 <tr><td><code>data</code></td><td><code>Vec&lt;u8&gt;</code></td><td>Static data section</td></tr>
 <tr><td><code>render_start</code></td><td><code>usize</code></td><td>Entry point for rendering</td></tr>
-<tr><td><code>exported_functions</code></td><td><code>HashMap&lt;String, usize&gt;</code></td><td>Named function entries</td></tr>
+<tr><td><code>exported_functions</code></td><td><code>BTreeMap&lt;String, usize&gt;</code></td><td>Named function entries</td></tr>
 <tr><td><code>capabilities</code></td><td><code>Vec&lt;String&gt;</code></td><td>Required runtime capabilities</td></tr>
 </tbody>
 </table>
 </div>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="knowledge-base"><a class="header" href="#knowledge-base">Knowledge Base</a></h1>
-<p>SPINE provides a distributed CRDT-based knowledge base with four memory subsystems.</p>
+<p>The daemon keeps a per-session knowledge store that agents write with <code>store_knowledge</code> and read with <code>query_knowledge</code>. The richer memory subsystems and CRDT replication described at the end of this page are research code, not part of the native commands.</p>
 <h2 id="basic-operations"><a class="header" href="#basic-operations">Basic Operations</a></h2>
 <h3 id="store"><a class="header" href="#store">Store</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -888,22 +989,10 @@ match Compiler::compile("let x = 1 + 2; x") {
     10,  // max results
 ).await?;
 <span class="boring">}</span></code></pre>
-<h3 id="delete"><a class="header" href="#delete">Delete</a></h3>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.delete_knowledge("rust-homepage").await?;
-<span class="boring">}</span></code></pre>
-<h3 id="propose-distributed"><a class="header" href="#propose-distributed">Propose (Distributed)</a></h3>
-<p>In cluster mode, propose knowledge for consensus:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.propose_knowledge(
-    "shared-finding",
-    serde_json::json!({"discovery": "important pattern"}),
-    vec!["research".into()],
-).await?;
-<span class="boring">}</span></code></pre>
-<h2 id="memory-subsystems"><a class="header" href="#memory-subsystems">Memory Subsystems</a></h2>
+<p>The knowledge base is per session on the daemon. There is no delete command in
+the core set; entries go when the session expires.</p>
+<h2 id="memory-subsystems-research"><a class="header" href="#memory-subsystems-research">Memory Subsystems (research)</a></h2>
+<p>The following live in <code>research/spine-knowledge</code> and are not reachable through the SDK or the wire.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -917,128 +1006,45 @@ match Compiler::compile("let x = 1 + 2; x") {
 </tbody>
 </table>
 </div>
-<h2 id="crdt-consistency"><a class="header" href="#crdt-consistency">CRDT Consistency</a></h2>
-<p>Knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.</p>
+<h2 id="crdt-consistency-research"><a class="header" href="#crdt-consistency-research">CRDT Consistency (research)</a></h2>
+<p>In <code>research/spine-knowledge</code>, knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.</p>
 <div style="break-before: page; page-break-before: always;"></div>
-<h1 id="swarm-intelligence"><a class="header" href="#swarm-intelligence">Swarm Intelligence</a></h1>
-<h2 id="task-delegation"><a class="header" href="#task-delegation">Task Delegation</a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Delegate to any available agent
-client.delegate_task("scrape product prices", None).await?;
-
-// Delegate to a specific agent
-client.delegate_task("analyze sentiment", Some(agent_id)).await?;
-<span class="boring">}</span></code></pre>
-<h2 id="swarm-search"><a class="header" href="#swarm-search">Swarm Search</a></h2>
-<p>Distributed search across multiple agents:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.swarm_search("quantum computing papers", 3).await?;
-<span class="boring">}</span></code></pre>
-<p>The <code>depth</code> parameter controls how many hops the search propagates.</p>
-<h2 id="plan-execution"><a class="header" href="#plan-execution">Plan Execution</a></h2>
-<p>Create and execute multi-step plans:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>// Create a plan
-let plan_id = client.create_swarm_plan("Research Rust async patterns").await?;
-
-// Execute individual tasks
-client.execute_plan_task(plan_id, task_id).await?;
-<span class="boring">}</span></code></pre>
-<h2 id="session-transfer"><a class="header" href="#session-transfer">Session Transfer</a></h2>
-<p>Move a session to another cluster node:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.transfer_session(target_node_id).await?;
-<span class="boring">}</span></code></pre>
-<h2 id="social-communication"><a class="header" href="#social-communication">Social Communication</a></h2>
-<p>Send speech acts between agents:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.send_speech_act(
-    target_agent_id,
-    "inform",
-    "Found 15 relevant results",
-).await?;
-<span class="boring">}</span></code></pre>
-<p>Supported performatives: <code>inform</code>, <code>request</code>, <code>propose</code>, <code>accept</code>, <code>reject</code>, <code>query</code>.</p>
-<h2 id="autonomous-mode"><a class="header" href="#autonomous-mode">Autonomous Mode</a></h2>
-<p>Enable self-directed exploration:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.set_autonomous_mode(true).await?;
-<span class="boring">}</span></code></pre>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="neural-protocol"><a class="header" href="#neural-protocol">Neural Protocol</a></h1>
-<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
-<p>The neural protocol enables learned message encoding using the Titans architecture. Messages are projected into a latent space for efficient transmission and optional cryptographic protection.</p>
-<h2 id="neural-transmission"><a class="header" href="#neural-transmission">Neural Transmission</a></h2>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>use spine_agentic::ProtocolDomain;
-
-let result = client.transmit_neural(
-    b"important data payload",
-    ProtocolDomain::Text,
-).await?;
-println!("Transmitted: {:?}", result);
-<span class="boring">}</span></code></pre>
-<h2 id="protocol-domains"><a class="header" href="#protocol-domains">Protocol Domains</a></h2>
+<h1 id="cli-commands"><a class="header" href="#cli-commands">CLI Commands</a></h1>
+<p>The <code>spine</code> CLI provides project management, interactive connections, and operations. The default server address is <code>127.0.0.1:8080</code>. <code>--verbose</code> is a global flag.</p>
 <div class="table-wrapper">
 <table>
 <thead>
-<tr><th>Domain</th><th>Description</th></tr>
+<tr><th>Command</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td><code>Text</code></td><td>Natural language content</td></tr>
-<tr><td><code>Code</code></td><td>Source code and structured data</td></tr>
-<tr><td><code>Binary</code></td><td>Binary data and files</td></tr>
+<tr><td><code>spine mcp</code></td><td>Serve the core’s read-only tools over MCP stdio</td></tr>
+<tr><td><code>spine task</code></td><td>Submit and inspect durable work over the signed mesh</td></tr>
+<tr><td><code>spine name</code></td><td>Publish, discover, renew and retrieve signed agent-web resources</td></tr>
+<tr><td><code>spine init</code></td><td>Scaffold a project</td></tr>
+<tr><td><code>spine connect</code></td><td>Interactive REPL</td></tr>
+<tr><td><code>spine query</code></td><td>One-shot queries</td></tr>
+<tr><td><code>spine deploy</code></td><td>Start a server</td></tr>
+<tr><td><code>spine benchmark</code></td><td>Performance benchmarks</td></tr>
+<tr><td><code>spine status</code></td><td>Check server health</td></tr>
+<tr><td><code>spine cert</code></td><td>Development certificates</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="latent-vector-subscription"><a class="header" href="#latent-vector-subscription">Latent Vector Subscription</a></h2>
-<p>Stream latent vectors as they’re generated:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let mut rx = client.subscribe_latent().await?;
-while let Some(vector) = rx.recv().await {
-    println!("Latent dim={}: norm={:.3}",
-        vector.len(),
-        vector.iter().map(|x| x * x).sum::&lt;f32&gt;().sqrt()
-    );
-}
-<span class="boring">}</span></code></pre>
-<h2 id="protocol-morphology"><a class="header" href="#protocol-morphology">Protocol Morphology</a></h2>
-<p>Trigger protocol shape-shifting:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.morph().await?;
-<span class="boring">}</span></code></pre>
-<p>This evolves the protocol’s frame structure using genetic algorithms for active defense.</p>
-<h2 id="speculation-stats"><a class="header" href="#speculation-stats">Speculation Stats</a></h2>
-<p>Check how well the predictor is performing:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>let stats = client.get_speculation_stats();
-println!("Hits: {}, Misses: {}", stats.hits, stats.misses);
-<span class="boring">}</span></code></pre>
-<div style="break-before: page; page-break-before: always;"></div>
-<h1 id="cli-commands"><a class="header" href="#cli-commands">CLI Commands</a></h1>
-<p>The <code>spine</code> CLI provides project management, interactive connections, and operations.</p>
-<h2 id="spine-init-name"><a class="header" href="#spine-init-name"><code>spine init &lt;name&gt;</code></a></h2>
+<p>There are no <code>morph</code>, <code>stats</code> or <code>search</code> commands; the protocol morphing,
+statistics and search commands they used no longer exist.</p>
+<h2 id="spine-init-path"><a class="header" href="#spine-init-path"><code>spine init [path]</code></a></h2>
 <p>Scaffold a new SPINE agent project:</p>
 <pre><code class="language-bash">spine init my-agent
-spine init my-agent --tls    # With TLS configuration
+spine init my-agent --name my-agent --tls    # With TLS configuration
 </code></pre>
-<p>Creates: <code>Cargo.toml</code>, <code>spine.toml</code>, <code>src/main.rs</code>, <code>examples/</code>, <code>.gitignore</code></p>
-<h2 id="spine-connect-addr"><a class="header" href="#spine-connect-addr"><code>spine connect &lt;addr&gt;</code></a></h2>
+<p><code>--examples</code> (on by default) includes example agent code.</p>
+<h2 id="spine-connect-addr"><a class="header" href="#spine-connect-addr"><code>spine connect [addr]</code></a></h2>
 <p>Interactive REPL connected to a SPINE server:</p>
 <pre><code class="language-bash">spine connect 127.0.0.1:8080
-spine connect 127.0.0.1:8080 --tls --domain spine.example.com
+spine connect 127.0.0.1:8080 --tls --domain spine.example.com --ca certs/ca.crt
 spine connect ws://127.0.0.1:8081 --ws
 </code></pre>
+<p>Flags: <code>--ws</code>, <code>--tls</code>, <code>--ca</code>, <code>--domain</code>, <code>--client-cert</code>, <code>--client-key</code>.</p>
 <p>REPL commands:</p>
 <div class="table-wrapper">
 <table>
@@ -1046,43 +1052,71 @@ spine connect ws://127.0.0.1:8081 --ws
 <tr><th>Command</th><th>Description</th></tr>
 </thead>
 <tbody>
-<tr><td><code>nav &lt;url&gt;</code></td><td>Navigate to URL</td></tr>
-<tr><td><code>ur</code></td><td>Get Unified Representation</td></tr>
-<tr><td><code>html</code></td><td>Get raw HTML</td></tr>
-<tr><td><code>search &lt;query&gt;</code></td><td>Search</td></tr>
+<tr><td><code>nav &lt;url&gt;</code> (also <code>navigate</code>, <code>go</code>)</td><td>Navigate to URL</td></tr>
+<tr><td><code>ur</code> (also <code>get</code>)</td><td>Get Unified Representation</td></tr>
+<tr><td><code>html</code> (also <code>raw</code>)</td><td>Get raw HTML</td></tr>
 <tr><td><code>ping</code></td><td>Measure latency</td></tr>
-<tr><td><code>exec &lt;script&gt;</code></td><td>Execute HLS script</td></tr>
-<tr><td><code>stats</code></td><td>Speculation stats</td></tr>
-<tr><td><code>morph</code></td><td>Trigger protocol morphing</td></tr>
-<tr><td><code>caps</code></td><td>List server capabilities</td></tr>
+<tr><td><code>exec &lt;script&gt;</code> (also <code>run</code>)</td><td>Execute HLS script</td></tr>
+<tr><td><code>caps</code> (also <code>capabilities</code>)</td><td>List binary capabilities</td></tr>
 <tr><td><code>help</code></td><td>Show commands</td></tr>
 <tr><td><code>quit</code></td><td>Disconnect</td></tr>
 </tbody>
 </table>
 </div>
-<h2 id="spine-query-addr-subcommand"><a class="header" href="#spine-query-addr-subcommand"><code>spine query &lt;addr&gt; &lt;subcommand&gt;</code></a></h2>
-<p>One-shot queries:</p>
-<pre><code class="language-bash">spine query 127.0.0.1:8080 navigate --url https://example.com
-spine query 127.0.0.1:8080 search --query "rust async"
-spine query 127.0.0.1:8080 ping --count 5
-spine query 127.0.0.1:8080 html --url https://example.com --format text
-spine query 127.0.0.1:8080 exec --script "let x = 42; x"
+<h2 id="spine-query-subcommand"><a class="header" href="#spine-query-subcommand"><code>spine query &lt;subcommand&gt;</code></a></h2>
+<p>One-shot queries. The server address is the <code>-a</code>/<code>--addr</code> option of each
+subcommand, not a positional argument:</p>
+<pre><code class="language-bash">spine query navigate https://example.com -a 127.0.0.1:8080 -f json
+spine query store my-key '{"a": 1}' -t tag1,tag2
+spine query knowledge "programming languages" -t language -l 10
+spine query html https://example.com
+spine query exec "let x = 42; x"
+spine query ping -n 5
 </code></pre>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Subcommand</th><th>Arguments and options</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigate &lt;url&gt;</code></td><td><code>-a</code>, <code>-f text|json|compact</code></td></tr>
+<tr><td><code>store &lt;key&gt; &lt;json&gt;</code></td><td><code>-t</code> tags (comma-separated), <code>-a</code></td></tr>
+<tr><td><code>knowledge &lt;query&gt;</code></td><td><code>-t</code> tags, <code>-l</code> limit (default 10), <code>-a</code></td></tr>
+<tr><td><code>html &lt;url&gt;</code></td><td><code>-a</code></td></tr>
+<tr><td><code>exec &lt;script or file&gt;</code></td><td><code>-a</code></td></tr>
+<tr><td><code>ping</code></td><td><code>-a</code>, <code>-n</code> count (default 5)</td></tr>
+</tbody>
+</table>
+</div>
 <h2 id="spine-deploy"><a class="header" href="#spine-deploy"><code>spine deploy</code></a></h2>
 <p>Start a SPINE server using configuration:</p>
 <pre><code class="language-bash">spine deploy
-spine deploy --config custom.toml
+spine deploy -c custom.toml -p 9000 --host 0.0.0.0
 </code></pre>
-<h2 id="spine-benchmark-addr"><a class="header" href="#spine-benchmark-addr"><code>spine benchmark &lt;addr&gt;</code></a></h2>
+<h2 id="spine-benchmark-addr"><a class="header" href="#spine-benchmark-addr"><code>spine benchmark [addr]</code></a></h2>
 <p>Performance benchmarks:</p>
-<pre><code class="language-bash">spine benchmark 127.0.0.1:8080 --iterations 100
-spine benchmark 127.0.0.1:8080 --concurrent 10 --iterations 50
+<pre><code class="language-bash">spine benchmark 127.0.0.1:8080 -n 100
+spine benchmark 127.0.0.1:8080 -c 10 -n 50
 </code></pre>
-<h2 id="spine-status-addr"><a class="header" href="#spine-status-addr"><code>spine status &lt;addr&gt;</code></a></h2>
+<h2 id="spine-status-addr"><a class="header" href="#spine-status-addr"><code>spine status [addr]</code></a></h2>
 <p>Check server health:</p>
 <pre><code class="language-bash">spine status 127.0.0.1:8080
-spine status 127.0.0.1:8080 --metrics-port 9090
 </code></pre>
+<h2 id="spine-cert"><a class="header" href="#spine-cert"><code>spine cert</code></a></h2>
+<pre><code class="language-bash">spine cert generate -o certs   # CA, server and client certificates for development
+spine cert info certs/ca.crt   # Show a PEM certificate
+</code></pre>
+<h2 id="spine-name---addr-addr-action"><a class="header" href="#spine-name---addr-addr-action"><code>spine name --addr &lt;addr&gt; &lt;action&gt;</code></a></h2>
+<p>Actions: <code>status</code>, <code>create</code>, <code>resolve &lt;name&gt;</code>, <code>providers &lt;capability&gt;</code>,
+<code>publish &lt;record&gt;</code>, <code>renew &lt;record&gt;</code>, <code>upload &lt;record&gt; &lt;resource&gt;</code> and
+<code>fetch &lt;name&gt; --output &lt;file&gt;</code>. Run <code>spine name --help</code> for each action’s options.</p>
+<h2 id="spine-task---addr-addr---peer-id---peer-key-hex-action"><a class="header" href="#spine-task---addr-addr---peer-id---peer-key-hex-action"><code>spine task --addr &lt;addr&gt; --peer &lt;id&gt; --peer-key &lt;hex&gt; &lt;action&gt;</code></a></h2>
+<p>Sends a <code>mesh_call</code> through the daemon to a pinned peer (a 64-hex-character
+Ed25519 key). Actions: <code>capabilities</code>, <code>submit &lt;spec file&gt;</code>, <code>status &lt;id&gt;</code>,
+<code>cancel &lt;id&gt;</code>, <code>knowledge-put &lt;key&gt; &lt;file&gt;</code> and <code>knowledge-get &lt;key&gt;</code>.</p>
+<h2 id="spine-mcp"><a class="header" href="#spine-mcp"><code>spine mcp</code></a></h2>
+<p>Serves the core’s read-only tools over MCP stdio, connecting to the daemon with
+<code>--addr</code>, and <code>--tls</code>, <code>--ca</code>, <code>--domain</code>, <code>--client-cert</code>, <code>--client-key</code> for TLS.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="rest-api"><a class="header" href="#rest-api">REST API</a></h1>
 <p>The SPINE Gateway exposes a RESTful API with auto-generated OpenAPI documentation.</p>
@@ -1114,9 +1148,6 @@ spine status 127.0.0.1:8080 --metrics-port 9090
 }
 </code></pre>
 <h4 id="get-apisessionsidhtml--get-raw-html"><a class="header" href="#get-apisessionsidhtml--get-raw-html"><code>GET /api/sessions/{id}/html</code> — Get raw HTML</a></h4>
-<h4 id="post-apisessionsidsearch--search"><a class="header" href="#post-apisessionsidsearch--search"><code>POST /api/sessions/{id}/search</code> — Search</a></h4>
-<pre><code class="language-json">{ "query": "rust programming" }
-</code></pre>
 <h4 id="get-apisessionsidping--ping"><a class="header" href="#get-apisessionsidping--ping"><code>GET /api/sessions/{id}/ping</code> — Ping</a></h4>
 <p>Response: <code>{ "round_trip_ms": 2 }</code></p>
 <h3 id="compute"><a class="header" href="#compute">Compute</a></h3>
@@ -1138,6 +1169,28 @@ spine status 127.0.0.1:8080 --metrics-port 9090
   "capabilities": []
 }
 </code></pre>
+<h3 id="namespace-and-agentic-routes"><a class="header" href="#namespace-and-agentic-routes">Namespace and agentic routes</a></h3>
+<p>Beyond the session API above, the gateway also serves (see Swagger UI for schemas):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Route</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>POST /v1/chat/completions</code></td><td>OpenAI-compatible chat completions, streamed as SSE</td></tr>
+<tr><td><code>GET /v1/agentic/capabilities</code></td><td>Capability discovery</td></tr>
+<tr><td><code>POST /v1/embeddings</code>, <code>GET /v1/agentic/codecs</code></td><td>Embeddings and codec catalog (the codec catalog comes from <code>spine-protocol-research</code>)</td></tr>
+<tr><td><code>GET</code>/<code>POST /v1/names/resolve</code></td><td>Resolve one name or a batch</td></tr>
+<tr><td><code>GET /v1/names/providers</code></td><td>Find providers of a capability</td></tr>
+<tr><td><code>POST /v1/names/publish</code></td><td>Publish a signed name record</td></tr>
+<tr><td><code>GET /v1/names/endpoints</code></td><td>Fetch a name’s endpoints</td></tr>
+<tr><td><code>GET /v1/names/crawl</code></td><td>Crawl names from a seed</td></tr>
+<tr><td><code>GET</code>/<code>POST /v1/resources</code></td><td>Download or upload a signed resource</td></tr>
+</tbody>
+</table>
+</div>
+<p>The gateway reaches a daemon over the native wire (spine-wire v1) through
+<code>spine-agent</code>; the REST side is plain HTTP unless you terminate TLS in front of it.</p>
 <h3 id="operations"><a class="header" href="#operations">Operations</a></h3>
 <h4 id="get-health"><a class="header" href="#get-health"><code>GET /health</code></a></h4>
 <pre><code class="language-json">{ "status": "ok", "uptime_secs": 3600, "active_sessions": 12 }
@@ -1148,6 +1201,7 @@ spine status 127.0.0.1:8080 --metrics-port 9090
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="kernel-primitives"><a class="header" href="#kernel-primitives">Kernel Primitives</a></h1>
 <p><code>spine-kernel</code> provides ultra-low-level hardware primitives for maximum performance.</p>
+<p><strong>Research.</strong> The crate lives in the separate <code>research/</code> workspace (<code>research/spine-kernel</code>), not the root workspace, and nothing on the native wire uses it. The figures below were measured on earlier builds and have not been re-measured.</p>
 <h2 id="simd-intrinsics"><a class="header" href="#simd-intrinsics">SIMD Intrinsics</a></h2>
 <p>AVX2 (x86_64) and NEON (aarch64) accelerated operations:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -1210,7 +1264,13 @@ let cycles = rdtsc() - start;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="transport-layer"><a class="header" href="#transport-layer">Transport Layer</a></h1>
 <h2 id="architecture"><a class="header" href="#architecture">Architecture</a></h2>
-<p><code>spine-transport</code> provides high-performance I/O with composable plugins:</p>
+<p><code>spine-transport</code> provides high-performance I/O with composable plugins. It
+supplies the socket pieces the native wire runs over (WebSocket bridge, QUIC
+stream) and its own <code>FrameCodec</code> (12-byte header, a different format). It is not the
+spine-wire v1 codec: that is <code>spine_protocol::frame</code> (15-byte header). The transport
+crate adds no encryption to the native path; TLS does that.</p>
+<p>Figures below were measured on earlier builds, before the native wire became
+spine-wire v1 (2026-11-21), and have not been re-measured.</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
 </span>use spine_transport::{TransportPlugin, MetricsPlugin, RateLimiterPlugin};
@@ -1234,9 +1294,11 @@ let cycles = rdtsc() - start;
 <p>Custom plugins implement the <code>TransportPlugin</code> trait:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>pub trait TransportPlugin: Send + Sync {
-    fn on_send(&amp;self, data: &amp;mut Vec&lt;u8&gt;) -&gt; Result&lt;()&gt;;
-    fn on_recv(&amp;self, data: &amp;mut Vec&lt;u8&gt;) -&gt; Result&lt;()&gt;;
+</span>pub trait TransportPlugin: Send + Sync + fmt::Debug {
+    fn name(&amp;self) -&gt; &amp;str;
+    fn on_send(&amp;self, frame: &amp;mut Frame) -&gt; TransportResult&lt;()&gt; { Ok(()) }
+    fn on_recv(&amp;self, frame: &amp;mut Frame) -&gt; TransportResult&lt;()&gt; { Ok(()) }
+    // plus on_connect, on_disconnect and is_enabled, all with defaults
 }
 <span class="boring">}</span></code></pre>
 <h2 id="bbr-congestion-control"><a class="header" href="#bbr-congestion-control">BBR Congestion Control</a></h2>
@@ -1248,22 +1310,29 @@ let cycles = rdtsc() - start;
 </ul>
 <h2 id="zero-copy-io"><a class="header" href="#zero-copy-io">Zero-Copy I/O</a></h2>
 <ul>
-<li>Frame decode via <code>bytes::Bytes</code> slicing (30% faster)</li>
+<li>Frame decode via <code>bytes::Bytes</code> slicing</li>
 <li>Buffer reuse pool for send/read/latent buffers</li>
-<li>Stack-allocated frame headers (<code>[u8; 16]</code>)</li>
+<li>Stack-allocated frame headers</li>
 </ul>
 <h2 id="websocket-bridge"><a class="header" href="#websocket-bridge">WebSocket Bridge</a></h2>
 <p>Client and server WebSocket adapters:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use spine_transport::WebSocketClientStream;
+</span>use spine_transport::{WebSocketBridge, WebSocketClientStream};
 
 // Used internally by AgentClient::connect_ws()
-let stream = WebSocketClientStream::connect("ws://localhost:8081").await?;
+let bridge = WebSocketBridge::connect("ws://localhost:8081").await?;
+let stream = WebSocketClientStream::new(bridge);
 <span class="boring">}</span></code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="streaming"><a class="header" href="#streaming">Streaming</a></h1>
 <p><code>spine-stream</code> provides reactive streaming with multiplexing and flow control.</p>
+<p>It is a library with its own message types; it is not the native wire’s streaming.
+spine-wire v1 reserves frame types <code>STREAM_START</code>, <code>STREAM_TOKEN</code>, <code>STREAM_END</code> and
+<code>STREAM_CANCEL</code> (0x20 to 0x23), but no command streams yet: every one of the 19
+commands is a single <code>REQUEST</code> and a single <code>RESPONSE</code>. Its <code>LatentVector</code> and
+<code>LatentBatch</code> stream items carry embeddings as data and are not an encryption or
+encoding layer.</p>
 <h2 id="features"><a class="header" href="#features">Features</a></h2>
 <ul>
 <li><strong>Reactive streams</strong> — Backpressure-aware data flow</li>
@@ -1287,6 +1356,7 @@ let batched = BatchingStream::new(source, 100, Duration::from_millis(50));
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="memory-system"><a class="header" href="#memory-system">Memory System</a></h1>
 <p><code>spine-knowledge</code> provides a unified bioinspired memory architecture.</p>
+<p><strong>Research.</strong> <code>spine-knowledge</code> and the MIRAS variants in <code>spine-crypto</code> live in the separate <code>research/</code> workspace. The daemon does not use them: the native <code>store_knowledge</code> and <code>query_knowledge</code> commands work on a per-session key/value store (see <a href="#knowledge-base">Knowledge Base</a>).</p>
 <h2 id="subsystems"><a class="header" href="#subsystems">Subsystems</a></h2>
 <h3 id="episodic-memory-hippocampus"><a class="header" href="#episodic-memory-hippocampus">Episodic Memory (Hippocampus)</a></h3>
 <p>Stores sequences of events with temporal ordering:</p>
@@ -1340,7 +1410,8 @@ let batched = BatchingStream::new(source, 100, Duration::from_millis(50));
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="gpu-compute"><a class="header" href="#gpu-compute">GPU Compute</a></h1>
-<p>The <code>spine-gpu</code> crate provides cross-platform GPU-accelerated tensor operations for SPINE’s neural encoding pipeline.</p>
+<p>The <code>spine-gpu</code> crate provides cross-platform GPU-accelerated tensor operations for SPINE’s neural encoding experiments.</p>
+<p><strong>Research.</strong> The crate lives in the separate <code>research/</code> workspace (<code>research/spine-gpu</code>). The native wire has no neural encoding stage, so nothing on the wire uses it.</p>
 <h2 id="architecture-1"><a class="header" href="#architecture-1">Architecture</a></h2>
 <pre><code class="language-text">┌─────────────────────────────────────────┐
 │            GpuAccelerator               │
@@ -1406,8 +1477,8 @@ accel.mat_vec_mul(&amp;weights, &amp;input, &amp;bias, rows, cols, &amp;mut outp
 </thead>
 <tbody>
 <tr><td>InMemory</td><td>(default)</td><td>Testing, ephemeral workloads</td><td>None</td></tr>
-<tr><td>SQLite</td><td><code>sqlite</code></td><td>Single-node production</td><td>WAL</td></tr>
-<tr><td>RocksDB</td><td><code>rocksdb</code></td><td>High-throughput workloads</td><td>LSM-tree</td></tr>
+<tr><td>SQLite</td><td><code>sqlite</code> (default)</td><td>Single-node production</td><td>WAL</td></tr>
+<tr><td>RocksDB</td><td><code>rocksdb-backend</code></td><td>High-throughput workloads</td><td>LSM-tree</td></tr>
 </tbody>
 </table>
 </div>
@@ -1415,12 +1486,13 @@ accel.mat_vec_mul(&amp;weights, &amp;input, &amp;bias, rows, cols, &amp;mut outp
 <p>Generic wrapper providing <code>serde</code> serialization over any backend:</p>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>let typed: TypedStorage&lt;MyConfig&gt; = TypedStorage::new(backend, "configs");
+</span>let typed = TypedStorage::new(backend, "configs");
 typed.put("key1", &amp;my_config)?;
 let config: Option&lt;MyConfig&gt; = typed.get("key1")?;
 <span class="boring">}</span></code></pre>
 <h2 id="persistentknowledge"><a class="header" href="#persistentknowledge">PersistentKnowledge</a></h2>
-<p>Adapter integrating <code>StorageBackend</code> with <code>spine-knowledge</code>:</p>
+<p>Adapter integrating <code>StorageBackend</code> with <code>spine-knowledge</code> (research,
+<code>research/spine-knowledge</code>; <code>spine-storage</code> itself is in the root workspace):</p>
 <ul>
 <li>Episodes stored in <code>"episodes"</code> namespace</li>
 <li>Concepts in <code>"concepts"</code> namespace</li>
@@ -1472,6 +1544,7 @@ let config: Option&lt;MyConfig&gt; = typed.get("key1")?;
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="kubernetes-operator"><a class="header" href="#kubernetes-operator">Kubernetes Operator</a></h1>
 <p>The <code>spine-k8s</code> crate provides a Kubernetes operator for managing SPINE cluster deployments.</p>
+<p><strong>Research.</strong> The crate lives in the separate <code>research/</code> workspace (<code>research/spine-k8s</code>), not the root workspace.</p>
 <h2 id="spinecluster-crd"><a class="header" href="#spinecluster-crd">SpineCluster CRD</a></h2>
 <pre><code class="language-yaml">apiVersion: spine.nervosys.ai/v1
 kind: SpineCluster
@@ -1517,10 +1590,10 @@ spec:
 </ul>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="formal-verification"><a class="header" href="#formal-verification">Formal Verification</a></h1>
-<p>SPINE uses multiple formal verification techniques to ensure correctness of critical components.</p>
+<p>SPINE keeps several formal models and audit documents under <code>formal/</code>. Most of them model research code or an earlier design, not the deployed path. The deployed constructions are the native wire (spine-wire v1, TLS only for confidentiality; no model here covers it) and the mesh handshake in <code>spine-session</code>, which is custom cryptography without external review. These artifacts were not updated when the wire changed on 2026-11-21.</p>
 <h2 id="tla--protocol-model-checking"><a class="header" href="#tla--protocol-model-checking">TLA+ — Protocol Model Checking</a></h2>
-<p><strong>File</strong>: <code>formal/tla/ChameleonProtocol.tla</code></p>
-<p>Models the Chameleon Protocol state machine with:</p>
+<p><strong>Mesh routing</strong>: <code>formal/tla/MeshRouting.tla</code> models TTL, shortest-path routing, gossip discovery and deduplication in the mesh.</p>
+<p><strong>Chameleon (research)</strong>: <code>formal/tla/ChameleonProtocol.tla</code> models the Chameleon Protocol state machine (experimental code in <code>research/spine-protocol-research</code>, not on the native wire) with:</p>
 <ul>
 <li>Epoch monotonicity invariant</li>
 <li>Synchronized evolution between peers</li>
@@ -1528,9 +1601,9 @@ spec:
 <li>Decoy message generation</li>
 </ul>
 <p>Verified with TLC model checker (<code>ChameleonProtocol_MC.tla</code> configuration).</p>
-<h2 id="tamarin-prover--key-exchange"><a class="header" href="#tamarin-prover--key-exchange">Tamarin Prover — Key Exchange</a></h2>
+<h2 id="tamarin-prover--key-exchange-research-design"><a class="header" href="#tamarin-prover--key-exchange-research-design">Tamarin Prover — Key Exchange (research design)</a></h2>
 <p><strong>File</strong>: <code>formal/tamarin/SpineKeyExchange.spthy</code></p>
-<p>Models the X3DH + RLWE key exchange with 10 security lemmas:</p>
+<p>Models an X3DH + RLWE hybrid key exchange, which is not the deployed mesh handshake (that is ML-KEM-768 with Ed25519 in <code>spine-session</code>). The model has 10 lemmas:</p>
 <ul>
 <li>Session key secrecy</li>
 <li>Perfect forward secrecy (PFS)</li>
@@ -1538,7 +1611,7 @@ spec:
 <li>Three security levels: Standard, Hardened, PostQuantum</li>
 </ul>
 <h2 id="kani--bounded-model-checking"><a class="header" href="#kani--bounded-model-checking">Kani — Bounded Model Checking</a></h2>
-<p><strong>File</strong>: <code>src/spine-kernel/src/kani_harnesses.rs</code></p>
+<p><strong>File</strong>: <code>research/spine-kernel/src/kani_harnesses.rs</code> (research crate)</p>
 <p>15 verification harnesses for unsafe Rust code:</p>
 <ul>
 <li><strong>Allocators</strong>: BumpAllocator, SlabAllocator, ArenaAllocator bounds</li>
@@ -1546,9 +1619,9 @@ spec:
 <li><strong>Ring buffers</strong>: SPSC/MPSC wraparound, capacity limits</li>
 <li><strong>SIMD</strong>: Dot product numerical bounds</li>
 </ul>
-<h2 id="cryptographic-audit"><a class="header" href="#cryptographic-audit">Cryptographic Audit</a></h2>
+<h2 id="cryptographic-audit-historical-internal"><a class="header" href="#cryptographic-audit-historical-internal">Cryptographic Audit (historical, internal)</a></h2>
 <p><strong>File</strong>: <code>formal/audit/CRYPTO_AUDIT.md</code></p>
-<p>13 findings across severity levels:</p>
+<p>An internal audit dated 2026-02-16 of the crypto code as it then stood, which included the PSK AES-GCM, <code>ChameleonKey</code> and <code>ProtocolMorphology</code> code that has since been removed from <code>spine-protocol</code>. It is not an external review and does not cover <code>spine-session</code>. 13 findings across severity levels:</p>
 <ul>
 <li>2 Critical (RLWE KEM, XOR cipher) — <strong>remediated</strong></li>
 <li>4 High (key evolution, SeqLock, ABA, mmap) — <strong>remediated</strong></li>
@@ -1558,6 +1631,304 @@ spec:
 <h2 id="misra-compliance"><a class="header" href="#misra-compliance">MISRA Compliance</a></h2>
 <p><strong>File</strong>: <code>formal/misra/MISRA_COMPLIANCE.md</code></p>
 <p>16 MISRA C:2012 rules mapped to Rust unsafe code with 8 documented deviations and Kani verification links.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="ontology--agent-discovery"><a class="header" href="#ontology--agent-discovery">Ontology &amp; Agent Discovery</a></h1>
+<p>SPINE includes a rich ontology system for agent self-description and mutual discovery.</p>
+<p><strong>Research.</strong> The ontology code is in <code>research/spine-agentic</code>, a separate workspace. The deployed discovery path is the <code>spine-name</code> crate and the <code>find_providers</code> and <code>capability_query</code> commands.</p>
+<h2 id="overview"><a class="header" href="#overview">Overview</a></h2>
+<p>Every agent publishes an <strong>AgentOntology</strong> — a namespace-versioned vocabulary of capabilities, roles, and domain expertise. The ontology system enables:</p>
+<ul>
+<li><strong>Self-description</strong>: Agents declare what they can do, what data they handle, and what protocols they speak.</li>
+<li><strong>Discovery</strong>: The <code>OntologyRegistry</code> indexes terms for lookup by URI, hash, or neural similarity.</li>
+<li><strong>Privacy</strong>: Per-term visibility controls (Public, HashOnly, NeuralHash, Private) let agents disclose selectively.</li>
+<li><strong>Compatibility scoring</strong>: Jaccard similarity between agents’ public terms identifies good collaborators.</li>
+</ul>
+<h2 id="core-types"><a class="header" href="#core-types">Core Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>OntologyTerm</code></td><td>URI-based term with label, description, parent hierarchy, properties</td></tr>
+<tr><td><code>AgentOntology</code></td><td>Namespace-versioned ontology with SHA-256 whole-ontology hash</td></tr>
+<tr><td><code>DisclosedOntology</code></td><td>Privacy-preserving view combining cleartext, hashed, and neural terms</td></tr>
+<tr><td><code>OntologyAccessControl</code></td><td>Per-agent permission rules with first-match-wins resolution</td></tr>
+<tr><td><code>OntologyRegistry</code></td><td>Discovery index with term lookup, hash verification, neural similarity</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="pre-built-vocabularies"><a class="header" href="#pre-built-vocabularies">Pre-Built Vocabularies</a></h2>
+<p>The <code>ontology_vocab</code> module provides 230+ hierarchical terms across 16 categories:</p>
+<ul>
+<li><strong>Capabilities</strong>: 9 top-level domains with 150+ leaf terms (web, data, security, NLP, etc.)</li>
+<li><strong>Roles</strong>: 15 agent roles (researcher, sentinel, coordinator, etc.)</li>
+<li><strong>Domains</strong>: 15 application domains (finance, healthcare, IoT, etc.)</li>
+<li><strong>Protocol/IO/QoS/Security/Hardware</strong>: 65 descriptors for interop and runtime constraints</li>
+</ul>
+<p>Six role-specific pre-built ontologies are available via <code>build_*_ontology()</code> constructors:
+<code>web_researcher</code>, <code>security_sentinel</code>, <code>iot_edge</code>, <code>data_pipeline</code>, <code>swarm_coordinator</code>, <code>ml_inference</code>.</p>
+<h2 id="visibility-controls"><a class="header" href="#visibility-controls">Visibility Controls</a></h2>
+<pre><code class="language-text">Public      → Term visible in cleartext to all agents
+HashOnly    → Only SHA-256 hash disclosed; verifiable but not browsable
+NeuralHash  → Locality-sensitive embedding for approximate matching
+Private     → Never disclosed
+</code></pre>
+<h2 id="usage-1"><a class="header" href="#usage-1">Usage</a></h2>
+<pre><code class="language-rust ignore">use spine_agentic::ontology_vocab::build_web_researcher_ontology;
+
+let ontology = build_web_researcher_ontology();
+let disclosed = ontology.disclose_public();
+// Register with the discovery index
+registry.register_ontology(&amp;agent_id, &amp;disclosed);</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="structured-data-extraction"><a class="header" href="#structured-data-extraction">Structured Data Extraction</a></h1>
+<p>SPINE’s parser includes a declarative extraction framework for pulling structured data from HTML documents.</p>
+<h2 id="overview-1"><a class="header" href="#overview-1">Overview</a></h2>
+<p>Instead of writing custom CSS-selector code for every page, agents define an <strong>ExtractionSchema</strong> — a declarative description of the fields to extract, their types, and any post-processing transforms.</p>
+<h2 id="core-types-1"><a class="header" href="#core-types-1">Core Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ExtractionSchema</code></td><td>Named schema with ordered field definitions</td></tr>
+<tr><td><code>FieldDefinition</code></td><td>CSS selector, field type, optional attribute, transform pipeline</td></tr>
+<tr><td><code>FieldType</code></td><td>Text, Integer, Float, Boolean, Url, List, Record (nested)</td></tr>
+<tr><td><code>FieldTransform</code></td><td>Trim, Lowercase, Uppercase, RegexCapture</td></tr>
+<tr><td><code>SchemaRegistry</code></td><td>Multi-schema registration and batch extraction</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="field-types"><a class="header" href="#field-types">Field Types</a></h2>
+<ul>
+<li><strong>Text</strong>: Extract text content or attribute value as a string.</li>
+<li><strong>Integer / Float / Boolean</strong>: Parse extracted text into typed values.</li>
+<li><strong>Url</strong>: Extract and normalize URL values.</li>
+<li><strong>List</strong>: Collect all matching elements into an array.</li>
+<li><strong>Record</strong>: Recursive sub-document extraction for nested structures.</li>
+</ul>
+<h2 id="transforms"><a class="header" href="#transforms">Transforms</a></h2>
+<p>Transforms are applied in pipeline order after extraction:</p>
+<ol>
+<li><code>Trim</code> — Strip leading/trailing whitespace</li>
+<li><code>Lowercase</code> / <code>Uppercase</code> — Case normalization</li>
+<li><code>RegexCapture(pattern)</code> — Extract first capture group</li>
+</ol>
+<h2 id="example"><a class="header" href="#example">Example</a></h2>
+<pre><code class="language-rust ignore">let schema = ExtractionSchema::new("article")
+    .field("title", "h1.title", FieldType::Text)
+    .field("author", ".byline", FieldType::Text)
+    .field_with_attr("link", "a.permalink", "href", FieldType::Url)
+    .field_with_transform("date", ".pubdate", FieldType::Text,
+        vec![FieldTransform::Trim]);</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="workflow-orchestration"><a class="header" href="#workflow-orchestration">Workflow Orchestration</a></h1>
+<p>SPINE provides DAG-based multi-step agent pipelines for coordinating complex tasks.</p>
+<p><strong>Research.</strong> This code is in <code>research/spine-agentic</code> (<code>workflow.rs</code>), a separate workspace, and is not part of the native wire.</p>
+<h2 id="overview-2"><a class="header" href="#overview-2">Overview</a></h2>
+<p>A <strong>Workflow</strong> is a directed acyclic graph of <strong>WorkflowSteps</strong>, where each step performs an action (fetch, extract, transform, call another agent, run a script, etc.). The <code>WorkflowEngine</code> executes workflows, tracking step status, emitting events, and enforcing dependency ordering.</p>
+<h2 id="core-types-2"><a class="header" href="#core-types-2">Core Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>WorkflowBuilder</code></td><td>Fluent API for constructing workflow DAGs with cycle detection</td></tr>
+<tr><td><code>Workflow</code></td><td>Immutable DAG with steps, edges, and definition hash (SHA-256)</td></tr>
+<tr><td><code>WorkflowStep</code></td><td>Named step with a <code>StepKind</code> and description</td></tr>
+<tr><td><code>WorkflowEngine</code></td><td>Execution engine with start/complete/fail/cancel/pause operations</td></tr>
+<tr><td><code>StepKind</code></td><td>10 variants: Fetch, Extract, Transform, Store, AgentCall, Script, FanOut, FanIn, Conditional, Custom</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="step-kinds"><a class="header" href="#step-kinds">Step Kinds</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Description</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Fetch { url }</code></td><td>HTTP fetch from a URL</td></tr>
+<tr><td><code>Extract { schema_name }</code></td><td>Apply an ExtractionSchema</td></tr>
+<tr><td><code>Transform { transformer }</code></td><td>Run a named transformer</td></tr>
+<tr><td><code>Store { namespace }</code></td><td>Persist to a namespace</td></tr>
+<tr><td><code>AgentCall { capability }</code></td><td>Delegate to another agent by capability</td></tr>
+<tr><td><code>Script { source }</code></td><td>Execute inline HLS script</td></tr>
+<tr><td><code>FanOut { branches }</code></td><td>Fork into N parallel branches</td></tr>
+<tr><td><code>FanIn</code></td><td>Join parallel branches</td></tr>
+<tr><td><code>Conditional { predicate_key }</code></td><td>Branch based on a predicate</td></tr>
+<tr><td><code>Custom { kind, config }</code></td><td>User-defined step type</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="templates"><a class="header" href="#templates">Templates</a></h2>
+<p>Six built-in workflow templates are available:
+<code>web_scraping_pipeline</code>, <code>data_enrichment</code>, <code>content_analysis</code>, <code>monitoring</code>, <code>agent_delegation</code>, <code>etl_pipeline</code>.</p>
+<h2 id="example-1"><a class="header" href="#example-1">Example</a></h2>
+<pre><code class="language-rust ignore">let workflow = WorkflowBuilder::new("research")
+    .description("Web research pipeline")
+    .add_step(WorkflowStep::new("fetch", StepKind::Fetch { url: "https://example.com".into() }))
+    .add_step(WorkflowStep::new("extract", StepKind::Extract { schema_name: "article".into() }))
+    .add_edge(0, 1)
+    .build()?;
+
+let engine = WorkflowEngine::new();
+let id = engine.register(workflow);
+engine.start(&amp;id)?;</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="protocol-negotiation"><a class="header" href="#protocol-negotiation">Protocol Negotiation</a></h1>
+<p>Every native connection (TCP, TLS, WebSocket, and QUIC when built) opens with one
+round trip of the spine-wire v1 handshake: the client sends <code>HELLO</code> and the
+server answers <code>HELLO_ACK</code>. Nothing else may be sent first. The specification is
+<code>docs/spec/00-wire.md</code> (sections C.5 to C.7 and C.10); the code is
+<code>spine_protocol::hello</code> (bodies and <code>negotiate</code>) and
+<code>spine_protocol::connection::Connection</code> (which sends and checks them).
+<code>AgentClient::connect*</code> and the daemon both go through it.</p>
+<p>The earlier JSON <code>VersionOffer</code> / <code>VersionResponse</code> handshake and its
+<code>ProtocolFeature</code> list are gone. Nothing in the current code negotiates features
+by name; the only optional capability slot is <code>extensions</code>.</p>
+<h2 id="bodies-1"><a class="header" href="#bodies-1">Bodies</a></h2>
+<p>Bodies are deterministic CBOR maps with text keys. <code>HELLO</code> and <code>HELLO_ACK</code> are
+open (unknown keys are ignored, so later versions can add fields); <code>CLOSE</code> is
+closed. Frames in the handshake are read under the 64 KiB pre-<code>HELLO</code> limit.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Frame</th><th>Keys</th></tr>
+</thead>
+<tbody>
+<tr><td><code>HELLO</code> (client, first)</td><td><code>versions</code> (strictly ascending, not empty), <code>max_frame</code> (1,024 to 16,777,216), <code>extensions</code> (no duplicates), <code>agent</code> (optional, at most 128 bytes)</td></tr>
+<tr><td><code>HELLO_ACK</code> (server)</td><td><code>version</code>, <code>max_frame</code>, <code>max_inflight</code> (at least 1), <code>extensions</code>, <code>agent</code> (optional)</td></tr>
+<tr><td><code>CLOSE</code></td><td><code>code</code>, <code>message</code>, <code>supported</code> (optional, for <code>unsupported_version</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="rules"><a class="header" href="#rules">Rules</a></h2>
+<ul>
+<li><strong>Version.</strong> The server selects the highest version offered that it supports.
+If there is none it sends <code>CLOSE</code> with <code>unsupported_version</code> and its
+<code>supported</code> list. Only version 1 exists.</li>
+<li><strong>Frame size.</strong> <code>max_frame</code> in the acknowledgement is the smaller of the
+client’s and the server’s limit, and applies to both directions from then on.</li>
+<li><strong>In-flight requests.</strong> <code>max_inflight</code> is the number of requests the client may
+have outstanding. The current daemon offers 1, so a client sends one <code>REQUEST</code>
+at a time; a second concurrent request is answered <code>overloaded</code>.</li>
+<li><strong>Extensions.</strong> <code>extensions</code> in the acknowledgement are the offered extensions
+the server supports, in the order the client offered them; the position is the
+extension index used by <code>EXT</code> frames. The current daemon supports none, and the
+SDK offers none.</li>
+<li><strong>Client check.</strong> The client rejects an acknowledgement that selects a version
+it did not offer, raises <code>max_frame</code> above its own, names an extension it did
+not offer, or carries <code>max_inflight</code> of 0, each as <code>protocol_violation</code>.</li>
+<li><strong>Timeout.</strong> The daemon closes a connection that has not sent <code>HELLO</code> within
+<code>server.hello_timeout_secs</code> (default 10) with <code>CLOSE(timeout)</code>. The SDK waits
+ten seconds for <code>HELLO_ACK</code>.</li>
+</ul>
+<p>The daemon’s offer is <code>spine_protocol::native::local_config()</code>: version 1, 16 MiB
+<code>max_frame</code>, <code>max_inflight</code> 1, no extensions. The SDK’s <code>HELLO</code> is
+<code>native::client_hello()</code>: version 1, 16 MiB <code>max_frame</code>, no extensions, and an
+<code>agent</code> string of the form <code>spine-protocol/&lt;version&gt;</code>.</p>
+<h2 id="usage-2"><a class="header" href="#usage-2">Usage</a></h2>
+<pre><code class="language-rust ignore">use spine_protocol::hello::{negotiate, Hello, LocalConfig};
+
+// Server side: frame is the first frame read from the peer.
+let hello = Hello::from_frame(&amp;frame)?;
+let ack = negotiate(&amp;hello, &amp;LocalConfig::default())?;
+let reply = ack.to_frame()?;
+// Client side, after reading the acknowledgement:
+// ack.validate_against(&amp;hello)?;</code></pre>
+<p>An <code>Err(Close)</code> is the body to send in a <code>CLOSE</code> frame before closing. Most code
+does not call these directly: <code>AgentClient::connect</code> and
+<code>Connection::client_handshake</code> / <code>Connection::server_handshake</code> run the whole
+exchange.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="mesh-networking"><a class="header" href="#mesh-networking">Mesh Networking</a></h1>
+<p>SPINE agents can form peer-to-peer mesh networks for decentralized communication. The code is the <code>spine-mesh</code> crate; the handshake it runs is <code>spine-session</code>. This is a separate protocol from the native client wire (spine-wire v1, which has no mesh handshake and takes its confidentiality from TLS); the daemon reaches the mesh through the <code>mesh_call</code> and <code>*_name</code> commands.</p>
+<h2 id="overview-3"><a class="header" href="#overview-3">Overview</a></h2>
+<p>The mesh networking layer provides:</p>
+<ul>
+<li><strong>Ed25519 signing identity</strong>: Cryptographic agent identity with fingerprinting</li>
+<li><strong>Peer-to-peer connections</strong>: Direct TCP, WebSocket and QUIC connections between agents, plaintext or with the encrypted <code>spine-session</code> handshake (ML-KEM-768 and Ed25519, AES-256-GCM frames; custom cryptography without external review)</li>
+<li><strong>Name records</strong>: Signed name records and their lookup RPC (<code>spine-name</code>, <code>naming_mesh</code>)</li>
+<li><strong>Multi-hop routing</strong>: Shortest-path message forwarding with TTL</li>
+<li><strong>Gossip protocol</strong>: Peer announcement propagation for network discovery</li>
+<li><strong>Message deduplication</strong>: Ring buffer preventing routing loops</li>
+</ul>
+<h2 id="core-types-3"><a class="header" href="#core-types-3">Core Types</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Type</th><th>Purpose</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Ed25519Keypair</code></td><td>Signing keypair (ed25519-dalek)</td></tr>
+<tr><td><code>SigningIdentity</code></td><td>Agent identity with signing and verification</td></tr>
+<tr><td><code>MeshNode</code></td><td>Network node with peer management and routing</td></tr>
+<tr><td><code>MeshEnvelope</code></td><td>Signed message container with source, target, hops, TTL</td></tr>
+<tr><td><code>MeshTarget</code></td><td>Destination: Agent(id), Broadcast, Capability(name)</td></tr>
+<tr><td><code>MeshPayload</code></td><td>Message variants: agent messages, peer gossip, ping/pong, route request/response, knowledge sync, swarm invite/response, name records and resolution, and versioned application RPC</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="routing"><a class="header" href="#routing">Routing</a></h2>
+<p>Messages are routed via shortest-path selection from the routing table. Routes are learned from incoming messages and gossip announcements. Stale routes are pruned periodically.</p>
+<pre><code class="language-text">Agent A → MeshNode → [hop] → MeshNode → Agent B
+              ↓                   ↑
+          Route Table          Route Table
+</code></pre>
+<h2 id="gossip-discovery"><a class="header" href="#gossip-discovery">Gossip Discovery</a></h2>
+<p>Nodes periodically broadcast <code>PeerAnnouncement</code> messages containing their identity, capabilities, and known peers. Announcements propagate through the network with max-hop limits, allowing new nodes to discover the full topology.</p>
+<h2 id="signature-verification"><a class="header" href="#signature-verification">Signature Verification</a></h2>
+<p>Every <code>MeshEnvelope</code> is signed by the sender using Ed25519. Recipients verify the signature against the sender’s public key from the trusted key store, rejecting messages from unknown or banned peers. The signature covers the id, sender, target, timestamp and payload; <code>ttl</code> and <code>hops</code> are rewritten by forwarders and are not signed, so treat them as advisory.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="observability--debugging"><a class="header" href="#observability--debugging">Observability &amp; Debugging</a></h1>
+<p>SPINE provides observability tools for monitoring, debugging, and analyzing agent behavior.</p>
+<p><strong>Research.</strong> Distributed tracing, the replay debugger, the swarm visualizer and anomaly detection described here are in <code>research/spine-agentic</code> (<code>tracing.rs</code>, <code>replay.rs</code>, <code>visualizer.rs</code>, <code>anomaly.rs</code>), a separate workspace. The Grafana dashboard and Prometheus config in <code>deploy/</code> are separate from that code. The native <code>tool_call</code> command carries an optional <code>trace</code> field.</p>
+<h2 id="distributed-tracing"><a class="header" href="#distributed-tracing">Distributed Tracing</a></h2>
+<p>The <code>AgentSpan</code> system provides hierarchical trace context with:</p>
+<ul>
+<li><strong>Trace/span/parent IDs</strong> for causality tracking</li>
+<li><strong>SpanEvent</strong> with timestamps for fine-grained timing</li>
+<li><strong>TraceContext</strong> wire propagation via header serialization</li>
+<li><strong>TraceCollector</strong> with capacity-bounded storage</li>
+</ul>
+<p>Query API: <code>root_span()</code>, <code>max_hops()</code>, <code>slow_spans(threshold)</code>, <code>error_spans()</code>, <code>agent_spans(id)</code>.</p>
+<h2 id="agent-replay-debugger"><a class="header" href="#agent-replay-debugger">Agent Replay Debugger</a></h2>
+<p>Record and replay agent decision-making:</p>
+<ul>
+<li><strong>ReplayLog</strong> with SHA-256 integrity verification</li>
+<li><strong>7 entry kinds</strong>: MessageReceived/Sent, Decision, StateTransition, TaskAction, ExternalEvent, Error</li>
+<li><strong>Breakpoints</strong> and state verification callbacks</li>
+<li><strong>Divergence detection</strong> between two replay logs</li>
+</ul>
+<h2 id="swarm-visualizer"><a class="header" href="#swarm-visualizer">Swarm Visualizer</a></h2>
+<p>Generate snapshots of swarm topology for visualization:</p>
+<ul>
+<li><strong>SwarmSnapshot</strong>: nodes, edges, clusters, message flows, resource heatmap</li>
+<li><strong>SnapshotRecorder</strong>: time-series extraction for load and message volume</li>
+<li><strong>NodeSnapshot</strong>: state, load, capabilities per agent</li>
+<li><strong>EdgeSnapshot</strong>: latency, bandwidth per connection</li>
+</ul>
+<h2 id="anomaly-detection"><a class="header" href="#anomaly-detection">Anomaly Detection</a></h2>
+<p>Automated detection of operational anomalies:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Detector</th><th>Trigger</th></tr>
+</thead>
+<tbody>
+<tr><td>Spike</td><td>σ-based deviation from rolling mean</td></tr>
+<tr><td>Drift</td><td>Linear regression slope on throughput</td></tr>
+<tr><td>Livelock</td><td>Low progress + non-zero throughput</td></tr>
+<tr><td>Deadlock</td><td>Zero throughput + high queue depth</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="grafana-dashboard"><a class="header" href="#grafana-dashboard">Grafana Dashboard</a></h2>
+<p>A pre-built Grafana dashboard (<code>deploy/grafana/spine-dashboard.json</code>) with 12 panels covers all SPINE metrics. Prometheus scrape config is at <code>deploy/prometheus/prometheus.yml</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="development-setup"><a class="header" href="#development-setup">Development Setup</a></h1>
 <h2 id="prerequisites-1"><a class="header" href="#prerequisites-1">Prerequisites</a></h2>
@@ -1577,6 +1948,9 @@ cargo test --workspace
 
 # Specific crate
 cargo test -p spine-protocol
+
+# Experimental crates are a separate workspace
+cd research &amp;&amp; cargo test
 
 # With output
 cargo test --workspace -- --nocapture
@@ -1598,9 +1972,11 @@ cargo test --workspace -- --nocapture
 <pre><code class="language-bash">cd fuzz
 cargo fuzz run fuzz_parse_html -- -max_total_time=60
 cargo fuzz run fuzz_frame_decode -- -max_total_time=60
-cargo fuzz run fuzz_latent_vector -- -max_total_time=60
 cargo fuzz run fuzz_message_deser -- -max_total_time=60
 cargo fuzz run fuzz_frame_header -- -max_total_time=60
+cargo fuzz run fuzz_negotiation -- -max_total_time=60
+cargo fuzz run fuzz_hls_compile -- -max_total_time=60
+cargo fuzz run fuzz_semver_parse -- -max_total_time=60
 </code></pre>
 <h2 id="documentation"><a class="header" href="#documentation">Documentation</a></h2>
 <pre><code class="language-bash"># Build mdBook docs
@@ -1614,25 +1990,32 @@ cargo doc --workspace --no-deps --open
 </code></pre>
 <div style="break-before: page; page-break-before: always;"></div>
 <h1 id="testing"><a class="header" href="#testing">Testing</a></h1>
+<p>Counts of tests and suites change often and are not recorded here. Earlier
+figures (for example 897+ unit tests and 41 properties) were measured before the
+native wire became spine-wire v1 (2026-11-21) and have not been re-measured; run
+the commands below for current numbers.</p>
 <h2 id="test-categories"><a class="header" href="#test-categories">Test Categories</a></h2>
 <h3 id="unit-tests"><a class="header" href="#unit-tests">Unit Tests</a></h3>
-<p>321+ tests across all crates:</p>
 <pre><code class="language-bash">cargo test --workspace
 </code></pre>
+<p>The <code>research/</code> crates are a separate workspace; test them with
+<code>cd research &amp;&amp; cargo test</code>.</p>
 <h3 id="property-based-tests"><a class="header" href="#property-based-tests">Property-Based Tests</a></h3>
-<p>41 properties using <code>proptest</code> across 4 crates:</p>
+<p><code>proptest</code> properties, for example in <code>src/spine-protocol/tests/proptest_protocol.rs</code>:</p>
 <pre><code class="language-bash">cargo test --workspace -- proptest
 </code></pre>
-<h3 id="integration-tests"><a class="header" href="#integration-tests">Integration Tests</a></h3>
-<p>11 multi-session in-process tests:</p>
+<h3 id="wire-and-integration-tests"><a class="header" href="#wire-and-integration-tests">Wire and Integration Tests</a></h3>
+<p>The <code>spine-protocol</code> integration tests cover the v1 wire: <code>wire_encoding.rs</code>
+(frame and CBOR encoding), <code>bodies_v1.rs</code> (command and reply bodies),
+<code>e2e_protocol.rs</code> and <code>integration.rs</code>.</p>
 <pre><code class="language-bash">cargo test -p spine-protocol --test '*'
 </code></pre>
 <h3 id="chaos-tests"><a class="header" href="#chaos-tests">Chaos Tests</a></h3>
-<p>13 tests for fault tolerance:</p>
-<pre><code class="language-bash">cargo test -p spine-protocol -- chaos
+<p>Fault-tolerance tests in <code>src/spine-protocol/tests/chaos.rs</code>:</p>
+<pre><code class="language-bash">cargo test -p spine-protocol --test chaos
 </code></pre>
 <h3 id="fuzz-targets"><a class="header" href="#fuzz-targets">Fuzz Targets</a></h3>
-<p>5 <code>cargo-fuzz</code> targets:</p>
+<p>Seven <code>cargo-fuzz</code> targets in <code>fuzz/fuzz_targets/</code>:</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -1640,10 +2023,12 @@ cargo doc --workspace --no-deps --open
 </thead>
 <tbody>
 <tr><td><code>fuzz_parse_html</code></td><td>Arbitrary HTML</td><td>Parser crash resistance</td></tr>
-<tr><td><code>fuzz_frame_decode</code></td><td>Arbitrary bytes</td><td>Frame decoder robustness</td></tr>
-<tr><td><code>fuzz_latent_vector</code></td><td>Arbitrary floats</td><td>Latent vector handling</td></tr>
-<tr><td><code>fuzz_message_deser</code></td><td>Arbitrary JSON</td><td>Message deserialization</td></tr>
-<tr><td><code>fuzz_frame_header</code></td><td>Arbitrary bytes</td><td>Header parsing</td></tr>
+<tr><td><code>fuzz_frame_decode</code></td><td>Arbitrary bytes</td><td>spine-wire v1 frame decoder and the transport crate’s own <code>FrameCodec</code></td></tr>
+<tr><td><code>fuzz_message_deser</code></td><td>Arbitrary bytes</td><td>v1 body decoders; accepted bodies must re-encode identically</td></tr>
+<tr><td><code>fuzz_frame_header</code></td><td>Arbitrary bytes</td><td>The transport crate’s 12-byte header (not the v1 header)</td></tr>
+<tr><td><code>fuzz_negotiation</code></td><td>Arbitrary bytes</td><td><code>HELLO</code> decoding, validation and negotiation</td></tr>
+<tr><td><code>fuzz_hls_compile</code></td><td>Arbitrary source</td><td>HLS compiler</td></tr>
+<tr><td><code>fuzz_semver_parse</code></td><td>Arbitrary strings</td><td>SemVer parsing in the transport marketplace module</td></tr>
 </tbody>
 </table>
 </div>
@@ -1653,9 +2038,10 @@ cargo doc --workspace --no-deps --open
 </span>use spine_protocol::replay::{TraceLog, ReplayVerifier};
 
 let mut log = TraceLog::new();
-// ... record messages ...
-let verifier = ReplayVerifier::new(&amp;log);
-verifier.verify()?;
+// ... log.record_send(&amp;msg, elapsed); log.record_recv(&amp;msg, elapsed); ...
+let verifier = ReplayVerifier::new(log);
+let serialization = verifier.verify_serialization()?;
+let ordering = verifier.verify_ordering();
 <span class="boring">}</span></code></pre>
 <h2 id="test-organization"><a class="header" href="#test-organization">Test Organization</a></h2>
 <pre><code>spine-*/

@@ -1,0 +1,29 @@
+[package]
+name = "spine-browser"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+authors.workspace = true
+description.workspace = true
+license.workspace = true
+
+[dependencies]
+spine-agent = { path = "../../src/spine-agent", version = "2.0.2", features = ["research"] }
+spine-human = { path = "../spine-human", version = "2.0.2" }
+spine-wasm = { path = "../../src/spine-wasm", version = "2.0.2" }
+spine-protocol = { path = "../../src/spine-protocol", version = "2.0.2" }
+spine-cluster = { path = "../spine-cluster", version = "2.0.2" }
+eframe = "0.28"
+egui = "0.28"
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+
+

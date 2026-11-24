@@ -54,14 +54,6 @@ async fn main() -> anyhow::Result<()> {
     let result = client.execute_hls(script).await?;
     println!("HLS Execution Result: {:?}", result.stats);
 
-    // 5. Check session history
-    println!("Fetching session history...");
-    let history = client.get_history().await?;
-    println!("Session History ({} commands):", history.len());
-    for (i, cmd) in history.iter().enumerate() {
-        println!("{}. {:?}", i + 1, cmd);
-    }
-
     println!("Agent task complete.");
     Ok(())
 }

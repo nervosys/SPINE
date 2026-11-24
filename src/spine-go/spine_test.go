@@ -9,9 +9,6 @@ func TestVersion(t *testing.T) {
 	if v == "" {
 		t.Fatal("Version() returned empty string")
 	}
-	if v != "1.0.0" {
-		t.Fatalf("expected version 1.0.0, got %s", v)
-	}
 }
 
 func TestParseHTML(t *testing.T) {

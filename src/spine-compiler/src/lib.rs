@@ -381,7 +381,7 @@ impl Compiler {
             instructions: ctx.instructions,
             data: ctx.string_pool.join("\0").into_bytes(),
             render_start: ctx.render_start,
-            exported_functions: ctx.exported_functions,
+            exported_functions: ctx.exported_functions.into_iter().collect(),
             capabilities: ctx.capabilities,
         })
     }

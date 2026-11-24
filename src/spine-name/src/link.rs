@@ -12,8 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::uri::SpineUri;
 
 /// The relation a link asserts between its source and target.
+///
+/// `Other` is for relations this crate does not name. A built-in relation has
+/// one spelling only: deserializing `Other` with a built-in relation's exact
+/// name yields the built-in variant (see [`Rel::other`]), because both sign as
+/// the same bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", from = "RelRepr")]
 pub enum Rel {
     /// Contained resource — the ordinary "walk downward" edge.
     Child,
@@ -38,7 +43,59 @@ pub enum Rel {
     Other(String),
 }
 
+/// The shape `Rel` deserializes through, so that [`Rel::Other`] can be
+/// normalised on the way in.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RelRepr {
+    Child,
+    Parent,
+    Peer,
+    Provides,
+    Requires,
+    Alternate,
+    Describes,
+    Snapshot,
+    Other(String),
+}
+
+impl From<RelRepr> for Rel {
+    fn from(repr: RelRepr) -> Self {
+        match repr {
+            RelRepr::Child => Rel::Child,
+            RelRepr::Parent => Rel::Parent,
+            RelRepr::Peer => Rel::Peer,
+            RelRepr::Provides => Rel::Provides,
+            RelRepr::Requires => Rel::Requires,
+            RelRepr::Alternate => Rel::Alternate,
+            RelRepr::Describes => Rel::Describes,
+            RelRepr::Snapshot => Rel::Snapshot,
+            RelRepr::Other(s) => Rel::other(s),
+        }
+    }
+}
+
 impl Rel {
+    /// A relation named by the publisher. If `name` is exactly the name of a
+    /// built-in relation the built-in variant is returned, so `Other("child")`
+    /// cannot come out of deserialization next to `Child` (they sign
+    /// identically). Unlike [`Rel::parse`] this does not change case:
+    /// `Other("Mirrors")` keeps its spelling, which is part of the signed bytes.
+    pub fn other(name: impl Into<String>) -> Self {
+        let name = name.into();
+        match name.as_str() {
+            "child" => Rel::Child,
+            "parent" => Rel::Parent,
+            "peer" => Rel::Peer,
+            "provides" => Rel::Provides,
+            "requires" => Rel::Requires,
+            "alternate" => Rel::Alternate,
+            "describes" => Rel::Describes,
+            "snapshot" => Rel::Snapshot,
+            _ => Rel::Other(name),
+        }
+    }
+
     /// Stable string form, used in signing bytes and on the wire.
     pub fn as_str(&self) -> &str {
         match self {
@@ -158,6 +215,41 @@ mod tests {
     fn unknown_rels_are_preserved_not_discarded() {
         assert_eq!(Rel::parse("Mirrors"), Rel::Other("mirrors".into()));
         assert_eq!(Rel::parse("Mirrors").as_str(), "mirrors");
+    }
+
+    #[test]
+    fn other_with_a_builtin_name_is_the_builtin() {
+        assert_eq!(Rel::other("child"), Rel::Child);
+        assert_eq!(Rel::other("snapshot"), Rel::Snapshot);
+        assert_eq!(Rel::other("mirrors"), Rel::Other("mirrors".into()));
+        assert_eq!(Rel::other("Child"), Rel::Other("Child".into()));
+    }
+
+    #[test]
+    fn deserializing_other_normalises_builtin_names() {
+        let alias: Rel = serde_json::from_str(r#"{"other":"child"}"#).unwrap();
+        assert_eq!(alias, Rel::Child);
+        let plain: Rel = serde_json::from_str(r#""child""#).unwrap();
+        assert_eq!(plain, Rel::Child);
+        let custom: Rel = serde_json::from_str(r#"{"other":"mirrors"}"#).unwrap();
+        assert_eq!(custom, Rel::Other("mirrors".into()));
+        // The spelling of a custom relation is preserved exactly.
+        let cased: Rel = serde_json::from_str(r#"{"other":"Mirrors"}"#).unwrap();
+        assert_eq!(cased.as_str(), "Mirrors");
+        // Serialization is unchanged.
+        assert_eq!(
+            serde_json::to_string(&Rel::Other("mirrors".into())).unwrap(),
+            r#"{"other":"mirrors"}"#
+        );
+        assert_eq!(serde_json::to_string(&Rel::Child).unwrap(), r#""child""#);
+    }
+
+    #[test]
+    fn a_link_with_an_aliased_rel_deserializes_to_the_builtin() {
+        let target = SpineUri::did([1u8; 32]).to_string();
+        let json = format!(r#"{{"rel":{{"other":"child"}},"target":"{target}"}}"#);
+        let link: Link = serde_json::from_str(&json).unwrap();
+        assert_eq!(link.rel, Rel::Child);
     }
 
     #[test]

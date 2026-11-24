@@ -1,43 +1,73 @@
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use rustls::pki_types::pem::PemObject;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::ClientConfig;
 use rustls::RootCertStore;
-use spine_human::HumanInteractionEngine;
 use spine_parser::UnifiedRepresentation;
-use spine_protocol::{BrowserCommand, Message, ProtocolHandler, Request, Response, SpineBinary};
+use spine_protocol::connection::Connection;
+use spine_protocol::frame::{Frame, FrameType};
+use spine_protocol::native;
+use spine_protocol::{BrowserCommand, SpineBinary};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_rustls::TlsConnector;
 use tracing::instrument;
+pub mod authority;
+pub mod names;
+pub mod resources;
 
 // Re-export the compiler for convenience
 pub use spine_compiler::Compiler;
 // Re-export WebSocket stream for CLI and external consumers
 pub use spine_transport::WebSocketClientStream;
+// The identity key type of `over_with_identity`, and the authority mode a
+// server reports, so a caller needs no direct dependency for either.
+pub use spine_protocol::hello::AuthorityMode;
+pub use spine_protocol::identify::SigningKey;
 
+/// A client of a SPINE daemon, speaking spine-wire v1.
+///
+/// Requests are serialized on one connection: each call sends one `REQUEST`
+/// frame and waits for the `RESPONSE` with the same frame id; no body carries
+/// an id. Every constructor performs the `HELLO` handshake and fails with the
+/// server's `CLOSE` code and message if the server refuses.
+///
+/// # Errors
+///
+/// Methods return `anyhow::Result`. When the daemon answers a command with
+/// `{err: {code, message}}`, the error is a
+/// [`spine_protocol::native::NativeError::Remote`]; recover the stable `code`
+/// with [`spine_protocol::native::remote_code`] (or both fields with
+/// [`spine_protocol::native::remote_error`]) and branch on it, never on the
+/// text. Connection failures are other `NativeError` variants.
 pub struct AgentClient<S> {
-    /// Public handler for advanced protocol operations (Chameleon, Speculation, etc.)
-    pub handler: ProtocolHandler<S>,
-    request_counter: u64,
-    latent_tx: Option<mpsc::Sender<Vec<f32>>>,
-    event_tx: Option<mpsc::Sender<spine_protocol::Event>>,
-    human_engine: Option<HumanInteractionEngine>,
-    pub neural_protocol: Option<spine_agentic::NeuralProtocol>,
+    /// The v1 connection, for direct frame access. Use it with care: a
+    /// request left unanswered keeps its id in flight until its reply is read.
+    pub conn: Connection<S>,
+    ping_counter: u64,
+    /// When the handshake finished: `HELLO_ACK.time` plus the time since is
+    /// the server's clock now, which is what an invocation is stamped with.
+    connected_at: std::time::Instant,
 }
 
 impl AgentClient<TcpStream> {
     pub async fn connect(addr: &str) -> anyhow::Result<Self> {
-        let stream = TcpStream::connect(addr).await?;
-        let handler = ProtocolHandler::new(stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
-            human_engine: None,
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
-        })
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
+        Self::over(stream).await
+    }
+
+    /// Like [`AgentClient::connect`], and the client then proves that it holds
+    /// `identity` with an `IDENTIFY` frame (see
+    /// [`AgentClient::over_with_identity`]).
+    pub async fn connect_with_identity(addr: &str, identity: &SigningKey) -> anyhow::Result<Self> {
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
+        Self::over_with_identity(stream, identity).await
     }
 
     /// Connect with exponential backoff retry.
@@ -104,59 +134,68 @@ impl AgentClient<tokio_rustls::client::TlsStream<TcpStream>> {
         let mut root_store = RootCertStore::empty();
 
         if let Some(ca) = ca_path {
-            let mut reader = std::io::BufReader::new(std::fs::File::open(ca)?);
-            let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
-                .filter_map(|c| c.ok())
+            let certs: Vec<_> = CertificateDer::pem_reader_iter(std::fs::File::open(ca)?)
+                .filter_map(Result::ok)
                 .collect();
             for cert in certs {
                 root_store.add(cert)?;
             }
         } else {
             // Fallback to system certs if no CA provided
-            for cert in rustls_native_certs::load_native_certs()? {
-                root_store.add(CertificateDer::from(cert.0))?;
+            let loaded = rustls_native_certs::load_native_certs();
+            for error in &loaded.errors {
+                tracing::warn!(%error, "skipping a system root certificate source");
+            }
+            if loaded.certs.is_empty() && !loaded.errors.is_empty() {
+                anyhow::bail!(
+                    "could not load any system root certificates ({} error(s), first: {})",
+                    loaded.errors.len(),
+                    loaded.errors[0]
+                );
+            }
+            for cert in loaded.certs {
+                root_store.add(cert)?;
             }
         }
 
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
         let config = if let Some((cert_path, key_path)) = client_cert {
-            let mut cert_reader = std::io::BufReader::new(std::fs::File::open(cert_path)?);
-            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
-                .filter_map(|c| c.ok())
-                .collect();
+            let certs: Vec<CertificateDer<'static>> =
+                CertificateDer::pem_reader_iter(std::fs::File::open(cert_path)?)
+                    .filter_map(Result::ok)
+                    .collect();
 
-            let mut key_reader = std::io::BufReader::new(std::fs::File::open(key_path)?);
-            let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
-                .filter_map(|k| k.ok())
-                .collect();
-            let key: PrivateKeyDer<'static> = keys
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("No key"))?
-                .into();
+            let key: PrivateKeyDer<'static> =
+                PrivatePkcs8KeyDer::pem_reader_iter(std::fs::File::open(key_path)?)
+                    .find_map(Result::ok)
+                    .ok_or_else(|| anyhow::anyhow!("No key"))?
+                    .into();
 
-            ClientConfig::builder()
+            ClientConfig::builder_with_provider(provider.clone())
+                .with_safe_default_protocol_versions()?
                 .with_root_certificates(root_store)
                 .with_client_auth_cert(certs, key)?
         } else {
-            ClientConfig::builder()
+            ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()?
                 .with_root_certificates(root_store)
                 .with_no_client_auth()
         };
 
         let connector = TlsConnector::from(Arc::new(config));
-        let stream = TcpStream::connect(addr).await?;
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
         let domain = ServerName::try_from(domain.to_owned())?;
-        let tls_stream = connector.connect(domain, stream).await?;
+        let tls_stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            connector.connect(domain, stream),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("native TLS handshake deadline exceeded"))??;
 
-        let handler = ProtocolHandler::new(tls_stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
-            human_engine: None,
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
-        })
+        Self::over(tls_stream).await
     }
 
     /// Connect to a SPINE server over TLS with automatic retry and exponential backoff.
@@ -200,15 +239,7 @@ impl AgentClient<spine_transport::WebSocketClientStream> {
             .await
             .map_err(|e| anyhow::anyhow!("WebSocket connect failed: {}", e))?;
         let stream = spine_transport::WebSocketClientStream::new(bridge);
-        let handler = ProtocolHandler::new(stream);
-        Ok(Self {
-            handler,
-            request_counter: 0,
-            latent_tx: None,
-            event_tx: None,
-            human_engine: None,
-            neural_protocol: Some(spine_agentic::NeuralProtocol::new(1000.0, 5.0)),
-        })
+        Self::over(stream).await
     }
 }
 
@@ -216,153 +247,203 @@ impl<S> AgentClient<S>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    /// Enable human-like interaction patterns
-    pub fn enable_human_mode(&mut self, engine: HumanInteractionEngine) {
-        self.human_engine = Some(engine);
+    /// Run the spine-wire v1 handshake over an already-connected `stream`.
+    ///
+    /// Fails if the server answers with `CLOSE` (the error names its code and
+    /// message), sends something other than `HELLO_ACK`, or does not answer
+    /// within the handshake deadline of ten seconds.
+    pub async fn over(stream: S) -> anyhow::Result<Self> {
+        let conn = native::client_connect(stream).await?;
+        Ok(Self {
+            conn,
+            ping_counter: 0,
+            connected_at: std::time::Instant::now(),
+        })
     }
 
-    pub async fn start_listener(
+    /// Like [`AgentClient::over`], and the client then sends `IDENTIFY`,
+    /// proving that it holds `identity`'s key (`docs/spec/00-wire.md` 6.6).
+    /// The default, [`AgentClient::over`], is anonymous.
+    ///
+    /// The identity is recorded by the server and grants nothing: the daemon
+    /// answers an identified client exactly as it answers an anonymous one.
+    /// The proof covers this connection's handshake but not the byte stream,
+    /// so a relay between the client and the server is not detected. A server
+    /// that cannot verify the proof closes the connection with
+    /// `protocol_violation`, which the first later call reports.
+    pub async fn over_with_identity(stream: S, identity: &SigningKey) -> anyhow::Result<Self> {
+        let conn = native::client_connect_with_identity(stream, Some(identity)).await?;
+        Ok(Self {
+            conn,
+            ping_counter: 0,
+            connected_at: std::time::Instant::now(),
+        })
+    }
+
+    /// The authority mode the server reported in `HELLO_ACK`: `Off` when the
+    /// node takes no authority requests; [`AgentClient::request_authorized`]
+    /// refuses to send one to such a node.
+    pub fn authority(&self) -> AuthorityMode {
+        self.conn.authority()
+    }
+
+    /// This connection's `binding`, the 32 bytes the server chose and sent in
+    /// `HELLO_ACK`. It grants nothing.
+    pub fn binding(&self) -> [u8; 32] {
+        self.conn.binding()
+    }
+
+    /// The server's clock (Unix seconds) at `HELLO_ACK`; not authenticated.
+    pub fn server_time(&self) -> u64 {
+        self.conn.server_time()
+    }
+
+    /// The public key this client proved with `IDENTIFY`, or `None` for an
+    /// anonymous client.
+    pub fn identity(&self) -> Option<[u8; 32]> {
+        self.conn.identity()
+    }
+
+    pub async fn capabilities(
         &mut self,
-    ) -> (
-        mpsc::Receiver<Vec<f32>>,
-        mpsc::Receiver<spine_protocol::Event>,
-    ) {
-        let (latent_tx, latent_rx) = mpsc::channel(100);
-        let (event_tx, event_rx) = mpsc::channel(100);
-
-        self.latent_tx = Some(latent_tx);
-        self.event_tx = Some(event_tx);
-
-        (latent_rx, event_rx)
+    ) -> anyhow::Result<spine_protocol::CapabilityAdvertisement> {
+        let query = BrowserCommand::CapabilityQuery(spine_protocol::CapabilityQuery {
+            selector: spine_protocol::CapabilitySelector::All,
+        });
+        let advertisement = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            native::call::<_, spine_protocol::CapabilityAdvertisement>(&mut self.conn, &query),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "capability discovery deadline exceeded; reconnect before another request"
+            )
+        })??;
+        Ok(advertisement)
     }
 
-    async fn send_request(&mut self, command: BrowserCommand) -> anyhow::Result<Response> {
-        self.request_counter += 1;
-        let id = self.request_counter.to_string();
-        let req = Request {
-            id: id.clone(),
-            command,
-        };
-        self.handler.send_message(&Message::Request(req)).await?;
+    pub async fn namespace_status(&mut self) -> anyhow::Result<serde_json::Value> {
+        self.send_request(BrowserCommand::NamespaceStatus).await
+    }
 
-        // If we have a listener, we should wait for the response via a channel.
-        // For now, we'll keep the simple loop if no listener is active.
-        loop {
-            match self.handler.receive_message().await? {
-                Message::Response(res) if res.id == id => return Ok(res),
-                Message::LatentMessage(vec) => {
-                    if let Some(tx) = &self.latent_tx {
-                        let _ = tx.send(vec.components).await;
-                    }
-                }
-                Message::Event(ev) => {
-                    if let Some(tx) = &self.event_tx {
-                        let _ = tx.send(ev).await;
-                    }
-                }
-                _ => continue,
+    /// Pin the worker signing key. Never automatically retry a mutation after
+    /// uncertain delivery; resubmit the exact same task id and specification.
+    ///
+    /// A refusal by the daemon, and an error the peer's application returned,
+    /// both surface as [`native::NativeError::Remote`]: recover the code with
+    /// [`native::remote_code`].
+    pub async fn mesh_call(
+        &mut self,
+        peer_id: &str,
+        peer_key: [u8; 32],
+        payload: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let value: serde_json::Value = self
+            .send_request(BrowserCommand::MeshCall {
+                peer_id: peer_id.into(),
+                peer_key,
+                payload,
+            })
+            .await?;
+        if let Some(error) = value.get("error") {
+            // The peer answered, and its application returned `{error: {code,
+            // message}}` rather than a result.
+            let field = |name: &str| error.get(name).and_then(serde_json::Value::as_str);
+            return Err(native::NativeError::Remote {
+                code: field("code").unwrap_or("application_error").to_string(),
+                message: field("message")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| error.to_string()),
+                details: None,
             }
+            .into());
+        }
+        value
+            .get("result")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("application returned no result"))
+    }
+
+    /// Send `command` and decode the `ok` value of its reply as a `T`. A reply
+    /// of `{err: ...}` is a [`native::NativeError::Remote`] holding the code and
+    /// message; the frame id correlates the exchange.
+    async fn send_request<T>(&mut self, command: BrowserCommand) -> anyhow::Result<T>
+    where
+        T: serde::Serialize + serde::de::DeserializeOwned,
+    {
+        Ok(native::call(&mut self.conn, &command).await?)
+    }
+
+    /// Invoke a native tool once. Calls are serialized on this client and are
+    /// never automatically replayed. Drop the connection after a timeout.
+    ///
+    /// A tool that fails (an unknown tool, bad arguments, the rate limit) is
+    /// `Ok(ToolOutcome::Err { code, .. })`; a refusal by the connection layer or
+    /// the decoder (`overloaded`, `unknown_command`, `invalid_request`) is an
+    /// error carrying that code, see [`native::remote_code`].
+    pub async fn call_tool(
+        &mut self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<spine_protocol::ToolOutcome> {
+        let call = BrowserCommand::ToolCall(spine_protocol::ToolCall {
+            name: name.into(),
+            args,
+            trace: None,
+        });
+        let reply = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            native::call::<_, serde_json::Value>(&mut self.conn, &call),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("tool deadline exceeded; reconnect before another request"))?;
+        match reply {
+            Ok(content) => Ok(spine_protocol::ToolOutcome::Ok { content }),
+            Err(native::NativeError::Remote {
+                code,
+                message,
+                details,
+            }) if !spine_protocol::body::PROTOCOL_ERROR_CODES.contains(&code.as_str()) => {
+                Ok(spine_protocol::ToolOutcome::Err {
+                    code,
+                    message,
+                    details,
+                })
+            }
+            Err(other) => Err(other.into()),
         }
     }
 
     #[instrument(skip(self))]
     pub async fn navigate(&mut self, url: &str) -> anyhow::Result<()> {
-        let res = self
+        let _: serde_json::Value = self
             .send_request(BrowserCommand::Navigate {
                 url: url.to_string(),
             })
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
         Ok(())
     }
 
     #[instrument(skip(self))]
     pub async fn get_ur(&mut self) -> anyhow::Result<UnifiedRepresentation> {
-        let res = self.send_request(BrowserCommand::GetUR).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let ur: UnifiedRepresentation = serde_json::from_value(
-            res.result
-                .ok_or_else(|| anyhow::anyhow!("Missing result in response"))?,
-        )?;
+        let value: serde_json::Value = self.send_request(BrowserCommand::GetUR).await?;
+        let ur: UnifiedRepresentation = serde_json::from_value(value)?;
         Ok(ur)
     }
 
     pub async fn get_raw_html(&mut self) -> anyhow::Result<String> {
-        let res = self.send_request(BrowserCommand::GetRawHTML).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let html = res.result.unwrap_or_default()["html"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        let value: serde_json::Value = self.send_request(BrowserCommand::GetRawHTML).await?;
+        let html = value["html"].as_str().unwrap_or_default().to_string();
         Ok(html)
-    }
-
-    pub async fn click(&mut self, element_id: &str) -> anyhow::Result<()> {
-        if let Some(engine) = &self.human_engine {
-            // Simulate reaction time
-            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
-
-            // Simulate mouse movement (simplified for now, just a delay)
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-            // Simulate click duration
-            tokio::time::sleep(engine.simulate_click_duration()).await;
-        }
-
-        let res = self
-            .send_request(BrowserCommand::Click {
-                element_id: element_id.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn type_text(&mut self, element_id: &str, text: &str) -> anyhow::Result<()> {
-        if let Some(engine) = &self.human_engine {
-            // Simulate reaction time
-            tokio::time::sleep(std::time::Duration::from_millis(engine.reaction_time_ms)).await;
-
-            let delays = engine.generate_typing_delays(text);
-            for (i, _c) in text.chars().enumerate() {
-                // In a real implementation, we might send each character individually
-                // but for now we'll just sleep and then send the whole text at the end
-                // or send it character by character if the protocol supports it.
-                tokio::time::sleep(delays[i]).await;
-            }
-        }
-
-        let res = self
-            .send_request(BrowserCommand::Type {
-                element_id: element_id.to_string(),
-                text: text.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
     }
 
     pub async fn execute_binary(
         &mut self,
         binary: SpineBinary,
     ) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::ExecuteBinary(binary))
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or(serde_json::Value::Null))
+        self.send_request(BrowserCommand::ExecuteBinary(binary))
+            .await
     }
 
     #[instrument(skip(self))]
@@ -371,103 +452,11 @@ where
         script: &str,
     ) -> anyhow::Result<spine_wasm::WasmExecutionResult> {
         let binary = spine_compiler::Compiler::compile(script)?;
-        let res = self
+        let value: serde_json::Value = self
             .send_request(BrowserCommand::ExecuteBinary(binary))
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let result: spine_wasm::WasmExecutionResult = serde_json::from_value(
-            res.result
-                .ok_or_else(|| anyhow::anyhow!("Missing result in response"))?,
-        )?;
+        let result: spine_wasm::WasmExecutionResult = serde_json::from_value(value)?;
         Ok(result)
-    }
-
-    pub async fn get_latent_ur(&mut self, dimensions: usize) -> anyhow::Result<Vec<f32>> {
-        let res = self
-            .send_request(BrowserCommand::GetLatentUR { dimensions })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let latent: Vec<f32> =
-            serde_json::from_value(res.result.unwrap_or_default()["latent_vector"].clone())?;
-        Ok(latent)
-    }
-
-    /// Subscribe to latent streams from the core
-    pub async fn subscribe_latent(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<f32>>> {
-        if let Some(_tx) = &self.latent_tx {
-            // This is a bit tricky since we can only have one receiver for the channel.
-            // In a real implementation, we'd use a broadcast channel or multiple subscribers.
-            anyhow::bail!("Already subscribed to latent stream");
-        }
-
-        let (tx, rx) = mpsc::channel(100);
-        self.latent_tx = Some(tx);
-        Ok(rx)
-    }
-
-    pub async fn morph(&mut self) -> anyhow::Result<()> {
-        let res = self.send_request(BrowserCommand::Morph).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    /// Get statistics about speculative decoding performance
-    pub fn get_speculation_stats(&self) -> &spine_protocol::SpeculationStats {
-        self.handler.get_speculation_stats()
-    }
-
-    #[instrument(skip(self))]
-    pub async fn search(&mut self, query: &str) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::Search {
-                query: query.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
-    }
-
-    pub async fn transfer_session(&mut self, target_node_id: uuid::Uuid) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::TransferSession { target_node_id })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn handle_event(
-        &mut self,
-        element_id: u32,
-        event_name: &str,
-        payload: serde_json::Value,
-    ) -> anyhow::Result<Vec<spine_protocol::VDomPatch>> {
-        let res = self
-            .send_request(BrowserCommand::HandleEvent {
-                element_id,
-                event_name: event_name.to_string(),
-                payload,
-            })
-            .await?;
-
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-
-        let patches: Vec<spine_protocol::VDomPatch> = serde_json::from_value(
-            res.result.unwrap_or(serde_json::json!({"patches": []}))["patches"].clone(),
-        )?;
-
-        Ok(patches)
     }
 
     pub async fn store_knowledge(
@@ -476,16 +465,13 @@ where
         value: serde_json::Value,
         tags: Vec<String>,
     ) -> anyhow::Result<()> {
-        let res = self
+        let _: serde_json::Value = self
             .send_request(BrowserCommand::StoreKnowledge {
                 key: key.to_string(),
                 value,
                 tags,
             })
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
         Ok(())
     }
 
@@ -495,43 +481,30 @@ where
         tags: Vec<String>,
         limit: usize,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let res = self
+        let value: serde_json::Value = self
             .send_request(BrowserCommand::QueryKnowledge {
                 query: query.to_string(),
                 tags,
                 limit,
             })
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let results = res.result.unwrap_or_default()["results"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let results = value["results"].as_array().cloned().unwrap_or_default();
         Ok(results)
     }
 
-    pub async fn delete_knowledge(&mut self, key: &str) -> anyhow::Result<()> {
-        let res = self
+    /// Delete the knowledge entries of this connection's session whose key is
+    /// exactly `key`, and return how many there were. Zero is success: nothing
+    /// held the key, or an earlier call already deleted it. Another session's
+    /// entries are never touched.
+    pub async fn delete_knowledge(&mut self, key: &str) -> anyhow::Result<u64> {
+        let value: serde_json::Value = self
             .send_request(BrowserCommand::DeleteKnowledge {
                 key: key.to_string(),
             })
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn get_history(&mut self) -> anyhow::Result<Vec<BrowserCommand>> {
-        let res = self.send_request(BrowserCommand::GetSessionHistory).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let history: Vec<BrowserCommand> =
-            serde_json::from_value(res.result.unwrap_or_default()["history"].clone())?;
-        Ok(history)
+        value["deleted"]
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("delete_knowledge answered without a count"))
     }
 
     #[instrument(skip(self))]
@@ -540,175 +513,44 @@ where
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as u64;
 
-        self.handler
-            .send_message(&Message::Ping { timestamp: now })
-            .await?;
+        // A PING frame whose token is the send time in milliseconds; the
+        // server's connection layer echoes it in a PONG. The id is a counter
+        // of this client's pings, never zero.
+        self.ping_counter += 1;
+        let id = self.ping_counter;
+        let ping = Frame {
+            frame_type: FrameType::Ping,
+            request_id: id,
+            body: native::ping_body(now)?,
+        };
+        native::send_bounded(&mut self.conn, ping).await?;
 
         loop {
-            match self.handler.receive_message().await? {
-                Message::Pong { timestamp } => {
+            match self.conn.recv().await? {
+                Some(frame) if frame.frame_type == FrameType::Pong && frame.request_id == id => {
+                    let token = native::ping_token(&frame.body)?;
                     let end = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)?
                         .as_millis() as u64;
-                    return Ok(end - timestamp);
+                    return Ok(end.saturating_sub(token));
                 }
-                _ => continue,
+                Some(_) => {}
+                None => anyhow::bail!("connection closed before the pong"),
             }
         }
     }
 
-    pub async fn get_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
-        let res = self.send_request(BrowserCommand::GetCapabilities).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let capabilities: Vec<String> =
-            serde_json::from_value(res.result.unwrap_or_default()["capabilities"].clone())?;
+    /// The capabilities the session's current binary declared, as the
+    /// program listed them. This is what the program asked for, not a
+    /// grant: the daemon checks each action the program requests against
+    /// the list (`network` for a navigation, `search`, `storage`), and an
+    /// action without its capability is refused with `capability_denied`.
+    pub async fn get_binary_capabilities(&mut self) -> anyhow::Result<Vec<String>> {
+        let value: serde_json::Value = self
+            .send_request(BrowserCommand::GetBinaryCapabilities)
+            .await?;
+        let capabilities: Vec<String> = serde_json::from_value(value["capabilities"].clone())?;
         Ok(capabilities)
-    }
-
-    pub async fn set_autonomous_mode(&mut self, enabled: bool) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SetAutonomousMode { enabled })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn swarm_search(&mut self, query: &str, depth: usize) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SwarmSearch {
-                query: query.to_string(),
-                depth,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn delegate_task(
-        &mut self,
-        task: &str,
-        target_agent_id: Option<uuid::Uuid>,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::DelegateTask {
-                task: task.to_string(),
-                target_agent_id,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn propose_knowledge(
-        &mut self,
-        key: &str,
-        value: serde_json::Value,
-        tags: Vec<String>,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::ProposeKnowledge {
-                key: key.to_string(),
-                value,
-                tags,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn create_swarm_plan(&mut self, goal: &str) -> anyhow::Result<uuid::Uuid> {
-        let res = self
-            .send_request(BrowserCommand::CreateSwarmPlan {
-                goal: goal.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let plan_id = res
-            .result
-            .and_then(|v| {
-                v.get("plan_id")
-                    .and_then(|id| id.as_str())
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
-            })
-            .ok_or_else(|| anyhow::anyhow!("Missing plan_id in response"))?;
-        Ok(plan_id)
-    }
-
-    pub async fn execute_plan_task(
-        &mut self,
-        plan_id: uuid::Uuid,
-        task_id: uuid::Uuid,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::ExecutePlanTask { plan_id, task_id })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
-    }
-
-    pub async fn transmit_neural(
-        &mut self,
-        data: &[u8],
-        domain: spine_agentic::ProtocolDomain,
-    ) -> anyhow::Result<spine_agentic::TransmissionResult> {
-        let domain_str = format!("{:?}", domain);
-        let res = self
-            .send_request(BrowserCommand::NeuralTransmit {
-                data: data.to_vec(),
-                domain: domain_str,
-            })
-            .await?;
-
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-
-        let stats = res
-            .result
-            .and_then(|v| serde_json::from_value::<spine_agentic::TransmissionResult>(v).ok())
-            .ok_or_else(|| anyhow::anyhow!("Failed to parse transmission results"))?;
-        Ok(stats)
-    }
-
-    pub async fn get_agentic_state(&mut self) -> anyhow::Result<serde_json::Value> {
-        let res = self.send_request(BrowserCommand::GetAgenticState).await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
-    }
-
-    pub async fn send_speech_act(
-        &mut self,
-        target_id: uuid::Uuid,
-        performative: &str,
-        content: &str,
-    ) -> anyhow::Result<()> {
-        let res = self
-            .send_request(BrowserCommand::SendSpeechAct {
-                target_id,
-                performative: performative.to_string(),
-                content: content.to_string(),
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(())
     }
 
     // ---- Namespace ----
@@ -728,16 +570,13 @@ where
         name: &str,
         if_none_match: Option<[u8; 32]>,
     ) -> anyhow::Result<spine_protocol::NameResolution> {
-        let res = self
+        let value: serde_json::Value = self
             .send_request(BrowserCommand::ResolveName {
                 name: name.to_string(),
                 if_none_match,
             })
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(serde_json::from_value(res.result.unwrap_or_default())?)
+        Ok(serde_json::from_value(value)?)
     }
 
     /// Resolve many names in one round trip.
@@ -748,15 +587,11 @@ where
         &mut self,
         names: &[String],
     ) -> anyhow::Result<Vec<spine_protocol::NameResolution>> {
-        let res = self
+        let body: serde_json::Value = self
             .send_request(BrowserCommand::ResolveNames {
                 names: names.to_vec(),
             })
             .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        let body = res.result.unwrap_or_default();
         Ok(serde_json::from_value(body["resolutions"].clone())?)
     }
 
@@ -766,16 +601,11 @@ where
         capability: &str,
         limit: Option<usize>,
     ) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::FindProviders {
-                capability: capability.to_string(),
-                limit,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
+        self.send_request(BrowserCommand::FindProviders {
+            capability: capability.to_string(),
+            limit,
+        })
+        .await
     }
 
     /// Publish a signed record.
@@ -787,13 +617,8 @@ where
         &mut self,
         record: serde_json::Value,
     ) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::PublishName { record })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
+        self.send_request(BrowserCommand::PublishName { record })
+            .await
     }
 
     /// Resolve a name and get back the endpoints to dial, in priority order.
@@ -805,16 +630,11 @@ where
         name: &str,
         if_none_match: Option<[u8; 32]>,
     ) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::FetchName {
-                name: name.to_string(),
-                if_none_match,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
+        self.send_request(BrowserCommand::FetchName {
+            name: name.to_string(),
+            if_none_match,
+        })
+        .await
     }
 
     /// Walk the agent web from a seed name, bounded by depth and visit count.
@@ -824,23 +644,19 @@ where
         max_depth: Option<u32>,
         max_visits: Option<usize>,
     ) -> anyhow::Result<serde_json::Value> {
-        let res = self
-            .send_request(BrowserCommand::CrawlNames {
-                seed: seed.to_string(),
-                max_depth,
-                max_visits,
-            })
-            .await?;
-        if let Some(err) = res.error {
-            anyhow::bail!(err);
-        }
-        Ok(res.result.unwrap_or_default())
+        self.send_request(BrowserCommand::CrawlNames {
+            seed: seed.to_string(),
+            max_depth,
+            max_visits,
+        })
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spine_protocol::WireError;
 
     #[test]
     fn test_compiler_reexport() {
@@ -859,84 +675,44 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_client_speculation_stats_type() {
-        // Verify the SpeculationStats type is accessible
-        let stats = spine_protocol::SpeculationStats::default();
-        assert_eq!(stats.output_predictions, 0);
-        assert_eq!(stats.output_hits, 0);
-    }
-
-    #[test]
     fn test_browser_command_serialization() {
-        // Test that BrowserCommand variants serialize correctly for the agent protocol
+        // The wire form of a command: the text of a unit command, a
+        // single-entry map for one with fields.
         let cmd = BrowserCommand::Navigate {
             url: "https://example.com".to_string(),
         };
         let json = serde_json::to_value(&cmd).unwrap();
-        assert!(json.to_string().contains("example.com"));
+        assert_eq!(
+            json,
+            serde_json::json!({"navigate": {"url": "https://example.com"}})
+        );
 
         let cmd2 = BrowserCommand::GetUR;
         let json2 = serde_json::to_value(&cmd2).unwrap();
-        assert!(!json2.to_string().is_empty());
+        assert_eq!(json2, serde_json::json!("get_ur"));
     }
 
     #[test]
-    fn test_request_response_protocol() {
-        // Test that Request/Response types work correctly
-        let req = Request {
-            id: "1".to_string(),
-            command: BrowserCommand::GetCapabilities,
-        };
-        let json = serde_json::to_string(&req).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.id, "1");
+    fn test_command_and_reply_codecs() {
+        let command = BrowserCommand::GetBinaryCapabilities;
+        let body = native::encode_command(&command).unwrap();
+        assert_eq!(native::decode_command(&body).unwrap(), command);
 
-        let res = Response {
-            id: "1".to_string(),
-            result: Some(serde_json::json!({"capabilities": ["navigate", "search"]})),
-            error: None,
-        };
-        assert!(res.error.is_none());
-        assert!(res.result.is_some());
-    }
-
-    #[test]
-    fn test_message_variants() {
-        // Test that Message::Request and Message::Response serialize/deserialize
-        let msg = Message::Request(Request {
-            id: "42".to_string(),
-            command: BrowserCommand::Morph,
-        });
-        let json = serde_json::to_string(&msg).unwrap();
-        let rt: Message = serde_json::from_str(&json).unwrap();
-        match rt {
-            Message::Request(r) => assert_eq!(r.id, "42"),
-            _ => panic!("Expected Request variant"),
-        }
+        let reply = spine_protocol::Reply::Ok(serde_json::json!({"capabilities": ["navigate"]}));
+        assert!(reply.into_result().is_ok());
     }
 
     #[test]
     fn test_ping_message() {
-        let msg = Message::Ping {
+        let msg = spine_protocol::Message::Ping {
             timestamp: 1234567890,
         };
         let json = serde_json::to_string(&msg).unwrap();
-        let rt: Message = serde_json::from_str(&json).unwrap();
+        let rt: spine_protocol::Message = serde_json::from_str(&json).unwrap();
         match rt {
-            Message::Ping { timestamp } => assert_eq!(timestamp, 1234567890),
+            spine_protocol::Message::Ping { timestamp } => assert_eq!(timestamp, 1234567890),
             _ => panic!("Expected Ping variant"),
         }
-    }
-
-    #[test]
-    fn test_latent_message() {
-        let msg = Message::LatentMessage(spine_protocol::LatentVector {
-            components: vec![0.1, 0.2, 0.3],
-            dim_hint: 3,
-            epoch: 0,
-        });
-        let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("0.1"));
     }
 
     #[tokio::test]
@@ -954,6 +730,274 @@ mod tests {
                 .await;
         assert!(result.is_err());
         assert!(result.is_err());
+    }
+
+    // ---- spine-wire v1 over an in-process stream ----
+
+    use std::time::Duration;
+    use tokio::io::{duplex, DuplexStream};
+
+    const LIMIT: Duration = Duration::from_secs(20);
+
+    type Answer = Result<serde_json::Value, WireError>;
+
+    /// A v1 server that answers every `REQUEST` with `reply(command)` until the
+    /// client hangs up. A capability query is answered with an advertisement.
+    fn spawn_server(
+        io: DuplexStream,
+        reply: fn(BrowserCommand) -> Answer,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut conn = Connection::server_handshake(
+                io,
+                &native::local_config(),
+                native::DEFAULT_HELLO_DEADLINE,
+            )
+            .await
+            .unwrap();
+            while let Ok(Some(frame)) = conn.recv().await {
+                if frame.frame_type != FrameType::Request {
+                    continue;
+                }
+                let command = native::decode_command(&frame.body).unwrap();
+                match command {
+                    BrowserCommand::CapabilityQuery(_) => {
+                        let ad = spine_protocol::CapabilityAdvertisement {
+                            agent_id: "test".to_string(),
+                            capabilities: Vec::new(),
+                        };
+                        native::send_ok(&mut conn, frame.request_id, &ad)
+                            .await
+                            .unwrap();
+                    }
+                    other => match reply(other) {
+                        Ok(value) => native::send_ok(&mut conn, frame.request_id, &value)
+                            .await
+                            .unwrap(),
+                        Err(error) => native::send_err(&mut conn, frame.request_id, &error)
+                            .await
+                            .unwrap(),
+                    },
+                }
+            }
+        })
+    }
+
+    fn answer(command: BrowserCommand) -> Answer {
+        match command {
+            BrowserCommand::ToolCall(call) => Ok(call.args),
+            _ => Ok(serde_json::json!({"html": "<p>hi</p>"})),
+        }
+    }
+
+    #[tokio::test]
+    async fn client_round_trips_requests_tools_capabilities_and_pings() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, answer);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let html = tokio::time::timeout(LIMIT, client.get_raw_html())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(html, "<p>hi</p>");
+
+        let result = tokio::time::timeout(
+            LIMIT,
+            client.call_tool("spine.content/hash", serde_json::json!({"text": "x"})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            result,
+            spine_protocol::ToolOutcome::Ok {
+                content: serde_json::json!({"text": "x"})
+            }
+        );
+
+        let ads = tokio::time::timeout(LIMIT, client.capabilities())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ads.agent_id, "test");
+
+        tokio::time::timeout(LIMIT, client.ping())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(client.conn.in_flight_len(), 0);
+
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_client_connects_anonymous_by_default_and_with_an_identity_on_request() {
+        for identified in [false, true] {
+            let (client_io, server_io) = duplex(64 * 1024);
+            let server = spawn_server(server_io, answer);
+            let key = SigningKey::from_bytes(&[0x55; 32]);
+            let mut client = tokio::time::timeout(LIMIT, async {
+                if identified {
+                    AgentClient::over_with_identity(client_io, &key).await
+                } else {
+                    AgentClient::over(client_io).await
+                }
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                client.identity(),
+                identified.then(|| key.verifying_key().to_bytes())
+            );
+            assert_eq!(client.authority(), AuthorityMode::Off);
+            assert_ne!(client.binding(), [0u8; 32]);
+            assert!(client.server_time() > 1_600_000_000);
+            let html = tokio::time::timeout(LIMIT, client.get_raw_html())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(html, "<p>hi</p>");
+            drop(client);
+            tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn an_error_response_surfaces_with_its_code() {
+        fn refuse(_: BrowserCommand) -> Answer {
+            Err(WireError::new("rate_limit", "Rate limit exceeded"))
+        }
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, refuse);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+        let error = tokio::time::timeout(LIMIT, client.get_raw_html())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(native::remote_code(&error), Some("rate_limit"));
+        assert_eq!(
+            native::remote_error(&error),
+            Some(("rate_limit", "Rate limit exceeded"))
+        );
+        // A tool that fails is an outcome, not an error, unless the refusal is
+        // the decoder's or the connection layer's.
+        let outcome = tokio::time::timeout(LIMIT, client.call_tool("shell", serde_json::json!({})))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(&outcome, spine_protocol::ToolOutcome::Err { code, .. } if code == "rate_limit")
+        );
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn protocol_refusals_of_a_tool_call_are_errors() {
+        fn invalid(_: BrowserCommand) -> Answer {
+            Err(WireError::new("invalid_request", "bad field"))
+        }
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, invalid);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+        let error = tokio::time::timeout(LIMIT, client.call_tool("t", serde_json::json!({})))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(native::remote_code(&error), Some("invalid_request"));
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_application_error_inside_a_mesh_call_keeps_its_code() {
+        fn denied(_: BrowserCommand) -> Answer {
+            Ok(serde_json::json!({"error": {"code": "not_authorized", "message": "no"}}))
+        }
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server = spawn_server(server_io, denied);
+        let mut client = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .unwrap();
+        let error = tokio::time::timeout(
+            LIMIT,
+            client.mesh_call("peer", [0; 32], serde_json::json!({})),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(native::remote_code(&error), Some("not_authorized"));
+        drop(client);
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_reports_the_servers_close_code() {
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            let hello = spine_protocol::frame::read_frame(
+                &mut server_io,
+                spine_protocol::frame::PRE_HELLO_MAX_FRAME,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(hello.frame_type, FrameType::Hello);
+            let close = spine_protocol::hello::Close::new(
+                spine_protocol::frame::CloseCode::ShuttingDown,
+                "draining",
+            );
+            spine_protocol::frame::write_frame(
+                &mut server_io,
+                &close.to_frame().unwrap(),
+                spine_protocol::frame::PRE_HELLO_MAX_FRAME,
+                false,
+            )
+            .await
+            .unwrap();
+        });
+        let error = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap()
+            .err()
+            .expect("the handshake must fail");
+        let text = error.to_string();
+        assert!(
+            text.contains("shutting_down") && text.contains("draining"),
+            "{text}"
+        );
+        tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_to_a_peer_that_is_not_spine_fails() {
+        // A pre-v1 style peer: it answers a HELLO with something that is not
+        // a HELLO_ACK, so the handshake ends in an error and not a hang.
+        let (client_io, mut server_io) = duplex(64 * 1024);
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            server_io.write_all(&[0xff; 32]).await.unwrap();
+            // Keep the stream open until the client has given up.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+        let result = tokio::time::timeout(LIMIT, AgentClient::over(client_io))
+            .await
+            .unwrap();
+        assert!(result.is_err());
+        server.abort();
     }
 
     #[test]

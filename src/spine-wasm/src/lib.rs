@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use spine_protocol::{Instruction, SpineBinary};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use wasmtime::*;
 
 // =============================================================================
@@ -77,6 +78,9 @@ pub struct WasmStats {
     pub compile_time_us: u64,
     pub execution_time_us: u64,
     pub wasm_size_bytes: usize,
+    /// Size of the guest's linear memory at the end of the run, read from
+    /// the instance (one 64 KiB page for generated programs). It does not
+    /// include host-side values; those are bounded by `MAX_LIVE_BYTES`.
     pub memory_used_bytes: usize,
     pub instructions_executed: usize,
 }
@@ -84,6 +88,147 @@ pub struct WasmStats {
 // =============================================================================
 // HOST STATE - Shared between WASM and host
 // =============================================================================
+
+/// Maximum number of instructions in one program. Checked before any
+/// WAT is built, so an oversized frame is refused before the compiler
+/// spends time or memory on it.
+pub const MAX_INSTRUCTIONS: usize = 65_536;
+
+/// Maximum depth of the host value stack.
+pub const MAX_STACK_DEPTH: usize = 1024;
+
+/// Maximum size, in estimated bytes, of one host value (a string's
+/// length, or the recursive sum for an array or object). Also bounds a
+/// string produced by `Concat` or `Add`.
+pub const MAX_VALUE_BYTES: usize = 64 * 1024;
+
+/// Maximum nesting depth of one host value (arrays and objects built by
+/// `list`/`object`, or parsed from a payload).
+pub const MAX_VALUE_DEPTH: usize = 64;
+
+/// Maximum total estimated bytes of live host values: the value stack,
+/// the variables, and every element, event, action and latent vector
+/// produced so far.
+pub const MAX_LIVE_BYTES: usize = 1024 * 1024;
+
+/// Maximum number of elements one execution may create.
+pub const MAX_ELEMENTS: usize = 4096;
+
+/// Maximum number of events one execution may emit.
+pub const MAX_EVENTS: usize = 4096;
+
+/// Maximum number of actions (navigate, search, store, query, reason)
+/// one execution may request.
+pub const MAX_ACTIONS: usize = 64;
+
+/// Maximum `num_args` of a `Call` instruction.
+pub const MAX_CALL_ARGS: usize = 32;
+
+/// Maximum number of latent vectors one execution may stream.
+pub const MAX_LATENT_STREAMS: usize = 256;
+
+/// Maximum dimensions of one streamed latent vector.
+pub const MAX_LATENT_DIMS: usize = 16_384;
+
+/// Maximum bytes of string data a program may carry. The guest's linear
+/// memory is one 64 KiB page, so data past this cannot be instantiated
+/// anyway; refusing it up front avoids building and parsing the WAT.
+pub const MAX_STRING_DATA_BYTES: usize = 64 * 1024;
+
+/// Fuel charged for every host call, on top of the guest instructions
+/// wasmtime already meters. Host calls also pay one unit per byte they
+/// read or scan.
+pub const HOST_CALL_FUEL: u64 = 64;
+
+/// Wall-clock time one `execute()` may spend running the guest, measured
+/// from the moment the guest starts and checked at every host call.
+///
+/// Fuel bounds the work, not the time: it counts instructions and bytes, so
+/// a run that is within its fuel can still be slow on a loaded machine, and
+/// the daemon runs programs on blocking threads that cannot be cancelled. A
+/// run past this deadline is stopped at its next host call with an error
+/// that names the deadline.
+///
+/// Not covered: building the WAT, parsing it and compiling the module happen
+/// before the guest starts, and are bounded by [`MAX_INSTRUCTIONS`] and
+/// [`MAX_STRING_DATA_BYTES`], not by this deadline. A single host call is not
+/// interrupted either; each is bounded by the byte and value budgets above.
+/// Use [`WasmRuntime::with_deadline`] for another value.
+pub const DEFAULT_EXECUTION_DEADLINE: Duration = Duration::from_secs(2);
+
+/// Rough per-node overhead used when estimating the size of a value.
+const VALUE_OVERHEAD: usize = 16;
+
+/// Rough per-record overhead for elements, events and actions.
+const RECORD_OVERHEAD: usize = 32;
+
+/// Estimated size of a JSON value in bytes, or `None` when it nests
+/// deeper than [`MAX_VALUE_DEPTH`].
+fn value_size(v: &serde_json::Value, depth: usize) -> Option<usize> {
+    if depth > MAX_VALUE_DEPTH {
+        return None;
+    }
+    match v {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            Some(VALUE_OVERHEAD)
+        }
+        serde_json::Value::String(s) => Some(VALUE_OVERHEAD + s.len()),
+        serde_json::Value::Array(a) => {
+            let mut total = VALUE_OVERHEAD;
+            for item in a {
+                total = total.saturating_add(value_size(item, depth + 1)?);
+            }
+            Some(total)
+        }
+        serde_json::Value::Object(m) => {
+            let mut total = VALUE_OVERHEAD;
+            for (k, item) in m {
+                total = total.saturating_add(k.len().saturating_add(value_size(item, depth + 1)?));
+            }
+            Some(total)
+        }
+    }
+}
+
+/// Bytes in one wasm linear-memory page.
+const WASM_PAGE_BYTES: usize = 65_536;
+
+/// Resource limits wasmtime enforces on the guest itself: linear memory
+/// is capped at `DEFAULT_MAX_MEMORY_PAGES` pages, with one instance, one
+/// memory and one table at most. A failed `memory.grow` returns -1 in the
+/// guest.
+fn guest_limits() -> StoreLimits {
+    StoreLimitsBuilder::new()
+        .memory_size(DEFAULT_MAX_MEMORY_PAGES * WASM_PAGE_BYTES)
+        .instances(1)
+        .memories(1)
+        .tables(1)
+        .build()
+}
+
+/// A `fmt::Write` sink that only counts, and fails once the count passes
+/// [`MAX_VALUE_BYTES`], so the length of a rendering is known before the
+/// string is built.
+struct CountingWriter(usize);
+
+impl std::fmt::Write for CountingWriter {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0 = self.0.saturating_add(s.len());
+        if self.0 > MAX_VALUE_BYTES {
+            Err(std::fmt::Error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Length of `format!("{}{}", left, right)` without building it, or
+/// `None` when it exceeds [`MAX_VALUE_BYTES`].
+fn concat_len(left: &serde_json::Value, right: &serde_json::Value) -> Option<usize> {
+    let mut w = CountingWriter(0);
+    std::fmt::write(&mut w, format_args!("{}{}", left, right)).ok()?;
+    Some(w.0)
+}
 
 #[derive(Default)]
 struct HostState {
@@ -98,6 +243,267 @@ struct HostState {
     value_stack: Vec<serde_json::Value>,
     variables: HashMap<String, serde_json::Value>,
     element_stack: Vec<u32>,
+
+    /// Estimated bytes of live host values, checked against
+    /// [`MAX_LIVE_BYTES`].
+    live_bytes: usize,
+    /// The first host budget that was exceeded, if any. Host functions
+    /// return an error (a wasmtime trap) when a budget is exceeded; this
+    /// keeps the message so `execute` can report the budget by name
+    /// instead of the generic trap text.
+    violation: Option<String>,
+}
+
+impl HostState {
+    /// Record a budget violation and return it as an error.
+    fn violate(&mut self, budget: &str, detail: String) -> anyhow::Error {
+        let msg = format!("host budget exceeded: {budget} ({detail})");
+        if self.violation.is_none() {
+            self.violation = Some(msg.clone());
+        }
+        anyhow::anyhow!(msg)
+    }
+
+    /// Count `n` more live bytes, refusing past [`MAX_LIVE_BYTES`].
+    fn charge(&mut self, n: usize) -> Result<()> {
+        let total = self.live_bytes.saturating_add(n);
+        if total > MAX_LIVE_BYTES {
+            return Err(self.violate(
+                "MAX_LIVE_BYTES",
+                format!("{total} bytes of live values, limit {MAX_LIVE_BYTES}"),
+            ));
+        }
+        self.live_bytes = total;
+        Ok(())
+    }
+
+    /// Stop counting `n` live bytes.
+    fn release(&mut self, n: usize) {
+        self.live_bytes = self.live_bytes.saturating_sub(n);
+    }
+
+    /// Estimated size of `v`, refusing a value over [`MAX_VALUE_BYTES`]
+    /// or nested past [`MAX_VALUE_DEPTH`].
+    fn sized(&mut self, v: &serde_json::Value) -> Result<usize> {
+        match value_size(v, 0) {
+            Some(n) if n <= MAX_VALUE_BYTES => Ok(n),
+            Some(n) => Err(self.violate(
+                "MAX_VALUE_BYTES",
+                format!("value of {n} bytes, limit {MAX_VALUE_BYTES}"),
+            )),
+            None => Err(self.violate(
+                "MAX_VALUE_DEPTH",
+                format!("value nested deeper than {MAX_VALUE_DEPTH}"),
+            )),
+        }
+    }
+
+    /// Refuse a string longer than [`MAX_VALUE_BYTES`].
+    fn check_str(&mut self, s: &str) -> Result<()> {
+        if s.len() > MAX_VALUE_BYTES {
+            return Err(self.violate(
+                "MAX_VALUE_BYTES",
+                format!("string of {} bytes, limit {MAX_VALUE_BYTES}", s.len()),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Push a value, enforcing depth, per-value and total budgets.
+    fn push_val(&mut self, v: serde_json::Value) -> Result<()> {
+        if self.value_stack.len() >= MAX_STACK_DEPTH {
+            return Err(self.violate(
+                "MAX_STACK_DEPTH",
+                format!("value stack deeper than {MAX_STACK_DEPTH}"),
+            ));
+        }
+        let size = self.sized(&v)?;
+        self.charge(size)?;
+        self.value_stack.push(v);
+        Ok(())
+    }
+
+    /// Pop a value and stop counting its bytes.
+    fn pop_val(&mut self) -> Option<serde_json::Value> {
+        let v = self.value_stack.pop()?;
+        self.release(value_size(&v, 0).unwrap_or(0));
+        Some(v)
+    }
+
+    /// Pop a value and take it as a string if it is one.
+    fn pop_str(&mut self) -> Option<String> {
+        self.pop_val().and_then(|v| match v {
+            serde_json::Value::String(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    /// Bind a variable, charging the new value and releasing the old one.
+    fn set_var(&mut self, name: String, val: serde_json::Value) -> Result<()> {
+        let size = self.sized(&val)?;
+        let name_cost = if self.variables.contains_key(&name) {
+            0
+        } else {
+            name.len() + RECORD_OVERHEAD
+        };
+        self.charge(size + name_cost)?;
+        if let Some(old) = self.variables.insert(name, val) {
+            self.release(value_size(&old, 0).unwrap_or(0));
+        }
+        Ok(())
+    }
+
+    /// Set an attribute on the first element with `id`, if there is one.
+    fn set_element_attribute(&mut self, id: u32, key: String, val: String) -> Result<()> {
+        self.check_str(&key)?;
+        self.check_str(&val)?;
+        if let Some(i) = self.elements.iter().position(|e| e.id == id) {
+            self.charge(RECORD_OVERHEAD + key.len() + val.len())?;
+            let key_len = key.len();
+            if let Some(old) = self.elements[i].attributes.insert(key, val) {
+                self.release(RECORD_OVERHEAD + key_len + old.len());
+            }
+        }
+        Ok(())
+    }
+
+    fn add_element(&mut self, e: WasmElement) -> Result<()> {
+        if self.elements.len() >= MAX_ELEMENTS {
+            return Err(self.violate("MAX_ELEMENTS", format!("more than {MAX_ELEMENTS} elements")));
+        }
+        self.check_str(&e.tag)?;
+        let mut cost = RECORD_OVERHEAD + e.tag.len();
+        for (k, v) in &e.attributes {
+            self.check_str(v)?;
+            cost += RECORD_OVERHEAD + k.len() + v.len();
+        }
+        self.charge(cost)?;
+        self.elements.push(e);
+        Ok(())
+    }
+
+    fn add_event(&mut self, e: WasmEvent) -> Result<()> {
+        if self.events.len() >= MAX_EVENTS {
+            return Err(self.violate("MAX_EVENTS", format!("more than {MAX_EVENTS} events")));
+        }
+        self.check_str(&e.name)?;
+        let payload = self.sized(&e.payload)?;
+        self.charge(RECORD_OVERHEAD + e.name.len() + payload)?;
+        self.events.push(e);
+        Ok(())
+    }
+
+    fn add_action(&mut self, a: WasmAction) -> Result<()> {
+        if self.actions.len() >= MAX_ACTIONS {
+            return Err(self.violate("MAX_ACTIONS", format!("more than {MAX_ACTIONS} actions")));
+        }
+        let cost = match &a {
+            WasmAction::Navigate(s) | WasmAction::Search(s) | WasmAction::Reason(s) => {
+                self.check_str(s)?;
+                s.len()
+            }
+            WasmAction::StoreKnowledge { key, value, tags } => {
+                self.check_str(key)?;
+                let v = self.sized(value)?;
+                key.len() + v + tags.iter().map(|t| t.len() + 24).sum::<usize>()
+            }
+            WasmAction::QueryKnowledge { query, tags, .. } => {
+                self.check_str(query)?;
+                query.len() + tags.iter().map(|t| t.len() + 24).sum::<usize>()
+            }
+        };
+        self.charge(RECORD_OVERHEAD + cost)?;
+        self.actions.push(a);
+        Ok(())
+    }
+}
+
+/// The wasmtime store's data: the host state the host functions work on,
+/// and the resource limits wasmtime enforces on the guest itself (linear
+/// memory growth, instances, tables).
+struct StoreData {
+    host: Arc<Mutex<HostState>>,
+    limits: StoreLimits,
+    /// When the guest must stop, and the allowance it was given (for the
+    /// message). `None` until the guest starts, and for a store built
+    /// without one.
+    deadline: Option<(Instant, Duration)>,
+}
+
+/// Lock the host state of a call.
+fn host<'a>(caller: &'a Caller<'_, StoreData>) -> std::sync::MutexGuard<'a, HostState> {
+    caller
+        .data()
+        .host
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Charge `units` of fuel for host work. Guest instructions are metered
+/// by wasmtime; this makes host calls (and the bytes they read, scan or
+/// build) draw on the same budget, so total work is bounded by fuel.
+///
+/// This is also where the wall-clock deadline is enforced: every host
+/// function calls it first, and the generated guest is one straight-line
+/// function that does its work only through host calls (no loop, so
+/// wasmtime's epoch checks, which sit at function entry and loop headers,
+/// would run once before any of it), so a check here sees every step the
+/// program takes.
+fn charge_fuel(caller: &mut Caller<'_, StoreData>, units: u64) -> Result<()> {
+    let past = caller
+        .data()
+        .deadline
+        .filter(|(at, _)| Instant::now() >= *at);
+    if let Some((_, allowed)) = past {
+        let err = host(caller).violate(
+            "deadline",
+            format!("execution ran past its {allowed:?} wall-clock deadline"),
+        );
+        // Nothing further is to run, whatever the guest does with the error.
+        caller.set_fuel(0)?;
+        return Err(err);
+    }
+    let left = caller.get_fuel()?;
+    if left < units {
+        let err = host(caller).violate(
+            "fuel",
+            format!("host work needs {units} units, {left} left"),
+        );
+        caller.set_fuel(0)?;
+        return Err(err);
+    }
+    caller.set_fuel(left - units)
+}
+
+/// Read `len` bytes of guest memory at `ptr`, refusing negative or
+/// oversized ranges before allocating.
+fn read_guest(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Result<Vec<u8>> {
+    if ptr < 0 || len < 0 {
+        anyhow::bail!("guest memory range out of bounds");
+    }
+    let len = len as usize;
+    if len > MAX_VALUE_BYTES {
+        return Err(host(caller).violate(
+            "MAX_VALUE_BYTES",
+            format!("guest read of {len} bytes, limit {MAX_VALUE_BYTES}"),
+        ));
+    }
+    charge_fuel(caller, len as u64)?;
+    let memory = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .context("guest memory export missing")?;
+    let mut buf = vec![0u8; len];
+    memory
+        .read(&*caller, ptr as usize, &mut buf)
+        .map_err(|e| anyhow::anyhow!("guest memory read out of bounds: {e}"))?;
+    Ok(buf)
+}
+
+/// Read a (lossy UTF-8) string from guest memory.
+fn read_guest_string(caller: &mut Caller<'_, StoreData>, ptr: i32, len: i32) -> Result<String> {
+    let buf = read_guest(caller, ptr, len)?;
+    Ok(String::from_utf8_lossy(&buf).to_string())
 }
 
 // =============================================================================
@@ -108,8 +514,18 @@ struct HostState {
 pub struct HlbToWatCompiler;
 
 impl HlbToWatCompiler {
-    /// Compile HLB binary to WAT (WebAssembly Text)
+    /// Compile HLB binary to WAT (WebAssembly Text).
+    ///
+    /// Refuses a program of more than [`MAX_INSTRUCTIONS`] instructions,
+    /// or one whose string data does not fit [`MAX_STRING_DATA_BYTES`].
     pub fn compile(binary: &SpineBinary) -> Result<String> {
+        if binary.instructions.len() > MAX_INSTRUCTIONS {
+            anyhow::bail!(
+                "program has {} instructions, exceeds MAX_INSTRUCTIONS ({})",
+                binary.instructions.len(),
+                MAX_INSTRUCTIONS
+            );
+        }
         let mut wat = String::new();
 
         // Module header
@@ -158,6 +574,8 @@ impl HlbToWatCompiler {
         wat.push_str("  (import \"env\" \"update_state_from_stack\" (func $update_state_from_stack (param i32 i32)))\n");
         wat.push_str("  (import \"env\" \"navigate_from_stack\" (func $navigate_from_stack))\n");
         wat.push_str("  (import \"env\" \"search_from_stack\" (func $search_from_stack))\n");
+        wat.push_str("  (import \"env\" \"store_knowledge_from_stack\" (func $store_knowledge_from_stack (param i32 i32)))\n");
+        wat.push_str("  (import \"env\" \"query_knowledge_from_stack\" (func $query_knowledge_from_stack (param i32 i32 i32)))\n");
         wat.push('\n');
 
         // Memory for string data
@@ -317,8 +735,32 @@ impl HlbToWatCompiler {
                     ));
                     data_offset += len + 1;
                 }
+                // The tag list is string data like any other: it is registered
+                // here, before the data section is written into the module.
+                Instruction::StoreKnowledgeFromStack { tags }
+                | Instruction::QueryKnowledgeFromStack { tags, .. } => {
+                    let tags_json = serde_json::json!(tags).to_string();
+                    if !string_offsets.contains_key(&tags_json) {
+                        let len = tags_json.len() as u32;
+                        string_offsets.insert(tags_json.clone(), (data_offset, len));
+                        data_section.push_str(&format!(
+                            "  (data (i32.const {}) \"{}\")\n",
+                            data_offset,
+                            escape_wat_string(&tags_json)
+                        ));
+                        data_offset += len + 1;
+                    }
+                }
                 _ => {}
             }
+        }
+
+        if data_offset as usize > MAX_STRING_DATA_BYTES {
+            anyhow::bail!(
+                "program string data is {} bytes, exceeds MAX_STRING_DATA_BYTES ({})",
+                data_offset,
+                MAX_STRING_DATA_BYTES
+            );
         }
 
         wat.push_str("  ;; String data\n");
@@ -651,6 +1093,9 @@ pub struct WasmRuntime {
     /// Fuel units allocated to each `execute()` call. See
     /// [`DEFAULT_FUEL_BUDGET`] for the rationale.
     fuel_budget: u64,
+    /// Wall-clock allowance of each `execute()` call. See
+    /// [`DEFAULT_EXECUTION_DEADLINE`].
+    deadline: Duration,
 }
 
 /// Per-execution fuel budget for untrusted HLS code. wasmtime charges
@@ -662,13 +1107,13 @@ pub struct WasmRuntime {
 /// This is the **production default**. Trusted callers that need to
 /// run long-running compute should construct `WasmRuntime` via
 /// [`WasmRuntime::with_fuel`] with a higher (or `u64::MAX`) value.
-const DEFAULT_FUEL_BUDGET: u64 = 1_000_000_000;
+pub const DEFAULT_FUEL_BUDGET: u64 = 1_000_000_000;
 
 /// Hard cap on the number of linear-memory pages a single HLS program
 /// can grow to. wasmtime pages are 64 KiB, so 256 pages = 16 MiB —
 /// enough for non-trivial DOM trees, small enough that a hostile
 /// program cannot exhaust host RAM before the fuel budget kicks in.
-const DEFAULT_MAX_MEMORY_PAGES: usize = 256;
+pub const DEFAULT_MAX_MEMORY_PAGES: usize = 256;
 
 impl WasmRuntime {
     /// Create a new WASM runtime with the production-default sandbox
@@ -686,8 +1131,12 @@ impl WasmRuntime {
         config.wasm_multi_value(true);
         // Sandbox controls — close the CPU-DoS vector for /api/sessions/
         // {id}/execute. consume_fuel is the wasmtime-recommended way to
-        // bound an untrusted program's CPU; epoch interruption would
-        // also work but requires a separate thread driving the ticker.
+        // bound an untrusted program's CPU. Epoch interruption is not
+        // used for the wall-clock deadline: wasmtime checks the epoch only
+        // at function entry and loop headers, and the generated guest is a
+        // single loop-free function that works through host calls, so no
+        // check would run while it works. The deadline is checked in
+        // `charge_fuel` instead (see `DEFAULT_EXECUTION_DEADLINE`).
         config.consume_fuel(true);
 
         let engine = Engine::new(&config)?;
@@ -695,14 +1144,37 @@ impl WasmRuntime {
         Ok(Self {
             engine,
             fuel_budget,
+            deadline: DEFAULT_EXECUTION_DEADLINE,
         })
     }
 
-    /// Execute an HLB binary using WebAssembly
+    /// Use `deadline` as the wall-clock allowance of each `execute()` call
+    /// instead of [`DEFAULT_EXECUTION_DEADLINE`]. A zero deadline refuses any
+    /// program that makes a host call.
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    /// Execute an HLB binary using WebAssembly.
+    ///
+    /// Work is bounded three ways: [`MAX_INSTRUCTIONS`] before anything
+    /// is compiled, guest fuel plus per-call host fuel while it runs, and
+    /// the host budgets ([`MAX_STACK_DEPTH`], [`MAX_VALUE_BYTES`],
+    /// [`MAX_LIVE_BYTES`], [`MAX_ELEMENTS`], [`MAX_EVENTS`],
+    /// [`MAX_ACTIONS`], [`MAX_CALL_ARGS`]). A program that exceeds one is
+    /// stopped and an error naming the budget is returned.
+    ///
+    /// The guest also has a wall-clock deadline ([`DEFAULT_EXECUTION_DEADLINE`],
+    /// or the one given to [`WasmRuntime::with_deadline`]), counted from the
+    /// moment it starts and checked at each host call; past it the run is
+    /// stopped with a `host budget exceeded: deadline` error. Compiling (WAT
+    /// build, parse, Cranelift) comes before the guest starts and is not
+    /// covered by it; [`MAX_INSTRUCTIONS`] and [`MAX_STRING_DATA_BYTES`] bound it.
     pub fn execute(&self, binary: &SpineBinary) -> Result<WasmExecutionResult> {
         let compile_start = std::time::Instant::now();
 
-        // Compile HLB to WAT
+        // Compile HLB to WAT (refuses an oversized program first)
         let wat = HlbToWatCompiler::compile(binary)?;
 
         // Parse WAT to WASM binary
@@ -716,9 +1188,18 @@ impl WasmRuntime {
 
         let compile_time = compile_start.elapsed();
 
-        // Create store with host state
+        // Create store with host state and the guest resource limits
         let host_state = Arc::new(Mutex::new(HostState::default()));
-        let mut store = Store::new(&self.engine, host_state.clone());
+        let limits = guest_limits();
+        let mut store = Store::new(
+            &self.engine,
+            StoreData {
+                host: host_state.clone(),
+                limits,
+                deadline: None,
+            },
+        );
+        store.limiter(|data| &mut data.limits);
         // Charge the per-execution fuel budget. wasmtime traps with
         // `wasmtime::Trap::OutOfFuel` once the program consumes this
         // many bytecode units — bounds a tight loop inside HLS to a
@@ -732,7 +1213,7 @@ impl WasmRuntime {
         let mut linker = Linker::new(&self.engine);
 
         // Define host functions
-        Self::define_host_functions(&mut linker, host_state.clone())?;
+        Self::define_host_functions(&mut linker)?;
 
         // Instantiate module
         let instance = linker
@@ -744,15 +1225,40 @@ impl WasmRuntime {
             .get_typed_func::<(), i32>(&mut store, "execute")
             .context("Failed to get execute function")?;
 
-        // Execute
-        let exec_start = std::time::Instant::now();
-        let instruction_count = execute_fn
-            .call(&mut store, ())
-            .context("WASM execution failed")?;
+        // The deadline runs from here, not from the start of `execute`:
+        // compiling is bounded by the instruction cap. A deadline too far
+        // out to represent is no deadline.
+        let exec_start = Instant::now();
+        store.data_mut().deadline = exec_start
+            .checked_add(self.deadline)
+            .map(|at| (at, self.deadline));
+        let call = execute_fn.call(&mut store, ());
         let exec_time = exec_start.elapsed();
+        let instruction_count = match call {
+            Ok(n) => n,
+            Err(e) => {
+                // A host budget trap reaches here as a generic wasm
+                // trap; report the budget by name instead.
+                let violation = host_state
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .violation
+                    .clone();
+                if let Some(msg) = violation {
+                    anyhow::bail!("{msg}");
+                }
+                return Err(e.context("WASM execution failed"));
+            }
+        };
+
+        // Real linear-memory size of the guest.
+        let memory_used_bytes = instance
+            .get_memory(&mut store, "memory")
+            .map(|m| m.data_size(&store))
+            .unwrap_or(0);
 
         // Extract results from host state
-        let state = host_state.lock().unwrap();
+        let state = host_state.lock().unwrap_or_else(|p| p.into_inner());
 
         Ok(WasmExecutionResult {
             elements: state.elements.clone(),
@@ -763,43 +1269,37 @@ impl WasmRuntime {
                 compile_time_us: compile_time.as_micros() as u64,
                 execution_time_us: exec_time.as_micros() as u64,
                 wasm_size_bytes: wasm_size,
-                memory_used_bytes: 65536, // 1 page = 64KB
+                memory_used_bytes,
                 instructions_executed: instruction_count as usize,
             },
         })
     }
 
-    fn define_host_functions(
-        linker: &mut Linker<Arc<Mutex<HostState>>>,
-        _state: Arc<Mutex<HostState>>,
-    ) -> Result<()> {
+    /// Register the `env.*` host functions. Every one is fallible: a
+    /// returned error traps the guest, which is how a host budget stops a
+    /// program. Each charges [`HOST_CALL_FUEL`] plus the bytes it
+    /// touches, and checks its budget before it allocates.
+    fn define_host_functions(linker: &mut Linker<StoreData>) -> Result<()> {
         // define_element(id: i32, tag_ptr: i32, tag_len: i32)
         linker.func_wrap(
             "env",
             "define_element",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, id: i32, tag_ptr: i32, tag_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory export");
-
-                let mut buf = vec![0u8; tag_len as usize];
-                memory
-                    .read(&caller, tag_ptr as usize, &mut buf)
-                    .expect("read memory");
-                let tag = String::from_utf8_lossy(&buf).to_string();
-
-                let state = caller.data().lock().unwrap();
-                drop(state);
-
-                let mut state = caller.data().lock().unwrap();
-                state.elements.push(WasmElement {
+            |mut caller: Caller<'_, StoreData>,
+             id: i32,
+             tag_ptr: i32,
+             tag_len: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let tag = read_guest_string(&mut caller, tag_ptr, tag_len)?;
+                let mut state = host(&caller);
+                state.add_element(WasmElement {
                     id: id as u32,
                     tag,
                     attributes: HashMap::new(),
                     parent_id: None,
-                });
+                })?;
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -807,34 +1307,22 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "set_attribute",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              id: i32,
              key_ptr: i32,
              key_len: i32,
              val_ptr: i32,
-             val_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory export");
-
-                let mut key_buf = vec![0u8; key_len as usize];
-                let mut val_buf = vec![0u8; val_len as usize];
-                memory
-                    .read(&caller, key_ptr as usize, &mut key_buf)
-                    .expect("read key");
-                memory
-                    .read(&caller, val_ptr as usize, &mut val_buf)
-                    .expect("read value");
-
-                let key = String::from_utf8_lossy(&key_buf).to_string();
-                let value = String::from_utf8_lossy(&val_buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
-                if let Some(elem) = state.elements.iter_mut().find(|e| e.id == id as u32) {
-                    elem.attributes.insert(key, value);
-                }
+             val_len: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let key = read_guest_string(&mut caller, key_ptr, key_len)?;
+                let value = read_guest_string(&mut caller, val_ptr, val_len)?;
+                let scanned = host(&caller).elements.len() as u64;
+                charge_fuel(&mut caller, scanned)?;
+                let mut state = host(&caller);
+                state.set_element_attribute(id as u32, key, value)?;
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -842,12 +1330,16 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "add_child",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, parent_id: i32, child_id: i32| {
-                let mut state = caller.data().lock().unwrap();
+            |mut caller: Caller<'_, StoreData>, parent_id: i32, child_id: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let scanned = host(&caller).elements.len() as u64;
+                charge_fuel(&mut caller, scanned)?;
+                let mut state = host(&caller);
                 if let Some(child) = state.elements.iter_mut().find(|e| e.id == child_id as u32) {
                     child.parent_id = Some(parent_id as u32);
                 }
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -855,33 +1347,21 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "emit_event",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              name_ptr: i32,
              name_len: i32,
              payload_ptr: i32,
-             payload_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory export");
-
-                let mut name_buf = vec![0u8; name_len as usize];
-                let mut payload_buf = vec![0u8; payload_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut name_buf)
-                    .expect("read name");
-                memory
-                    .read(&caller, payload_ptr as usize, &mut payload_buf)
-                    .expect("read payload");
-
-                let name = String::from_utf8_lossy(&name_buf).to_string();
-                let payload_str = String::from_utf8_lossy(&payload_buf).to_string();
+             payload_len: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
+                let payload_str = read_guest_string(&mut caller, payload_ptr, payload_len)?;
                 let payload: serde_json::Value = serde_json::from_str(&payload_str)
                     .unwrap_or(serde_json::Value::String(payload_str));
-
-                let mut state = caller.data().lock().unwrap();
-                state.events.push(WasmEvent { name, payload });
+                let mut state = host(&caller);
+                state.add_event(WasmEvent { name, payload })?;
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -889,19 +1369,12 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "push_value",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; len as usize];
-                memory.read(&caller, ptr as usize, &mut buf).expect("read");
-                let s = String::from_utf8_lossy(&buf).to_string();
+            |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let s = read_guest_string(&mut caller, ptr, len)?;
                 let val: serde_json::Value =
                     serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s));
-
-                let mut state = caller.data().lock().unwrap();
-                state.value_stack.push(val);
+                host(&caller).push_val(val)
             },
         )?;
 
@@ -909,9 +1382,10 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "pop_value",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| {
-                let mut state = caller.data().lock().unwrap();
-                state.value_stack.pop();
+            |mut caller: Caller<'_, StoreData>| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                host(&caller).pop_val();
+                Ok(())
             },
         )?;
 
@@ -919,22 +1393,16 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "load_var",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; len as usize];
-                memory.read(&caller, ptr as usize, &mut buf).expect("read");
-                let name = String::from_utf8_lossy(&buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
+            |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, ptr, len)?;
+                let mut state = host(&caller);
                 let val = state
                     .variables
                     .get(&name)
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                state.value_stack.push(val);
+                state.push_val(val)
             },
         )?;
 
@@ -942,19 +1410,14 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "store_var",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; len as usize];
-                memory.read(&caller, ptr as usize, &mut buf).expect("read");
-                let name = String::from_utf8_lossy(&buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
-                if let Some(val) = state.value_stack.pop() {
-                    state.variables.insert(name, val);
+            |mut caller: Caller<'_, StoreData>, ptr: i32, len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, ptr, len)?;
+                let mut state = host(&caller);
+                if let Some(val) = state.pop_val() {
+                    state.set_var(name, val)?;
                 }
+                Ok(())
             },
         )?;
 
@@ -962,10 +1425,11 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "bin_op",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, op_code: i32| {
-                let mut state = caller.data().lock().unwrap();
-                let right = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
-                let left = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+            |mut caller: Caller<'_, StoreData>, op_code: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let mut state = host(&caller);
+                let right = state.pop_val().unwrap_or(serde_json::Value::Null);
+                let left = state.pop_val().unwrap_or(serde_json::Value::Null);
 
                 // Simple evaluation for now
                 let res = match op_code {
@@ -978,7 +1442,18 @@ impl WasmRuntime {
                                 )
                             }
                             (serde_json::Value::String(l), serde_json::Value::String(r)) => {
-                                serde_json::Value::String(format!("{}{}", l, r))
+                                // Size is checked before the string is built.
+                                let total = l.len().saturating_add(r.len());
+                                if total > MAX_VALUE_BYTES {
+                                    return Err(state.violate(
+                                        "MAX_VALUE_BYTES",
+                                        format!("string of {total} bytes, limit {MAX_VALUE_BYTES}"),
+                                    ));
+                                }
+                                let mut s = String::with_capacity(total);
+                                s.push_str(&l);
+                                s.push_str(&r);
+                                serde_json::Value::String(s)
                             }
                             _ => serde_json::Value::Null,
                         }
@@ -1046,12 +1521,22 @@ impl WasmRuntime {
                         }
                     }
                     13 => {
-                        // Concat
-                        serde_json::Value::String(format!("{}{}", left, right))
+                        // Concat. The rendered length is counted first so
+                        // a doubling program is refused before it
+                        // allocates.
+                        match concat_len(&left, &right) {
+                            Some(_) => serde_json::Value::String(format!("{}{}", left, right)),
+                            None => {
+                                return Err(state.violate(
+                                    "MAX_VALUE_BYTES",
+                                    format!("concatenation over {MAX_VALUE_BYTES} bytes"),
+                                ));
+                            }
+                        }
                     }
                     _ => serde_json::Value::Null,
                 };
-                state.value_stack.push(res);
+                state.push_val(res)
             },
         )?;
 
@@ -1059,20 +1544,16 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "define_element_from_stack",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, id: i32| {
-                let mut state = caller.data().lock().unwrap();
-                let tag = state
-                    .value_stack
-                    .pop()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "div".to_string());
-
-                state.elements.push(WasmElement {
+            |mut caller: Caller<'_, StoreData>, id: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let mut state = host(&caller);
+                let tag = state.pop_str().unwrap_or_else(|| "div".to_string());
+                state.add_element(WasmElement {
                     id: id as u32,
                     tag,
                     attributes: HashMap::new(),
                     parent_id: None,
-                });
+                })
             },
         )?;
 
@@ -1080,27 +1561,18 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "set_attribute_from_stack",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, id: i32, key_ptr: i32, key_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; key_len as usize];
-                memory
-                    .read(&caller, key_ptr as usize, &mut buf)
-                    .expect("read");
-                let key = String::from_utf8_lossy(&buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
-                let val = state
-                    .value_stack
-                    .pop()
-                    .map(|v| v.to_string())
-                    .unwrap_or_default();
-
-                if let Some(elem) = state.elements.iter_mut().find(|e| e.id == id as u32) {
-                    elem.attributes.insert(key, val);
-                }
+            |mut caller: Caller<'_, StoreData>,
+             id: i32,
+             key_ptr: i32,
+             key_len: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let key = read_guest_string(&mut caller, key_ptr, key_len)?;
+                let scanned = host(&caller).elements.len() as u64;
+                charge_fuel(&mut caller, scanned)?;
+                let mut state = host(&caller);
+                let val = state.pop_val().map(|v| v.to_string()).unwrap_or_default();
+                state.set_element_attribute(id as u32, key, val)
             },
         )?;
 
@@ -1108,11 +1580,11 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "define_text_from_stack",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| {
-                let mut state = caller.data().lock().unwrap();
+            |mut caller: Caller<'_, StoreData>| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let mut state = host(&caller);
                 let text = state
-                    .value_stack
-                    .pop()
+                    .pop_val()
                     .map(|v| {
                         v.as_str()
                             .map(|s| s.to_string())
@@ -1122,12 +1594,12 @@ impl WasmRuntime {
 
                 // Text elements are special, for now we'll just create a "text" element
                 let id = state.elements.len() as u32 + 1000; // Simple ID generation
-                state.elements.push(WasmElement {
+                state.add_element(WasmElement {
                     id,
                     tag: "text".to_string(),
                     attributes: [("content".to_string(), text)].into_iter().collect(),
                     parent_id: None,
-                });
+                })
             },
         )?;
 
@@ -1135,21 +1607,14 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "declare_state_from_stack",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; name_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut buf)
-                    .expect("read");
-                let name = String::from_utf8_lossy(&buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
-                if let Some(val) = state.value_stack.pop() {
-                    state.variables.insert(name, val);
+            |mut caller: Caller<'_, StoreData>, name_ptr: i32, name_len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
+                let mut state = host(&caller);
+                if let Some(val) = state.pop_val() {
+                    state.set_var(name, val)?;
                 }
+                Ok(())
             },
         )?;
 
@@ -1157,21 +1622,14 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "update_state_from_stack",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; name_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut buf)
-                    .expect("read");
-                let name = String::from_utf8_lossy(&buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
-                if let Some(val) = state.value_stack.pop() {
-                    state.variables.insert(name, val);
+            |mut caller: Caller<'_, StoreData>, name_ptr: i32, name_len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
+                let mut state = host(&caller);
+                if let Some(val) = state.pop_val() {
+                    state.set_var(name, val)?;
                 }
+                Ok(())
             },
         )?;
 
@@ -1179,15 +1637,13 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "navigate_from_stack",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| {
-                let mut state = caller.data().lock().unwrap();
-                if let Some(url) = state
-                    .value_stack
-                    .pop()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                {
-                    state.actions.push(WasmAction::Navigate(url));
+            |mut caller: Caller<'_, StoreData>| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let mut state = host(&caller);
+                if let Some(url) = state.pop_str() {
+                    state.add_action(WasmAction::Navigate(url))?;
                 }
+                Ok(())
             },
         )?;
 
@@ -1195,15 +1651,13 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "search_from_stack",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| {
-                let mut state = caller.data().lock().unwrap();
-                if let Some(query) = state
-                    .value_stack
-                    .pop()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                {
-                    state.actions.push(WasmAction::Search(query));
+            |mut caller: Caller<'_, StoreData>| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let mut state = host(&caller);
+                if let Some(query) = state.pop_str() {
+                    state.add_action(WasmAction::Search(query))?;
                 }
+                Ok(())
             },
         )?;
 
@@ -1211,29 +1665,15 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "store_knowledge_from_stack",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, tags_ptr: i32, tags_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; tags_len as usize];
-                memory
-                    .read(&caller, tags_ptr as usize, &mut buf)
-                    .expect("read");
-                let tags_str = String::from_utf8_lossy(&buf).to_string();
+            |mut caller: Caller<'_, StoreData>, tags_ptr: i32, tags_len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let tags_str = read_guest_string(&mut caller, tags_ptr, tags_len)?;
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
 
-                let mut state = caller.data().lock().unwrap();
-                let value = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
-                let key = state
-                    .value_stack
-                    .pop()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                    .unwrap_or_default();
-
-                state
-                    .actions
-                    .push(WasmAction::StoreKnowledge { key, value, tags });
+                let mut state = host(&caller);
+                let value = state.pop_val().unwrap_or(serde_json::Value::Null);
+                let key = state.pop_str().unwrap_or_default();
+                state.add_action(WasmAction::StoreKnowledge { key, value, tags })
             },
         )?;
 
@@ -1241,33 +1681,22 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "query_knowledge_from_stack",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              tags_ptr: i32,
              tags_len: i32,
-             limit: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; tags_len as usize];
-                memory
-                    .read(&caller, tags_ptr as usize, &mut buf)
-                    .expect("read");
-                let tags_str = String::from_utf8_lossy(&buf).to_string();
+             limit: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let tags_str = read_guest_string(&mut caller, tags_ptr, tags_len)?;
                 let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
 
-                let mut state = caller.data().lock().unwrap();
-                let query = state
-                    .value_stack
-                    .pop()
-                    .and_then(|v| v.as_str().map(|s| s.to_string()))
-                    .unwrap_or_default();
-
-                state.actions.push(WasmAction::QueryKnowledge {
+                let mut state = host(&caller);
+                let query = state.pop_str().unwrap_or_default();
+                state.add_action(WasmAction::QueryKnowledge {
                     query,
                     tags,
-                    limit: limit as usize,
-                });
+                    limit: limit.max(0) as usize,
+                })
             },
         )?;
 
@@ -1275,31 +1704,35 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "call_func",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              name_ptr: i32,
              name_len: i32,
-             num_args: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; name_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut buf)
-                    .expect("read");
-                let name = String::from_utf8_lossy(&buf).to_string();
+             num_args: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
 
-                let mut state = caller.data().lock().unwrap();
-                let mut args = Vec::new();
+                // The count is checked before anything is popped or
+                // allocated: it is a guest-supplied i32.
+                if num_args < 0 || num_args as usize > MAX_CALL_ARGS {
+                    return Err(host(&caller).violate(
+                        "MAX_CALL_ARGS",
+                        format!("num_args {num_args}, limit {MAX_CALL_ARGS}"),
+                    ));
+                }
+                charge_fuel(&mut caller, num_args as u64)?;
+
+                let mut state = host(&caller);
+                let mut args = Vec::with_capacity(num_args as usize);
                 for _ in 0..num_args {
-                    args.push(state.value_stack.pop().unwrap_or(serde_json::Value::Null));
+                    args.push(state.pop_val().unwrap_or(serde_json::Value::Null));
                 }
                 args.reverse();
 
                 // Built-in functions
                 let res = match name.as_str() {
                     "len" => {
-                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        let arg = state.pop_val().unwrap_or(serde_json::Value::Null);
                         match arg {
                             serde_json::Value::Array(a) => serde_json::json!(a.len()),
                             serde_json::Value::String(s) => serde_json::json!(s.len()),
@@ -1308,14 +1741,14 @@ impl WasmRuntime {
                         }
                     }
                     "str" => {
-                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        let arg = state.pop_val().unwrap_or(serde_json::Value::Null);
                         match arg {
                             serde_json::Value::String(s) => serde_json::Value::String(s),
                             _ => serde_json::Value::String(arg.to_string()),
                         }
                     }
                     "num" => {
-                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+                        let arg = state.pop_val().unwrap_or(serde_json::Value::Null);
                         let n = match arg {
                             serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
                             serde_json::Value::String(s) => s.parse().unwrap_or(0.0),
@@ -1325,14 +1758,16 @@ impl WasmRuntime {
                         serde_json::json!(n)
                     }
                     "print" => {
-                        let arg = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
-                        println!("[HLS PRINT] {}", arg);
+                        // Guest-controlled text goes to the log at debug
+                        // level, not to the daemon's stdout.
+                        let arg = state.pop_val().unwrap_or(serde_json::Value::Null);
+                        log::debug!("[HLS PRINT] {}", arg);
                         serde_json::Value::Null
                     }
                     "list" => {
                         let mut items = Vec::new();
                         for _ in 0..num_args {
-                            if let Some(val) = state.value_stack.pop() {
+                            if let Some(val) = state.pop_val() {
                                 items.push(val);
                             }
                         }
@@ -1342,72 +1777,52 @@ impl WasmRuntime {
                     "object" => {
                         let mut map = serde_json::Map::new();
                         for _ in 0..(num_args / 2) {
-                            let val = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
-                            let key = state
-                                .value_stack
-                                .pop()
-                                .and_then(|v| v.as_str().map(|s| s.to_string()))
-                                .unwrap_or_default();
+                            let val = state.pop_val().unwrap_or(serde_json::Value::Null);
+                            let key = state.pop_str().unwrap_or_default();
                             map.insert(key, val);
                         }
                         serde_json::Value::Object(map)
                     }
                     "emit" => {
                         let payload = if num_args > 1 {
-                            state.value_stack.pop().unwrap_or(serde_json::Value::Null)
+                            state.pop_val().unwrap_or(serde_json::Value::Null)
                         } else {
                             serde_json::Value::Null
                         };
-                        let event_name = state
-                            .value_stack
-                            .pop()
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        state.events.push(WasmEvent {
+                        let event_name = state.pop_str().unwrap_or_default();
+                        state.add_event(WasmEvent {
                             name: event_name,
                             payload,
-                        });
+                        })?;
                         serde_json::Value::Null
                     }
                     "reason" => {
-                        let query = state
-                            .value_stack
-                            .pop()
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        state.actions.push(WasmAction::Reason(query));
+                        let query = state.pop_str().unwrap_or_default();
+                        state.add_action(WasmAction::Reason(query))?;
                         serde_json::Value::Null
                     }
                     "remember" => {
-                        let value = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
-                        let key = state
-                            .value_stack
-                            .pop()
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        state.actions.push(WasmAction::StoreKnowledge {
+                        let value = state.pop_val().unwrap_or(serde_json::Value::Null);
+                        let key = state.pop_str().unwrap_or_default();
+                        state.add_action(WasmAction::StoreKnowledge {
                             key,
                             value,
                             tags: vec!["hls".to_string()],
-                        });
+                        })?;
                         serde_json::Value::Null
                     }
                     "query_memory" => {
-                        let query = state
-                            .value_stack
-                            .pop()
-                            .and_then(|v| v.as_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        state.actions.push(WasmAction::QueryKnowledge {
+                        let query = state.pop_str().unwrap_or_default();
+                        state.add_action(WasmAction::QueryKnowledge {
                             query,
                             tags: vec![],
                             limit: 5,
-                        });
+                        })?;
                         serde_json::Value::Null
                     }
                     _ => serde_json::Value::Null,
                 };
-                state.value_stack.push(res);
+                state.push_val(res)
             },
         )?;
 
@@ -1415,20 +1830,12 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "emit_event_from_stack",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, name_ptr: i32, name_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory");
-                let mut buf = vec![0u8; name_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut buf)
-                    .expect("read");
-                let name = String::from_utf8_lossy(&buf).to_string();
-
-                let mut state = caller.data().lock().unwrap();
-                let payload = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
-                state.events.push(WasmEvent { name, payload });
+            |mut caller: Caller<'_, StoreData>, name_ptr: i32, name_len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
+                let mut state = host(&caller);
+                let payload = state.pop_val().unwrap_or(serde_json::Value::Null);
+                state.add_event(WasmEvent { name, payload })
             },
         )?;
 
@@ -1436,9 +1843,10 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "unary_op",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, op_code: i32| {
-                let mut state = caller.data().lock().unwrap();
-                let val = state.value_stack.pop().unwrap_or(serde_json::Value::Null);
+            |mut caller: Caller<'_, StoreData>, op_code: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let mut state = host(&caller);
+                let val = state.pop_val().unwrap_or(serde_json::Value::Null);
 
                 let res = match op_code {
                     0 => {
@@ -1459,7 +1867,7 @@ impl WasmRuntime {
                     }
                     _ => serde_json::Value::Null,
                 };
-                state.value_stack.push(res);
+                state.push_val(res)
             },
         )?;
 
@@ -1467,8 +1875,9 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "call_target",
-            |_caller: Caller<'_, Arc<Mutex<HostState>>>, _target: i32| {
+            |mut caller: Caller<'_, StoreData>, _target: i32| -> Result<()> {
                 // Internal calls not yet supported in WASM runtime
+                charge_fuel(&mut caller, HOST_CALL_FUEL)
             },
         )?;
 
@@ -1476,11 +1885,28 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "stream_latent",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, _ptr: i32, len: i32| {
-                // In a real implementation, we'd read the vector from memory
-                let mut state = caller.data().lock().unwrap();
+            |mut caller: Caller<'_, StoreData>, _ptr: i32, len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                // `len` is a dimension count the guest supplies: check it
+                // before the vector is allocated.
+                if len < 0 || len as usize > MAX_LATENT_DIMS {
+                    return Err(host(&caller).violate(
+                        "MAX_LATENT_DIMS",
+                        format!("latent vector of {len} dimensions, limit {MAX_LATENT_DIMS}"),
+                    ));
+                }
+                charge_fuel(&mut caller, len as u64)?;
+                let mut state = host(&caller);
+                if state.latent_streams.len() >= MAX_LATENT_STREAMS {
+                    return Err(state.violate(
+                        "MAX_LATENT_STREAMS",
+                        format!("more than {MAX_LATENT_STREAMS} latent vectors"),
+                    ));
+                }
+                state.charge(RECORD_OVERHEAD + len as usize * std::mem::size_of::<f32>())?;
                 state.latent_streams.push(vec![0.0f32; len as usize]);
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -1488,10 +1914,11 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "morph_protocol",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, _seed: i64| {
-                let mut state = caller.data().lock().unwrap();
-                state.instruction_count += 1;
+            |mut caller: Caller<'_, StoreData>, _seed: i64| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
                 // Morphing would be handled by the protocol layer
+                host(&caller).instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -1499,10 +1926,11 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "inject_decoy",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>, _ptr: i32, _len: i32| {
-                let mut state = caller.data().lock().unwrap();
-                state.instruction_count += 1;
+            |mut caller: Caller<'_, StoreData>, _ptr: i32, _len: i32| -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
                 // Decoy injection would be handled by the protocol layer
+                host(&caller).instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -1510,36 +1938,25 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "declare_state",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              name_ptr: i32,
              name_len: i32,
              val_ptr: i32,
-             val_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory export");
-
-                let mut name_buf = vec![0u8; name_len as usize];
-                let mut val_buf = vec![0u8; val_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut name_buf)
-                    .expect("read name");
-                memory
-                    .read(&caller, val_ptr as usize, &mut val_buf)
-                    .expect("read value");
-
-                let name = String::from_utf8_lossy(&name_buf).to_string();
-                let val_str = String::from_utf8_lossy(&val_buf).to_string();
+             val_len: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
+                let val_str = read_guest_string(&mut caller, val_ptr, val_len)?;
                 let val: serde_json::Value =
                     serde_json::from_str(&val_str).unwrap_or(serde_json::Value::Null);
 
-                let mut state = caller.data().lock().unwrap();
-                state.events.push(WasmEvent {
+                let mut state = host(&caller);
+                state.add_event(WasmEvent {
                     name: "state_declared".to_string(),
                     payload: serde_json::json!({ "name": name, "value": val }),
-                });
+                })?;
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -1547,36 +1964,25 @@ impl WasmRuntime {
         linker.func_wrap(
             "env",
             "update_state",
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, StoreData>,
              name_ptr: i32,
              name_len: i32,
              val_ptr: i32,
-             val_len: i32| {
-                let memory = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory export");
-
-                let mut name_buf = vec![0u8; name_len as usize];
-                let mut val_buf = vec![0u8; val_len as usize];
-                memory
-                    .read(&caller, name_ptr as usize, &mut name_buf)
-                    .expect("read name");
-                memory
-                    .read(&caller, val_ptr as usize, &mut val_buf)
-                    .expect("read value");
-
-                let name = String::from_utf8_lossy(&name_buf).to_string();
-                let val_str = String::from_utf8_lossy(&val_buf).to_string();
+             val_len: i32|
+             -> Result<()> {
+                charge_fuel(&mut caller, HOST_CALL_FUEL)?;
+                let name = read_guest_string(&mut caller, name_ptr, name_len)?;
+                let val_str = read_guest_string(&mut caller, val_ptr, val_len)?;
                 let val: serde_json::Value =
                     serde_json::from_str(&val_str).unwrap_or(serde_json::Value::Null);
 
-                let mut state = caller.data().lock().unwrap();
-                state.events.push(WasmEvent {
+                let mut state = host(&caller);
+                state.add_event(WasmEvent {
                     name: "state_updated".to_string(),
                     payload: serde_json::json!({ "name": name, "value": val }),
-                });
+                })?;
                 state.instruction_count += 1;
+                Ok(())
             },
         )?;
 
@@ -1604,7 +2010,7 @@ mod tests {
             instructions,
             data: Vec::new(),
             render_start: 0,
-            exported_functions: HashMap::new(),
+            exported_functions: std::collections::BTreeMap::new(),
             capabilities: Vec::new(),
         }
     }
@@ -1884,6 +2290,32 @@ mod tests {
     }
 
     #[test]
+    fn test_knowledge_instructions_compile_to_a_module_that_parses() {
+        // Both instructions call host functions and carry their tag list as
+        // string data: the module must import the functions and hold the data.
+        let binary = empty_binary(vec![
+            Instruction::Push(serde_json::json!("key")),
+            Instruction::Push(serde_json::json!({"v": 1})),
+            Instruction::StoreKnowledgeFromStack {
+                tags: vec!["t".into()],
+            },
+            Instruction::Push(serde_json::json!("question")),
+            Instruction::QueryKnowledgeFromStack {
+                tags: vec!["u".into()],
+                limit: 3,
+            },
+        ]);
+        let wat = HlbToWatCompiler::compile(&binary).unwrap();
+        assert!(wat.contains("$store_knowledge_from_stack (param i32 i32)"));
+        assert!(wat.contains("$query_knowledge_from_stack (param i32 i32 i32)"));
+        assert!(
+            wat.matches("(data ").count() >= 5,
+            "three pushed values and two tag lists"
+        );
+        wat::parse_str(&wat).expect("the module parses");
+    }
+
+    #[test]
     fn test_compile_search_from_stack() {
         let binary = empty_binary(vec![Instruction::SearchFromStack]);
         let wat = HlbToWatCompiler::compile(&binary).unwrap();
@@ -2076,5 +2508,340 @@ mod tests {
         let wat = HlbToWatCompiler::compile(&binary).unwrap();
         // The function returns the instruction count as i32.const N
         assert!(wat.contains("(i32.const 3)"));
+    }
+
+    // --- Host budgets (see the MAX_* constants) -----------------------
+
+    fn err_text(result: Result<WasmExecutionResult>) -> String {
+        format!(
+            "{:#}",
+            result.expect_err("program should have been refused")
+        )
+    }
+
+    /// `x = "a"`, then `rounds` times `x = x <op> x`.
+    fn doubling_program(rounds: usize, op: spine_protocol::ProtocolBinOp) -> SpineBinary {
+        let mut ins = vec![
+            Instruction::Push(serde_json::json!("a")),
+            Instruction::Store("x".to_string()),
+        ];
+        for _ in 0..rounds {
+            ins.push(Instruction::Load("x".to_string()));
+            ins.push(Instruction::Load("x".to_string()));
+            ins.push(Instruction::BinOp(op));
+            ins.push(Instruction::Store("x".to_string()));
+        }
+        empty_binary(ins)
+    }
+
+    #[test]
+    fn test_doubling_concat_is_refused_quickly() {
+        let runtime = WasmRuntime::new().unwrap();
+        let start = std::time::Instant::now();
+        // 40 rounds would ask for terabytes if unchecked.
+        let msg =
+            err_text(runtime.execute(&doubling_program(40, spine_protocol::ProtocolBinOp::Concat)));
+        assert!(msg.contains("MAX_VALUE_BYTES"), "got: {msg}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_doubling_string_add_is_refused() {
+        let runtime = WasmRuntime::new().unwrap();
+        let msg =
+            err_text(runtime.execute(&doubling_program(40, spine_protocol::ProtocolBinOp::Add)));
+        assert!(msg.contains("MAX_VALUE_BYTES"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_huge_num_args_is_refused() {
+        let runtime = WasmRuntime::new().unwrap();
+        for n in [MAX_CALL_ARGS + 1, 1_000_000_000, 2_000_000_000] {
+            let binary = empty_binary(vec![Instruction::Call {
+                name: "list".to_string(),
+                num_args: n,
+            }]);
+            let msg = err_text(runtime.execute(&binary));
+            assert!(msg.contains("MAX_CALL_ARGS"), "n={n}, got: {msg}");
+        }
+        // The cap itself is allowed.
+        let binary = empty_binary(vec![Instruction::Call {
+            name: "list".to_string(),
+            num_args: MAX_CALL_ARGS,
+        }]);
+        runtime.execute(&binary).expect("num_args at the cap runs");
+    }
+
+    #[test]
+    fn test_stack_depth_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let push = |n: usize| {
+            empty_binary(
+                (0..n)
+                    .map(|_| Instruction::Push(serde_json::json!(1)))
+                    .collect(),
+            )
+        };
+        runtime
+            .execute(&push(MAX_STACK_DEPTH))
+            .expect("a stack at the cap runs");
+        let msg = err_text(runtime.execute(&push(MAX_STACK_DEPTH + 1)));
+        assert!(msg.contains("MAX_STACK_DEPTH"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_value_bytes_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let big = "z".repeat(MAX_VALUE_BYTES / 2 + 1000);
+        let binary = empty_binary(vec![
+            Instruction::Push(serde_json::json!(big)),
+            Instruction::Push(serde_json::json!(big)),
+            Instruction::BinOp(spine_protocol::ProtocolBinOp::Add),
+        ]);
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("MAX_VALUE_BYTES"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_live_bytes_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        // Each value is under the per-value cap; together they are not.
+        let big = "z".repeat(50_000);
+        let binary = empty_binary(
+            (0..30)
+                .map(|_| Instruction::Push(serde_json::json!(big)))
+                .collect(),
+        );
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("MAX_LIVE_BYTES"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_element_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let make = |n: usize| {
+            empty_binary(
+                (0..n)
+                    .map(|i| Instruction::DefineElement {
+                        id: i as u32,
+                        tag: "d".to_string(),
+                    })
+                    .collect(),
+            )
+        };
+        let ok = runtime.execute(&make(MAX_ELEMENTS)).unwrap();
+        assert_eq!(ok.elements.len(), MAX_ELEMENTS);
+        let msg = err_text(runtime.execute(&make(MAX_ELEMENTS + 1)));
+        assert!(msg.contains("MAX_ELEMENTS"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_event_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let make = |n: usize| {
+            empty_binary(
+                (0..n)
+                    .map(|_| Instruction::EmitEvent {
+                        name: "e".to_string(),
+                        payload: serde_json::json!(null),
+                    })
+                    .collect(),
+            )
+        };
+        let ok = runtime.execute(&make(MAX_EVENTS)).unwrap();
+        assert_eq!(ok.events.len(), MAX_EVENTS);
+        let msg = err_text(runtime.execute(&make(MAX_EVENTS + 1)));
+        assert!(msg.contains("MAX_EVENTS"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_action_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let make = |n: usize| {
+            let mut ins = Vec::new();
+            for _ in 0..n {
+                ins.push(Instruction::Push(serde_json::json!("https://example.com/")));
+                ins.push(Instruction::NavigateFromStack);
+            }
+            empty_binary(ins)
+        };
+        let ok = runtime.execute(&make(MAX_ACTIONS)).unwrap();
+        assert_eq!(ok.actions.len(), MAX_ACTIONS);
+        let msg = err_text(runtime.execute(&make(MAX_ACTIONS + 1)));
+        assert!(msg.contains("MAX_ACTIONS"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_latent_caps() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![Instruction::StreamLatent {
+            vector: vec![0.0; MAX_LATENT_DIMS + 1],
+        }]);
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("MAX_LATENT_DIMS"), "got: {msg}");
+
+        let binary = empty_binary(
+            (0..=MAX_LATENT_STREAMS)
+                .map(|_| Instruction::StreamLatent { vector: vec![0.0] })
+                .collect(),
+        );
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("MAX_LATENT_STREAMS"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_instruction_count_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![Instruction::Pop; MAX_INSTRUCTIONS + 1]);
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("MAX_INSTRUCTIONS"), "got: {msg}");
+        // The compiler refuses it too, before building any WAT.
+        assert!(HlbToWatCompiler::compile(&binary).is_err());
+    }
+
+    #[test]
+    fn test_string_data_cap() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![Instruction::DefineElement {
+            id: 1,
+            tag: "a".repeat(MAX_STRING_DATA_BYTES + 1),
+        }]);
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("MAX_STRING_DATA_BYTES"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_host_work_draws_on_fuel() {
+        // Guest instructions alone are far under this budget; the host
+        // calls are not.
+        let runtime = WasmRuntime::with_fuel(5_000).unwrap();
+        let binary = empty_binary(
+            (0..200)
+                .map(|i| Instruction::DefineElement {
+                    id: i,
+                    tag: "d".to_string(),
+                })
+                .collect(),
+        );
+        let msg = err_text(runtime.execute(&binary));
+        assert!(msg.contains("host budget exceeded: fuel"), "got: {msg}");
+    }
+
+    fn small_program() -> SpineBinary {
+        empty_binary(
+            (0..20)
+                .map(|i| Instruction::DefineElement {
+                    id: i,
+                    tag: "div".to_string(),
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn test_zero_deadline_refuses_a_normal_program_by_name() {
+        let runtime = WasmRuntime::new().unwrap().with_deadline(Duration::ZERO);
+        let msg = err_text(runtime.execute(&small_program()));
+        assert!(msg.contains("host budget exceeded: deadline"), "got: {msg}");
+        assert!(msg.contains("wall-clock deadline"), "got: {msg}");
+        assert!(msg.contains("0ns"), "the allowance is named: {msg}");
+    }
+
+    #[test]
+    fn test_default_deadline_lets_a_normal_program_pass() {
+        let runtime = WasmRuntime::new().unwrap();
+        let result = runtime.execute(&small_program()).unwrap();
+        assert_eq!(result.elements.len(), 20);
+        // A deadline too large to add to the clock is no deadline.
+        let unbounded = WasmRuntime::new().unwrap().with_deadline(Duration::MAX);
+        let result = unbounded.execute(&small_program()).unwrap();
+        assert_eq!(result.elements.len(), 20);
+    }
+
+    /// A run with no host call has nothing to check; it ends at once.
+    #[test]
+    fn test_zero_deadline_does_not_touch_a_program_without_host_calls() {
+        let runtime = WasmRuntime::new().unwrap().with_deadline(Duration::ZERO);
+        assert!(runtime.execute(&empty_binary(vec![])).is_ok());
+    }
+
+    /// The deadline is per execution, not per engine: many runs at once on
+    /// one runtime do not interfere with each other.
+    #[test]
+    fn test_parallel_executions_on_one_runtime_all_pass() {
+        let runtime = Arc::new(WasmRuntime::new().unwrap());
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let runtime = Arc::clone(&runtime);
+                std::thread::spawn(move || {
+                    (0..10)
+                        .map(|_| runtime.execute(&small_program()).map(|r| r.elements.len()))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            for outcome in handle.join().unwrap() {
+                assert_eq!(outcome.unwrap(), 20);
+            }
+        }
+    }
+
+    #[test]
+    fn test_normal_stack_program_still_runs() {
+        let runtime = WasmRuntime::new().unwrap();
+        let binary = empty_binary(vec![
+            Instruction::Push(serde_json::json!("a")),
+            Instruction::Push(serde_json::json!("b")),
+            Instruction::BinOp(spine_protocol::ProtocolBinOp::Concat),
+            Instruction::DefineTextFromStack,
+            Instruction::Push(serde_json::json!("https://example.com/")),
+            Instruction::NavigateFromStack,
+        ]);
+        let result = runtime.execute(&binary).unwrap();
+        assert_eq!(result.elements.len(), 1);
+        assert_eq!(result.actions.len(), 1);
+    }
+
+    #[test]
+    fn test_guest_memory_limit() {
+        // The limiter the runtime installs refuses growth past
+        // DEFAULT_MAX_MEMORY_PAGES.
+        let engine = Engine::default();
+        let wasm = wat::parse_str(
+            r#"(module
+                 (memory (export "memory") 1)
+                 (func (export "grow") (param i32) (result i32)
+                   (memory.grow (local.get 0))))"#,
+        )
+        .unwrap();
+        let module = Module::new(&engine, &wasm).unwrap();
+        let mut store = Store::new(
+            &engine,
+            StoreData {
+                host: Arc::new(Mutex::new(HostState::default())),
+                limits: guest_limits(),
+                deadline: None,
+            },
+        );
+        store.limiter(|data| &mut data.limits);
+        let instance = Linker::<StoreData>::new(&engine)
+            .instantiate(&mut store, &module)
+            .unwrap();
+        let grow = instance
+            .get_typed_func::<i32, i32>(&mut store, "grow")
+            .unwrap();
+        // One page now; growing by the whole cap would pass it.
+        assert_eq!(
+            grow.call(&mut store, DEFAULT_MAX_MEMORY_PAGES as i32)
+                .unwrap(),
+            -1
+        );
+        // Growing to exactly the cap is allowed (returns the old size).
+        assert_eq!(
+            grow.call(&mut store, DEFAULT_MAX_MEMORY_PAGES as i32 - 1)
+                .unwrap(),
+            1
+        );
     }
 }

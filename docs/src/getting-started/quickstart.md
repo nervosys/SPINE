@@ -70,4 +70,3 @@ cargo run
 - [Configuration](./configuration.md) — Customize server settings
 - [Navigation & URs](../sdk/navigation.md) — Deep dive into web extraction
 - [HLS Scripting](../sdk/hls.md) — Server-side scripting language
-- [Swarm Intelligence](../sdk/swarm.md) — Multi-agent coordination

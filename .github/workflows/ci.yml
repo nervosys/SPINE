@@ -45,7 +45,92 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy (all targets)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (spine-protocol without quic)
+        run: cargo clippy -p spine-protocol --no-default-features --all-targets -- -D warnings
+
+      - name: Clippy (spine-web with research code)
+        run: cargo clippy -p spine-web --features research --all-targets -- -D warnings
+
+      - name: Clippy (spine-core with research code)
+        run: cargo clippy -p spine-core --features research --all-targets -- -D warnings
+
+      - name: Clippy (spine-agent with research code)
+        run: cargo clippy -p spine-agent --features research --all-targets -- -D warnings
+
+      - name: Clippy (spine-gateway with research code)
+        run: cargo clippy -p spine-gateway --features research --all-targets -- -D warnings
+
+      - name: Clippy (spine-mesh alone)
+        run: cargo clippy -p spine-mesh --all-targets -- -D warnings
+
+  # ── Research workspace ──────────────────────────────────────────────────────
+  # research/ is a separate cargo workspace (its own Cargo.toml, Cargo.lock and
+  # target/). spine-browser stays excluded, as it was before the split.
+  research:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: research
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            research/target
+          key: ${{ runner.os }}-research-${{ hashFiles('research/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-research-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (all targets)
         run: cargo clippy --workspace --exclude spine-browser --all-targets -- -D warnings
+
+      - name: Run tests (lib + integration)
+        run: cargo test --workspace --exclude spine-browser --lib --tests
+
+  # ── Wire vectors ────────────────────────────────────────────────────────────
+  # The spine-wire v1 conformance vectors are checked by an independent
+  # implementation written in Python (standard library only). No other job
+  # uses Python, so this uses the runner's preinstalled python3 rather than a
+  # setup action. The Rust side of the check is
+  # src/spine-protocol/tests/conformance_vectors.rs, run by the test job.
+  wire-vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check every vector with the Python reference implementation
+        run: python3 scripts/wire_v1.py check docs/spec/00-wire.vectors.json
+
+      - name: The committed vectors match the generator
+        run: python3 scripts/wire_v1.py generate | diff - docs/spec/00-wire.vectors.json
+
+      - name: Check every name vector with the Python reference implementation
+        run: python3 scripts/names_v1.py check docs/spec/02-names.vectors.json
+
+      - name: The committed name vectors match the generator
+        run: python3 scripts/names_v1.py generate | diff - docs/spec/02-names.vectors.json
+
+      - name: Check every authority vector with the Python reference implementation
+        run: python3 scripts/authority_v1.py check docs/spec/03-authority.vectors.json
+
+      - name: The committed authority vectors match the generator
+        run: python3 scripts/authority_v1.py generate | diff - docs/spec/03-authority.vectors.json
 
   # ── Security Audit ─────────────────────────────────────────────────────────
   audit:
@@ -93,13 +178,13 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-test-
 
       - name: Build workspace
-        run: cargo build --workspace --exclude spine-browser --target ${{ matrix.target }}
+        run: cargo build --workspace --target ${{ matrix.target }}
 
       - name: Run tests (lib + integration)
-        run: cargo test --workspace --exclude spine-browser --lib --tests --target ${{ matrix.target }}
+        run: cargo test --workspace --lib --tests --target ${{ matrix.target }}
 
       - name: Run doc tests
-        run: cargo test --workspace --exclude spine-browser --doc --target ${{ matrix.target }}
+        run: cargo test --workspace --doc --target ${{ matrix.target }}
 
 
   # -- Coverage ---------------------------------------------------------------
@@ -129,7 +214,7 @@ jobs:
           restore-keys: ${{ runner.os }}-coverage-
 
       - name: Generate coverage
-        run: cargo llvm-cov --workspace --exclude spine-browser --lib --tests --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --lib --tests --lcov --output-path lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5
@@ -146,6 +231,12 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories licenses sources
+      # research/ is its own workspace and lockfile; spine-browser's GUI
+      # dependencies are only reachable from there.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: research/Cargo.toml
+          command: check advisories licenses sources
 
   # -- MSRV Check -------------------------------------------------------------
   msrv:
@@ -153,7 +244,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.89.0
 
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -170,7 +261,7 @@ jobs:
           restore-keys: ${{ runner.os }}-msrv-
 
       - name: Check MSRV compilation
-        run: cargo check --workspace --exclude spine-browser
+        run: cargo check --workspace --locked
 
   # ── Build Release Binaries ─────────────────────────────────────────────────
   build:
@@ -265,7 +356,7 @@ jobs:
           restore-keys: ${{ runner.os }}-docs-
 
       - name: Build API docs
-        run: cargo doc --workspace --exclude spine-browser --no-deps
+        run: cargo doc --workspace --no-deps
 
       - uses: actions/upload-artifact@v6
         with:
@@ -298,7 +389,7 @@ jobs:
         run: |
           cargo bench -p spine-protocol --bench hot_path_bench -- --output-format bencher | tee bench_output.txt
           cargo bench -p spine-transport --bench transport_bench -- --output-format bencher | tee -a bench_output.txt
-          cargo bench -p spine-kernel --bench kernel_bench -- --output-format bencher | tee -a bench_output.txt
+          (cd research && cargo bench -p spine-kernel --bench kernel_bench -- --output-format bencher) | tee -a bench_output.txt
 
       # The benchmark-history step that stood here never worked. It used
       # benchmark-action/github-action-benchmark, which fetches a `gh-pages`

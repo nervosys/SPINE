@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,42 +181,36 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture Overview</a></h1>
-<p>SPINE is a headless semantic browser with adaptive encryption. It is organized as a Rust workspace of 19 crates, each with a focused responsibility.</p>
+<p>SPINE is a headless semantic browser and agent web stack. The root Cargo workspace has 18 crates, each with a focused responsibility; experimental crates live in a separate <code>research/</code> workspace (see <a href="./crates.html">Crate Map</a>).</p>
 <h2 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h2>
 <ol>
 <li><strong>Semantic-first</strong> — All content is parsed into Unified Representations, not raw HTML</li>
 <li><strong>Agent-native</strong> — Built for programmatic access, not human browsing</li>
-<li><strong>Secure by default</strong> — Layered encryption from TLS to latent-space cryptography</li>
-<li><strong>Bioinspired</strong> — Memory, learning, and coordination modeled on biological systems</li>
-<li><strong>Zero-copy where possible</strong> — Kernel primitives and transport avoid unnecessary allocations</li>
+<li><strong>One wire</strong> — A single versioned binary protocol (spine-wire v1) with deterministic encoding, so every value has exactly one byte representation</li>
+<li><strong>Honest security claims</strong> — Native-path confidentiality comes from TLS; the mesh has its own signed and encrypted handshake; research code is labelled as such</li>
+<li><strong>Zero-copy where possible</strong> — Transport avoids unnecessary allocations</li>
 </ol>
 <h2 id="system-layers"><a class="header" href="#system-layers">System Layers</a></h2>
 <pre><code>┌─────────────────────────────────────────────────────────────┐
 │                      User Interfaces                         │
-│   spine-cli · spine-gateway · spine-browser                  │
+│   spine-cli · spine-gateway · spine-grpc                     │
 ├─────────────────────────────────────────────────────────────┤
 │                      Agent SDK                               │
-│   spine-agent (connect, navigate, search, execute, swarm)    │
-├─────────────────────────────────────────────────────────────┤
-│                   Agentic Intelligence                       │
-│   spine-agentic (neural protocols, swarm, social cognition)  │
+│   spine-agent (connect, navigate, execute, knowledge, names) │
 ├──────────┬──────────┬──────────┬──────────┬─────────────────┤
-│ Protocol │ Parser   │ Compiler │ Knowledge│ Core             │
-│ messages │ HTML→UR  │ HLS→WASM │ CRDT mem │ server+config    │
+│ Protocol │ Parser   │ Compiler │ Name     │ Core             │
+│ wire v1  │ HTML→UR  │ HLS→WASM │ + Mesh   │ daemon + config  │
 ├──────────┴──────────┴──────────┴──────────┴─────────────────┤
 │                    Infrastructure                            │
-│  transport · stream · crypto · neural · wasm · human         │
-├─────────────────────────────────────────────────────────────┤
-│                    spine-kernel                               │
-│  SIMD · allocators · atomics · ring buffers · RDTSC          │
+│  transport · stream · session · storage · cache · wasm       │
 └─────────────────────────────────────────────────────────────┘
 </code></pre>
 <h2 id="data-flow"><a class="header" href="#data-flow">Data Flow</a></h2>
 <ol>
-<li><strong>Agent connects</strong> via TCP, TLS, or WebSocket to spine-core server</li>
-<li><strong>Requests</strong> are serialized as <code>Message</code> enum through <code>ProtocolHandler</code></li>
-<li><strong>Server</strong> fetches web content, parses to <code>UnifiedRepresentation</code></li>
-<li><strong>Response</strong> flows back through optional compression, encryption, speculation</li>
+<li><strong>Agent connects</strong> via TCP, TLS, or WebSocket to the <code>spine-core</code> daemon and exchanges <code>HELLO</code> / <code>HELLO_ACK</code></li>
+<li><strong>Commands</strong> travel as <code>REQUEST</code> frames whose body is a <code>BrowserCommand</code> in deterministic CBOR, handled by <code>spine_protocol::connection::Connection</code></li>
+<li><strong>Daemon</strong> fetches web content under its outbound policy and parses it to a <code>UnifiedRepresentation</code></li>
+<li><strong>Reply</strong> is a <code>RESPONSE</code> frame with the same request id, whose body is <code>{ok: result}</code> or <code>{err: {code, message}}</code>, optionally zstd-compressed</li>
 <li><strong>Agent</strong> receives structured data for processing</li>
 </ol>
 <h2 id="security-layers"><a class="header" href="#security-layers">Security Layers</a></h2>
@@ -226,15 +220,15 @@
 <tr><th>Layer</th><th>Component</th><th>Purpose</th></tr>
 </thead>
 <tbody>
-<tr><td>Transport</td><td>TLS 1.3</td><td>Channel encryption</td></tr>
-<tr><td>Protocol</td><td>Chameleon keys</td><td>Moving-target defense</td></tr>
-<tr><td>Latent</td><td>Neural encoding</td><td>Latent-space cryptography</td></tr>
-<tr><td>Post-quantum</td><td>RLWE lattice</td><td>Future-proof key exchange</td></tr>
-<tr><td>Identity</td><td>X3DH</td><td>Initial trust establishment</td></tr>
-<tr><td>Anti-Sybil</td><td>Stake + PoW</td><td>Decentralized trust</td></tr>
+<tr><td>Transport</td><td>TLS, optional mutual TLS</td><td>Confidentiality and authentication on the native wire</td></tr>
+<tr><td>Wire</td><td>spine-wire v1 framing and strict CBOR</td><td>Bounded frames, one encoding per value; no encryption</td></tr>
+<tr><td>Mesh</td><td><code>spine-session</code> handshake, signed envelopes</td><td>Node-to-node authentication and encryption (a separate protocol)</td></tr>
+<tr><td>Identity</td><td>Ed25519 keys and signed name records</td><td>Self-certifying names and authorship</td></tr>
 </tbody>
 </table>
 </div>
+<p>There is no SPINE-level encryption, obfuscation, padding or traffic-analysis
+resistance on the native wire. See <a href="./security.html">Security</a>.</p>
 
                     </main>
 

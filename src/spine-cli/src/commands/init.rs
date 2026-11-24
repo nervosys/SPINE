@@ -8,6 +8,10 @@ const DEFAULT_SPINE_TOML: &str = r#"# SPINE Server Configuration
 # See https://github.com/nervosys/SPINE for documentation
 
 [server]
+# Loopback only. Binding any other address (for example "0.0.0.0") is refused
+# at startup unless `mutual_tls = true` under [tls] (with TLS enabled and a
+# client CA), or `allow_unauthenticated_remote = true` here, which says the
+# network itself is trusted: every native client has full control of the node.
 host = "127.0.0.1"
 port = 8080
 ws_port_offset = 1
@@ -40,6 +44,12 @@ const DEFAULT_SPINE_TOML_TLS: &str = r#"# SPINE Server Configuration (TLS enable
 # See https://github.com/nervosys/SPINE for documentation
 
 [server]
+# Every interface. This is valid only because `mutual_tls = true` under [tls]
+# identifies each client by a certificate signed by `ca_path`; every native
+# client has full control of this node. Without mutual TLS, a host that is not
+# loopback is refused at startup unless `allow_unauthenticated_remote = true`
+# is set here, which says the network itself is trusted. For a node reached
+# only from this machine, use host = "127.0.0.1".
 host = "0.0.0.0"
 port = 8443
 ws_port_offset = 1
@@ -56,7 +66,9 @@ shutdown_timeout_secs = 30
 enabled = true
 cert_path = "certs/cert.pem"
 key_path = "certs/key.pem"
+# The CA that signs the client certificates this node accepts.
 ca_path = "certs/ca.pem"
+mutual_tls = true
 
 [cluster]
 port_offset = 1000
@@ -147,39 +159,6 @@ async fn main() -> Result<()> {
 }
 "#;
 
-const EXAMPLE_SWARM: &str = r#"//! Swarm intelligence example
-//!
-//! Creates a collaborative plan and delegates tasks across agents.
-
-use spine_agent::AgentClient;
-use anyhow::Result;
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    env_logger::init();
-
-    let mut client = AgentClient::connect("127.0.0.1:8080").await?;
-
-    // Enable autonomous mode
-    client.set_autonomous_mode(true).await?;
-    println!("Autonomous mode enabled");
-
-    // Create a swarm plan
-    let plan_id = client.create_swarm_plan("Research and summarize AI news").await?;
-    println!("Created plan: {}", plan_id);
-
-    // Initiate a swarm search
-    client.swarm_search("latest AI developments 2026", 3).await?;
-    println!("Swarm search initiated");
-
-    // Check agentic state
-    let state = client.get_agentic_state().await?;
-    println!("Agent state: {}", serde_json::to_string_pretty(&state)?);
-
-    Ok(())
-}
-"#;
-
 const EXAMPLE_BENCHMARK: &str = r#"//! Benchmark example
 //!
 //! Measures latency and throughput of a SPINE server.
@@ -219,14 +198,6 @@ async fn main() -> Result<()> {
     println!("\nUR Fetch Throughput:");
     println!("  100 fetches in {:.2}s", elapsed.as_secs_f64());
     println!("  {:.1} fetches/sec", 100.0 / elapsed.as_secs_f64());
-
-    // Speculation stats
-    let stats = client.get_speculation_stats();
-    println!("\nSpeculation Stats:");
-    println!("  Predictions: {}", stats.output_predictions);
-    println!("  Hits: {}", stats.output_hits);
-    println!("  Accuracy: {:.1}%", stats.output_accuracy() * 100.0);
-    println!("  Bytes saved: {}", stats.bytes_saved);
 
     Ok(())
 }
@@ -303,7 +274,6 @@ log = "0.4"
         let examples_dir = path.join("examples");
         std::fs::create_dir_all(&examples_dir)?;
         std::fs::write(examples_dir.join("knowledge.rs"), EXAMPLE_KNOWLEDGE)?;
-        std::fs::write(examples_dir.join("swarm.rs"), EXAMPLE_SWARM)?;
         std::fs::write(examples_dir.join("benchmark.rs"), EXAMPLE_BENCHMARK)?;
         eprintln!("  {} Created examples/", "✓".green());
     }
@@ -314,4 +284,30 @@ log = "0.4"
     eprintln!("  3. Check server health:   {}", "spine status".cyan());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> spine_core::SpineConfig {
+        toml::from_str(text).expect("the template is valid TOML for the daemon")
+    }
+
+    #[test]
+    fn the_plain_template_binds_loopback_and_validates_without_the_unauthenticated_flag() {
+        let config = parse(DEFAULT_SPINE_TOML);
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert!(!config.server.allow_unauthenticated_remote);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_tls_template_is_mutual_tls_and_does_not_set_the_unauthenticated_flag() {
+        let config = parse(DEFAULT_SPINE_TOML_TLS);
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert!(config.tls.enabled && config.tls.mutual_tls);
+        assert!(!config.server.allow_unauthenticated_remote);
+        config.validate().unwrap();
+    }
 }

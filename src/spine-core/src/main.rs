@@ -6,17 +6,32 @@ use axum::{routing::get, Router};
 use dashmap::DashMap;
 use prometheus::{Encoder, TextEncoder};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "research")]
 use spine_cluster::{ClusterNode, NodeCapabilities};
-use spine_neural::NeuralLatentEncoder;
-use spine_parser::parse_html;
-use spine_protocol::{BrowserCommand, Message, PreComputedResponse, ProtocolHandler, Response};
+use spine_core::authority::Authorized;
+use spine_core::authority_audit::{Admission, AuthContext, AuthorityNode};
+use spine_core::outbound;
+use spine_protocol::body::{
+    ERR_ACTION_UNSUPPORTED, ERR_BATCH_TOO_LARGE, ERR_CAPABILITY_DENIED, ERR_DELETE_REFUSED,
+    ERR_EXECUTION_FAILED, ERR_INTERNAL, ERR_INVALID_PEER_ID, ERR_INVALID_REQUEST, ERR_INVALID_SEED,
+    ERR_KNOWLEDGE_CAPACITY, ERR_LOOKUP_FAILED, ERR_LOOKUP_UNAVAILABLE, ERR_MALFORMED_RECORD,
+    ERR_MESH_CALL_FAILED, ERR_NAMESPACE_UNAVAILABLE, ERR_NO_PAGE, ERR_OVERLOADED, ERR_PARSE_ERROR,
+    ERR_PUBLISH_FAILED, ERR_RATE_LIMIT, ERR_RECORD_EXPIRED, ERR_RECORD_REJECTED,
+    ERR_RESOURCE_NOT_FOUND, ERR_SESSION_CAPACITY, ERR_SESSION_EXPIRED, ERR_SESSION_NOT_FOUND,
+};
+use spine_protocol::connection::{
+    response_ok_body, Connection, ConnectionError, ConnectionReader, ConnectionWriter, Incoming,
+};
+use spine_protocol::frame::{CloseCode, Frame, FrameError, FrameType, MAX_FRAME};
+use spine_protocol::native;
+use spine_protocol::{BrowserCommand, ToolOutcome, WireError};
 use spine_transport::WebSocketStream;
 use spine_wasm::WasmRuntime;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, instrument, span, warn, Level};
+use tracing::{debug, error, info, instrument, span, warn, Instrument, Level};
 use uuid::Uuid;
 
 mod config;
@@ -41,16 +56,15 @@ struct Session {
     /// Cached parsed UnifiedRepresentation (invalidated on navigation)
     #[serde(skip)]
     cached_ur: Option<spine_parser::UnifiedRepresentation>,
-    last_command: Option<BrowserCommand>,
-    needs_morph: bool,
     /// Reactive state variables
     state: std::collections::HashMap<String, serde_json::Value>,
     /// Current HLB binary for reactivity
     current_binary: Option<spine_protocol::SpineBinary>,
-    /// Command history for this session
-    history: Vec<BrowserCommand>,
-    /// Whether the agent is in autonomous mode
-    autonomous_mode: bool,
+    /// Last detach/import time. Zero is a legacy record granted one retention interval.
+    #[serde(default)]
+    retained_at: u64,
+    #[serde(skip)]
+    detached_since: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -60,14 +74,46 @@ impl Session {
             current_html: None,
             current_vdom: None,
             cached_ur: None,
-            last_command: None,
-            needs_morph: false,
             state: std::collections::HashMap::new(),
             current_binary: None,
-            history: Vec::new(),
-            autonomous_mode: false,
+            retained_at: unix_now(),
+            detached_since: Some(std::time::Instant::now()),
         }
     }
+}
+
+/// Connections own this lease across awaited commands; aborts also detach the session.
+struct RateLease {
+    state: Arc<BrowserState>,
+    id: String,
+}
+impl Drop for RateLease {
+    fn drop(&mut self) {
+        self.state.rate_limits.remove(&self.id);
+    }
+}
+
+struct SessionLease {
+    state: Arc<BrowserState>,
+    id: String,
+}
+impl Drop for SessionLease {
+    fn drop(&mut self) {
+        let mut active = self.state.session_gate.lock().unwrap();
+        if let Some(mut session) = self.state.sessions.get_mut(&self.id) {
+            session.retained_at = unix_now();
+            session.detached_since = Some(std::time::Instant::now());
+        }
+        active.remove(&self.id);
+        self.state.rate_limits.remove(&self.id);
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct SessionSnapshot {
+    version: u32,
+    sessions: std::collections::BTreeMap<String, Session>,
+    knowledge: std::collections::BTreeMap<String, Vec<KnowledgeEntry>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -78,6 +124,7 @@ struct KnowledgeEntry {
     timestamp_ns: u64,
 }
 
+#[cfg(feature = "research")]
 #[derive(Clone)]
 struct KnowledgeProposal {
     key: String,
@@ -87,6 +134,7 @@ struct KnowledgeProposal {
     origin_node: spine_cluster::NodeId,
 }
 
+#[cfg(feature = "research")]
 #[derive(Clone)]
 struct KnowledgeVote {
     voter_id: spine_cluster::NodeId,
@@ -95,99 +143,292 @@ struct KnowledgeVote {
 }
 
 struct BrowserState {
+    resources: spine_core::resources::ResourceStore,
     sessions: DashMap<String, Session>,
+    /// Serializes admission/import/reaping and protects connected sessions.
+    session_gate: std::sync::Mutex<std::collections::HashSet<String>>,
+    snapshot_gate: Mutex<()>,
     knowledge_base: DashMap<String, Vec<KnowledgeEntry>>,
+    /// Bytes held in `knowledge_base`, over every session and bucket.
+    knowledge_budget: spine_core::knowledge::KnowledgeBudget,
+    #[cfg(feature = "research")]
     proposals: DashMap<Uuid, KnowledgeProposal>,
+    #[cfg(feature = "research")]
     plans: DashMap<Uuid, spine_protocol::SwarmPlan>,
-    client: reqwest::Client,
-    /// RwLock allows concurrent encoder reads (multiple sessions encoding in parallel)
-    encoder: tokio::sync::RwLock<NeuralLatentEncoder>,
+    fetcher: outbound::Fetcher,
+    #[cfg(feature = "research")]
     cluster: Mutex<ClusterNode>,
-    agentic_runtime: Arc<spine_agentic::AgenticWebRuntime>,
     /// Rate limiter: session_id -> (tokens, last_update)
     rate_limits: DashMap<String, (f64, std::time::Instant)>,
-    /// Cached WasmRuntime (expensive to create, safe to reuse)
-    wasm_runtime: spine_wasm::WasmRuntime,
-    /// Cached NeuralProtocol per domain (avoids re-allocating neural weights per request)
-    neural_protocols: DashMap<String, spine_agentic::NeuralProtocol>,
-    /// Active connection count per IP address
-    connections_per_ip: DashMap<std::net::IpAddr, std::sync::atomic::AtomicUsize>,
-    /// Total active connection count
-    active_connections: std::sync::atomic::AtomicUsize,
+    /// Cached WasmRuntime (expensive to create, safe to reuse). Shared
+    /// by `Arc` so a program can run on a blocking thread.
+    wasm_runtime: Arc<spine_wasm::WasmRuntime>,
+    /// Process-wide permits for programs compiling and running at once.
+    execute_permits: Arc<tokio::sync::Semaphore>,
+    /// Shared native connection admission, including unfinished handshakes.
+    connections: Arc<spine_core::connections::ConnectionBudget>,
     /// Server start time for uptime calculation
     start_time: std::time::Instant,
     /// Shutdown signal: when true, stop accepting new connections
     shutting_down: std::sync::atomic::AtomicBool,
+    /// The last session persistence attempt failed; cleared by the next success.
+    persistence_failing: std::sync::atomic::AtomicBool,
+    /// Becomes true when shutdown starts. Each native session watches it, sends
+    /// `CLOSE(shutting_down)` once it is idle, and ends.
+    shutdown: tokio::sync::watch::Sender<bool>,
     /// Server configuration
     config: SpineConfig,
     /// The namespace this node serves: names it publishes, plus records it has
     /// learned. This is what makes the node an *origin* in the agent web rather
     /// than only a proxy onto the human one.
-    names: spine_name::LocalResolver,
+    names: Arc<spine_name::LocalResolver>,
     /// The mesh this node resolves *through*, when it has joined one.
     ///
     /// `None` means the node is an origin but not a participant: it serves what
     /// it holds and cannot look anything up. That is a supported configuration,
     /// not a failure — a node with no seeds has nothing to route through.
-    mesh_names: Option<Arc<spine_agentic::naming_mesh::MeshNameResolver>>,
+    mesh_names: Option<Arc<spine_mesh::naming_mesh::MeshNameResolver>>,
+    /// Owner renewal outcomes and the bootstrap at join, counted.
+    namespace_counters: Arc<namespace::NamespaceCounters>,
+    /// The authority carrier: the mode, and in mode `audit` the gate, the node
+    /// key and the counters.
+    authority: Arc<AuthorityNode>,
+}
+
+impl KnowledgeEntry {
+    /// What the entry is charged against the daemon-wide knowledge budget.
+    fn cost(&self) -> u64 {
+        spine_core::knowledge::entry_cost(spine_core::knowledge::entry_bytes(
+            &self.key,
+            &self.value,
+            &self.tags,
+        ))
+    }
 }
 
 impl BrowserState {
-    async fn save_sessions(&self) -> anyhow::Result<()> {
-        let dir = std::path::Path::new("sessions");
-        tokio::fs::create_dir_all(dir).await.ok();
-
-        for entry in self.sessions.iter() {
-            let id = entry.key();
-            let session = entry.value();
-            let path = dir.join(format!("{}.json", id));
-            let json = serde_json::to_string(session)?;
-            tokio::fs::write(path, json).await?;
-        }
-
-        // Save knowledge base
-        let kb_dir = std::path::Path::new("knowledge");
-        tokio::fs::create_dir_all(kb_dir).await.ok();
-        for entry in self.knowledge_base.iter() {
-            let id = entry.key();
-            let entries = entry.value();
-            let path = kb_dir.join(format!("{}.json", id));
-            let json = serde_json::to_string(entries)?;
-            tokio::fs::write(path, json).await?;
-        }
-
+    /// Appends `entry` to the knowledge of `bucket` (a session id or a
+    /// cluster bucket), holding it to the per-session entry cap, the entry
+    /// size and the daemon-wide byte budget. The refusal carries the reason
+    /// and the wire code that answers it.
+    fn append_knowledge(
+        &self,
+        bucket: &str,
+        entry: KnowledgeEntry,
+    ) -> Result<(), spine_core::knowledge::Refusal> {
+        let size = spine_core::knowledge::entry_bytes(&entry.key, &entry.value, &entry.tags);
+        let mut held = self.knowledge_base.entry(bucket.to_string()).or_default();
+        spine_core::knowledge::admit_entry(held.len(), MAX_KNOWLEDGE_ENTRIES_PER_SESSION, size)?;
+        self.knowledge_budget
+            .reserve(spine_core::knowledge::entry_cost(size))
+            .map_err(spine_core::knowledge::Refusal::Capacity)?;
+        held.push(entry);
         Ok(())
     }
 
-    fn load_sessions(&self) -> anyhow::Result<()> {
-        let dir = std::path::Path::new("sessions");
-        if dir.exists() {
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) {
-                        let json = std::fs::read_to_string(&path)?;
-                        let session: Session = serde_json::from_str(&json)?;
-                        self.sessions.insert(id, session);
-                    }
-                }
-            }
+    /// Deletes the entries of the session `session_id` whose key is exactly
+    /// `key`, releases what they were charged from the daemon-wide budget and
+    /// returns how many there were. Zero when the session holds none (or no
+    /// knowledge at all), so a repeat is a no-op. Other sessions' and the
+    /// cluster buckets' entries are never looked at.
+    fn delete_knowledge(&self, session_id: &str, key: &str) -> usize {
+        match self.knowledge_base.get_mut(session_id) {
+            Some(mut held) => spine_core::knowledge::delete_matching(
+                &mut *held,
+                |entry| entry.key == key,
+                KnowledgeEntry::cost,
+                &self.knowledge_budget,
+            ),
+            None => 0,
         }
+    }
 
-        let kb_dir = std::path::Path::new("knowledge");
-        if kb_dir.exists() {
-            for entry in std::fs::read_dir(kb_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(String::from) {
-                        let json = std::fs::read_to_string(&path)?;
-                        let entries: Vec<KnowledgeEntry> = serde_json::from_str(&json)?;
-                        self.knowledge_base.insert(id, entries);
+    fn create_session(self: &Arc<Self>) -> Option<SessionLease> {
+        let mut active = self.session_gate.lock().unwrap();
+        if self.sessions.len() >= self.config.server.max_sessions {
+            return None;
+        }
+        let id = Uuid::new_v4().to_string();
+        self.sessions.insert(id.clone(), Session::new());
+        active.insert(id.clone());
+        Some(SessionLease {
+            state: self.clone(),
+            id,
+        })
+    }
+
+    #[cfg(feature = "research")]
+    fn import_session(&self, id: String, mut session: Session) -> bool {
+        let _gate = self.session_gate.lock().unwrap();
+        if !spine_core::session_store::valid_id(&id)
+            || self.sessions.len() >= self.config.server.max_sessions
+            || self.sessions.contains_key(&id)
+        {
+            return false;
+        }
+        session.retained_at = unix_now();
+        session.detached_since = Some(std::time::Instant::now());
+        self.sessions.insert(id, session);
+        true
+    }
+
+    fn reap_sessions(&self) -> Vec<String> {
+        let active = self.session_gate.lock().unwrap();
+        let ttl = std::time::Duration::from_secs(self.config.server.session_retention_secs);
+        let ids: Vec<_> = self
+            .sessions
+            .iter()
+            .filter(|e| {
+                !active.contains(e.key()) && e.detached_since.is_some_and(|t| t.elapsed() >= ttl)
+            })
+            .map(|e| e.key().clone())
+            .collect();
+        for id in &ids {
+            self.sessions.remove(id);
+            if let Some((_, entries)) = self.knowledge_base.remove(id) {
+                self.knowledge_budget
+                    .release(entries.iter().map(KnowledgeEntry::cost).sum());
+            }
+            self.rate_limits.remove(id);
+        }
+        ids
+    }
+
+    async fn save_sessions(self: &Arc<Self>) -> anyhow::Result<()> {
+        let _serial = self.snapshot_gate.lock().await;
+        let state = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let snapshot = {
+                let active = state.session_gate.lock().unwrap();
+                let now = unix_now();
+                SessionSnapshot {
+                    version: 1,
+                    sessions: state
+                        .sessions
+                        .iter()
+                        .map(|e| {
+                            let mut session = e.value().clone();
+                            if active.contains(e.key()) {
+                                session.retained_at = now;
+                            }
+                            (e.key().clone(), session)
+                        })
+                        .collect(),
+                    knowledge: state
+                        .knowledge_base
+                        .iter()
+                        .map(|e| (e.key().clone(), e.value().clone()))
+                        .collect(),
+                }
+            };
+            spine_core::session_store::write(
+                std::path::Path::new("spine-sessions-v1.json"),
+                &snapshot,
+            )
+        })
+        .await?
+    }
+
+    fn load_sessions(&self) -> anyhow::Result<()> {
+        use spine_core::session_store::{read, valid_id, MAX_LEGACY_BYTES, MAX_SNAPSHOT_BYTES};
+        let manifest = std::path::Path::new("spine-sessions-v1.json");
+        let mut snapshot = if manifest.exists() {
+            let snapshot: SessionSnapshot = read(manifest, MAX_SNAPSHOT_BYTES)?;
+            anyhow::ensure!(
+                snapshot.version == 1,
+                "unsupported session snapshot version"
+            );
+            snapshot
+        } else {
+            // One-time migration. An authoritative manifest prevents old files resurrecting records.
+            let mut snapshot = SessionSnapshot {
+                version: 1,
+                sessions: Default::default(),
+                knowledge: Default::default(),
+            };
+            let mut total = 0u64;
+            for directory in ["sessions", "knowledge"] {
+                let dir = std::path::Path::new(directory);
+                if !dir.exists() {
+                    continue;
+                }
+                let mut count = 0usize;
+                for entry in std::fs::read_dir(dir)? {
+                    let path = entry?.path();
+                    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                        continue;
+                    }
+                    let Some(id) = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .filter(|id| valid_id(id))
+                    else {
+                        continue;
+                    };
+                    count += 1;
+                    anyhow::ensure!(
+                        count <= self.config.server.max_sessions + 1,
+                        "legacy session record count exceeds configured limit"
+                    );
+                    total = total.saturating_add(std::fs::metadata(&path)?.len());
+                    anyhow::ensure!(
+                        total <= MAX_SNAPSHOT_BYTES,
+                        "legacy session data exceeds byte limit"
+                    );
+                    if directory == "sessions" {
+                        snapshot
+                            .sessions
+                            .insert(id.into(), read(&path, MAX_LEGACY_BYTES)?);
+                    } else {
+                        snapshot
+                            .knowledge
+                            .insert(id.into(), read(&path, MAX_LEGACY_BYTES)?);
                     }
                 }
             }
+            snapshot
+        };
+        anyhow::ensure!(
+            snapshot.sessions.len() <= self.config.server.max_sessions,
+            "persisted session count exceeds configured limit"
+        );
+        anyhow::ensure!(
+            snapshot.knowledge.len() <= self.config.server.max_sessions + 1,
+            "persisted knowledge count exceeds configured limit"
+        );
+        let now = unix_now();
+        let ttl = self.config.server.session_retention_secs;
+        snapshot.sessions.retain(|id, session| {
+            if !valid_id(id) {
+                return false;
+            }
+            let Some(age) = spine_core::session_store::restored_age(session.retained_at, now, ttl)
+            else {
+                return false;
+            };
+            session.retained_at = now.saturating_sub(age);
+            session.detached_since = Some(
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(age))
+                    .unwrap_or_else(std::time::Instant::now),
+            );
+            true
+        });
+        snapshot
+            .knowledge
+            .retain(|id, _| id == "cluster_shared" || snapshot.sessions.contains_key(id));
+        // Commit migration/expiry before exposing state or starting listeners. Fail closed on corruption.
+        spine_core::session_store::write(manifest, &snapshot)?;
+        for (id, session) in snapshot.sessions {
+            self.sessions.insert(id, session);
+        }
+        // Only what is kept after the drops above is charged. A snapshot an
+        // older daemon wrote past the budget loads whole; new entries are
+        // refused until enough is released.
+        for (id, knowledge) in snapshot.knowledge {
+            self.knowledge_budget
+                .charge(knowledge.iter().map(KnowledgeEntry::cost).sum());
+            self.knowledge_base.insert(id, knowledge);
         }
         Ok(())
     }
@@ -224,23 +465,55 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Map a resolver provenance onto its protocol-level counterpart.
-fn wire_provenance(p: spine_name::Provenance) -> spine_protocol::NameProvenance {
-    match p {
-        spine_name::Provenance::Cache => spine_protocol::NameProvenance::Cache,
-        spine_name::Provenance::StaleCache => spine_protocol::NameProvenance::StaleCache,
-        spine_name::Provenance::Local => spine_protocol::NameProvenance::Local,
-        spine_name::Provenance::Network => spine_protocol::NameProvenance::Network,
-        spine_name::Provenance::Address => spine_protocol::NameProvenance::Address,
+/// Directed writes are transport delivery attempts, not storage acknowledgements.
+/// Report local persistence independently and preserve partial mesh failures.
+async fn publication_report(
+    state: &BrowserState,
+    record: spine_name::NameRecord,
+    log: Option<spine_name::SuccessionLog>,
+) -> serde_json::Value {
+    let mut sent = 0;
+    let mut failed = 0;
+    let mut broadcast = false;
+    let mut replication_error = None;
+    if let Some(mesh) = &state.mesh_names {
+        // A rotated name's record is admitted and replicated with its log.
+        let outcome = match log {
+            Some(log) => mesh.publish_with_log(record.clone(), log).await,
+            None => mesh.publish(record.clone()).await,
+        };
+        match outcome {
+            Ok(report) => {
+                sent = report.sent;
+                failed = report.failed;
+                broadcast = report.broadcast;
+            }
+            Err(error) => replication_error = Some(error.to_string()),
+        }
     }
+    serde_json::json!({
+        "status": "published", "name": record.name.to_string(), "stored": true,
+        "local_persistent": !state.config.namespace.records_path.is_empty(),
+        "replicas": sent, "replication_sent": sent, "replication_failed": failed,
+        "replication_broadcast": broadcast, "replication_error": replication_error,
+        "replication_acknowledged": 0, "durable": false,
+        "retry": "mesh maintenance reoffers live records; remote persistence is not acknowledged"
+    })
 }
 
 /// Resolve one name, honouring a caller-supplied content-hash validator.
+///
+/// The pure mapping from what the resolver says to the wire outcome, and the
+/// evidence each outcome carries, is `spine_core::name_outcome`; this function
+/// only decides what to ask. A `resolved` answer carries the succession log the
+/// node holds; a retired, compromised or revoked name answers its own outcome
+/// with its evidence (`docs/spec/00-wire.md` 12.5).
 async fn resolve_one(
     state: &Arc<BrowserState>,
     raw: &str,
     if_none_match: Option<[u8; 32]>,
 ) -> spine_protocol::NameResolution {
+    use spine_core::name_outcome;
     use spine_name::Resolver;
 
     let uri = match spine_name::SpineUri::parse(raw) {
@@ -258,42 +531,48 @@ async fn resolve_one(
             // The validator exchange: if the caller already holds this exact
             // representation, say so and send no body. The hash is the content's
             // own, so unlike an ETag the caller can verify the claim itself.
+            // Only an answer that would have been `resolved` can be unchanged.
+            let answer = name_outcome::resolved(
+                &state.names,
+                raw,
+                &resolution.record,
+                resolution.provenance,
+            );
             if let (Some(theirs), Some(ours)) = (if_none_match, resolution.record.content_hash) {
-                if theirs == ours {
+                if theirs == ours
+                    && matches!(answer, spine_protocol::NameResolution::Resolved { .. })
+                {
                     return spine_protocol::NameResolution::Unchanged {
                         ttl_secs: resolution.record.remaining_ttl(state.names.now()) as u32,
                     };
                 }
             }
-            match serde_json::to_value(&resolution.record) {
-                Ok(record) => spine_protocol::NameResolution::Resolved {
-                    record,
-                    provenance: wire_provenance(resolution.provenance),
-                },
-                Err(e) => spine_protocol::NameResolution::Invalid {
-                    name: raw.to_string(),
-                    reason: e.to_string(),
-                },
+            answer
+        }
+        // A still-valid negative entry is an answer, not a miss: it is the whole
+        // point of caching the absence. Both surface as `NotFound` from the
+        // resolver, so ask the cache which this was before walking the mesh.
+        // Publishing or renewing a name clears the entry, so this cannot mask a
+        // newly published record.
+        Err(spine_name::NameError::NotFound(_)) if state.names.is_negative_cached(&uri) => {
+            spine_protocol::NameResolution::NotFound {
+                name: raw.to_string(),
             }
         }
         // Not held locally: this is where the node stops being a directory and
         // starts being a participant. Cache what the walk returns, so the next
         // ask for the same name is answered without another round trip.
         Err(spine_name::NameError::NotFound(_)) => match resolve_over_mesh(state, &uri).await {
-            Some(record) => {
-                let _ = state.names.cache_record(record.clone());
-                match serde_json::to_value(&record) {
-                    Ok(value) => spine_protocol::NameResolution::Resolved {
-                        record: value,
-                        provenance: spine_protocol::NameProvenance::Network,
-                    },
-                    Err(e) => spine_protocol::NameResolution::Invalid {
-                        name: raw.to_string(),
-                        reason: e.to_string(),
-                    },
-                }
+            Ok(Some(record)) => {
+                // The log that came with the record was offered to the local
+                // resolver already, so a rotated name's record can be cached. A
+                // refusal here is about the name's standing (the log retires
+                // it, it is compromised, the record needs a log this node does
+                // not hold) and `from_mesh` answers it with its outcome.
+                let cached = state.names.cache_record(record.clone());
+                name_outcome::from_mesh(&state.names, raw, &uri, &record, cached.as_ref().err())
             }
-            None => {
+            Ok(None) => {
                 // Remember the miss: an agent retrying a name nobody has should
                 // not re-walk the keyspace every time.
                 state.names.cache_negative(&uri);
@@ -301,11 +580,33 @@ async fn resolve_one(
                     name: raw.to_string(),
                 }
             }
+            Err(reason) => {
+                // A lookup can teach this node that the name is retired (the
+                // log was adopted into the local resolver by
+                // `resolve_over_mesh`): then the answer is that outcome with
+                // its evidence, not a bare failure.
+                match state.names.resolve(&uri).await {
+                    Err(e) => name_outcome::refusal(&state.names, raw, &uri, &e).unwrap_or(
+                        spine_protocol::NameResolution::Unavailable {
+                            name: raw.to_string(),
+                            reason,
+                        },
+                    ),
+                    Ok(_) => spine_protocol::NameResolution::Unavailable {
+                        name: raw.to_string(),
+                        reason,
+                    },
+                }
+            }
         },
-        Err(e) => spine_protocol::NameResolution::Invalid {
-            name: raw.to_string(),
-            reason: e.to_string(),
-        },
+        // Retired, compromised and revoked names answer with their evidence;
+        // any other refusal is the caller's error, as before.
+        Err(e) => name_outcome::refusal(&state.names, raw, &uri, &e).unwrap_or_else(|| {
+            spine_protocol::NameResolution::Invalid {
+                name: raw.to_string(),
+                reason: e.to_string(),
+            }
+        }),
     }
 }
 
@@ -313,61 +614,310 @@ async fn resolve_one(
 async fn resolve_over_mesh(
     state: &Arc<BrowserState>,
     uri: &spine_name::SpineUri,
-) -> Option<spine_name::NameRecord> {
-    let mesh = state.mesh_names.as_ref()?;
-    match mesh.resolve(uri).await {
-        Ok(record) => Some(record),
+) -> Result<Option<spine_name::NameRecord>, String> {
+    let Some(mesh) = state.mesh_names.as_ref() else {
+        return Ok(None);
+    };
+    if mesh.peer_count().await == 0 {
+        return Err("namespace has no reachable peers; only local names are available".into());
+    }
+    match mesh.resolve_with_log(uri).await {
+        Ok((record, log)) => {
+            // The local resolver needs the log to admit, and so cache, a
+            // rotated name's record. A refusal only costs the cache entry.
+            if let Some(log) = log {
+                if let Err(error) = state.names.offer_log(log) {
+                    debug!(%error, "succession log from the mesh was not kept");
+                }
+            }
+            Ok(Some(record))
+        }
+        Err(spine_mesh::naming_mesh::NameMeshError::NotFound(_)) => Ok(None),
         Err(e) => {
-            debug!("mesh resolution of {uri} failed: {e}");
-            None
+            // A lookup that taught the mesh service the name is retired: keep
+            // the log that retires it where `resolve_one` can answer with it.
+            // (A name the mesh service knows to be compromised has no accessor
+            // for its proof: that case stays `unavailable`.)
+            if let spine_mesh::naming_mesh::NameMeshError::Name(spine_name::NameError::Retired(_)) =
+                &e
+            {
+                if let Some(key) = uri.public_key() {
+                    if let Some(log) = mesh.succession_log(key).await {
+                        if let Err(error) = state.names.offer_log(log) {
+                            debug!(%error, "retirement log from the mesh was not kept");
+                        }
+                    }
+                }
+            }
+            Err(e.to_string())
         }
     }
 }
 
-#[instrument(skip(state, session_id, request_id))]
+/// The `ok` value of a command's reply. Most commands answer with a JSON-shaped
+/// value; `read_resource` and `capability_query` answer with their typed
+/// results so that byte fields reach the wire as CBOR byte strings.
+enum Output {
+    Json(serde_json::Value),
+    Chunk(spine_protocol::resource::ResourceChunk),
+    Capabilities(spine_protocol::CapabilityAdvertisement),
+}
+
+impl serde::Serialize for Output {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Output::Json(value) => value.serialize(serializer),
+            Output::Chunk(chunk) => chunk.serialize(serializer),
+            Output::Capabilities(ad) => ad.serialize(serializer),
+        }
+    }
+}
+
+/// A command's answer: the `ok` value, or the `err` to send. The frame
+/// header's request id correlates it; nothing here carries an id.
+type Answer = Result<Output, WireError>;
+
+/// Programs compiling and running at once, process-wide. Each runs on a
+/// blocking thread and can use a core for a while, so the pool is small.
+const EXECUTE_CONCURRENCY: usize = 4;
+
+/// How long `execute_binary` waits for an executor permit before it
+/// answers `overloaded`.
+const EXECUTE_PERMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Reactive state variables one session may hold.
+const MAX_SESSION_STATE_ENTRIES: usize = 256;
+
+/// Knowledge entries one session may hold.
+const MAX_KNOWLEDGE_ENTRIES_PER_SESSION: usize = 1024;
+
+/// Navigations (fetches) one `execute_binary` may request.
+const MAX_NAVIGATIONS_PER_EXECUTE: usize = 4;
+
+/// An `err` with a code from `spine_protocol::body`.
+fn fail(code: &str, message: String) -> WireError {
+    WireError::new(code, message)
+}
+
+/// The `err` for a failed navigation. The fetcher's error carries its wire
+/// code (`outbound_address_denied`, ...), which passes through unchanged; an
+/// HTTP status goes in `details.status`.
+fn navigation_failure(error: &outbound::FetchError) -> WireError {
+    let message = format!("the outbound request was refused or failed ({error})");
+    let wire = fail(error.code(), message);
+    match error.status() {
+        Some(status) => wire.with_details(serde_json::json!({ "status": status })),
+        None => wire,
+    }
+}
+
+/// The `err` for a failed `read_resource`, by the error's variant.
+fn read_failure(error: &spine_core::resources::ReadError) -> WireError {
+    use spine_core::resources::ReadError;
+    let code = match error {
+        ReadError::NotFound => ERR_RESOURCE_NOT_FOUND,
+        ReadError::InvalidRange(_) => ERR_INVALID_REQUEST,
+        ReadError::Internal(_) => ERR_INTERNAL,
+    };
+    fail(code, error.to_string())
+}
+
+/// The answer to `delete_resource`. The proof is checked first, against the
+/// `owner` the request names and this connection's `binding`, before the store
+/// is read, so a caller that cannot prove a key learns nothing about what the
+/// store holds. A proof that does not verify is `delete_refused`. A valid proof
+/// is then looked up under that owner: a blob it owns is deleted
+/// (`deleted: true`); no blob, or a blob another publisher holds, answers
+/// `deleted: false` alike, so a caller with any key at all cannot tell the two
+/// apart. The name record that binds the resource is not touched.
+fn delete_resource(
+    state: &BrowserState,
+    binding: [u8; 32],
+    hash: [u8; 32],
+    owner: [u8; 32],
+    proof: [u8; 64],
+) -> Answer {
+    use spine_core::resources::DeleteError;
+    if !spine_protocol::resource::verify_delete_proof(&owner, &hash, &binding, &proof) {
+        return Err(fail(
+            ERR_DELETE_REFUSED,
+            "the delete proof does not verify".into(),
+        ));
+    }
+    match state.resources.delete(owner, hash) {
+        Ok(()) => Ok(Output::Json(serde_json::json!({ "deleted": true }))),
+        Err(DeleteError::NotFound | DeleteError::NotOwner) => {
+            Ok(Output::Json(serde_json::json!({ "deleted": false })))
+        }
+        Err(error @ DeleteError::Internal(_)) => Err(fail(ERR_INTERNAL, error.to_string())),
+    }
+}
+
+#[instrument(skip_all)]
 async fn handle_command(
     state: &Arc<BrowserState>,
     session_id: &str,
     command: BrowserCommand,
-    request_id: String,
-) -> (Response, Vec<Vec<f32>>) {
+    request_id: u64,
+) -> Answer {
     let timer = COMMAND_LATENCY.start_timer();
     COMMANDS_TOTAL.inc();
+    // The frame id names the request in traces; only the research build's
+    // cluster search forwards it.
+    #[cfg(not(feature = "research"))]
+    let _ = request_id;
 
-    // Record command in history
-    if let Some(mut session) = state.sessions.get_mut(session_id) {
-        session.history.push(command.clone());
-        session.last_command = Some(command.clone());
-    }
-
-    let mut latent_to_stream = Vec::new();
     let response = match command {
+        BrowserCommand::NamespaceStatus => {
+            let result = match &state.mesh_names {
+                Some(mesh) => {
+                    let key: String = mesh
+                        .local_key()
+                        .as_bytes()
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    let peers=mesh.peers().await.into_iter().map(|p| {
+                        let key:String=p.info.id.as_bytes().iter().map(|b|format!("{b:02x}")).collect();
+                        serde_json::json!({"agent_id":p.agent_id,"public_key":key,"endpoints":p.info.endpoints})
+                    }).collect::<Vec<_>>();
+                    serde_json::json!({"enabled":true,"agent_id":mesh.agent_id(),"public_key":key,"peers":peers,
+                        "connectivity":if peers.is_empty(){"local_only"}else{"connected"},"tasks_enabled":state.config.namespace.tasks_enabled})
+                }
+                None => serde_json::json!({"enabled":false,"connectivity":"local_only","peers":[]}),
+            };
+            Ok(Output::Json(result))
+        }
+        BrowserCommand::MeshCall {
+            peer_id,
+            peer_key,
+            payload,
+        } => match (&state.mesh_names, uuid::Uuid::parse_str(&peer_id)) {
+            (Some(mesh), Ok(id)) => mesh
+                .application_call(spine_mesh::AgentId(id), peer_key, payload)
+                .await
+                .map(Output::Json)
+                .map_err(|e| fail(ERR_MESH_CALL_FAILED, e.to_string())),
+            (None, _) => Err(fail(
+                ERR_NAMESPACE_UNAVAILABLE,
+                "namespace is unavailable".into(),
+            )),
+            (_, Err(_)) => Err(fail(ERR_INVALID_PEER_ID, "peer id must be a UUID".into())),
+        },
+        BrowserCommand::ReadResource {
+            hash,
+            offset,
+            max_bytes,
+        } => match state.resources.read(hash, offset, max_bytes) {
+            Ok(chunk) => Ok(Output::Chunk(chunk)),
+            Err(e) => Err(read_failure(&e)),
+        },
+        BrowserCommand::PublishResource {
+            record,
+            content_type,
+            data,
+        } => {
+            type Published = (spine_name::NameRecord, Option<spine_name::SuccessionLog>);
+            let result = (|| -> Result<Published, WireError> {
+                // As in `PublishName`: the succession log may ride beside the
+                // record's fields.
+                let log = spine_name::publication_log(&record)
+                    .transpose()
+                    .map_err(|e| {
+                        fail(
+                            ERR_MALFORMED_RECORD,
+                            format!("malformed succession log: {e}"),
+                        )
+                    })?;
+                let record: spine_name::NameRecord = serde_json::from_value(record)
+                    .map_err(|e| fail(ERR_MALFORMED_RECORD, e.to_string()))?;
+                if record.is_expired(unix_now()) {
+                    return Err(fail(ERR_RECORD_EXPIRED, "record is expired".into()));
+                }
+                // The log is offered before the resource store judges the
+                // record, which it does against the resolver's book. A valid
+                // log is kept even if the publication then fails.
+                if let Some(log) = &log {
+                    if spine_name::log_inception_key(log)
+                        .is_some_and(|key| record.name.public_key() != Some(&key))
+                    {
+                        return Err(fail(
+                            ERR_RECORD_REJECTED,
+                            "succession log is for another name".into(),
+                        ));
+                    }
+                    state
+                        .names
+                        .offer_log(log.clone())
+                        .map_err(|e| fail(ERR_RECORD_REJECTED, e.to_string()))?;
+                }
+                let (hash, created) = state
+                    .resources
+                    .put_as(
+                        spine_core::resources::publisher_of(&record),
+                        &record,
+                        &content_type,
+                        &data,
+                    )
+                    .map_err(|e| fail(ERR_PUBLISH_FAILED, e.to_string()))?;
+                if let Err(e) = state.names.publish(record.clone()) {
+                    // Drop the blob only if this request added it; an earlier
+                    // publication of the same content still refers to it.
+                    if created {
+                        let _ = state.resources.remove(hash);
+                    }
+                    return Err(fail(ERR_RECORD_REJECTED, e.to_string()));
+                }
+                Ok((record, log))
+            })();
+            match result {
+                Ok((record, log)) => {
+                    let publication = publication_report(state, record, log).await;
+                    Ok(Output::Json(publication))
+                }
+                Err(e) => Err(e),
+            }
+        }
         BrowserCommand::ResolveName {
             name,
             if_none_match,
         } => {
             let resolution = resolve_one(state, &name, if_none_match).await;
-            Response {
-                id: request_id,
-                result: Some(serde_json::to_value(resolution).unwrap_or_default()),
-                error: None,
-            }
+            Ok(Output::Json(
+                serde_json::to_value(resolution).unwrap_or_default(),
+            ))
         }
 
         BrowserCommand::ResolveNames { names } => {
             // One round trip for the whole batch. Each name resolves
             // independently, so a single bad name never fails the others.
+            if names.len() > 256 {
+                return Err(fail(
+                    ERR_BATCH_TOO_LARGE,
+                    "resolution batch exceeds 256 names".into(),
+                ));
+            }
             let mut results = Vec::with_capacity(names.len());
-            for name in &names {
-                results.push(resolve_one(state, name, None).await);
+            for batch in names.chunks(16) {
+                let mut tasks = Vec::new();
+                for name in batch {
+                    let state = state.clone();
+                    let name = name.clone();
+                    tasks.push(tokio::spawn(async move {
+                        resolve_one(&state, &name, None).await
+                    }));
+                }
+                // Await handles in input order; all sixteen tasks run concurrently.
+                for task in tasks {
+                    match task.await {
+                        Ok(result) => results.push(result),
+                        Err(_) => return Err(fail(ERR_INTERNAL, "resolution task failed".into())),
+                    }
+                }
             }
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "resolutions": serde_json::to_value(&results).unwrap_or_default(),
-                })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({
+                "resolutions": serde_json::to_value(&results).unwrap_or_default(),
+            })))
         }
 
         BrowserCommand::FindProviders { capability, limit } => {
@@ -376,84 +926,89 @@ async fn handle_command(
                 Ok(mut providers) => {
                     // An empty local index is not an answer — "who can do X" is
                     // exactly the question the mesh exists to route.
-                    if providers.is_empty() {
-                        if let Some(mesh) = state.mesh_names.as_ref() {
-                            providers = mesh.find_providers(&capability).await.unwrap_or_default();
-                            for record in &providers {
-                                let _ = state.names.cache_record(record.clone());
+                    if let Some(mesh) = state.mesh_names.as_ref() {
+                        if mesh.peer_count().await > 0 {
+                            match mesh.find_providers(&capability).await {
+                                Ok(remote) => {
+                                    for record in remote {
+                                        if !record.is_expired(unix_now())
+                                            && state.names.cache_record(record.clone()).is_ok()
+                                        {
+                                            match providers
+                                                .iter()
+                                                .position(|p| p.name == record.name)
+                                            {
+                                                Some(i) if record.supersedes(&providers[i]) => {
+                                                    providers[i] = record
+                                                }
+                                                Some(_) => {}
+                                                None => providers.push(record),
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    return Err(fail(
+                                        ERR_LOOKUP_UNAVAILABLE,
+                                        format!("capability lookup unavailable: {e}"),
+                                    ))
+                                }
                             }
                         }
                     }
+                    providers.sort_by(|a, b| {
+                        b.endpoints
+                            .len()
+                            .cmp(&a.endpoints.len())
+                            .then(b.published_at.cmp(&a.published_at))
+                            .then(a.name.to_string().cmp(&b.name.to_string()))
+                    });
                     if let Some(n) = limit {
                         providers.truncate(n);
                     }
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "capability": capability,
-                            "providers": serde_json::to_value(&providers).unwrap_or_default(),
-                            "count": providers.len(),
-                        })),
-                        error: None,
-                    }
+                    Ok(Output::Json(serde_json::json!({
+                        "capability": capability,
+                        "providers": serde_json::to_value(&providers).unwrap_or_default(),
+                        "count": providers.len(),
+                    })))
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e.to_string()),
-                },
+                Err(e) => Err(fail(ERR_LOOKUP_FAILED, e.to_string())),
             }
         }
 
         BrowserCommand::PublishName { record } => {
+            // `spine name publish --log` sends the name's succession log beside
+            // the record's fields; without it a rotated name's record is refused.
+            let log = match spine_name::publication_log(&record) {
+                Some(Ok(log)) => Some(log),
+                Some(Err(e)) => {
+                    return Err(fail(
+                        ERR_MALFORMED_RECORD,
+                        format!("malformed succession log: {e}"),
+                    ))
+                }
+                None => None,
+            };
             match serde_json::from_value::<spine_name::NameRecord>(record) {
                 // publish() verifies the signature, so an unsigned or forged
                 // record is rejected here rather than becoming servable state.
                 Ok(record) => {
-                    let name = record.name.to_string();
-                    match state.names.publish(record.clone()) {
+                    if record.is_expired(unix_now()) {
+                        return Err(fail(ERR_RECORD_EXPIRED, "record is expired".into()));
+                    }
+                    let published = match log.clone() {
+                        Some(log) => state.names.publish_with_log(record.clone(), log),
+                        None => state.names.publish(record.clone()),
+                    };
+                    match published {
                         Ok(()) => {
-                            // Publishing locally makes a name resolvable *here*.
-                            // It does not make it findable: a record that never
-                            // leaves this node is one node's private opinion
-                            // about a name, and it dies with the process. Push
-                            // it to the nodes closest to its key as well, and
-                            // report how many copies actually landed.
-                            let replicas = match state.mesh_names.as_ref() {
-                                Some(mesh) => mesh
-                                    .publish(record)
-                                    .await
-                                    .map(|r| r.replicas())
-                                    .unwrap_or(0),
-                                None => 0,
-                            };
-                            Response {
-                                id: request_id,
-                                result: Some(serde_json::json!({
-                                    "status": "published",
-                                    "name": name,
-                                    "replicas": replicas,
-                                    // False means the name lives here and
-                                    // nowhere else — usually not what a
-                                    // publisher intends, and never visible
-                                    // before this was reported.
-                                    "durable": replicas > 0,
-                                })),
-                                error: None,
-                            }
+                            let publication = publication_report(state, record, log).await;
+                            Ok(Output::Json(publication))
                         }
-                        Err(e) => Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("record rejected: {e}")),
-                        },
+                        Err(e) => Err(fail(ERR_RECORD_REJECTED, format!("record rejected: {e}"))),
                     }
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(format!("malformed record: {e}")),
-                },
+                Err(e) => Err(fail(ERR_MALFORMED_RECORD, format!("malformed record: {e}"))),
             }
         }
 
@@ -478,14 +1033,10 @@ async fn handle_command(
                 }
                 _ => Vec::new(),
             };
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "resolution": serde_json::to_value(&resolution).unwrap_or_default(),
-                    "endpoints": endpoints,
-                })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({
+                "resolution": serde_json::to_value(&resolution).unwrap_or_default(),
+                "endpoints": endpoints,
+            })))
         }
 
         BrowserCommand::CrawlNames {
@@ -525,42 +1076,43 @@ async fn handle_command(
                     }
                 }
 
-                Response {
-                    id: request_id,
-                    result: Some(serde_json::json!({
-                        "visited": visited,
-                        // Reporting what was *not* walked keeps a bounded crawl
-                        // from reading as an exhaustive one.
-                        "skipped": frontier.skipped().len(),
-                        "pending": frontier.pending(),
-                    })),
-                    error: None,
-                }
+                Ok(Output::Json(serde_json::json!({
+                    "visited": visited,
+                    // Reporting what was *not* walked keeps a bounded crawl
+                    // from reading as an exhaustive one.
+                    "skipped": frontier.skipped().len(),
+                    "pending": frontier.pending(),
+                })))
             }
-            Err(e) => Response {
-                id: request_id,
-                result: None,
-                error: Some(format!("invalid seed name: {e}")),
-            },
+            Err(e) => Err(fail(ERR_INVALID_SEED, format!("invalid seed name: {e}"))),
         },
 
         BrowserCommand::Navigate { url } => {
-            match state.client.get(&url).send().await {
-                Ok(resp) => {
-                    let html = resp.text().await.unwrap_or_default();
-
+            match state.fetcher.fetch_text_for(session_id, &url).await {
+                Ok(html) => {
                     // Transpile HTML to HLB for agentic interaction
+                    #[cfg(feature = "research")]
                     let hlb = spine_human::HumanTranspiler::transpile(&html, "", "")
                         .unwrap_or_else(|e| {
-                            warn!("Transpilation failed for {}: {}", url, e);
+                            warn!(error_kind = %std::any::type_name_of_val(&e), "Page transpilation failed");
                             spine_protocol::SpineBinary {
                                 instructions: vec![],
                                 data: vec![],
                                 render_start: 0,
-                                exported_functions: std::collections::HashMap::new(),
+                                exported_functions: std::collections::BTreeMap::new(),
                                 capabilities: vec![],
                             }
                         });
+                    // Without the research feature there is no transpiler: the
+                    // session gets the same empty binary a failed transpile yields.
+                    #[cfg(not(feature = "research"))]
+                    let hlb = spine_protocol::SpineBinary {
+                        instructions: vec![],
+                        data: vec![],
+                        render_start: 0,
+                        exported_functions: std::collections::BTreeMap::new(),
+                        capabilities: vec![],
+                    };
 
                     if let Some(mut session) = state.sessions.get_mut(session_id) {
                         session.current_url = Some(url);
@@ -569,34 +1121,13 @@ async fn handle_command(
                         session.current_vdom = None;
                         session.cached_ur = None; // Invalidate cached UR on navigation
                     } else {
-                        // Create new session if it doesn't exist
-                        let session = Session {
-                            current_url: Some(url),
-                            current_html: Some(html),
-                            current_vdom: None,
-                            cached_ur: None,
-                            last_command: None,
-                            needs_morph: false,
-                            state: std::collections::HashMap::new(),
-                            current_binary: Some(hlb),
-                            history: Vec::new(),
-                            autonomous_mode: false,
-                        };
-                        state.sessions.insert(session_id.to_string(), session);
+                        return Err(fail(ERR_SESSION_EXPIRED, "Session expired".into()));
                     }
-                    Response {
-                        id: request_id,
-                        result: Some(
-                            serde_json::json!({"status": "success", "session_id": session_id}),
-                        ),
-                        error: None,
-                    }
+                    Ok(Output::Json(
+                        serde_json::json!({"status": "success", "session_id": session_id}),
+                    ))
                 }
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e.to_string()),
-                },
+                Err(e) => Err(navigation_failure(&e)),
             }
         }
         BrowserCommand::GetUR => {
@@ -604,64 +1135,48 @@ async fn handle_command(
                 // Populate cache on first access (avoids re-parsing on repeated GetUR calls)
                 if session.cached_ur.is_none() {
                     if let Some(html) = session.current_html.clone() {
-                        session.cached_ur = spine_parser::parse_html(&html).ok();
+                        match spine_parser::parse_html(&html) {
+                            Ok(ur) => session.cached_ur = Some(ur),
+                            Err(e) => {
+                                return Err(fail(
+                                    ERR_PARSE_ERROR,
+                                    format!("the loaded page does not parse: {e}"),
+                                ))
+                            }
+                        }
                     }
                 }
                 if let Some(ur) = &session.cached_ur {
                     let vdom_tree = session.current_vdom.as_ref().map(|v| v.to_tree());
                     let vdom_ur = session.current_vdom.as_ref().map(|v| v.to_ur());
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "parsed_ur": serde_json::to_value(ur).unwrap_or_default(),
-                            "vdom_tree": vdom_tree,
-                            "vdom_ur": vdom_ur,
-                        })),
-                        error: None,
-                    }
+                    Ok(Output::Json(serde_json::json!({
+                        "parsed_ur": serde_json::to_value(ur).unwrap_or_default(),
+                        "vdom_tree": vdom_tree,
+                        "vdom_ur": vdom_ur,
+                    })))
                 } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded in session".to_string()),
-                    }
+                    Err(fail(ERR_NO_PAGE, "No page loaded in session".to_string()))
                 }
             } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
+                Err(fail(ERR_SESSION_NOT_FOUND, "Session not found".to_string()))
             }
         }
         BrowserCommand::GetRawHTML => {
             if let Some(session) = state.sessions.get(session_id) {
                 if let Some(html) = &session.current_html {
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({ "html": html })),
-                        error: None,
-                    }
+                    Ok(Output::Json(serde_json::json!({ "html": html })))
                 } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
+                    Err(fail(ERR_NO_PAGE, "No page loaded".to_string()))
                 }
             } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
+                Err(fail(ERR_SESSION_NOT_FOUND, "Session not found".to_string()))
             }
         }
         BrowserCommand::ExecuteBinary(bin) => {
             info!(
-                "Executing HLB with {} instructions and capabilities: {:?}",
+                "Executing HLB with {} instructions and {} capabilities",
                 bin.instructions.len(),
-                bin.capabilities
+                bin.capabilities.len()
             );
 
             // Capability check
@@ -671,29 +1186,153 @@ async fn handle_command(
                         // Allowed by default for now
                     }
                     _ => {
-                        return (
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some(format!("Unauthorized or unknown capability: {}", cap)),
-                            },
-                            Vec::new(),
-                        );
+                        return Err(fail(
+                            ERR_CAPABILITY_DENIED,
+                            format!("Unauthorized or unknown capability: {}", cap),
+                        ));
                     }
                 }
             }
+
+            // Compiling and running is CPU work that cannot be cancelled
+            // once started, so it runs on a blocking thread behind a
+            // process-wide permit, and a saturated executor answers
+            // `overloaded` instead of queueing. The bound on how long a
+            // run takes is the fuel plus the host budgets inside
+            // `spine_wasm` (see its `MAX_*` constants), not a timeout.
+            let permit = match tokio::time::timeout(
+                EXECUTE_PERMIT_WAIT,
+                state.execute_permits.clone().acquire_owned(),
+            )
+            .await
+            {
+                Ok(Ok(permit)) => permit,
+                _ => {
+                    return Err(fail(
+                        ERR_OVERLOADED,
+                        "the executor is busy; retry later".to_string(),
+                    ));
+                }
+            };
+            let runtime = state.wasm_runtime.clone();
+            let program = bin.clone();
+            let ran = tokio::task::spawn_blocking(move || {
+                // The permit is held until the work ends, even if the
+                // client has gone.
+                let _permit = permit;
+                runtime.execute(&program)
+            })
+            .await;
+
+            // A program that fails to compile, instantiate or run is the
+            // client's error, not the daemon's: answer it and keep serving.
+            let result = match ran {
+                Ok(Ok(result)) => result,
+                Ok(Err(e)) => {
+                    return Err(fail(ERR_EXECUTION_FAILED, format!("execution failed: {e}")));
+                }
+                Err(_) => {
+                    return Err(fail(
+                        ERR_EXECUTION_FAILED,
+                        "execution failed: the executor stopped".to_string(),
+                    ));
+                }
+            };
+
+            // Everything the program asked for is checked here, before
+            // any of it is carried out: a refusal leaves no partial effect.
+            // The declared capabilities are what the action needs, not a
+            // list the daemon grants.
+            let declares = |cap: &str| bin.capabilities.iter().any(|c| c == cap);
+            let mut navigations = 0usize;
+            let mut stores = 0usize;
+            let mut store_cost = 0u64;
+            for action in &result.actions {
+                let needs = match action {
+                    spine_wasm::WasmAction::Navigate(_) => {
+                        navigations += 1;
+                        Some("network")
+                    }
+                    spine_wasm::WasmAction::Search(_) => Some("search"),
+                    spine_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
+                        stores += 1;
+                        store_cost = store_cost.saturating_add(spine_core::knowledge::entry_cost(
+                            spine_core::knowledge::entry_bytes(key, value, tags),
+                        ));
+                        Some("storage")
+                    }
+                    spine_wasm::WasmAction::QueryKnowledge { .. }
+                    | spine_wasm::WasmAction::Reason(_) => None,
+                };
+                if let Some(cap) = needs {
+                    if !declares(cap) {
+                        return Err(fail(
+                            ERR_CAPABILITY_DENIED,
+                            format!("the program requested an action that needs the \"{cap}\" capability, which it did not declare"),
+                        ));
+                    }
+                }
+                // The response cannot say an action was skipped, so one this
+                // daemon does not perform refuses the whole program.
+                if let Some(name) =
+                    spine_core::actions::unsupported_action(action, cfg!(feature = "research"))
+                {
+                    return Err(fail(
+                        ERR_ACTION_UNSUPPORTED,
+                        format!("the \"{name}\" action is not supported by this daemon"),
+                    ));
+                }
+            }
+            if navigations > MAX_NAVIGATIONS_PER_EXECUTE {
+                return Err(fail(
+                    ERR_EXECUTION_FAILED,
+                    format!(
+                        "execution failed: {navigations} navigations requested, at most {MAX_NAVIGATIONS_PER_EXECUTE} allowed"
+                    ),
+                ));
+            }
+            if let Some(session) = state.sessions.get(session_id) {
+                let new_names: std::collections::HashSet<&str> = result
+                    .events
+                    .iter()
+                    .filter(|e| matches!(e.name.as_str(), "state_declared" | "state_updated"))
+                    .filter_map(|e| e.payload.get("name").and_then(|v| v.as_str()))
+                    .filter(|n| !session.state.contains_key(*n))
+                    .collect();
+                if session.state.len() + new_names.len() > MAX_SESSION_STATE_ENTRIES {
+                    return Err(fail(
+                        ERR_EXECUTION_FAILED,
+                        format!(
+                            "execution failed: a session may hold at most {MAX_SESSION_STATE_ENTRIES} state variables"
+                        ),
+                    ));
+                }
+            }
+            let held = state
+                .knowledge_base
+                .get(session_id)
+                .map_or(0, |entries| entries.len());
+            if held + stores > MAX_KNOWLEDGE_ENTRIES_PER_SESSION {
+                return Err(fail(
+                    ERR_KNOWLEDGE_CAPACITY,
+                    format!(
+                        "a session may hold at most {MAX_KNOWLEDGE_ENTRIES_PER_SESSION} knowledge entries"
+                    ),
+                ));
+            }
+
+            // The daemon-wide byte budget, reserved for every store now so a
+            // refusal leaves no partial effect. Each stored entry keeps its
+            // share; one the session is gone for is released below.
+            state
+                .knowledge_budget
+                .reserve(store_cost)
+                .map_err(|reason| fail(ERR_KNOWLEDGE_CAPACITY, reason))?;
 
             // Store binary in session for reactivity
             if let Some(mut session) = state.sessions.get_mut(session_id) {
                 session.current_binary = Some(bin.clone());
             }
-
-            let result = state
-                .wasm_runtime
-                .execute(&bin)
-                .expect("Failed to execute HLB in WASM");
-
-            latent_to_stream = result.latent_streams.clone();
 
             // Update session VDOM and compute patches
             let new_vdom = VirtualDom::from_wasm(&result);
@@ -725,32 +1364,41 @@ async fn handle_command(
             for action in &result.actions {
                 match action {
                     spine_wasm::WasmAction::Navigate(url) => {
-                        info!("WASM requested navigation to {}", url);
+                        info!("WASM requested navigation");
                         let state_clone = state.clone();
                         let url_clone = url.clone();
                         let sid_clone = session_id.to_string();
                         tokio::spawn(async move {
-                            if let Ok(resp) = state_clone.client.get(&url_clone).send().await {
-                                if let Ok(html) = resp.text().await {
-                                    if let Some(mut session) =
-                                        state_clone.sessions.get_mut(&sid_clone)
-                                    {
-                                        session.current_url = Some(url_clone);
-                                        session.current_html = Some(html);
-                                    }
+                            if let Ok(html) = state_clone
+                                .fetcher
+                                .fetch_text_for(&sid_clone, &url_clone)
+                                .await
+                            {
+                                if let Some(mut session) = state_clone.sessions.get_mut(&sid_clone)
+                                {
+                                    session.current_url = Some(url_clone);
+                                    session.current_html = Some(html);
                                 }
                             }
                         });
                     }
                     spine_wasm::WasmAction::Search(query) => {
-                        info!("WASM requested search for {}", query);
-                        let cluster = state.cluster.lock().await;
-                        let _ = cluster.broadcast_search(query.clone(), request_id.clone());
+                        info!("WASM requested search");
+                        #[cfg(feature = "research")]
+                        {
+                            let cluster = state.cluster.lock().await;
+                            let _ = cluster.broadcast_search(query.clone(), request_id.to_string());
+                        }
+                        #[cfg(not(feature = "research"))]
+                        let _ = query;
                     }
                     spine_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
-                        info!("WASM requested knowledge storage: {}", key);
+                        info!("WASM requested knowledge storage");
                         if let Some(_session) = state.sessions.get_mut(session_id) {
-                            // Store in local KB
+                            // Store in local KB, under the session's own id
+                            // exactly as the `store_knowledge` command does.
+                            // The program's key stays in the entry; it does
+                            // not choose which entry list is written.
                             let entry = KnowledgeEntry {
                                 key: key.clone(),
                                 value: value.clone(),
@@ -763,276 +1411,61 @@ async fn handle_command(
                             };
                             state
                                 .knowledge_base
-                                .entry(key.clone())
+                                .entry(session_id.to_string())
                                 .or_default()
                                 .push(entry);
 
-                            let cluster = state.cluster.lock().await;
-                            let _ = cluster.broadcast_knowledge(
-                                key.clone(),
-                                value.clone(),
-                                tags.clone(),
-                            );
+                            #[cfg(feature = "research")]
+                            {
+                                let cluster = state.cluster.lock().await;
+                                let _ = cluster.broadcast_knowledge(
+                                    key.clone(),
+                                    value.clone(),
+                                    tags.clone(),
+                                );
+                            }
+                        } else {
+                            // Reserved with the others; nothing was stored.
+                            state
+                                .knowledge_budget
+                                .release(spine_core::knowledge::entry_cost(
+                                    spine_core::knowledge::entry_bytes(key, value, tags),
+                                ));
                         }
                     }
                     spine_wasm::WasmAction::QueryKnowledge {
-                        query,
+                        query: _,
                         tags: _,
                         limit: _,
                     } => {
-                        info!("WASM requested knowledge query: {}", query);
+                        info!("WASM requested knowledge query");
                     }
                     spine_wasm::WasmAction::Reason(query) => {
-                        info!("WASM requested reasoning: {}", query);
-                        if let Some(mut session) = state.sessions.get_mut(session_id) {
-                            if let Some(html) = &session.current_html {
-                                if let Ok(ur) = spine_parser::parse_html(html) {
-                                    let engine = spine_human::ReasoningEngine::new();
-                                    let plan = engine.create_plan(query, &ur);
-                                    info!("Reasoning plan: {:?}", plan);
-                                    // Store the plan in session history or state for the agent to see
-                                    session.history.push(BrowserCommand::Navigate {
-                                        url: format!("reasoning://{}", query),
-                                    });
-                                }
-                            }
-                        }
+                        info!("WASM requested reasoning");
+                        let _ = query;
                     }
                 }
             }
 
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "status": "executed",
-                    "stats": {
-                        "instructions_executed": result.stats.instructions_executed,
-                        "compile_time_us": result.stats.compile_time_us,
-                        "execution_time_us": result.stats.execution_time_us,
-                        "wasm_size_bytes": result.stats.wasm_size_bytes,
-                        "memory_used_bytes": result.stats.memory_used_bytes,
-                    },
-                    "elements": result.elements,
-                    "events": result.events,
-                    "actions": result.actions,
-                    "latent_streams_count": result.latent_streams.len(),
-                    "patches": patches,
-                })),
-                error: None,
-            }
-        }
-        BrowserCommand::HandleEvent {
-            element_id: _element_id,
-            event_name,
-            payload: _payload,
-        } => {
-            if let Some(mut session) = state.sessions.get_mut(session_id) {
-                let bin = session.current_binary.clone();
-                if let Some(bin) = bin {
-                    if let Some(&pc) = bin.exported_functions.get(&event_name) {
-                        let mut runtime = vdom::HlbRuntime::new();
-                        // Load session state into runtime
-                        for (k, v) in &session.state {
-                            runtime.state.insert(k.clone(), v.clone());
-                        }
-
-                        // Execute handler
-                        let _handler_result = runtime.execute(&bin, pc);
-
-                        // Update session state from runtime
-                        for (k, v) in &runtime.state {
-                            session.state.insert(k.clone(), v.clone());
-                        }
-
-                        // Re-render from render_start
-                        let render_result = runtime.execute(&bin, bin.render_start);
-
-                        // Compute patches
-                        let new_vdom = render_result.vdom;
-                        let mut patches = Vec::new();
-                        if let Some(old_vdom) = &session.current_vdom {
-                            patches = new_vdom.diff(old_vdom);
-                        }
-                        session.current_vdom = Some(new_vdom);
-
-                        Response {
-                            id: request_id,
-                            result: Some(serde_json::json!({
-                                "status": "event_handled",
-                                "patches": patches,
-                                "events": render_result.events,
-                            })),
-                            error: None,
-                        }
-                    } else {
-                        Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(format!("Handler not found for event: {}", event_name)),
-                        }
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No binary loaded in session".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::Click { element_id } => {
-            println!("Clicking element: {}", element_id);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "clicked" })),
-                error: None,
-            }
-        }
-        BrowserCommand::Type { element_id, text } => {
-            println!("Typing '{}' into element: {}", text, element_id);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "typed" })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetLatentUR { dimensions } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(html) = &session.current_html {
-                    match spine_parser::parse_html(html) {
-                        Ok(ur) => {
-                            let ur_json = serde_json::to_string(&ur).unwrap_or_default();
-                            let mut encoder = state.encoder.write().await;
-                            let latent_vector = encoder.encode(ur_json.as_bytes());
-                            Response {
-                                id: request_id,
-                                result: Some(serde_json::json!({
-                                    "ur": ur,
-                                    "latent_vector": latent_vector,
-                                    "dimensions": dimensions,
-                                    "status": "encoded"
-                                })),
-                                error: None,
-                            }
-                        }
-                        Err(e) => Response {
-                            id: request_id,
-                            result: None,
-                            error: Some(e.to_string()),
-                        },
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::Morph => {
-            info!("Triggering protocol morphing for session {}", session_id);
-            let mut encoder = state.encoder.write().await;
-            let seed = rand::random::<u64>();
-            encoder.evolve(seed);
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "status": "morphed",
-                    "new_seed": seed,
-                    "protocol": "chameleon-v2"
-                })),
-                error: None,
-            }
-        }
-        BrowserCommand::Search { query } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                if let Some(_html) = &session.current_html {
-                    // Local search
-                    let local_results = serde_json::json!([
-                        { "text": "Found relevant content locally...", "relevance": 0.92 }
-                    ]);
-
-                    // Broadcast to cluster for distributed search
-                    let cluster = state.cluster.lock().await;
-                    let _ = cluster.broadcast_search(query.clone(), request_id.clone());
-
-                    Response {
-                        id: request_id,
-                        result: Some(serde_json::json!({
-                            "query": query,
-                            "local_results": local_results,
-                            "distributed": true,
-                            "status": "searching_cluster"
-                        })),
-                        error: None,
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("No page loaded".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::TransferSession { target_node_id } => {
-            if let Some(session) = state.sessions.get(session_id) {
-                match serde_json::to_vec(&*session) {
-                    Ok(data) => {
-                        let cluster = state.cluster.lock().await;
-                        if let Err(e) = cluster
-                            .send_session_data(session_id.to_string(), data)
-                            .await
-                        {
-                            Response {
-                                id: request_id,
-                                result: None,
-                                error: Some(format!("Transfer failed: {}", e)),
-                            }
-                        } else {
-                            Response {
-                                id: request_id,
-                                result: Some(
-                                    serde_json::json!({ "status": "transferred", "target": target_node_id }),
-                                ),
-                                error: None,
-                            }
-                        }
-                    }
-                    Err(e) => Response {
-                        id: request_id,
-                        result: None,
-                        error: Some(format!("Serialization failed: {}", e)),
-                    },
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
+            Ok(Output::Json(serde_json::json!({
+                "status": "executed",
+                "stats": {
+                    "instructions_executed": result.stats.instructions_executed,
+                    "compile_time_us": result.stats.compile_time_us,
+                    "execution_time_us": result.stats.execution_time_us,
+                    "wasm_size_bytes": result.stats.wasm_size_bytes,
+                    "memory_used_bytes": result.stats.memory_used_bytes,
+                },
+                "elements": result.elements,
+                "events": result.events,
+                "actions": result.actions,
+                "latent_streams_count": result.latent_streams.len(),
+                "patches": patches,
+            })))
         }
         BrowserCommand::StoreKnowledge { key, value, tags } => {
+            // The same count `execute_binary` holds a session to, and a bound
+            // on one entry (the frame limit is the only other).
             let entry = KnowledgeEntry {
                 key: key.clone(),
                 value: value.clone(),
@@ -1043,286 +1476,178 @@ async fn handle_command(
                     .as_nanos() as u64,
             };
             state
-                .knowledge_base
-                .entry(session_id.to_string())
-                .or_default()
-                .push(entry);
+                .append_knowledge(session_id, entry)
+                .map_err(|refusal| {
+                    fail(refusal.code(), format!("store_knowledge failed: {refusal}"))
+                })?;
 
             // Broadcast to cluster
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.broadcast_knowledge(key, value, tags);
-
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_stored" })),
-                error: None,
+            #[cfg(feature = "research")]
+            {
+                let cluster = state.cluster.lock().await;
+                let _ = cluster.broadcast_knowledge(key, value, tags);
             }
+            #[cfg(not(feature = "research"))]
+            let _ = (key, value, tags);
+
+            Ok(Output::Json(
+                serde_json::json!({ "status": "knowledge_stored" }),
+            ))
         }
         BrowserCommand::QueryKnowledge { query, tags, limit } => {
-            let entries = state
+            // Filter under the read guard and clone only what is returned, at
+            // most `MAX_KNOWLEDGE_QUERY_RESULTS`.
+            let limit = spine_core::knowledge::query_limit(limit);
+            let results: Vec<KnowledgeEntry> = state
                 .knowledge_base
                 .get(session_id)
-                .map(|e| e.clone())
-                .unwrap_or_default();
-            let results: Vec<_> = entries
-                .into_iter()
-                .filter(|e| {
-                    let matches_tags = tags.is_empty() || tags.iter().all(|t| e.tags.contains(t));
-                    let matches_query = query.is_empty() || e.key.contains(&query);
-                    matches_tags && matches_query
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter(|e| {
+                            let matches_tags =
+                                tags.is_empty() || tags.iter().all(|t| e.tags.contains(t));
+                            let matches_query = query.is_empty() || e.key.contains(&query);
+                            matches_tags && matches_query
+                        })
+                        .take(limit)
+                        .cloned()
+                        .collect()
                 })
-                .take(limit)
-                .collect();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "results": results })),
-                error: None,
-            }
-        }
-        BrowserCommand::DeleteKnowledge { key } => {
-            if let Some(mut entries) = state.knowledge_base.get_mut(session_id) {
-                entries.retain(|e| e.key != key);
-            }
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_deleted" })),
-                error: None,
-            }
-        }
-        BrowserCommand::GetSessionHistory => {
-            let history = state
-                .sessions
-                .get(session_id)
-                .map(|s| s.history.clone())
                 .unwrap_or_default();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "history": history })),
-                error: None,
-            }
+            Ok(Output::Json(serde_json::json!({ "results": results })))
         }
-        BrowserCommand::GetCapabilities => {
+        BrowserCommand::GetBinaryCapabilities => {
+            // What the current binary declared; a declaration the daemon
+            // checks actions against, not a grant.
             let capabilities = state
                 .sessions
                 .get(session_id)
                 .and_then(|s| s.current_binary.as_ref().map(|b| b.capabilities.clone()))
                 .unwrap_or_default();
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "capabilities": capabilities })),
-                error: None,
-            }
+            Ok(Output::Json(
+                serde_json::json!({ "capabilities": capabilities }),
+            ))
         }
-        BrowserCommand::SetAutonomousMode { enabled } => {
-            if let Some(mut session) = state.sessions.get_mut(session_id) {
-                session.autonomous_mode = enabled;
-                Response {
-                    id: request_id,
-                    result: Some(
-                        serde_json::json!({ "status": "autonomous_mode_set", "enabled": enabled }),
-                    ),
-                    error: None,
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Session not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::SwarmSearch { query, depth } => {
-            info!(
-                "Initiating swarm search for '{}' with depth {}",
-                query, depth
-            );
-            let cluster = state.cluster.lock().await;
-            let _ = cluster
-                .broadcast_swarm_search(query.clone(), depth, request_id.clone())
-                .await;
-            Response {
-                id: request_id,
-                result: Some(
-                    serde_json::json!({ "status": "swarm_search_initiated", "query": query, "depth": depth }),
-                ),
-                error: None,
-            }
-        }
-        BrowserCommand::DelegateTask {
-            task,
-            target_agent_id,
-        } => {
-            info!("Delegating task: '{}' to {:?}", task, target_agent_id);
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.delegate_task(task.clone(), target_agent_id).await;
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "task_delegated", "task": task })),
-                error: None,
-            }
-        }
-        BrowserCommand::ProposeKnowledge { key, value, tags } => {
-            info!("Proposing knowledge: {} = {:?}", key, value);
-            let cluster = state.cluster.lock().await;
-            let _ = cluster
-                .propose_knowledge(key.clone(), value.clone(), tags.clone())
-                .await;
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "knowledge_proposed", "key": key })),
-                error: None,
-            }
-        }
-        BrowserCommand::CreateSwarmPlan { goal } => {
-            info!("Creating swarm plan for goal: '{}'", goal);
-            let plan_id = Uuid::new_v4();
-
-            // Simulate plan generation (in a real app, this would use an LLM)
-            let tasks = vec![
-                spine_protocol::PlanTask {
-                    id: Uuid::new_v4(),
-                    description: format!("Research: {}", goal),
-                    required_skills: vec!["research".to_string(), "scraping".to_string()],
-                    assigned_to: None,
-                    dependencies: vec![],
-                    status: spine_protocol::TaskStatus::Pending,
-                    result: None,
-                },
-                spine_protocol::PlanTask {
-                    id: Uuid::new_v4(),
-                    description: format!("Synthesize findings for: {}", goal),
-                    required_skills: vec!["synthesis".to_string()],
-                    assigned_to: None,
-                    dependencies: vec![], // Would depend on the first task
-                    status: spine_protocol::TaskStatus::Pending,
-                    result: None,
-                },
-            ];
-
-            let plan = spine_protocol::SwarmPlan {
-                id: plan_id,
-                goal: goal.clone(),
-                tasks,
-                status: spine_protocol::PlanStatus::Active,
-                created_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            };
-
-            state.plans.insert(plan_id, plan.clone());
-
-            let cluster = state.cluster.lock().await;
-            let _ = cluster.propose_swarm_plan(plan).await;
-
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "plan_created", "plan_id": plan_id })),
-                error: None,
-            }
-        }
-        BrowserCommand::ExecutePlanTask { plan_id, task_id } => {
-            info!("Executing plan task {} for plan {}", task_id, plan_id);
-
-            if let Some(mut plan) = state.plans.get_mut(&plan_id) {
-                if let Some(task) = plan.tasks.iter_mut().find(|t| t.id == task_id) {
-                    task.status = spine_protocol::TaskStatus::InProgress;
-
-                    // Broadcast update
-                    let cluster = state.cluster.lock().await;
-                    let _ = cluster
-                        .update_plan_task(plan_id, task_id, task.status.clone(), None)
-                        .await;
-
-                    Response {
-                        id: request_id,
-                        result: Some(
-                            serde_json::json!({ "status": "task_started", "task_id": task_id }),
-                        ),
-                        error: None,
-                    }
-                } else {
-                    Response {
-                        id: request_id,
-                        result: None,
-                        error: Some("Task not found".to_string()),
-                    }
-                }
-            } else {
-                Response {
-                    id: request_id,
-                    result: None,
-                    error: Some("Plan not found".to_string()),
-                }
-            }
-        }
-        BrowserCommand::NeuralTransmit { data, domain } => {
-            let domain_enum = match domain.as_str() {
-                "RealTime" => spine_agentic::ProtocolDomain::RealTime,
-                "BulkData" => spine_agentic::ProtocolDomain::BulkData,
-                "SecureControl" => spine_agentic::ProtocolDomain::SecureControl,
-                "IoT" => spine_agentic::ProtocolDomain::IoT,
-                _ => spine_agentic::ProtocolDomain::BulkData,
-            };
-
-            let mut protocol = state
-                .neural_protocols
-                .entry(domain.clone())
-                .or_insert_with(|| spine_agentic::NeuralProtocol::new(1000.0, 5.0));
-            match protocol.transmit(&data, domain_enum).await {
-                Ok(stats) => Response {
-                    id: request_id,
-                    result: Some(serde_json::to_value(stats).unwrap_or_default()),
-                    error: None,
-                },
-                Err(e) => Response {
-                    id: request_id,
-                    result: None,
-                    error: Some(e),
-                },
-            }
-        }
-        BrowserCommand::GetAgenticState => {
-            let runtime = state.agentic_runtime.clone();
-            let profile = runtime.profile();
-            let variant = profile.miras_variant.clone();
-            let surprise = 0.15;
-
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({
-                    "miras_variant": variant,
-                    "surprise_level": surprise,
-                    "agent_id": profile.id,
-                    "trust_level": format!("{:?}", profile.trust_level),
-                })),
-                error: None,
-            }
-        }
-        BrowserCommand::SendSpeechAct {
-            target_id,
-            performative,
-            content,
-        } => {
-            info!(
-                "Sending speech act to {}: {} - {}",
-                target_id, performative, content
-            );
-            Response {
-                id: request_id,
-                result: Some(serde_json::json!({ "status": "sent" })),
-                error: None,
-            }
-        }
+        // `handle_session` answers these two before a session is involved.
+        // `answer_job` answers the deletes too, without creating a session.
+        BrowserCommand::ToolCall(_)
+        | BrowserCommand::CapabilityQuery(_)
+        | BrowserCommand::DeleteResource { .. }
+        | BrowserCommand::DeleteKnowledge { .. } => Err(fail(
+            ERR_INTERNAL,
+            "this command is not served by a session".into(),
+        )),
     };
 
     timer.observe_duration();
-    (response, latent_to_stream)
+    response
+}
+
+/// Resource store accounting, read off the async threads. `None`: unreadable.
+async fn resource_usage(state: &Arc<BrowserState>) -> Option<spine_core::resources::ResourceUsage> {
+    let state = state.clone();
+    tokio::task::spawn_blocking(move || state.resources.usage().ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Dependency state for `/ready`.
+async fn dependencies(state: &Arc<BrowserState>) -> spine_core::operations::Dependencies {
+    let mut namespace_peers = 0;
+    if let Some(mesh) = &state.mesh_names {
+        namespace_peers = mesh.peer_count().await;
+    }
+    spine_core::operations::Dependencies {
+        persistence_failing: state
+            .persistence_failing
+            .load(std::sync::atomic::Ordering::Relaxed),
+        storage_unavailable: resource_usage(state).await.is_none(),
+        namespace_enabled: state.mesh_names.is_some(),
+        namespace_peers,
+        seeds_configured: !state.config.namespace.seeds.is_empty()
+            || !state.config.namespace.dns_seeds.is_empty(),
+        seeds_reached: state.namespace_counters.snapshot().seeds_reached,
+        seeds_failed: state.namespace_counters.snapshot().seeds_failed,
+    }
+}
+
+/// Everything `/metrics` reports beyond the process-wide registry.
+async fn metrics_snapshot(state: &Arc<BrowserState>) -> spine_core::operations::MetricsSnapshot {
+    use spine_core::operations::{CacheCounts, MeshSnapshot, MetricsSnapshot};
+    let mut mesh = None;
+    if let Some(resolver) = &state.mesh_names {
+        mesh = Some(MeshSnapshot {
+            peers: resolver.peer_count().await,
+            pending_lookups: resolver.pending_lookups(),
+            pending_calls: resolver.pending_application_calls(),
+            metrics: resolver.metrics().await,
+        });
+    }
+    let cache = state.names.cache_stats();
+    let usage = resource_usage(state).await;
+    MetricsSnapshot {
+        sessions_limit: state.config.server.max_sessions,
+        draining: state
+            .shutting_down
+            .load(std::sync::atomic::Ordering::Relaxed),
+        connections: state.connections.snapshot(),
+        outbound: state.fetcher.snapshot(),
+        execute_permits_in_use: EXECUTE_CONCURRENCY
+            .saturating_sub(state.execute_permits.available_permits()),
+        execute_permits_limit: EXECUTE_CONCURRENCY,
+        persistence_failing: state
+            .persistence_failing
+            .load(std::sync::atomic::Ordering::Relaxed),
+        resource_bytes: usage.map(|u| u.bytes),
+        resource_limit_bytes: state.resources.limit_bytes(),
+        resource_blobs: usage.map_or(0, |u| u.blobs as u64),
+        records_held: state.names.local_len(),
+        cache: CacheCounts {
+            hits: cache.hits,
+            stale_hits: cache.stale_hits,
+            negative_hits: cache.negative_hits,
+            misses: cache.misses,
+            evictions: cache.evictions,
+        },
+        activity: state.namespace_counters.snapshot(),
+        authority: state.authority.counts(),
+        mesh,
+    }
+}
+
+/// The node's authority state for the configured mode. Mode `audit` needs the
+/// node key (`[namespace] key_path`, created on first use as the namespace does)
+/// and keeps the usage ledger in the node's record store when it has one.
+/// `required` is refused by the configuration check before this is reached; it
+/// is refused here again so that no path can start a node that reports it.
+fn build_authority(
+    config: &SpineConfig,
+    backend: &Arc<dyn spine_storage::StorageBackend>,
+) -> Result<AuthorityNode> {
+    match config.authority.mode {
+        config::AuthorityMode::Off => Ok(AuthorityNode::off()),
+        config::AuthorityMode::Audit => {
+            let signer = namespace::load_or_create_key(&config.namespace.key_path)
+                .context("authority.mode = \"audit\" needs the node key")?;
+            let ledger = (!config.namespace.records_path.is_empty()).then(|| backend.clone());
+            let settings = spine_core::authority_audit::AuditSettings {
+                trusted_roots: config.authority.trusted_root_keys()?,
+                skew_secs: config.authority.skew_secs,
+                max_invocation_age_secs: config.authority.max_invocation_age_secs,
+            };
+            AuthorityNode::audit(&settings, signer, ledger, unix_now())
+        }
+        config::AuthorityMode::Required => {
+            anyhow::bail!("authority.mode = \"required\" is not available in this build")
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = SpineConfig::load();
+    let config = SpineConfig::try_load()?;
     init_telemetry("spine-core")?;
     info!("Starting SPINE Agentic Browser...");
     info!(
@@ -1331,39 +1656,61 @@ async fn main() -> Result<()> {
     );
 
     let port = config.server.port;
+    #[cfg(feature = "research")]
     let cluster_port = port + config.cluster.port_offset;
+    #[cfg(feature = "research")]
     let cluster_addr: std::net::SocketAddr = format!("{}:{}", config.server.host, cluster_port)
         .parse()
         .context("invalid cluster address")?;
 
+    #[cfg(feature = "research")]
     let capabilities = NodeCapabilities {
         supports_wasm: true,
-        supports_chameleon: true,
-        supports_speculation: true,
+        supports_chameleon: false,
+        supports_speculation: false,
         max_sessions: config.server.max_sessions,
         region: Some(config.cluster.region.clone()),
         skills: config.cluster.skills.clone(),
     };
 
+    #[cfg(feature = "research")]
     let mut cluster_node = ClusterNode::new(cluster_addr, capabilities);
+    #[cfg(feature = "research")]
     cluster_node.start().await?;
-
-    let profile = spine_agentic::AgentProfile::new("SPINE Core Agent")
-        .with_capabilities(vec![
-            spine_agentic::AgentCapability::Navigation,
-            spine_agentic::AgentCapability::ContentExtraction,
-            spine_agentic::AgentCapability::AgentCommunication,
-            spine_agentic::AgentCapability::KnowledgeManagement,
-            spine_agentic::AgentCapability::SwarmParticipation,
-        ])
-        .with_trust(spine_agentic::TrustLevel::Core);
-    let agentic_runtime = Arc::new(spine_agentic::AgenticWebRuntime::new(profile));
 
     // Join the namespace before serving, so the first client request already has
     // a mesh to route through. A node that cannot reach a seed still starts: it
     // serves the names it holds and says plainly that it is not routing.
+    let name_backend: Arc<dyn spine_storage::StorageBackend> =
+        if config.namespace.records_path.is_empty() {
+            Arc::new(spine_storage::InMemoryBackend::new())
+        } else {
+            Arc::new(spine_storage::sqlite::SqliteBackend::open(
+                &config.namespace.records_path,
+            )?)
+        };
+    let application = namespace::task_application(&config.namespace, name_backend.clone())?;
+    // The mesh service's succession log book is kept beside the local one when
+    // the namespace has a records path (its own namespaces, spec 02 decision 50).
+    let mesh_log_store: Option<Arc<dyn spine_mesh::logbook_store::LogBookStore>> =
+        if config.namespace.records_path.is_empty() {
+            None
+        } else {
+            Some(Arc::new(namespace::BackendLogBookStore::new(
+                name_backend.clone(),
+            )))
+        };
+    let namespace_counters = Arc::new(namespace::NamespaceCounters::default());
     let mesh_names = if config.namespace.enabled {
-        match namespace::join(&config.namespace, &config.server.host).await {
+        match namespace::join_with_application(
+            &config.namespace,
+            &config.server.host,
+            application,
+            mesh_log_store,
+            namespace_counters.clone(),
+        )
+        .await
+        {
             Ok(resolver) => Some(resolver),
             Err(e) => {
                 error!("failed to join the spine:// namespace: {e:#}");
@@ -1374,33 +1721,94 @@ async fn main() -> Result<()> {
         None
     };
 
+    let names = Arc::new(spine_name::LocalResolver::persistent(
+        unix_now,
+        name_backend.clone(),
+    )?);
+    if let Some(mesh) = &mesh_names {
+        for record in names.published_records()? {
+            if !record.is_expired(unix_now()) {
+                // The mesh store keeps its own log book, in memory: give it the
+                // persisted log first, or a rotated name's record is refused.
+                let log = record
+                    .name
+                    .public_key()
+                    .and_then(|key| names.succession_log(key));
+                if let Some(log) = log {
+                    mesh.offer_log(log).await?;
+                }
+                mesh.publish_local(record).await?;
+            }
+        }
+    }
+    namespace::spawn_owner_renewal(
+        names.clone(),
+        mesh_names.clone(),
+        &config.namespace,
+        namespace_counters.clone(),
+    )?;
+    let authority = Arc::new(build_authority(&config, &name_backend)?);
     let state = Arc::new(BrowserState {
+        // A blob named by a record this node currently publishes is never
+        // evicted, including after the record is renewed.
+        resources: spine_core::resources::ResourceStore::new(name_backend)
+            .with_reference_source({
+                let names = names.clone();
+                move || {
+                    let now = unix_now();
+                    let records = names
+                        .published_records()
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    Ok(records
+                        .into_iter()
+                        .filter(|record| !record.is_expired(now))
+                        .filter_map(|record| record.content_hash)
+                        .collect())
+                }
+            })
+            // A resource's binding record is judged against the succession logs
+            // the resolver holds: the current key of a rotated name, never a
+            // superseded one (spec 02, section 10).
+            .with_record_authority({
+                let names = names.clone();
+                move |record: &spine_name::NameRecord| {
+                    names.authorise(record).map_err(anyhow::Error::from)
+                }
+            }),
         sessions: DashMap::new(),
+        session_gate: Default::default(),
+        snapshot_gate: Mutex::new(()),
         knowledge_base: DashMap::new(),
+        knowledge_budget: spine_core::knowledge::KnowledgeBudget::new(
+            spine_core::knowledge::MAX_KNOWLEDGE_BYTES,
+        ),
+        #[cfg(feature = "research")]
         proposals: DashMap::new(),
+        #[cfg(feature = "research")]
         plans: DashMap::new(),
-        client: reqwest::Client::new(),
-        encoder: tokio::sync::RwLock::new(NeuralLatentEncoder::new(256, 1024, &[512, 256], 8, 42)),
+        fetcher: outbound::Fetcher::new(config.outbound.clone())?,
+        #[cfg(feature = "research")]
         cluster: Mutex::new(cluster_node),
-        agentic_runtime,
         rate_limits: DashMap::new(),
-        wasm_runtime: WasmRuntime::new().expect("Failed to initialize WASM runtime"),
-        neural_protocols: DashMap::new(),
-        connections_per_ip: DashMap::new(),
-        active_connections: std::sync::atomic::AtomicUsize::new(0),
+        wasm_runtime: Arc::new(WasmRuntime::new().expect("Failed to initialize WASM runtime")),
+        execute_permits: Arc::new(tokio::sync::Semaphore::new(EXECUTE_CONCURRENCY)),
+        connections: spine_core::connections::ConnectionBudget::new(
+            config.server.max_connections,
+            config.server.max_connections_per_ip,
+        ),
         start_time: std::time::Instant::now(),
         shutting_down: std::sync::atomic::AtomicBool::new(false),
+        persistence_failing: std::sync::atomic::AtomicBool::new(false),
+        shutdown: tokio::sync::watch::channel(false).0,
         config: config.clone(),
-        names: spine_name::LocalResolver::new(unix_now),
+        names,
         mesh_names,
+        namespace_counters,
+        authority,
     });
 
-    // Load persisted sessions
-    if let Err(e) = state.load_sessions() {
-        warn!("Failed to load persisted sessions: {}", e);
-    } else {
-        info!("Loaded {} persisted sessions", state.sessions.len());
-    }
+    state.load_sessions().context("load retained sessions")?;
+    info!("Loaded {} persisted sessions", state.sessions.len());
 
     // Start session persistence task
     let persistence_state = state.clone();
@@ -1410,8 +1818,14 @@ async fn main() -> Result<()> {
         loop {
             interval.tick().await;
             if let Err(e) = persistence_state.save_sessions().await {
+                persistence_state
+                    .persistence_failing
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
                 error!("Failed to save sessions: {}", e);
             } else {
+                persistence_state
+                    .persistence_failing
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 debug!("Sessions persisted to disk");
             }
         }
@@ -1419,21 +1833,29 @@ async fn main() -> Result<()> {
 
     // Start metrics & health server
     let metrics_state = state.clone();
+    let namespace_metrics_state = state.clone();
     let health_state = state.clone();
     let ready_state = state.clone();
     let metrics_app = Router::new()
-        .route("/metrics", get(|| async {
+        .route("/metrics", get(move || {
+            let state = namespace_metrics_state.clone();
+            async move {
+            SESSIONS_ACTIVE.set(state.sessions.len() as i64);
             let encoder = TextEncoder::new();
             let metric_families = prometheus::gather();
             let mut buffer = vec![];
             let _ = encoder.encode(&metric_families, &mut buffer);
-            String::from_utf8(buffer).unwrap_or_default()
+            let mut body = String::from_utf8(buffer).unwrap_or_default();
+            body.push_str(&spine_core::operations::render_metrics(&metrics_snapshot(&state).await));
+            body
+            }
         }))
         .route("/health", get(move || {
             let state = health_state.clone();
             async move {
                 let uptime = state.start_time.elapsed().as_secs();
-                let active = state.active_connections.load(std::sync::atomic::Ordering::Relaxed);
+                let connections = state.connections.snapshot();
+                let active = connections.active;
                 let sessions = state.sessions.len();
                 let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -1445,6 +1867,8 @@ async fn main() -> Result<()> {
                     "uptime_secs": uptime,
                     "active_connections": active,
                     "sessions": sessions,
+                    "connections": connections,
+                    "outbound": state.fetcher.snapshot(),
                     "version": env!("CARGO_PKG_VERSION"),
                 });
 
@@ -1460,13 +1884,17 @@ async fn main() -> Result<()> {
                 let shutting_down = state.shutting_down.load(std::sync::atomic::Ordering::Relaxed);
                 let sessions = state.sessions.len();
                 let max = state.config.server.max_sessions;
-                let ready = !shutting_down && sessions < max;
-
-                let body = serde_json::json!({
-                    "ready": ready,
-                    "sessions": sessions,
-                    "max_sessions": max,
+                let readiness = spine_core::operations::readiness_with(shutting_down, sessions, max, state.connections.snapshot(), dependencies(&state).await);
+                let ready = readiness.ready;
+                let mut body = serde_json::json!(readiness);
+                body["namespace"] = serde_json::json!(match &state.mesh_names {
+                    Some(mesh) if !mesh.peers().await.is_empty() => "peers_known",
+                    Some(_) => "local_only",
+                    None => "disabled",
                 });
+                body["tasks_enabled"] = serde_json::json!(state.config.namespace.tasks_enabled);
+                body["pending_mesh_calls"] = serde_json::json!(state.mesh_names.as_ref().map_or(0, |mesh| mesh.pending_application_calls()));
+                body["outbound"] = serde_json::json!(state.fetcher.snapshot());
 
                 let code = if ready { 200u16 } else { 503 };
                 (
@@ -1482,13 +1910,11 @@ async fn main() -> Result<()> {
                 html.push_str("<style>body{font-family:sans-serif;padding:20px;} table{border-collapse:collapse;width:100%;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} th{background-color:#f2f2f2;}</style>");
                 html.push_str("</head><body><h1>SPINE Session Monitor</h1>");
                 html.push_str(&format!("<p>Active Sessions: {}</p>", state.sessions.len()));
-                html.push_str("<table><tr><th>Session ID</th><th>URL</th><th>Last Command</th></tr>");
+                html.push_str("<table><tr><th>Session ID</th></tr>");
                 for entry in state.sessions.iter() {
-                    let (id, session) = entry.pair();
-                    html.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{:?}</td></tr>",
-                        id,
-                        session.current_url.as_deref().unwrap_or("None"),
-                        session.last_command));
+                    let id = entry.key();
+                    let safe_id=id.replace('&',"&amp;").replace('<',"&lt;").replace('>',"&gt;").replace('"',"&quot;");
+                    html.push_str(&format!("<tr><td>{}</td></tr>",safe_id));
                 }
                 html.push_str("</table></body></html>");
                 axum::response::Html(html)
@@ -1496,8 +1922,10 @@ async fn main() -> Result<()> {
         }));
 
     let metrics_port = config.server.metrics_port;
+    let metrics_host = config.server.host.clone();
     tokio::spawn(async move {
-        let addr: std::net::SocketAddr = match format!("0.0.0.0:{}", metrics_port).parse() {
+        let addr: std::net::SocketAddr = match format!("{}:{}", metrics_host, metrics_port).parse()
+        {
             Ok(a) => a,
             Err(e) => {
                 error!("Invalid metrics address: {}", e);
@@ -1521,12 +1949,15 @@ async fn main() -> Result<()> {
     });
 
     // Start cluster event listener
+    #[cfg(feature = "research")]
     let cluster_state = state.clone();
+    #[cfg(feature = "research")]
     let event_rx = {
         let cluster = state.cluster.lock().await;
         cluster.get_event_receiver()
     };
 
+    #[cfg(feature = "research")]
     tokio::spawn(async move {
         let mut rx = event_rx.lock().await;
         while let Some(event) = rx.recv().await {
@@ -1544,7 +1975,9 @@ async fn main() -> Result<()> {
                 spine_cluster::ClusterEvent::SessionDataReceived { session_id, data } => {
                     info!("Received session data for {}", session_id);
                     if let Ok(session) = serde_json::from_slice::<Session>(&data) {
-                        cluster_state.sessions.insert(session_id, session);
+                        if !cluster_state.import_session(session_id, session) {
+                            warn!("Session import refused: invalid ID, duplicate or capacity");
+                        }
                     }
                 }
                 spine_cluster::ClusterEvent::SearchRequested {
@@ -1553,8 +1986,8 @@ async fn main() -> Result<()> {
                     origin_node,
                 } => {
                     info!(
-                        "Distributed search requested: '{}' from node {}",
-                        query, origin_node
+                        "Distributed search {} requested from node {}",
+                        request_id, origin_node
                     );
 
                     let mut results = Vec::new();
@@ -1592,10 +2025,7 @@ async fn main() -> Result<()> {
                     tags,
                     origin_node,
                 } => {
-                    info!(
-                        "Knowledge synced from node {}: {} = {}",
-                        origin_node, key, value
-                    );
+                    info!("Knowledge synced from node {}", origin_node);
                     // Store in a global/shared knowledge base or specific session if applicable
                     // For now, we'll store it in a "cluster_shared" session
                     let entry = KnowledgeEntry {
@@ -1607,11 +2037,12 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     };
-                    cluster_state
-                        .knowledge_base
-                        .entry("cluster_shared".to_string())
-                        .or_default()
-                        .push(entry);
+                    // Held to the per-session entry cap and the byte budget
+                    // like any session's knowledge; a peer cannot grow it
+                    // without bound.
+                    if let Err(reason) = cluster_state.append_knowledge("cluster_shared", entry) {
+                        warn!("Dropping synced knowledge: {reason}");
+                    }
                 }
                 spine_cluster::ClusterEvent::SwarmSearchRequested {
                     query,
@@ -1620,29 +2051,20 @@ async fn main() -> Result<()> {
                     origin_node,
                 } => {
                     info!(
-                        "Swarm search requested: '{}' (depth {}) from node {}",
-                        query, depth, origin_node
+                        "Legacy swarm search at depth {} requested from node {}",
+                        depth, origin_node
                     );
-                    // Spawn a "Scout" session to perform the search
-                    let scout_id = format!("scout-{}-{}", origin_node, Uuid::new_v4());
-                    let mut scout_session = Session::new();
-                    scout_session.current_url =
-                        Some(format!("https://www.google.com/search?q={}", query));
-                    scout_session.autonomous_mode = true;
-                    cluster_state
-                        .sessions
-                        .insert(scout_id.clone(), scout_session);
-
-                    // In a real implementation, we'd wait for the scout to finish and send results back
+                    let _ = query;
+                    warn!("Legacy swarm search unsupported; no scout session created");
                 }
                 spine_cluster::ClusterEvent::TaskDelegated {
-                    task,
+                    task: _,
                     target_agent_id,
                     origin_node,
                 } => {
                     info!(
-                        "Task delegated from node {}: '{}' (target: {:?})",
-                        origin_node, task, target_agent_id
+                        "Legacy task event from node {} (target: {:?}); execution unsupported",
+                        origin_node, target_agent_id
                     );
                     // Handle task delegation (e.g., assign to an idle autonomous session)
                 }
@@ -1654,8 +2076,8 @@ async fn main() -> Result<()> {
                     origin_node,
                 } => {
                     info!(
-                        "Knowledge proposal received from node {}: {} = {:?}",
-                        origin_node, key, value
+                        "Legacy knowledge proposal {} received from node {}",
+                        proposal_id, origin_node
                     );
 
                     // Store proposal
@@ -1670,9 +2092,7 @@ async fn main() -> Result<()> {
                         },
                     );
 
-                    // Auto-vote based on confidence (simulated)
-                    let cluster = cluster_state.cluster.lock().await;
-                    let _ = cluster.vote_on_knowledge(proposal_id, true, 0.9).await;
+                    // No automatic confidence vote: this path has no evaluator.
                 }
                 spine_cluster::ClusterEvent::KnowledgeVoteReceived {
                     proposal_id,
@@ -1750,10 +2170,7 @@ async fn main() -> Result<()> {
                     value,
                     tags,
                 } => {
-                    info!(
-                        "Knowledge proposal {} committed: {} = {:?}",
-                        proposal_id, key, value
-                    );
+                    info!("Knowledge proposal {} committed", proposal_id);
 
                     let entry = KnowledgeEntry {
                         key,
@@ -1764,18 +2181,17 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     };
-                    cluster_state
-                        .knowledge_base
-                        .entry("cluster_consensus".to_string())
-                        .or_default()
-                        .push(entry);
+                    if let Err(reason) = cluster_state.append_knowledge("cluster_consensus", entry)
+                    {
+                        warn!("Dropping committed knowledge: {reason}");
+                    }
                     cluster_state.proposals.remove(&proposal_id);
                 }
                 spine_cluster::ClusterEvent::SwarmPlanProposed { plan, origin_node } => {
                     info!(
-                        "Swarm plan proposed by node {}: '{}' ({} tasks)",
+                        "Legacy swarm plan {} proposed by node {} ({} tasks)",
+                        plan.id,
                         origin_node,
-                        plan.goal,
                         plan.tasks.len()
                     );
                     cluster_state.plans.insert(plan.id, plan);
@@ -1803,209 +2219,6 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start autonomous agent loop
-    let agent_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-        loop {
-            interval.tick().await;
-
-            // 1. Swarm Task Scheduling
-            for mut plan_entry in agent_state.plans.iter_mut() {
-                let plan_id = *plan_entry.key();
-                let plan = plan_entry.value_mut();
-
-                if plan.status == spine_protocol::PlanStatus::Active {
-                    let completed_tasks: Vec<_> = plan
-                        .tasks
-                        .iter()
-                        .filter(|t| t.status == spine_protocol::TaskStatus::Completed)
-                        .map(|t| t.id)
-                        .collect();
-
-                    for task in plan.tasks.iter_mut() {
-                        if task.status == spine_protocol::TaskStatus::Pending
-                            && task.assigned_to.is_none()
-                        {
-                            // Check dependencies
-                            let deps_met = task
-                                .dependencies
-                                .iter()
-                                .all(|dep_id| completed_tasks.contains(dep_id));
-
-                            if !deps_met {
-                                continue;
-                            }
-
-                            // Skill-based Routing
-                            let cluster = agent_state.cluster.lock().await;
-                            let mut best_node = None;
-
-                            // Check self first
-                            let my_id = cluster.id;
-                            let my_caps = cluster.get_capabilities();
-                            let my_score = task
-                                .required_skills
-                                .iter()
-                                .filter(|s| my_caps.skills.contains(s))
-                                .count();
-
-                            if my_score > 0 {
-                                best_node = Some((my_id, my_score));
-                            }
-
-                            // Check other nodes
-                            for node in cluster.get_healthy_nodes() {
-                                if node.id == my_id {
-                                    continue;
-                                }
-                                let score = task
-                                    .required_skills
-                                    .iter()
-                                    .filter(|s| node.capabilities.skills.contains(s))
-                                    .count();
-
-                                if score > best_node.map(|(_, s)| s).unwrap_or(0) {
-                                    best_node = Some((node.id, score));
-                                }
-                            }
-
-                            if let Some((node_id, _)) = best_node {
-                                info!("Swarm Scheduler: Assigning task '{}' to node {} (skills matched)", task.description, node_id);
-                                task.assigned_to = Some(node_id);
-
-                                if node_id == my_id {
-                                    task.status = spine_protocol::TaskStatus::InProgress;
-                                    // Broadcast assignment
-                                    let _ = cluster
-                                        .update_plan_task(
-                                            plan_id,
-                                            task.id,
-                                            task.status.clone(),
-                                            None,
-                                        )
-                                        .await;
-
-                                    // Trigger task execution (simulated)
-                                    let task_desc = task.description.clone();
-                                    let task_id = task.id;
-                                    let task_state = agent_state.clone();
-                                    tokio::spawn(async move {
-                                        tokio::time::sleep(std::time::Duration::from_secs(10))
-                                            .await;
-                                        info!("Task completed: {}", task_desc);
-                                        if let Some(mut p) = task_state.plans.get_mut(&plan_id) {
-                                            if let Some(t) =
-                                                p.tasks.iter_mut().find(|t| t.id == task_id)
-                                            {
-                                                t.status = spine_protocol::TaskStatus::Completed;
-                                                t.result = Some(
-                                                    serde_json::json!({ "status": "success", "data": "Simulated result" }),
-                                                );
-
-                                                let cluster = task_state.cluster.lock().await;
-                                                let _ = cluster
-                                                    .update_plan_task(
-                                                        plan_id,
-                                                        task_id,
-                                                        t.status.clone(),
-                                                        t.result.clone(),
-                                                    )
-                                                    .await;
-                                            }
-                                        }
-                                    });
-                                } else {
-                                    // Task assigned to another node, they will pick it up in their loop
-                                    let _ = cluster
-                                        .update_plan_task(
-                                            plan_id,
-                                            task.id,
-                                            task.status.clone(),
-                                            None,
-                                        )
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 2. Autonomous Session Loop
-            for mut entry in agent_state.sessions.iter_mut() {
-                let session_id = entry.key().clone();
-                let session = entry.value_mut();
-
-                if session.autonomous_mode {
-                    if let Some(html) = &session.current_html {
-                        match spine_parser::parse_html(html) {
-                            Ok(ur) => {
-                                let engine = spine_human::ReasoningEngine::new();
-                                let plan = engine.create_plan("Explore and find search", &ur);
-
-                                if let Some(best_action) = plan.steps.first() {
-                                    if plan.estimated_success > 0.7 {
-                                        info!("Autonomous agent in session {} executing plan step: {}", session_id, best_action.action_type);
-
-                                        // Execute the action
-                                        match best_action.action_type.as_str() {
-                                            "Search" | "Authenticate" => {
-                                                if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(
-                                                        spine_protocol::BrowserCommand::Click {
-                                                            element_id: target_id.clone(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            "InputSearch" => {
-                                                if let Some(target_id) = &best_action.target_id {
-                                                    session.history.push(
-                                                        spine_protocol::BrowserCommand::Type {
-                                                            element_id: target_id.clone(),
-                                                            text: "SPINE Browser".to_string(),
-                                                        },
-                                                    );
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => warn!(
-                                "Failed to parse HTML for autonomous session {}: {}",
-                                session_id, e
-                            ),
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    // Start autonomous security monitor
-    let monitor_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            interval.tick().await;
-            info!("Autonomous security monitor: checking session health...");
-            for mut session in monitor_state.sessions.iter_mut() {
-                // If a session has been active but hasn't morphed recently, trigger a morph
-                // This is a simple "agentic" self-healing behavior
-                if session.last_command.is_some() && !session.needs_morph {
-                    info!(
-                        "Self-healing: triggering proactive protocol morph for session {}",
-                        session.key()
-                    );
-                    session.needs_morph = true;
-                }
-            }
-        }
-    });
-
     let addr = format!("{}:{}", config.server.host, port);
     let listener = TcpListener::bind(&addr).await?;
     info!("TCP listening on {}", addr);
@@ -2015,6 +2228,12 @@ async fn main() -> Result<()> {
     let ws_addr = format!("{}:{}", config.server.host, ws_port);
     let ws_listener = TcpListener::bind(&ws_addr).await?;
     info!("WebSocket listening on ws://{}", ws_addr);
+
+    #[cfg(feature = "quic")]
+    anyhow::ensure!(
+        !config.tls.enabled,
+        "optional native QUIC cannot enforce the configured TLS policy"
+    );
 
     // QUIC listener on port + offset
     #[cfg(feature = "quic")]
@@ -2031,100 +2250,75 @@ async fn main() -> Result<()> {
         let quic_state = Arc::clone(&state);
         tokio::spawn(async move {
             while let Some(incoming) = quic_endpoint.accept().await {
+                if quic_state
+                    .shutting_down
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    incoming.refuse();
+                    continue;
+                }
+                let Some(admission) = quic_state
+                    .connections
+                    .try_acquire(incoming.remote_address().ip())
+                else {
+                    incoming.refuse();
+                    continue;
+                };
                 let quic_state = Arc::clone(&quic_state);
                 tokio::spawn(async move {
-                    match incoming.await {
-                        Ok(connection) => {
+                    let _admission = admission;
+                    match tokio::time::timeout(std::time::Duration::from_secs(10), incoming).await {
+                        Ok(Ok(connection)) => {
                             info!("New QUIC connection from {}", connection.remote_address());
-                            match connection.accept_bi().await {
-                                Ok((send, recv)) => {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                connection.accept_bi(),
+                            )
+                            .await
+                            {
+                                Ok(Ok((send, recv))) => {
                                     let stream = spine_transport::QuicStream::new(send, recv);
-                                    let mut handler = ProtocolHandler::new(stream);
-                                    handle_session(&mut handler, quic_state).await;
+                                    serve_native(stream, quic_state).await;
                                 }
-                                Err(e) => error!("QUIC stream accept failed: {}", e),
+                                Ok(Err(e)) => debug!("QUIC stream accept failed: {e}"),
+                                Err(_) => debug!("QUIC stream accept deadline exceeded"),
                             }
                         }
-                        Err(e) => error!("QUIC connection failed: {}", e),
+                        Ok(Err(e)) => debug!("QUIC connection failed: {e}"),
+                        Err(_) => debug!("QUIC connection deadline exceeded"),
                     }
                 });
             }
         });
     }
 
-    // TLS setup (uses config with env-var override)
-    let tls_acceptor = if config.tls.enabled {
-        let cert_path = std::path::Path::new(&config.tls.cert_path);
-        let key_path = std::path::Path::new(&config.tls.key_path);
-        let ca_path = std::path::Path::new(&config.tls.ca_path);
-        let ca_opt = if ca_path.exists() {
-            Some(ca_path)
-        } else {
-            None
-        };
-
-        if cert_path.exists() && key_path.exists() {
-            Some(create_tls_acceptor(cert_path, key_path, ca_opt)?)
-        } else {
-            info!(
-                "TLS enabled but certs not found at {}. Falling back to plain TCP.",
-                config.tls.cert_path
-            );
-            None
-        }
-    } else {
-        None
-    };
-
+    // Explicit TLS policy also applies to the WebSocket listener.
+    let tls_acceptor = configured_acceptor(&config.tls)?;
     // Watchdog: periodically reap idle sessions
     let watchdog_state = Arc::clone(&state);
     let watchdog_secs = config.server.session_watchdog_secs;
-    let idle_timeout = std::time::Duration::from_secs(config.server.idle_timeout_secs);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(watchdog_secs));
         loop {
             interval.tick().await;
-            let now = std::time::Instant::now();
-            let mut reaped = 0u32;
-            let ids_to_remove: Vec<String> = watchdog_state
-                .sessions
-                .iter()
-                .filter_map(|entry| {
-                    let session = entry.value();
-                    // Sessions with no recent command and past idle timeout
-                    if session.last_command.is_some() {
-                        // We don't have per-session timestamps yet, use a heuristic:
-                        // sessions in autonomous mode are kept alive
-                        if session.autonomous_mode {
-                            return None;
-                        }
+            let reaped = watchdog_state.reap_sessions();
+            if !reaped.is_empty() {
+                #[cfg(feature = "research")]
+                {
+                    let cluster = watchdog_state.cluster.lock().await;
+                    for id in &reaped {
+                        cluster.remove_session(id);
                     }
-                    // For now, reap sessions that have no URL and no commands (abandoned)
-                    if session.current_url.is_none()
-                        && session.last_command.is_none()
-                        && session.history.is_empty()
-                    {
-                        Some(entry.key().clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for id in ids_to_remove {
-                watchdog_state.sessions.remove(&id);
-                SESSIONS_ACTIVE.dec();
-                reaped += 1;
-            }
-            if reaped > 0 {
+                }
                 info!(
-                    "Watchdog: reaped {} idle sessions, {} remaining",
-                    reaped,
-                    watchdog_state.sessions.len()
+                    reaped = reaped.len(),
+                    remaining = watchdog_state.sessions.len(),
+                    "Expired detached sessions"
                 );
+                if let Err(error) = watchdog_state.save_sessions().await {
+                    error!(%error, "Failed to persist session expiry");
+                }
             }
-            let _ = now; // suppress unused warning for future per-session timestamps
-            let _ = idle_timeout;
         }
     });
 
@@ -2134,15 +2328,30 @@ async fn main() -> Result<()> {
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let shutdown_notify_signal = Arc::clone(&shutdown_notify);
     tokio::spawn(async move {
-        // Wait for Ctrl+C
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("Failed to listen for ctrl_c: {}", e);
-            return;
+        let signal = async {
+            if let Err(error) = tokio::signal::ctrl_c().await {
+                warn!(%error,"console shutdown signal is unavailable");
+                std::future::pending::<()>().await;
+            }
+        };
+        if std::env::var("SPINE_MANAGED_CHILD").as_deref() == Ok("1") {
+            use tokio::io::AsyncReadExt;
+            let mut control = tokio::io::stdin();
+            // One byte or EOF from the private parent pipe requests draining.
+            // Parent termination closes the pipe; no network admin endpoint is exposed.
+            tokio::select! {_=signal=>{},_=control.read_u8()=>{}}
+        } else {
+            signal.await;
         }
         info!("Shutdown signal received — draining connections...");
         shutdown_state
             .shutting_down
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Sessions that are idle, or finish their current command, send
+        // CLOSE(shutting_down). Nothing waits for a slow peer: each close is
+        // bounded by the connection layer's one-second write timeout, and the
+        // drain below has its own deadline.
+        shutdown_state.shutdown.send_replace(true);
 
         // Save sessions before shutdown
         if let Err(e) = shutdown_state.save_sessions().await {
@@ -2154,9 +2363,7 @@ async fn main() -> Result<()> {
         // Wait for active connections to drain (up to timeout)
         let deadline = tokio::time::Instant::now() + shutdown_timeout;
         loop {
-            let active = shutdown_state
-                .active_connections
-                .load(std::sync::atomic::Ordering::Relaxed);
+            let active = shutdown_state.connections.active();
             if active == 0 {
                 info!("All connections drained");
                 break;
@@ -2175,8 +2382,6 @@ async fn main() -> Result<()> {
         shutdown_notify_signal.notify_one();
     });
 
-    let max_per_ip = config.server.max_connections_per_ip;
-
     loop {
         tokio::select! {
             // Shutdown gate
@@ -2189,53 +2394,33 @@ async fn main() -> Result<()> {
             result = listener.accept() => {
                 let (socket, addr) = result?;
 
-                // Enforce per-IP connection limit
-                let ip = addr.ip();
-                let current = {
-                    let entry = state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
-                    entry.value().load(std::sync::atomic::Ordering::Relaxed)
+                let Some(admission) = state.connections.try_acquire(addr.ip()) else {
+                    drop(socket);
+                    continue;
                 };
-                if current >= max_per_ip {
-                    warn!("Per-IP limit reached for {} ({}/{}), rejecting", ip, current, max_per_ip);
-                    drop(socket);
-                    continue;
-                }
 
-                // Check shutdown flag
-                if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
-                    info!("Rejecting connection during shutdown");
-                    drop(socket);
-                    continue;
-                }
-
+                // During shutdown the connection is still accepted: the handshake
+                // runs and `serve_native` answers it with CLOSE(shutting_down).
                 let span = span!(Level::INFO, "connection", remote_addr = %addr, transport = "tcp");
                 let _enter = span.enter();
                 info!("New TCP connection from {}", addr);
-
-                // Track connection
-                state.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0))
-                    .value().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                 let conn_state = Arc::clone(&state);
                 let tls_acceptor = tls_acceptor.clone();
 
                 tokio::spawn(async move {
+                    let _admission = admission;
                     if let Some(acceptor) = tls_acceptor {
-                        match acceptor.accept(socket).await {
-                            Ok(tls_stream) => {
-                                let mut handler = ProtocolHandler::new(tls_stream);
-                                handle_session(&mut handler, conn_state.clone()).await;
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
+                            Ok(Ok(tls_stream)) => {
+                                serve_native(tls_stream, conn_state.clone()).await;
                             }
-                            Err(e) => error!("TLS handshake failed: {}", e),
+                            Ok(Err(e)) => debug!("TLS handshake failed: {}", e),
+                            Err(_) => debug!("TLS handshake deadline exceeded"),
                         }
                     } else {
-                        let mut handler = ProtocolHandler::new(socket);
-                        handle_session(&mut handler, conn_state.clone()).await;
+                        serve_native(socket, conn_state.clone()).await;
                     }
-                    // Decrement counters on disconnect
-                    conn_state.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    conn_state.connections_per_ip.entry(ip).and_modify(|v| { v.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); });
                 });
             }
 
@@ -2243,39 +2428,25 @@ async fn main() -> Result<()> {
             result = ws_listener.accept() => {
                 let (socket, addr) = result?;
 
-                let ip = addr.ip();
-                let current = {
-                    let entry = state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0));
-                    entry.value().load(std::sync::atomic::Ordering::Relaxed)
+                let Some(admission) = state.connections.try_acquire(addr.ip()) else {
+                    drop(socket);
+                    continue;
                 };
-                if current >= max_per_ip {
-                    warn!("Per-IP limit reached for {} (WS), rejecting", ip);
-                    drop(socket);
-                    continue;
-                }
-                if state.shutting_down.load(std::sync::atomic::Ordering::Relaxed) {
-                    drop(socket);
-                    continue;
-                }
-
                 info!("New WebSocket connection from {}", addr);
 
-                state.active_connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                state.connections_per_ip.entry(ip).or_insert_with(|| std::sync::atomic::AtomicUsize::new(0))
-                    .value().fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
                 let conn_state = Arc::clone(&state);
+                let acceptor = tls_acceptor.clone();
                 tokio::spawn(async move {
-                    match spine_transport::WebSocketServerBridge::accept(socket).await {
-                        Ok(bridge) => {
-                            let stream = WebSocketStream::new(bridge);
-                            let mut handler = ProtocolHandler::new(stream);
-                            handle_session(&mut handler, conn_state.clone()).await;
+                    let _admission = admission;
+                    if let Some(acceptor) = acceptor {
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(socket)).await {
+                            Ok(Ok(stream)) => handle_websocket(stream, conn_state).await,
+                            Ok(Err(e)) => debug!("WebSocket TLS handshake failed: {e}"),
+                            Err(_) => debug!("WebSocket TLS handshake deadline exceeded"),
                         }
-                        Err(e) => error!("WebSocket upgrade failed: {}", e),
+                    } else {
+                        handle_websocket(socket, conn_state).await;
                     }
-                    conn_state.active_connections.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    conn_state.connections_per_ip.entry(ip).and_modify(|v| { v.fetch_sub(1, std::sync::atomic::Ordering::Relaxed); });
                 });
             }
         }
@@ -2289,168 +2460,668 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn handle_session<S>(handler: &mut ProtocolHandler<S>, state: Arc<BrowserState>)
+async fn handle_websocket<S>(stream: S, state: Arc<BrowserState>)
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut session_id: Option<String> = None;
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        spine_transport::WebSocketServerBridge::accept(stream),
+    )
+    .await
+    {
+        Ok(Ok(bridge)) => {
+            serve_native(WebSocketStream::new(bridge), state).await;
+        }
+        Ok(Err(e)) => debug!("WebSocket upgrade failed: {e}"),
+        Err(_) => debug!("WebSocket upgrade deadline exceeded"),
+    }
+}
 
+/// Runs the spine-wire v1 handshake on `stream` and, if it succeeds, the
+/// session. The handshake deadline is `server.hello_timeout_secs`; a
+/// client that does not complete it is sent `CLOSE(timeout)` and dropped, which
+/// releases its admission when the caller's task ends.
+async fn serve_native<S>(stream: S, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
+    // HELLO_ACK reports the node's authority mode: `off` or `audit` (`required`
+    // is refused at start-up). `audit` checks an `AUTH_REQUEST` and enforces
+    // nothing. The per-connection `binding` (32 bytes from the operating
+    // system's random source) and `time` (the system clock) are drawn by
+    // `negotiate`, once for every connection.
+    let mut local = native::local_config();
+    local.authority = state.authority.mode();
+    match Connection::server_handshake(stream, &local, deadline).await {
+        Ok(mut conn) => {
+            // Admission refused after the handshake: the daemon is draining.
+            if state
+                .shutting_down
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                conn.close(CloseCode::ShuttingDown, "the server is shutting down")
+                    .await;
+                return;
+            }
+            handle_session(conn, state).await
+        }
+        Err(e) => debug!("native handshake failed: {e}"),
+    }
+}
+
+/// What a connection's reader and command loop queue for its writer.
+enum Outgoing {
+    /// A frame to send after the state checks, for example a `RESPONSE`.
+    Frame(Frame),
+    /// A frame the reader produced for the peer (a `PONG`, an `overloaded`
+    /// `RESPONSE`), written without consulting the in-flight table.
+    Answer(Frame),
+    /// A `CLOSE`; the writer sends it, shuts down, and ends the session.
+    Close(CloseCode, String),
+}
+
+/// One accepted request, waiting for its turn or running.
+struct Job {
+    request_id: u64,
+    body: Vec<u8>,
+    /// The key the connection proved with `IDENTIFY`, if it did. It is read
+    /// for the log and for nothing else: an identity grants nothing, so an
+    /// identified connection and an anonymous one get the same answers
+    /// (`docs/spec/00-wire.md` 6.6; the acceptance test
+    /// `an_identified_client_gets_the_answers_an_anonymous_one_gets`).
+    identity: Option<[u8; 32]>,
+    /// This connection's `HELLO_ACK.binding`: what a `delete_resource` proof
+    /// is bound to, and the `session` of an invocation.
+    binding: [u8; 32],
+    /// The request arrived as an `AUTH_REQUEST`: `body` is `{auth, command}`
+    /// and not a command.
+    auth: bool,
+}
+
+/// An identity for the log: the key in hex, or `anonymous`. Never a metric
+/// label: keys are free to mint, so they would make the label set unbounded.
+fn identity_label(identity: Option<[u8; 32]>) -> String {
+    match identity {
+        Some(key) => key.iter().map(|byte| format!("{byte:02x}")).collect(),
+        None => "anonymous".to_string(),
+    }
+}
+
+/// Returns when the connection has been declared over (or the signal's owner
+/// is gone, which also means over).
+async fn flagged(signal: &mut tokio::sync::watch::Receiver<bool>) {
+    let _ = signal.wait_for(|over| *over).await.map(|_| ());
+}
+
+/// The `RESPONSE` frame for `answer`. An answer that cannot be encoded becomes
+/// an `internal` error, so the request id is released and the client is not
+/// left waiting.
+fn response_frame(request_id: u64, answer: &Answer) -> Frame {
+    let encoded = match answer {
+        Ok(output) => response_ok_body(output).map_err(|e| e.to_string()),
+        Err(error) => native::error_body(error).map_err(|e| e.to_string()),
+    };
+    let body = match encoded {
+        Ok(body) => body,
+        Err(message) => {
+            warn!("Response could not be encoded: {message}");
+            native::error_body(&fail(
+                ERR_INTERNAL,
+                format!("response could not be encoded: {message}"),
+            ))
+            .unwrap_or_else(|_| vec![0xa0])
+        }
+    };
+    Frame {
+        frame_type: FrameType::Response,
+        request_id,
+        body,
+    }
+}
+
+/// The `RESPONSE` frame for `answer`, as it will be sent on a connection whose
+/// `max_frame` is given: an answer too large to send is replaced here by the
+/// `internal` error the writer would have sent in its place, so that a receipt
+/// made from the frame's body is a receipt for the body the client gets.
+fn fit_response(request_id: u64, answer: &Answer, max_frame: u32) -> Frame {
+    let frame = response_frame(request_id, answer);
+    let length = 11 + frame.body.len() as u64;
+    let max = max_frame.min(MAX_FRAME);
+    if length <= u64::from(max) {
+        return frame;
+    }
+    let error = ConnectionError::Frame(FrameError::LengthTooLarge { length, max });
+    warn!("Response could not be sent: {error}");
+    response_frame(
+        request_id,
+        &Err(fail(
+            ERR_INTERNAL,
+            format!("response could not be sent: {error}"),
+        )),
+    )
+}
+
+/// Why a queued frame did not get written.
+enum WriteFailure {
+    /// The write deadline passed with the frame partly written.
+    Deadline,
+    /// The connection layer refused or failed the write.
+    Failed(ConnectionError),
+}
+
+/// Writes one queued frame under [`native::WRITE_DEADLINE`].
+async fn write_once<S>(
+    writer: &mut ConnectionWriter<S>,
+    frame: Frame,
+    checked: bool,
+) -> Result<(), WriteFailure>
+where
+    S: AsyncWrite + Unpin + Send,
+{
+    let written = tokio::time::timeout(native::WRITE_DEADLINE, async {
+        if checked {
+            writer.send(frame).await
+        } else {
+            writer.answer(frame).await
+        }
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(WriteFailure::Failed(e)),
+        Err(_) => Err(WriteFailure::Deadline),
+    }
+}
+
+/// Writes a queued frame. Returns false when the connection is over and
+/// nothing more should be written. A response that cannot be sent but leaves
+/// the connection usable (for example one over the frame limit) is replaced by
+/// an `internal` error, so the request id is released.
+async fn write_queued<S>(writer: &mut ConnectionWriter<S>, frame: Frame, checked: bool) -> bool
+where
+    S: AsyncWrite + Unpin + Send,
+{
+    let request_id = frame.request_id;
+    let is_response = frame.frame_type == FrameType::Response;
+    match write_once(writer, frame, checked).await {
+        Ok(()) => true,
+        Err(WriteFailure::Deadline) => {
+            // The stream may hold a partial frame: write nothing more.
+            warn!("Write deadline exceeded; abandoning the connection");
+            writer.abandon();
+            false
+        }
+        Err(WriteFailure::Failed(e)) => {
+            if writer.is_dead() {
+                debug!("Failed to send frame: {e}");
+                return false;
+            }
+            if matches!(e, ConnectionError::Unusable) {
+                // The reader finished the connection (a violation, the peer
+                // went away). A `CLOSE` it asked for may still be queued
+                // behind this frame, so keep draining.
+                debug!("Dropping a frame for a finished connection");
+                return true;
+            }
+            if !is_response || !checked {
+                debug!("Failed to send frame: {e}");
+                return false;
+            }
+            warn!("Response could not be sent: {e}");
+            let body = match native::error_body(&fail(
+                ERR_INTERNAL,
+                format!("response could not be sent: {e}"),
+            )) {
+                Ok(body) => body,
+                Err(_) => return false,
+            };
+            let replacement = Frame {
+                frame_type: FrameType::Response,
+                request_id,
+                body,
+            };
+            write_once(writer, replacement, true).await.is_ok()
+        }
+    }
+}
+
+/// The single owner of a connection's write half. Writes what the other two
+/// loops queue, in order. It ends after a `CLOSE`, a failed or timed-out
+/// write, or when every sender is gone and the queue is empty; whichever it
+/// is, the connection is then over and the other loops are told so.
+async fn write_responses<S>(
+    mut writer: ConnectionWriter<S>,
+    mut queue: tokio::sync::mpsc::Receiver<Outgoing>,
+    over: Arc<tokio::sync::watch::Sender<bool>>,
+) where
+    S: AsyncWrite + Unpin + Send,
+{
+    while let Some(item) = queue.recv().await {
+        let go_on = match item {
+            Outgoing::Frame(frame) => write_queued(&mut writer, frame, true).await,
+            Outgoing::Answer(frame) => write_queued(&mut writer, frame, false).await,
+            Outgoing::Close(code, message) => {
+                writer.close(code, &message).await;
+                false
+            }
+        };
+        if !go_on {
+            break;
+        }
+    }
+    over.send_replace(true);
+}
+
+/// The single owner of a connection's read half: reads frames for as long as
+/// the connection lives, whatever the command loop is doing.
+///
+/// - `PING` and the `overloaded` refusal come back from the reader as
+///   [`Incoming::Reply`] and are queued for the writer at once.
+/// - A `REQUEST` or `AUTH_REQUEST` the reader accepted (the table has room)
+///   goes to the command loop. The queue has room for `max_inflight` jobs, and an id stays in the
+///   table until its `RESPONSE` is written, so the queue cannot be full here.
+/// - `STREAM_CANCEL` is delivered by the reader for an id in flight and
+///   ignored: v1 defines it only for a stream, and no command streams.
+/// - `IDENTIFY` (already verified by the connection layer) is logged; the
+///   identity is attached to the jobs that follow and grants nothing.
+/// - `PONG` answers a `PING` this daemon never sends and is ignored.
+/// - A peer `CLOSE`, end of stream, or an i/o error ends the loop; a
+///   violation or the idle deadline queues the `CLOSE` the reader wants first.
+///
+/// When the loop ends it declares the connection over, which stops the command
+/// loop (a running command is dropped) and, through the closed queues, the
+/// writer.
+async fn read_requests<S>(
+    mut reader: ConnectionReader<S>,
+    queue: tokio::sync::mpsc::Sender<Outgoing>,
+    jobs: tokio::sync::mpsc::Sender<Job>,
+    over: Arc<tokio::sync::watch::Sender<bool>>,
+    mut over_seen: tokio::sync::watch::Receiver<bool>,
+    idle: std::time::Duration,
+) where
+    S: AsyncRead + Unpin + Send,
+{
     loop {
-        match handler.receive_message().await {
-            Ok(Message::Ping { timestamp }) => {
-                let _ = handler.send_message(&Message::Pong { timestamp }).await;
-            }
-            Ok(Message::Request(req)) => {
-                let req_span =
-                    span!(Level::INFO, "request", request_id = %req.id, command = ?req.command);
-                let _enter = req_span.enter();
-                info!("Received request: {:?}", req);
-
-                // 1. Check session limit for new sessions
-                if session_id.is_none() && state.sessions.len() >= state.config.server.max_sessions
-                {
-                    let _ = handler
-                        .send_message(&Message::Response(Response {
-                            id: req.id,
-                            result: None,
-                            error: Some("Server busy: maximum sessions reached".to_string()),
-                        }))
-                        .await;
-                    return;
-                }
-
-                // 2. Ensure session exists
-                let id = if let Some(id) = session_id.as_ref() {
-                    id.clone()
-                } else {
-                    let new_id = Uuid::new_v4().to_string();
-                    SESSIONS_ACTIVE.inc();
-                    state.sessions.insert(new_id.clone(), Session::new());
-
-                    // Register session with cluster
-                    let cluster = state.cluster.lock().await;
-                    cluster.register_local_session(new_id.clone());
-
-                    session_id = Some(new_id.clone());
-                    new_id
-                };
-
-                // 3. Enforce rate limit
-                if !state.check_rate_limit(&id) {
-                    let _ = handler
-                        .send_message(&Message::Response(Response {
-                            id: req.id,
-                            result: None,
-                            error: Some("Rate limit exceeded".to_string()),
-                        }))
-                        .await;
-                    continue;
-                }
-
-                // Check if session needs a proactive morph
-                if let Some(mut session) = state.sessions.get_mut(&id) {
-                    if session.needs_morph {
-                        let seed = rand::random::<u64>();
-                        info!("Sending proactive MorphRequest for session {}", id);
-                        if handler
-                            .send_message(&Message::MorphRequest { seed })
-                            .await
-                            .is_ok()
-                        {
-                            handler.morph_now(seed);
-                            session.needs_morph = false;
-                        }
-                    }
-                }
-
-                // Handle the command
-                let (res, latent_to_stream) = if let BrowserCommand::Morph = req.command {
-                    let seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos() as u64;
-                    handler.morph_now(seed);
-                    PROTOCOL_MORPHS.inc();
-                    (
-                        Response {
-                            id: req.id,
-                            result: Some(serde_json::json!({ "status": "morphed", "seed": seed })),
-                            error: None,
-                        },
-                        Vec::new(),
-                    )
-                } else {
-                    let (res, latent) =
-                        handle_command(&state, &id, req.command.clone(), req.id).await;
-                    if let Some(mut session) = state.sessions.get_mut(&id) {
-                        session.last_command = Some(req.command);
-                    }
-                    (res, latent)
-                };
-
-                if let Err(e) = handler.send_message(&Message::Response(res)).await {
-                    error!("Failed to send response: {}", e);
-                }
-
-                // Stream any latent vectors produced
-                for vector in latent_to_stream {
-                    let latent_msg = spine_protocol::LatentVector {
-                        components: vector,
-                        dim_hint: 0,
-                        epoch: 0,
+        // `recv_timeout` suspends its deadline while a request is in flight.
+        // A read dropped part-way through a frame is fine: the connection is
+        // over when `over_seen` fires and is not read again.
+        let received = tokio::select! {
+            _ = flagged(&mut over_seen) => break,
+            received = reader.recv_timeout(idle) => received,
+        };
+        match received {
+            Ok(Some(Incoming::Frame(frame))) => match frame.frame_type {
+                FrameType::Request | FrameType::AuthRequest => {
+                    let job = Job {
+                        request_id: frame.request_id,
+                        auth: frame.frame_type == FrameType::AuthRequest,
+                        body: frame.body,
+                        identity: reader.identity(),
+                        binding: reader.binding(),
                     };
-                    if let Err(e) = handler
-                        .send_message(&Message::LatentMessage(latent_msg))
-                        .await
-                    {
-                        error!("Failed to stream latent vector: {}", e);
+                    if jobs.send(job).await.is_err() {
+                        break;
                     }
                 }
-
-                // Speculative pre-computation for likely next requests
-                let state_clone = state.clone();
-                let id_clone = id.clone();
-                handler.speculate_responses(|predicted_hash| {
-                    let session = state_clone.sessions.get(&id_clone)?;
-                    let last_cmd = session.last_command.as_ref()?;
-
-                    match last_cmd {
-                        BrowserCommand::Navigate { .. } => {
-                            // If we just navigated, the agent will likely ask for UR
-                            if let Some(html) = &session.current_html {
-                                if let Ok(ur) = parse_html(html) {
-                                    return Some(Message::PreComputed(PreComputedResponse {
-                                        request_hash: predicted_hash,
-                                        result: serde_json::to_value(ur).unwrap_or_default(),
-                                        confidence: 0.85,
-                                        alternatives: Vec::new(),
-                                    }));
-                                }
-                            }
-                        }
-                        BrowserCommand::GetUR => {
-                            // If we just got UR, the agent might want raw HTML for transpilation
-                            if let Some(html) = &session.current_html {
-                                return Some(Message::PreComputed(PreComputedResponse {
-                                    request_hash: predicted_hash,
-                                    result: serde_json::json!({ "html": html }),
-                                    confidence: 0.7,
-                                    alternatives: Vec::new(),
-                                }));
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    None
-                });
+                FrameType::StreamCancel => {
+                    debug!(
+                        "Ignoring STREAM_CANCEL for request {}: nothing streams",
+                        frame.request_id
+                    );
+                }
+                FrameType::Identify => {
+                    // The connection layer has verified the proof. The key is
+                    // recorded with the connection and logged; it grants
+                    // nothing.
+                    debug!(
+                        "Connection identified as {}",
+                        identity_label(reader.identity())
+                    );
+                }
+                _ => {}
+            },
+            Ok(Some(Incoming::Reply(frame))) => {
+                if queue.send(Outgoing::Answer(frame)).await.is_err() {
+                    break;
+                }
             }
-            Ok(_) => {}
+            Ok(None) => break,
+            Err(ConnectionError::Closed(close)) => {
+                debug!("Client closed the connection: {}", close.code);
+                break;
+            }
             Err(e) => {
-                error!("Connection error: {}", e);
-                // Cleanup session if needed, or keep it for reconnection
+                if matches!(e, ConnectionError::Timeout) {
+                    debug!("Connection idle too long");
+                } else {
+                    error!("Connection error: {}", e);
+                }
+                if let Some(close) = e.close_to_send() {
+                    let code = close.close_code().unwrap_or(CloseCode::ProtocolViolation);
+                    let _ = queue.send(Outgoing::Close(code, close.message)).await;
+                }
                 break;
             }
         }
     }
+    over.send_replace(true);
+}
+
+/// Runs the commands of one connection, one at a time in arrival order, and
+/// queues each answer for the writer. Per-connection state (the session, the
+/// rate buckets) lives here, so commands of one connection are never
+/// concurrent.
+///
+/// Ends when the connection is over (a command that is running is dropped at
+/// its next await point, and the session is detached as it is when the
+/// connection ends normally), when the reader has gone and the queue is empty,
+/// or on shutdown. On shutdown a command that is running finishes and is
+/// answered, requests still waiting get no answer, and `CLOSE(shutting_down)`
+/// goes out after the answers already queued.
+async fn run_commands(
+    state: Arc<BrowserState>,
+    mut jobs: tokio::sync::mpsc::Receiver<Job>,
+    queue: tokio::sync::mpsc::Sender<Outgoing>,
+    mut over_seen: tokio::sync::watch::Receiver<bool>,
+    max_frame: u32,
+) {
+    let mut session_lease: Option<SessionLease> = None;
+    let tool_rate = RateLease {
+        state: state.clone(),
+        id: Uuid::new_v4().to_string(),
+    };
+    // The bucket for session commands is the connection's, so it applies
+    // before a session exists and a refused command creates none.
+    let command_rate = RateLease {
+        state: state.clone(),
+        id: Uuid::new_v4().to_string(),
+    };
+    let mut shutdown = state.shutdown.subscribe();
+
+    loop {
+        // Between commands: on shutdown say so and end.
+        let draining = *shutdown.borrow();
+        if draining {
+            let _ = queue
+                .send(Outgoing::Close(
+                    CloseCode::ShuttingDown,
+                    "the server is shutting down".to_string(),
+                ))
+                .await;
+            break;
+        }
+        let job = tokio::select! {
+            _ = flagged(&mut over_seen) => break,
+            _ = shutdown.changed() => continue,
+            job = jobs.recv() => match job {
+                Some(job) => job,
+                None => break,
+            },
+        };
+        let request_id = job.request_id;
+        let mut authorized: Option<Box<Authorized>> = None;
+        let answer = tokio::select! {
+            _ = flagged(&mut over_seen) => break,
+            answer = answer_job(&state, &mut session_lease, &tool_rate, &command_rate, job, &mut authorized) => answer,
+        };
+        let response = fit_response(request_id, &answer, max_frame);
+        // A command the gate authorised and that ran gets its receipt first,
+        // while its id is in flight (`docs/spec/00-wire.md` 8.6).
+        if let Some(authorized) = authorized {
+            if let Some(body) =
+                state
+                    .authority
+                    .issue_receipt(&authorized, &response.body, unix_now())
+            {
+                let receipt = Frame {
+                    frame_type: FrameType::Receipt,
+                    request_id,
+                    body,
+                };
+                if queue.send(Outgoing::Frame(receipt)).await.is_err() {
+                    break;
+                }
+            }
+        }
+        if queue.send(Outgoing::Frame(response)).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// What the node's authority state makes of an `AUTH_REQUEST` job: refuses it
+/// in mode `off`, decodes its body, charges the connection's command bucket
+/// (before the gate, so a flood costs the node no signature checks), asks the
+/// gate on a blocking thread and leaves its authorisation, if it got one, in
+/// `authorized`. Returns the command to run, or the answer that replaces it.
+/// In mode `audit` a refused verdict is only counted: the command comes back.
+async fn admit_auth_job(
+    state: &Arc<BrowserState>,
+    command_rate: &RateLease,
+    job: &Job,
+    authorized: &mut Option<Box<Authorized>>,
+) -> Result<BrowserCommand, WireError> {
+    let refuse = |code: &str, message: &str| fail(code, message.to_string());
+    if let Some(Admission::Refuse { code, message }) = state.authority.refuse_if_off() {
+        return Err(refuse(code, message));
+    }
+    let request = match spine_protocol::auth::decode_auth_request(&job.body) {
+        Ok(request) => request,
+        Err(e) => {
+            state.authority.note_malformed();
+            return Err(e.to_wire());
+        }
+    };
+    if !state.check_rate_limit(&command_rate.id) {
+        state.authority.note_rate_limited();
+        return Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string()));
+    }
+    let context = AuthContext {
+        identity: job.identity,
+        binding: job.binding,
+        now: unix_now(),
+    };
+    let node = state.authority.clone();
+    let (request, admission) = tokio::task::spawn_blocking(move || {
+        let admission = node.admit_auth(&request, &context);
+        (request, admission)
+    })
+    .await
+    .map_err(|e| fail(ERR_INTERNAL, format!("the authority check failed: {e}")))?;
+    match admission {
+        Admission::Refuse { code, message } => Err(refuse(code, message)),
+        Admission::Run(authorization) => {
+            *authorized = authorization;
+            Ok(request.command)
+        }
+    }
+}
+
+/// The answer to one request: decodes it, applies the connection's rate
+/// limits, creates the session on first use and runs the command. For an
+/// `AUTH_REQUEST` it first asks the node's authority state
+/// ([`admit_auth_job`]); `authorized` is left holding the gate's authorisation
+/// only if the command was then run.
+async fn answer_job(
+    state: &Arc<BrowserState>,
+    session_lease: &mut Option<SessionLease>,
+    tool_rate: &RateLease,
+    command_rate: &RateLease,
+    job: Job,
+    authorized: &mut Option<Box<Authorized>>,
+) -> Answer {
+    let request_id = job.request_id;
+    // An `AUTH_REQUEST` has been charged to the command bucket already.
+    let charged = job.auth;
+    let command = if job.auth {
+        admit_auth_job(state, command_rate, &job, authorized).await?
+    } else {
+        let command = match native::decode_command(&job.body) {
+            Ok(command) => command,
+            // C.7: a well-formed frame whose request cannot be served is an
+            // error response, not the end of the connection. The code says
+            // whether the command is unknown or its fields are wrong.
+            Err(e) => return Err(e.to_wire()),
+        };
+        if let Admission::Refuse { code, message } =
+            state.authority.admit_plain(&command, job.identity)
+        {
+            return Err(fail(code, message.to_string()));
+        }
+        command
+    };
+    match command {
+        BrowserCommand::CapabilityQuery(query) => {
+            let capabilities = spine_core::tools::capabilities()
+                .into_iter()
+                .filter(|capability| match &query.selector {
+                    spine_protocol::CapabilitySelector::All => true,
+                    spine_protocol::CapabilitySelector::Exact(uri) => &capability.uri == uri,
+                    spine_protocol::CapabilitySelector::Prefix(prefix) => {
+                        capability.uri.starts_with(prefix)
+                    }
+                    spine_protocol::CapabilitySelector::Semantic { .. } => false,
+                })
+                .collect();
+            let agent_id = match &state.mesh_names {
+                Some(mesh) => spine_name::SpineUri::did(*mesh.local_key().as_bytes()).to_string(),
+                None => "spine-core:local-unattested".into(),
+            };
+            let advertisement = spine_protocol::CapabilityAdvertisement {
+                agent_id,
+                capabilities,
+            };
+            Ok(Output::Capabilities(advertisement))
+        }
+        BrowserCommand::ToolCall(call) => {
+            let outcome = if state.check_rate_limit(&tool_rate.id) {
+                spine_core::tools::invoke(call)
+            } else {
+                // Not run: no receipt for it.
+                authorized.take();
+                ToolOutcome::Err {
+                    code: ERR_RATE_LIMIT.into(),
+                    message: "tool request rate exceeded".into(),
+                    details: None,
+                }
+            };
+            outcome.into_reply().into_result().map(Output::Json)
+        }
+        command => {
+            let req_span = span!(Level::INFO, "request", request_id = request_id);
+            debug!(
+                "Received request {request_id} from {}",
+                identity_label(job.identity)
+            );
+
+            // Rate limit first: a refused command creates no session.
+            if !charged && !state.check_rate_limit(&command_rate.id) {
+                return Err(fail(ERR_RATE_LIMIT, "Rate limit exceeded".to_string()));
+            }
+
+            // The deletes need no session of their own, and a delete creates
+            // none: `delete_knowledge` on a connection with no session
+            // deleted nothing, and `delete_resource` is bound to the connection
+            // by its proof.
+            let command = match command {
+                BrowserCommand::DeleteResource { hash, owner, proof } => {
+                    COMMANDS_TOTAL.inc();
+                    return delete_resource(state, job.binding, hash, owner, proof);
+                }
+                BrowserCommand::DeleteKnowledge { key } => {
+                    COMMANDS_TOTAL.inc();
+                    let deleted = session_lease
+                        .as_ref()
+                        .map_or(0, |lease| state.delete_knowledge(&lease.id, &key));
+                    return Ok(Output::Json(serde_json::json!({ "deleted": deleted })));
+                }
+                other => other,
+            };
+
+            if session_lease.is_none() {
+                *session_lease = state.create_session();
+                if let Some(lease) = session_lease.as_ref() {
+                    #[cfg(feature = "research")]
+                    state
+                        .cluster
+                        .lock()
+                        .await
+                        .register_local_session(lease.id.clone());
+                    #[cfg(not(feature = "research"))]
+                    let _ = lease;
+                } else {
+                    // No close code means "busy", so the connection stays
+                    // open: the client may retry, or hang up. The command did
+                    // not run, so there is no receipt.
+                    authorized.take();
+                    return Err(fail(
+                        ERR_SESSION_CAPACITY,
+                        "Server busy: maximum sessions reached".into(),
+                    ));
+                }
+            }
+            let id = match session_lease.as_ref() {
+                Some(lease) => lease.id.clone(),
+                None => {
+                    authorized.take();
+                    return Err(fail(
+                        ERR_SESSION_CAPACITY,
+                        "Server busy: maximum sessions reached".into(),
+                    ));
+                }
+            };
+
+            handle_command(state, &id, command, request_id)
+                .instrument(req_span)
+                .await
+        }
+    }
+}
+
+/// Serves one established native connection, with reading, executing and
+/// writing as three independent loops:
+///
+/// - a reader task (`read_requests`) that never waits for a command, so a
+///   `PING` is answered, a request over `max_inflight` is refused with
+///   `overloaded`, and a closed connection is noticed while a command runs;
+/// - the command loop (`run_commands`), run inline, which executes the
+///   connection's commands one at a time in arrival order;
+/// - a writer task (`write_responses`) that owns the write half.
+///
+/// The channels between them are bounded: at most `max_inflight` requests are
+/// accepted at a time, and the writer's queue holds their answers plus a few
+/// control frames, with back-pressure on the reader beyond that. Both spawned
+/// tasks live in a `JoinSet` that is drained before this function returns, so
+/// no task outlives the connection, and dropping this future aborts them.
+async fn handle_session<S>(conn: Connection<S>, state: Arc<BrowserState>)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let idle = std::time::Duration::from_secs(state.config.server.idle_timeout_secs);
+    let (reader, writer) = conn.split();
+    let capacity = reader.max_inflight().max(1) as usize;
+    let max_frame = reader.max_frame();
+    let (queue_tx, queue_rx) = tokio::sync::mpsc::channel::<Outgoing>(capacity + 16);
+    let (jobs_tx, jobs_rx) = tokio::sync::mpsc::channel::<Job>(capacity);
+    let (over_tx, over_rx) = tokio::sync::watch::channel(false);
+    let over: Arc<tokio::sync::watch::Sender<bool>> = Arc::new(over_tx);
+
+    let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+    tasks.spawn(write_responses(writer, queue_rx, Arc::clone(&over)));
+    tasks.spawn(read_requests(
+        reader,
+        queue_tx.clone(),
+        jobs_tx,
+        Arc::clone(&over),
+        over.subscribe(),
+        idle,
+    ));
+
+    run_commands(state, jobs_rx, queue_tx, over_rx, max_frame).await;
+    // The command loop ended (shutdown, or the connection is over): the reader
+    // stops, which closes the writer's queue after what is queued is written.
+    over.send_replace(true);
+    while tasks.join_next().await.is_some() {}
 }

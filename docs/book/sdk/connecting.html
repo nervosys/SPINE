@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -182,6 +182,9 @@
                     <main>
                         <h1 id="connecting"><a class="header" href="#connecting">Connecting</a></h1>
 <h2 id="transport-options"><a class="header" href="#transport-options">Transport Options</a></h2>
+<p>Every constructor runs the spine-wire v1 handshake (<code>HELLO</code> / <code>HELLO_ACK</code>)
+before it returns, with a ten-second deadline. TLS is the only thing that
+protects the connection; plain TCP and <code>ws://</code> are plaintext.</p>
 <h3 id="tcp-plaintext"><a class="header" href="#tcp-plaintext">TCP (plaintext)</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -212,6 +215,7 @@
 </span><span class="boring">fn main() {
 </span>let mut client = AgentClient::connect_ws("ws://127.0.0.1:8081").await?;
 <span class="boring">}</span></code></pre>
+<p>Use a <code>wss://</code> URL for a TLS WebSocket.</p>
 <h3 id="auto-reconnect"><a class="header" href="#auto-reconnect">Auto-Reconnect</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
@@ -223,13 +227,70 @@ let mut client = AgentClient::connect_with_retry(
     Duration::from_secs(1),     // base delay (exponential backoff)
 ).await?;
 <span class="boring">}</span></code></pre>
+<p><code>connect_tls_with_retry(addr, domain, ca_path, client_cert, max_retries)</code> does
+the same over TLS. <code>AgentClient::over(stream)</code> runs the handshake on a stream you
+already hold.</p>
 <h2 id="connection-lifecycle"><a class="header" href="#connection-lifecycle">Connection Lifecycle</a></h2>
 <ol>
-<li><strong>Connect</strong> — Establish TCP/TLS/WS connection</li>
-<li><strong>Use</strong> — Send commands, receive responses</li>
+<li><strong>Connect</strong> — Establish the TCP/TLS/WS connection and complete <code>HELLO</code> / <code>HELLO_ACK</code></li>
+<li><strong>Use</strong> — Send commands, receive responses; the daemon answers one request at a time (<code>max_inflight = 1</code>)</li>
 <li><strong>Drop</strong> — Connection closes when <code>AgentClient</code> is dropped</li>
 </ol>
-<p>The connection is stateful — the server maintains session state (navigation history, cached URs, knowledge) per connection.</p>
+<p>The connection is stateful — the server maintains session state (the loaded page, cached UR, knowledge) per connection.</p>
+<h2 id="methods"><a class="header" href="#methods">Methods</a></h2>
+<p>All methods are async and return <code>anyhow::Result</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Returns</th><th>Wire command</th></tr>
+</thead>
+<tbody>
+<tr><td><code>navigate(url)</code></td><td><code>()</code></td><td><code>navigate</code></td></tr>
+<tr><td><code>get_ur()</code></td><td><code>UnifiedRepresentation</code></td><td><code>get_ur</code></td></tr>
+<tr><td><code>get_raw_html()</code></td><td><code>String</code></td><td><code>get_raw_html</code></td></tr>
+<tr><td><code>execute_binary(SpineBinary)</code></td><td><code>Value</code></td><td><code>execute_binary</code></td></tr>
+<tr><td><code>execute_hls(script)</code></td><td><code>WasmExecutionResult</code></td><td><code>execute_binary</code> (compiles locally)</td></tr>
+<tr><td><code>store_knowledge(key, value, tags)</code></td><td><code>()</code></td><td><code>store_knowledge</code></td></tr>
+<tr><td><code>query_knowledge(query, tags, limit)</code></td><td><code>Vec&lt;Value&gt;</code></td><td><code>query_knowledge</code></td></tr>
+<tr><td><code>get_binary_capabilities()</code></td><td><code>Vec&lt;String&gt;</code></td><td><code>get_binary_capabilities</code></td></tr>
+<tr><td><code>capabilities()</code></td><td><code>CapabilityAdvertisement</code></td><td><code>capability_query</code></td></tr>
+<tr><td><code>call_tool(name, args)</code></td><td><code>ToolOutcome</code></td><td><code>tool_call</code></td></tr>
+<tr><td><code>namespace_status()</code></td><td><code>Value</code></td><td><code>namespace_status</code></td></tr>
+<tr><td><code>mesh_call(peer_id, peer_key, payload)</code></td><td><code>Value</code></td><td><code>mesh_call</code></td></tr>
+<tr><td><code>resolve_name(name, if_none_match)</code></td><td><code>NameResolution</code></td><td><code>resolve_name</code></td></tr>
+<tr><td><code>resolve_names(&amp;[String])</code></td><td><code>Vec&lt;NameResolution&gt;</code></td><td><code>resolve_names</code></td></tr>
+<tr><td><code>find_providers(capability, limit)</code></td><td><code>Value</code></td><td><code>find_providers</code></td></tr>
+<tr><td><code>publish_name(record)</code></td><td><code>Value</code></td><td><code>publish_name</code></td></tr>
+<tr><td><code>fetch_name(name, if_none_match)</code></td><td><code>Value</code></td><td><code>fetch_name</code></td></tr>
+<tr><td><code>crawl_names(seed, max_depth, max_visits)</code></td><td><code>Value</code></td><td><code>crawl_names</code></td></tr>
+<tr><td><code>ping()</code></td><td><code>u64</code> (round trip, ms)</td><td><code>PING</code> frame</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>spine_agent::resources</code> adds <code>publish_resource(record, content_type, data)</code>,
+<code>read_resource(record)</code> and <code>fetch_resource(name)</code>, which verify signed records and
+content hashes end to end (<code>publish_resource</code> and <code>read_resource</code> are the
+<code>publish_resource</code> and <code>read_resource</code> wire commands). The public <code>conn</code> field is
+the underlying <code>Connection&lt;S&gt;</code> for direct frame access.</p>
+<h2 id="errors"><a class="header" href="#errors">Errors</a></h2>
+<p>When the daemon answers <code>{err: {code, message}}</code> the returned <code>anyhow::Error</code>
+holds <code>spine_protocol::native::NativeError::Remote { code, message, details }</code>.
+Branch on the code, never on the message:</p>
+<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use spine_protocol::native::remote_code;
+
+if let Err(err) = client.get_ur().await {
+    match remote_code(&amp;err) {
+        Some("no_page_loaded") =&gt; { /* call navigate first */ }
+        Some(code) =&gt; eprintln!("daemon refused: {code}"),
+        None =&gt; eprintln!("connection problem: {err}"),
+    }
+}
+<span class="boring">}</span></code></pre>
+<p><code>call_tool</code> is different: a tool failure comes back as
+<code>Ok(ToolOutcome::Err { code, message, details })</code>; only protocol-level failures
+are <code>Err(..)</code>. The error codes are listed in <a href="../architecture/protocol.html">Protocol</a>.</p>
 
                     </main>
 

@@ -1,33 +1,32 @@
 use std::fs::File;
-use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::{
+    CertificateDer, CertificateRevocationListDer, PrivateKeyDer, PrivatePkcs8KeyDer,
+};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
 use tokio_rustls::rustls::{RootCertStore, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 
 pub fn load_certs(path: &Path) -> anyhow::Result<Vec<CertificateDer<'static>>> {
     let certfile = File::open(path)?;
-    let mut reader = BufReader::new(certfile);
-    let certs = rustls_pemfile::certs(&mut reader)
-        .filter_map(|c| c.ok())
+    // A section that does not parse is skipped, as it always was.
+    let certs = CertificateDer::pem_reader_iter(certfile)
+        .filter_map(Result::ok)
         .collect();
     Ok(certs)
 }
 
 pub fn load_private_key(path: &Path) -> anyhow::Result<PrivateKeyDer<'static>> {
     let keyfile = File::open(path)?;
-    let mut reader = BufReader::new(keyfile);
-    let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .filter_map(|k| k.ok())
-        .collect();
-    if keys.is_empty() {
-        return Err(anyhow::anyhow!("No private key found"));
-    }
-    // Safe: checked !keys.is_empty() above
-    Ok(keys.into_iter().next().expect("verified non-empty").into())
+    // Only PKCS#8 ("PRIVATE KEY") sections count, RSA and EC sections are
+    // skipped, a section that does not parse is skipped, and the first key wins.
+    let key = PrivatePkcs8KeyDer::pem_reader_iter(keyfile)
+        .find_map(Result::ok)
+        .ok_or_else(|| anyhow::anyhow!("No private key found"))?;
+    Ok(key.into())
 }
 
 pub fn create_tls_acceptor(
@@ -37,6 +36,38 @@ pub fn create_tls_acceptor(
 ) -> anyhow::Result<TlsAcceptor> {
     let config = build_server_config(cert_path, key_path, ca_path, None)?;
     Ok(TlsAcceptor::from(Arc::new(config)))
+}
+
+/// Resolve the configured TLS policy without inferring client authentication
+/// from an incidental CA file. Missing explicitly required inputs fail closed.
+pub fn configured_acceptor(cfg: &crate::config::TlsConfig) -> anyhow::Result<Option<TlsAcceptor>> {
+    anyhow::ensure!(
+        !cfg.mutual_tls || cfg.enabled,
+        "mutual TLS requires enabled TLS"
+    );
+    anyhow::ensure!(
+        cfg.crl_path.is_empty() || cfg.mutual_tls,
+        "client CRL requires mutual TLS"
+    );
+    if !cfg.enabled {
+        return Ok(None);
+    }
+    let ca = if cfg.mutual_tls {
+        anyhow::ensure!(
+            !cfg.ca_path.is_empty(),
+            "mutual TLS requires an explicit CA path"
+        );
+        Some(Path::new(&cfg.ca_path))
+    } else {
+        None
+    };
+    let crl = if cfg.crl_path.is_empty() {
+        None
+    } else {
+        Some(Path::new(&cfg.crl_path))
+    };
+    let config = build_server_config(Path::new(&cfg.cert_path), Path::new(&cfg.key_path), ca, crl)?;
+    Ok(Some(TlsAcceptor::from(Arc::new(config))))
 }
 
 /// Build a rustls `ServerConfig` with optional mTLS and CRL.
@@ -49,25 +80,40 @@ pub fn build_server_config(
     let certs = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
 
+    // Dependency feature unification can enable both Ring and AWS-LC. Select
+    // the provider explicitly instead of relying on a process-global default.
+    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
     let config = if let Some(ca_path) = ca_path {
         let ca_certs = load_certs(ca_path)?;
         let mut roots = RootCertStore::empty();
         for cert in ca_certs {
             roots.add(cert)?;
         }
-        let mut builder = WebPkiClientVerifier::builder(Arc::new(roots));
+        let mut builder =
+            WebPkiClientVerifier::builder_with_provider(Arc::new(roots), provider.clone());
         // Load CRL if provided
         if let Some(crl_path) = crl_path {
             let crl_data = std::fs::read(crl_path)?;
-            let crl = tokio_rustls::rustls::pki_types::CertificateRevocationListDer::from(crl_data);
-            builder = builder.with_crls(vec![crl]);
+            let crls = if crl_data.starts_with(b"-----BEGIN") {
+                CertificateRevocationListDer::pem_slice_iter(&crl_data)
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                vec![CertificateRevocationListDer::from(crl_data)]
+            };
+            anyhow::ensure!(
+                !crls.is_empty(),
+                "configured CRL file contains no revocation lists"
+            );
+            builder = builder.with_crls(crls);
         }
         let client_auth = builder.build()?;
-        ServerConfig::builder()
+        ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()?
             .with_client_cert_verifier(client_auth)
             .with_single_cert(certs, key)?
     } else {
-        ServerConfig::builder()
+        ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()?
             .with_no_client_auth()
             .with_single_cert(certs, key)?
     };
@@ -229,9 +275,14 @@ pub fn generate_self_signed(
 
     let mut cert_params = rcgen::CertificateParams::new(params.sans.clone())?;
     cert_params.distinguished_name = distinguished_name;
-    cert_params.not_before = rcgen::date_time_ymd(2024, 1, 1);
-    let days_from_epoch = 365 * 54 + params.validity_days; // ~2024 + validity
-    cert_params.not_after = rcgen::date_time_ymd(2024 + (days_from_epoch / 365) as i32, 1, 1);
+    anyhow::ensure!(
+        params.validity_days > 0,
+        "certificate validity must be positive"
+    );
+    let now = SystemTime::now();
+    cert_params.not_before = (now - std::time::Duration::from_secs(300)).into();
+    cert_params.not_after =
+        (now + std::time::Duration::from_secs(u64::from(params.validity_days) * 86400)).into();
 
     if params.is_ca {
         cert_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
@@ -274,8 +325,9 @@ pub fn generate_dev_certs(dir: &Path) -> anyhow::Result<()> {
         .key_usages
         .push(rcgen::KeyUsagePurpose::KeyCertSign);
     ca_params.key_usages.push(rcgen::KeyUsagePurpose::CrlSign);
-    ca_params.not_before = rcgen::date_time_ymd(2024, 1, 1);
-    ca_params.not_after = rcgen::date_time_ymd(2034, 1, 1);
+    let now = SystemTime::now();
+    ca_params.not_before = (now - std::time::Duration::from_secs(300)).into();
+    ca_params.not_after = (now + std::time::Duration::from_secs(3650 * 86400)).into();
 
     let ca_key = rcgen::KeyPair::generate()?;
     let ca_cert = ca_params.self_signed(&ca_key)?;
@@ -290,8 +342,9 @@ pub fn generate_dev_certs(dir: &Path) -> anyhow::Result<()> {
     let server_sans = vec!["localhost".to_string(), "127.0.0.1".to_string()];
     let mut server_params = rcgen::CertificateParams::new(server_sans)?;
     server_params.distinguished_name = server_dn;
-    server_params.not_before = rcgen::date_time_ymd(2024, 1, 1);
-    server_params.not_after = rcgen::date_time_ymd(2026, 1, 1);
+    let now = SystemTime::now();
+    server_params.not_before = (now - std::time::Duration::from_secs(300)).into();
+    server_params.not_after = (now + std::time::Duration::from_secs(365 * 86400)).into();
 
     let server_key = rcgen::KeyPair::generate()?;
     let server_cert = server_params.signed_by(&server_key, &ca_cert, &ca_key)?;
@@ -305,8 +358,9 @@ pub fn generate_dev_certs(dir: &Path) -> anyhow::Result<()> {
 
     let mut client_params = rcgen::CertificateParams::new(Vec::<String>::new())?;
     client_params.distinguished_name = client_dn;
-    client_params.not_before = rcgen::date_time_ymd(2024, 1, 1);
-    client_params.not_after = rcgen::date_time_ymd(2026, 1, 1);
+    let now = SystemTime::now();
+    client_params.not_before = (now - std::time::Duration::from_secs(300)).into();
+    client_params.not_after = (now + std::time::Duration::from_secs(365 * 86400)).into();
 
     let client_key = rcgen::KeyPair::generate()?;
     let client_cert = client_params.signed_by(&client_key, &ca_cert, &ca_key)?;
@@ -376,11 +430,7 @@ impl AcmeCertManager {
         let cert_path = self.cert_dir.join("acme-cert.pem");
         let pem_data = std::fs::read(&cert_path).ok()?;
         // Parse the first certificate from PEM
-        let mut cursor = std::io::Cursor::new(pem_data);
-        let certs: Vec<_> = rustls_pemfile::certs(&mut cursor)
-            .filter_map(|c| c.ok())
-            .collect();
-        let cert_der = certs.first()?;
+        let cert_der = CertificateDer::pem_slice_iter(&pem_data).find_map(Result::ok)?;
         // Use the cert to validate it exists; actual expiry parsed from x509 would need
         // a dedicated parser. For simplicity, estimate from file modification time + 90 days.
         let _ = cert_der;
@@ -440,6 +490,40 @@ mod tests {
 
     fn install_crypto_provider() {
         let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    }
+
+    #[test]
+    fn configured_tls_policy_requires_explicit_inputs() {
+        install_crypto_provider();
+        let dir = tempfile::tempdir().unwrap();
+        generate_dev_certs(dir.path()).unwrap();
+        let mut cfg = crate::config::TlsConfig {
+            enabled: true,
+            cert_path: dir.path().join("cert.pem").to_string_lossy().into_owned(),
+            key_path: dir.path().join("key.pem").to_string_lossy().into_owned(),
+            ca_path: dir
+                .path()
+                .join("missing-ca.pem")
+                .to_string_lossy()
+                .into_owned(),
+            ..Default::default()
+        };
+        assert!(
+            configured_acceptor(&cfg).unwrap().is_some(),
+            "server-only TLS ignores unused CA paths"
+        );
+        cfg.mutual_tls = true;
+        assert!(configured_acceptor(&cfg).is_err());
+        cfg.ca_path = dir.path().join("ca.pem").to_string_lossy().into_owned();
+        assert!(configured_acceptor(&cfg).unwrap().is_some());
+        cfg.crl_path = dir
+            .path()
+            .join("missing-crl.pem")
+            .to_string_lossy()
+            .into_owned();
+        assert!(configured_acceptor(&cfg).is_err());
+        cfg.enabled = false;
+        assert!(configured_acceptor(&cfg).is_err());
     }
 
     #[test]

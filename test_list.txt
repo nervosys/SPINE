@@ -1,7 +1,7 @@
+# STALE (2026-11-21): generated from `cargo test -- --list` before the spine-wire v1 migration and the move of research crates. It names tests that no longer exist (for example tests::test_latent_message, tests::test_request_response_protocol) and omits new ones. Nothing reads this file. Regenerate with a full `cargo test --workspace -- --list` on a machine that can build, or delete it.
     Blocking waiting for file lock on package cache
     Finished `test` profile [unoptimized + debuginfo] target(s) in 8.25s
      Running unittests src\lib.rs (target\debug\deps\spine_agent-583848a33fae2c76.exe)
-tests::test_agent_client_speculation_stats_type: test
 tests::test_browser_command_serialization: test
 tests::test_compiler_reexport: test
 tests::test_compiler_reexport_error: test
@@ -673,7 +673,6 @@ tests::test_protocol_genome_random: test
 tests::test_protocol_morphology: test
 tests::test_protocol_population_creation: test
 tests::test_protocol_population_evolution: test
-tests::test_speculative_predictor: test
 tests::test_statistical_methods: test
 
 34 tests, 0 benchmarks

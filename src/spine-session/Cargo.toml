@@ -1,0 +1,21 @@
+[package]
+name = "spine-session"
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+version.workspace = true
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Authenticated, forward-secret session handshake for the SPINE mesh (ML-KEM-768 + Ed25519 + AES-256-GCM)"
+
+[dependencies]
+thiserror.workspace = true
+rand.workspace = true
+sha2 = "0.10"
+aes-gcm = "0.10"
+hkdf = "0.12"
+ml-kem = "0.2"
+ed25519-dalek.workspace = true
+zeroize = { version = "1.8", features = ["derive"] }

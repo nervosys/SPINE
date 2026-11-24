@@ -1,3 +1,4 @@
+# STALE (2026-11-21): a captured build/test log from before the spine-wire v1 migration. Nothing reads this file; do not rely on it.
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache
     Blocking waiting for file lock on package cache

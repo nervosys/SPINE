@@ -1,0 +1,12 @@
+# Run alongside single-node.toml; set SPINE_GATEWAY_BEARER_TOKEN in the environment.
+# Optional model: SPINE_MODEL_URL=http://127.0.0.1:8000/v1
+# Optional routing: IRONGATE_URL, IRONGATE_TOKEN, SPINE_REQUIRE_GATEWAY=1
+# Credentials belong in the process environment, never in this file.
+[server]
+host = "127.0.0.1"
+port = 8080
+metrics_port = 9090
+
+[logging]
+format = "json"
+level = "info"

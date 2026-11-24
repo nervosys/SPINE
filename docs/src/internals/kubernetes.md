@@ -2,6 +2,8 @@
 
 The `spine-k8s` crate provides a Kubernetes operator for managing SPINE cluster deployments.
 
+**Research.** The crate lives in the separate `research/` workspace (`research/spine-k8s`), not the root workspace.
+
 ## SpineCluster CRD
 
 ```yaml

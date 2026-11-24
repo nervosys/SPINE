@@ -1,35 +1,34 @@
 # SPINE Documentation
 
-**SPINE** is a headless semantic browser with adaptive encryption — an efficient tool for AI agents to extract meaning, communicate securely, and coordinate in swarms.
+**SPINE** is a headless semantic browser and agent web stack: a daemon that fetches pages and returns structured Unified Representations, a binary wire protocol (spine-wire v1) to talk to it, and a signed mesh and naming layer for agents to find each other.
 
 ## What is SPINE?
 
-SPINE provides a complete agentic web stack:
+SPINE provides an agentic web stack:
 
 - **Headless semantic browsing** — Navigate web pages and extract structured Unified Representations instead of raw HTML
-- **Adaptive encryption** — X3DH key exchange, Chameleon latent-space cryptography, quantum-resistant RLWE
-- **Swarm intelligence** — Multi-agent coordination with capability discovery and task delegation
-- **Neural protocols** — Learned message encoding with Titans architecture for efficient communication
+- **Native wire** — spine-wire v1: length-prefixed binary frames, deterministic CBOR bodies, a `HELLO`/`HELLO_ACK` handshake and a closed set of 21 commands (see [Protocol](./architecture/protocol.md))
+- **Confidentiality** — On the native client wire, confidentiality and authentication come from TLS (optionally mutual TLS) and nothing else. The mesh path between nodes is a different protocol with its own ML-KEM-768 and Ed25519 handshake (`spine-session`)
+- **Naming and mesh** — `spine://` self-certifying names, signed name records, and an Ed25519-signed agent mesh
 - **HLS scripting** — Domain-specific language compiled to WebAssembly for server-side execution
-- **Knowledge base** — Distributed CRDT-based memory with episodic, semantic, working, and collective subsystems
+- **Knowledge store** — Per-session key/value entries with tags, through `store_knowledge` and `query_knowledge`
+- **Research (not shipped)** — Swarm intelligence, neural codecs, latent-space encoding, the memory subsystems and other experiments live in the separate `research/` workspace and are not on the native wire
 
 ## Architecture at a Glance
 
 ```
-┌─────────────────────────────────────────────────┐
-│                  spine-agent                     │  High-level SDK
-├─────────────┬─────────────┬─────────────────────┤
-│ spine-cli   │ spine-gateway│ spine-browser       │  Interfaces
-├─────────────┴─────────────┴─────────────────────┤
-│                 spine-agentic                    │  Swarm / Neural
-├──────────┬──────────┬───────────┬───────────────┤
-│ protocol │ parser   │ compiler  │ knowledge     │  Core
-├──────────┴──────────┴───────────┴───────────────┤
-│  transport │ stream │ crypto │ neural │ wasm    │  Infrastructure
-├─────────────────────────────────────────────────┤
-│                  spine-kernel                    │  Hardware primitives
-└─────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│ spine-cli · spine-gateway · spine-agent (SDK)          │  Interfaces
+├───────────────────────────────────────────────────────┤
+│ spine-core (daemon)                                    │  Sessions, commands
+├───────────┬───────────┬───────────┬───────────────────┤
+│ protocol  │ parser    │ compiler  │ name · mesh       │  Core
+├───────────┴───────────┴───────────┴───────────────────┤
+│ transport · stream · session · storage · cache · wasm  │  Infrastructure
+└───────────────────────────────────────────────────────┘
 ```
+
+The experimental crates in `research/` are a separate Cargo workspace and are not part of this stack.
 
 ## Quick Example
 
@@ -44,10 +43,6 @@ async fn main() -> anyhow::Result<()> {
     client.navigate("https://example.com").await?;
     let ur = client.get_ur().await?;
     println!("Title: {}", ur.title);
-
-    // Search
-    let results = client.search("rust programming").await?;
-    println!("Results: {}", results);
 
     Ok(())
 }

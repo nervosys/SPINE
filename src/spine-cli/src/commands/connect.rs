@@ -96,10 +96,6 @@ async fn interactive_session(client: &mut AgentClient<TcpStream>) -> Result<()> 
                 Ok(html) => println!("{}", html),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
             },
-            Cmd::Search(q) => match client.search(&q).await {
-                Ok(val) => println!("{}", serde_json::to_string_pretty(&val)?),
-                Err(e) => eprintln!("  {} {}", "✗".red(), e),
-            },
             Cmd::Ping => match client.ping().await {
                 Ok(ms) => eprintln!("  pong: {}ms", ms),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
@@ -108,28 +104,7 @@ async fn interactive_session(client: &mut AgentClient<TcpStream>) -> Result<()> 
                 Ok(result) => println!("{:?}", result),
                 Err(e) => eprintln!("  {} {}", "✗".red(), e),
             },
-            Cmd::Stats => {
-                let s = client.get_speculation_stats();
-                println!("Speculation Stats:");
-                println!(
-                    "  Output: {} predictions, {} hits ({:.1}%)",
-                    s.output_predictions,
-                    s.output_hits,
-                    s.output_accuracy() * 100.0
-                );
-                println!(
-                    "  Input:  {} predictions, {} hits ({:.1}%)",
-                    s.input_predictions,
-                    s.input_hits,
-                    s.input_accuracy() * 100.0
-                );
-                println!("  Bytes saved: {}", s.bytes_saved);
-            }
-            Cmd::Morph => match client.morph().await {
-                Ok(()) => eprintln!("  {} Protocol morphed", "✓".green()),
-                Err(e) => eprintln!("  {} {}", "✗".red(), e),
-            },
-            Cmd::Capabilities => match client.get_capabilities().await {
+            Cmd::Capabilities => match client.get_binary_capabilities().await {
                 Ok(caps) => {
                     println!("Capabilities:");
                     for c in &caps {
@@ -238,11 +213,8 @@ enum Cmd {
     Navigate(String),
     Ur,
     Html,
-    Search(String),
     Ping,
     Exec(String),
-    Stats,
-    Morph,
     Capabilities,
     Help,
     Quit,
@@ -261,13 +233,6 @@ fn handle_command(line: &str) -> Cmd {
         }
         "ur" | "get" => Cmd::Ur,
         "html" | "raw" => Cmd::Html,
-        "search" | "find" => {
-            if parts.len() > 1 {
-                Cmd::Search(parts[1].to_string())
-            } else {
-                Cmd::Unknown("search requires a query".into())
-            }
-        }
         "ping" => Cmd::Ping,
         "exec" | "run" => {
             if parts.len() > 1 {
@@ -276,8 +241,6 @@ fn handle_command(line: &str) -> Cmd {
                 Cmd::Unknown("exec requires a script".into())
             }
         }
-        "stats" => Cmd::Stats,
-        "morph" => Cmd::Morph,
         "caps" | "capabilities" => Cmd::Capabilities,
         "help" | "?" | "h" => Cmd::Help,
         "quit" | "exit" | "q" => Cmd::Quit,
@@ -294,11 +257,8 @@ fn print_help() {
         "ur".cyan()
     );
     eprintln!("  {}                 Get raw HTML", "html".cyan());
-    eprintln!("  {}       Search the semantic web", "search <q>".cyan());
     eprintln!("  {}                 Ping the server", "ping".cyan());
     eprintln!("  {}         Execute HLS script", "exec <code>".cyan());
-    eprintln!("  {}                Speculation stats", "stats".cyan());
-    eprintln!("  {}                Morph the protocol", "morph".cyan());
     eprintln!("  {}                 Server capabilities", "caps".cyan());
     eprintln!("  {}                 Show this help", "help".cyan());
     eprintln!("  {}                 Disconnect", "quit".cyan());

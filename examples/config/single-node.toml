@@ -1,0 +1,24 @@
+[server]
+host = "127.0.0.1"
+port = 8080
+metrics_port = 9090
+max_sessions = 100
+max_connections_per_ip = 20
+shutdown_timeout_secs = 30
+
+[namespace]
+connection_limit = 64
+handshake_timeout_secs = 10
+frame_timeout_secs = 60
+queue_timeout_secs = 5
+write_timeout_secs = 10
+enabled = true
+port = 9440
+key_path = "spine-node.key"
+records_path = "spine-names.sqlite"
+maintain_secs = 60
+seeds = []
+
+[logging]
+format = "json"
+level = "info"

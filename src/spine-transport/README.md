@@ -15,7 +15,7 @@ API documentation: <https://docs.rs/spine-transport>
 
 ## Workspace dependencies
 
-- `spine-protocol`
+None.
 
 ## License
 

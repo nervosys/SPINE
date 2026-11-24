@@ -1,7 +1,9 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-/// Fuzz Frame::parse_header with arbitrary 12-byte inputs.
+/// Fuzz the transport crate's `Frame::parse_header` with arbitrary 12-byte
+/// inputs. That is the transport layer's own header, not the spine-wire v1
+/// frame header (see fuzz_frame_decode for the latter).
 /// Also tests with arbitrary-length inputs to ensure bounds checking.
 fuzz_target!(|data: &[u8]| {
     if data.len() >= 12 {

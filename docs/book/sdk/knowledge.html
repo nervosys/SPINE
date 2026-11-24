@@ -35,10 +35,10 @@
             const path_to_root = "../";
             const default_light_theme = "navy";
             const default_dark_theme = "coal";
-            window.path_to_searchindex_js = "../searchindex-e9d9344b.js";
+            window.path_to_searchindex_js = "../searchindex-ed85ce67.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-476c3948.js"></script>
+        <script src="../toc-b76612a0.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -181,7 +181,7 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="knowledge-base"><a class="header" href="#knowledge-base">Knowledge Base</a></h1>
-<p>SPINE provides a distributed CRDT-based knowledge base with four memory subsystems.</p>
+<p>The daemon keeps a per-session knowledge store that agents write with <code>store_knowledge</code> and read with <code>query_knowledge</code>. The richer memory subsystems and CRDT replication described at the end of this page are research code, not part of the native commands.</p>
 <h2 id="basic-operations"><a class="header" href="#basic-operations">Basic Operations</a></h2>
 <h3 id="store"><a class="header" href="#store">Store</a></h3>
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
@@ -201,22 +201,10 @@
     10,  // max results
 ).await?;
 <span class="boring">}</span></code></pre>
-<h3 id="delete"><a class="header" href="#delete">Delete</a></h3>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.delete_knowledge("rust-homepage").await?;
-<span class="boring">}</span></code></pre>
-<h3 id="propose-distributed"><a class="header" href="#propose-distributed">Propose (Distributed)</a></h3>
-<p>In cluster mode, propose knowledge for consensus:</p>
-<pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
-</span><span class="boring">fn main() {
-</span>client.propose_knowledge(
-    "shared-finding",
-    serde_json::json!({"discovery": "important pattern"}),
-    vec!["research".into()],
-).await?;
-<span class="boring">}</span></code></pre>
-<h2 id="memory-subsystems"><a class="header" href="#memory-subsystems">Memory Subsystems</a></h2>
+<p>The knowledge base is per session on the daemon. There is no delete command in
+the core set; entries go when the session expires.</p>
+<h2 id="memory-subsystems-research"><a class="header" href="#memory-subsystems-research">Memory Subsystems (research)</a></h2>
+<p>The following live in <code>research/spine-knowledge</code> and are not reachable through the SDK or the wire.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -230,8 +218,8 @@
 </tbody>
 </table>
 </div>
-<h2 id="crdt-consistency"><a class="header" href="#crdt-consistency">CRDT Consistency</a></h2>
-<p>Knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.</p>
+<h2 id="crdt-consistency-research"><a class="header" href="#crdt-consistency-research">CRDT Consistency (research)</a></h2>
+<p>In <code>research/spine-knowledge</code>, knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.</p>
 
                     </main>
 
@@ -241,7 +229,7 @@
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                             </a>
 
-                            <a rel="next prefetch" href="../sdk/swarm.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../cli/commands.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                             </a>
 
@@ -255,7 +243,7 @@
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
                     </a>
 
-                    <a rel="next prefetch" href="../sdk/swarm.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../cli/commands.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
                     </a>
             </nav>

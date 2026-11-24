@@ -2,6 +2,13 @@
 //!
 //! Python bindings for the SPINE agentic web stack using PyO3.
 //!
+//! `Client` wraps `spine_agent::AgentClient` (spine-wire v1, plain TCP; there
+//! is no TLS entry point here yet). When the daemon answers a command with an
+//! error, the raised `RuntimeError` text is `"<code>: <message>"` (the
+//! `NativeError::Remote` display); branch on the code before the colon, not on
+//! the message. `get_capabilities` returns the binary-executor capabilities
+//! (`get_binary_capabilities`), not the full capability advertisement.
+//!
 //! ## Usage
 //!
 //! ```python
@@ -152,28 +159,6 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// Click an element by ID.
-    fn click(&self, element_id: &str) -> PyResult<()> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.click(element_id))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
-    /// Type text into an element.
-    fn type_text(&self, element_id: &str, text: &str) -> PyResult<()> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.type_text(element_id, text))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
     /// Execute an HLS script and return the result as JSON string.
     fn execute_hls(&self, script: &str) -> PyResult<String> {
         let mut client = self
@@ -182,29 +167,6 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         let result = runtime()
             .block_on(client.execute_hls(script))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        Ok(serde_json::to_string(&result).unwrap_or_default())
-    }
-
-    /// Get latent vector representation of current page.
-    fn get_latent_ur(&self, dimensions: usize) -> PyResult<Vec<f32>> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.get_latent_ur(dimensions))
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
-    /// Search across the web.
-    fn search(&self, query: &str) -> PyResult<String> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let result = runtime()
-            .block_on(client.search(query))
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         Ok(serde_json::to_string(&result).unwrap_or_default())
     }
@@ -220,25 +182,14 @@ impl PyClient {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
-    /// Trigger protocol morphing.
-    fn morph(&self) -> PyResult<()> {
-        let mut client = self
-            .client
-            .lock()
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        runtime()
-            .block_on(client.morph())
-            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
-    }
-
-    /// Get server capabilities.
+    /// Get the daemon's binary-executor capabilities (not the full advertisement).
     fn get_capabilities(&self) -> PyResult<Vec<String>> {
         let mut client = self
             .client
             .lock()
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         runtime()
-            .block_on(client.get_capabilities())
+            .block_on(client.get_binary_capabilities())
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))
     }
 
@@ -318,7 +269,7 @@ fn compile_hls(source: &str) -> PyResult<PySpineBinary> {
 // Module definition
 // ---------------------------------------------------------------------------
 
-/// SPINE: A headless semantic browser with adaptive encryption for AI agents.
+/// SPINE: a headless semantic browser for AI agents.
 #[pymodule]
 fn spine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(connect, m)?)?;

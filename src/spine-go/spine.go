@@ -1,7 +1,14 @@
 // Package spine provides Go bindings for the SPINE agentic web stack.
 //
-// SPINE is a headless semantic browser with adaptive encryption for AI agents.
-// These bindings use cgo to call into the SPINE C FFI library (spine-ffi).
+// SPINE is a headless semantic browser for AI agents. These bindings use cgo
+// to call into the SPINE C FFI library (spine-ffi), which wraps the Rust SDK
+// (spine-agent). They do not speak the wire themselves: the spine-wire v1
+// framing, HELLO handshake and CBOR bodies are all inside the library.
+//
+// Connect opens a plain TCP connection (spine_connect); there is no TLS entry
+// point in the C ABI yet, so use it on loopback or inside a trusted network.
+// Errors surfaced from the daemon arrive as text from spine_last_error; the C
+// ABI does not expose the stable wire error code.
 //
 // # Quick Start
 //
@@ -25,12 +32,12 @@
 //
 // You must first build the spine-ffi crate as a shared or static library:
 //
-//	cd spine-ffi && cargo build --release
+//	cargo build --release -p spine-ffi        # from the repository root
 //
 // Then set CGO flags to point at the library:
 //
 //	export CGO_LDFLAGS="-L../../target/release -lspine_ffi"
-//	export CGO_CFLAGS="-I../spine-ffi/include"
+//	export CGO_CFLAGS="-I../spine-ffi/include"   # src/spine-ffi/include/spine.h
 //	go build ./...
 package spine
 
@@ -128,19 +135,6 @@ func (c *Client) GetRawHTML() (string, error) {
 	return C.GoString(ptr), nil
 }
 
-// Search performs a web search and returns the results as raw JSON.
-func (c *Client) Search(query string) (json.RawMessage, error) {
-	cQuery := C.CString(query)
-	defer C.free(unsafe.Pointer(cQuery))
-
-	ptr := C.spine_search(c.handle, cQuery)
-	if ptr == nil {
-		return nil, lastError()
-	}
-	defer C.spine_free_string(ptr)
-	return json.RawMessage(C.GoString(ptr)), nil
-}
-
 // ExecuteHLS compiles and executes an HLS script on the server.
 func (c *Client) ExecuteHLS(script string) (*ExecutionResult, error) {
 	cScript := C.CString(script)
@@ -169,16 +163,8 @@ func (c *Client) Ping() (int64, error) {
 	return int64(rtt), nil
 }
 
-// Morph triggers protocol morphing (Chameleon protocol).
-func (c *Client) Morph() error {
-	rc := C.spine_morph(c.handle)
-	if rc != 0 {
-		return lastError()
-	}
-	return nil
-}
-
-// GetCapabilities returns the server's advertised capabilities.
+// GetCapabilities returns the daemon's binary-executor capabilities (the
+// get_binary_capabilities command), not the full capability advertisement.
 func (c *Client) GetCapabilities() ([]string, error) {
 	ptr := C.spine_get_capabilities(c.handle)
 	if ptr == nil {

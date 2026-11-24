@@ -9,16 +9,23 @@
 //! # just the wire protocol
 //! spine-web = { version = "1.0", default-features = false, features = ["protocol"] }
 //!
-//! # the agentic-web starter (default): protocol + transport + agent + agentic
+//! # the agentic-web starter (default): protocol + transport + agent + name
 //! spine-web = "1.0"
+//!
+//! # the starter plus the research crates (neural, crypto, agentic, cluster, ...)
+//! spine-web = { version = "1.0", features = ["research"] }
 //!
 //! # every reusable library
 //! spine-web = { version = "1.0", features = ["full"] }
 //! ```
 //!
-//! Each module below is present only when its feature is enabled. Heavy optional
-//! backends (`gpu`, `storage`'s SQLite, `k8s`) are opt-in and are *not* part of
-//! `full`.
+//! Each module below is present only when its feature is enabled. The research
+//! crates (`neural`, `crypto`, `agentic`, `cluster`, `human`, `recursive`,
+//! `knowledge`, `kernel`, `mechgen`, `gpu`, `k8s`) are never in the default
+//! build; the `research` feature turns on all of them except the heavy `gpu` and
+//! `k8s` backends, and also switches on the research code paths of
+//! `spine-protocol`, `spine-agent` and `spine-core`. Heavy optional backends
+//! (`gpu`, `storage`'s SQLite, `k8s`) are opt-in and are *not* part of `full`.
 //!
 //! The `no_std` crates (`spine-nostd`, `spine-embedded`) are intentionally not
 //! re-exported here — depend on them directly for embedded targets, since this

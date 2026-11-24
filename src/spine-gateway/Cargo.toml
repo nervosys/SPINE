@@ -1,7 +1,6 @@
 [package]
 name = "spine-gateway"
 repository.workspace = true
-homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 version.workspace = true
@@ -16,12 +15,14 @@ name = "spine-gateway"
 path = "src/main.rs"
 
 [dependencies]
+spine-name = { path = "../spine-name", version = "2.0.2" }
 spine-agent = { path = "../spine-agent", version = "2.0.2" }
-spine-protocol = { path = "../spine-protocol", version = "2.0.2" }
+spine-protocol = { path = "../spine-protocol", version = "2.0.2", default-features = false }
 spine-parser = { path = "../spine-parser", version = "2.0.2" }
 spine-compiler = { path = "../spine-compiler", version = "2.0.2" }
 spine-core = { path = "../spine-core", version = "2.0.2" }
 spine-transport = { path = "../spine-transport", version = "2.0.2" }
+spine-protocol-research = { path = "../../research/spine-protocol-research", version = "2.0.2", optional = true }
 
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -32,20 +33,25 @@ log = { workspace = true }
 env_logger = { workspace = true }
 tracing = { workspace = true }
 
-axum = { version = "0.7", features = ["json", "macros"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-utoipa = { version = "4", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "7", features = ["axum"] }
+axum = { version = "0.8", features = ["json", "macros"] }
+utoipa = { version = "6", features = ["axum_extras", "uuid"] }
+utoipa-swagger-ui = { version = "10", features = ["axum"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 dashmap.workspace = true
 futures = "0.3"
+reqwest = { workspace = true, features = ["stream"] }
 base64 = "0.22"
 subtle = "2.5"
 rustls = { workspace = true }
 
 [features]
 default = []
+
+# Restore the research codec routes: `POST /v1/embeddings` and `GET /v1/agentic/codecs`,
+# backed by a process-wide registry pre-populated with `TitansLatentCodec` (256-dim, f32).
+# Needs `spine-protocol-research` (and through it spine-neural and spine-crypto). Without
+# it both routes stay registered and answer 503 with a message to rebuild with this feature.
+research = ["dep:spine-protocol-research"]
 
 # Compile spine-gateway against the FIPS-shaped rustls provider stack.
 #

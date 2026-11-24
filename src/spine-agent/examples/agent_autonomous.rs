@@ -12,14 +12,7 @@ async fn main() -> Result<()> {
     println!("[INIT] Connecting to SPINE Browser...");
     let mut client = AgentClient::connect("127.0.0.1:8080").await?;
 
-    // Enable Chameleon Protocol
-    let secret: [u8; 32] = [0x42; 32];
-    client.handler.enable_chameleon(secret);
-    println!("[✓] Chameleon Protocol enabled");
-
-    // Enable speculative decoding
-    client.handler.enable_speculation(true, true);
-    println!("[✓] Speculative Decoding enabled\n");
+    println!();
 
     println!("[1] Compiling autonomous HLS program...\n");
 
@@ -87,21 +80,6 @@ async fn main() -> Result<()> {
             println!("    Instructions executed: {}", count);
         }
     }
-
-    println!("\n[3] Simulating event loop...");
-    // In a real scenario, the agent would listen for events and re-execute
-    // For this demo, we'll just trigger the 'Click' event to move to the next step
-
-    println!("[4] Clicking 'Simulate Result Found' button...");
-    let patches = client
-        .handle_event(0, "click", serde_json::json!({}))
-        .await?;
-
-    // handle_event returns Vec<VDomPatch>
-    println!(
-        "    ✓ Event handled. Received {} VDOM patches.",
-        patches.len()
-    );
 
     println!("\n[DONE] Autonomous agent demo complete.");
     Ok(())

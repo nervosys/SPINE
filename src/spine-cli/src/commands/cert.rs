@@ -3,6 +3,8 @@
 use anyhow::Result;
 use colored::Colorize;
 use std::path::PathBuf;
+use tokio_rustls::rustls::pki_types::pem::PemObject;
+use tokio_rustls::rustls::pki_types::CertificateDer;
 
 use crate::CertAction;
 
@@ -24,20 +26,17 @@ async fn generate(output: PathBuf) -> Result<()> {
     spine_core::tls::generate_dev_certs(&output)?;
 
     eprintln!("{} Generated certificates:", "✓".green().bold());
-    eprintln!("  CA:     {}/ca_cert.pem", output.display());
+    eprintln!("  CA:     {}/ca.pem", output.display());
+    eprintln!("  Server: {}/cert.pem + key.pem", output.display());
     eprintln!(
-        "  Server: {}/server_cert.pem + server_key.pem",
-        output.display()
-    );
-    eprintln!(
-        "  Client: {}/client_cert.pem + client_key.pem",
+        "  Client: {}/client-cert.pem + client-key.pem",
         output.display()
     );
     eprintln!();
     eprintln!("{}", "Usage:".bold());
     eprintln!("  Server: spine deploy --config spine.toml  (set tls.cert_path/key_path/ca_path)");
     eprintln!(
-        "  Client: spine connect <addr> --tls --ca {}/ca_cert.pem --client-cert {}/client_cert.pem --client-key {}/client_key.pem",
+        "  Client: spine connect <addr> --tls --ca {}/ca.pem --client-cert {}/client-cert.pem --client-key {}/client-key.pem",
         output.display(), output.display(), output.display()
     );
 
@@ -46,7 +45,7 @@ async fn generate(output: PathBuf) -> Result<()> {
 
 async fn info(path: PathBuf) -> Result<()> {
     let pem_data = std::fs::read(&path)?;
-    let certs: Vec<_> = rustls_pemfile::certs(&mut &pem_data[..]).collect();
+    let certs: Vec<_> = CertificateDer::pem_slice_iter(&pem_data).collect();
 
     if certs.is_empty() {
         eprintln!(

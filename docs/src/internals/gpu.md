@@ -1,6 +1,8 @@
 # GPU Compute
 
-The `spine-gpu` crate provides cross-platform GPU-accelerated tensor operations for SPINE's neural encoding pipeline.
+The `spine-gpu` crate provides cross-platform GPU-accelerated tensor operations for SPINE's neural encoding experiments.
+
+**Research.** The crate lives in the separate `research/` workspace (`research/spine-gpu`). The native wire has no neural encoding stage, so nothing on the wire uses it.
 
 ## Architecture
 

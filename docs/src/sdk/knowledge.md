@@ -1,6 +1,6 @@
 # Knowledge Base
 
-SPINE provides a distributed CRDT-based knowledge base with four memory subsystems.
+The daemon keeps a per-session knowledge store that agents write with `store_knowledge` and read with `query_knowledge`. The richer memory subsystems and CRDT replication described at the end of this page are research code, not part of the native commands.
 
 ## Basic Operations
 
@@ -24,25 +24,12 @@ let results = client.query_knowledge(
 ).await?;
 ```
 
-### Delete
+The knowledge base is per session on the daemon. There is no delete command in
+the core set; entries go when the session expires.
 
-```rust
-client.delete_knowledge("rust-homepage").await?;
-```
+## Memory Subsystems (research)
 
-### Propose (Distributed)
-
-In cluster mode, propose knowledge for consensus:
-
-```rust
-client.propose_knowledge(
-    "shared-finding",
-    serde_json::json!({"discovery": "important pattern"}),
-    vec!["research".into()],
-).await?;
-```
-
-## Memory Subsystems
+The following live in `research/spine-knowledge` and are not reachable through the SDK or the wire.
 
 | Subsystem      | Inspiration        | Purpose                                    |
 | -------------- | ------------------ | ------------------------------------------ |
@@ -51,6 +38,6 @@ client.propose_knowledge(
 | **Working**    | Prefrontal cortex  | Active context, current task state         |
 | **Collective** | Swarm intelligence | Shared knowledge across agents via CRDTs   |
 
-## CRDT Consistency
+## CRDT Consistency (research)
 
-Knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.
+In `research/spine-knowledge`, knowledge entries use Conflict-free Replicated Data Types for eventual consistency across distributed nodes. No coordination protocol needed — concurrent writes automatically merge.
