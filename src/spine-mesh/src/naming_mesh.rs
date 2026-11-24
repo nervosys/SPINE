@@ -3974,11 +3974,14 @@ mod tests {
         assert_eq!((report.proofs, report.logs, report.dropped), (1, 0, 0));
 
         // It now refuses a record under either branch.
-        for rec in [
-            record_under(1, &branch_a, 101, 3),
-            record_under(1, &branch_b, 51, 3),
+        for (rec, log) in [
+            (record_under(1, &branch_a, 101, 3), branch_a.clone()),
+            (record_under(1, &branch_b, 51, 3), branch_b.clone()),
         ] {
-            let envelope = h.nodes[2].node.announce_name(rec).unwrap();
+            let envelope = h.nodes[2]
+                .node
+                .announce_name_with_log(rec, Some(log))
+                .unwrap();
             assert!(h.nodes[1].handle_envelope(&envelope, NOW).await);
         }
         assert_eq!(h.nodes[1].record_count().await, 0);
