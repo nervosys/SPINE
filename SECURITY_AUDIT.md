@@ -6,7 +6,7 @@
 
 1. **Nothing authorises a native command.** The authority gate (`src/spine-core/src/authority.rs`), its durable ledger (`authority_ledger.rs`) and the command classification are library code that the daemon does not call. spine-wire v1 has no carrier for a grant chain or invocation (`docs/spec/00-wire.md`, G8); the handshake's optional client key (`IDENTIFY`, 6.6) is recorded and logged and grants nothing, and it is not bound to the channel, so a relay can carry it. `[authority] mode = "required"` is refused at start-up (`config.rs` `AuthorityConfig::validate`). **Any client that can connect has operator-level access to all 19 commands**, including `navigate`, `execute_binary` and `mesh_call`. No receipt is issued. Reachability and, optionally, a TLS client certificate are the only controls (`SpineConfig::validate`, `config.rs:562-598`).
 2. **No external cryptographic review of the handshake, and the session layer (Stage 8) is not built.** The mesh handshake (`spine-session` `handshake.rs`) is the only SPINE-level encrypted channel; the native client wire does not use it.
-3. **A resolve answer on the client wire carries no succession log** (`NameResolution::Resolved { record, provenance }`, `spine-protocol/src/lib.rs:498-506`), so a client cannot itself verify a rotated name through the daemon.
+3. **The log in a resolve answer is only as long as the node holds it** (`NameResolution::Resolved { record, provenance, log }`, with `retired`, `compromised` and `revoked`; `docs/spec/00-wire.md` 12.5). Clients verify the evidence from the name's inception key (`spine-agent` `names.rs`). Open: a node that is behind (`02-names.md` 10.8), and a mesh-only compromise answered as `unavailable`.
 4. **Publisher keys are free to mint**, so per-publisher quotas bound a key, not a party.
 5. **Replica records are in memory only; an evicted tombstone allows resurrection; equivocation proofs spread only when asked for.**
 6. **One host call in `execute_binary` is not interruptible, and compile time is outside the 2 s deadline.**
@@ -108,7 +108,7 @@ Ratings are the reviewer's, not a standard score. "Open" means no change in the 
 | No authorisation on the native wire | High | Open. Gate built, not enforced, no carrier, `required` refused at start-up | `config.rs` `AuthorityConfig::validate`; `docs/spec/03-authority.md` "What is not done" |
 | Handshake not externally reviewed; session layer not built | High | Open | `HANDSHAKE-REVIEW.md`; `COMPLETION_PLAN.md` Stage 8 |
 | Native wire plaintext by default (loopback); wide bind allowed with an explicit flag | Medium | By design, documented | `config.rs:584-598` |
-| Resolve answer carries no succession log | Medium | Open (wire revision) | `spine-protocol/src/lib.rs:498-506`; `02-names.md` decision 46 |
+| Resolve answer log only as long as the node holds it; mesh-only compromise answered `unavailable` | Low | Open (the log and the outcomes are on the wire since 2026-11-24) | `spine-protocol/src/names.rs`; `spine-agent/src/names.rs`; `02-names.md` decision 53 |
 | Key succession weak window before entry 1; lost current key unrecoverable | Medium | By design, documented | `02-names.md` 10.4, 10.9 |
 | Evicted tombstone allows resurrection (at most 7 days); proofs not pushed | Medium | Open | `02-names.md` decisions 51, 52 |
 | Per-publisher quotas bound a key, not a party | Medium | Open | `resources.rs:46-49` |

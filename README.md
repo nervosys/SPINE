@@ -660,7 +660,7 @@ Four documents, because they answer different questions:
 
 1. The authority gate, its durable ledger and the command classification exist as library code and are **not enforced on the wire**. Any client that can connect has operator-level access to all 19 commands, including `navigate`, `execute_binary` and `mesh_call`. `[authority] mode = "required"` is refused at start-up because spine-wire v1 has no carrier for a grant. Nothing issues a receipt.
 2. The mesh handshake has had **no external cryptographic review**, and the session layer (Stage 8 of `COMPLETION_PLAN.md`) is not built. The native client wire does not run over it.
-3. A resolve answer on the client wire carries no succession log, so a client cannot itself verify a rotated name through the daemon.
+3. A resolve answer carries the succession log the node holds, and the client verifies it (`docs/spec/00-wire.md` 12.5); a node that is behind holds a shorter log than exists, which a client cannot see, and a name compromised only in the mesh service's book is answered `unavailable`.
 4. Publisher keys are free to mint, so per-publisher quotas bound a key, not a party.
 5. Mesh replica records are in memory only, an evicted tombstone allows resurrection, and equivocation proofs spread only when asked for.
 6. One host call in `execute_binary` is not interruptible, and compile time is outside its 2 s deadline.

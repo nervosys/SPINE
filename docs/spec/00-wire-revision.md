@@ -369,6 +369,8 @@ Security: the receipt is signed by the node key over a domain-separated body (`s
 
 ### C6. Names
 
+Status: Accepted and implemented in stage 2 (2026-11-24), with the changes listed in "As implemented" at the end of this part. Normative text: `00-wire.md` 1.5, 12.4 and 12.5. The rest of this part is the proposal as written, kept for its reasoning.
+
 #### C6.1 The log in a resolve answer
 
 Current: `NameResolution` is externally tagged: `{"resolved": {record, provenance}}`, `{"unchanged": {ttl_secs}}`, `{"not_found": {name}}`, `{"invalid": {name, reason}}`, `{"unavailable": {name, reason}}` (`lib.rs` `NameResolution`; `00-wire.md` 12.4). The record is a JSON-shaped `spine_name::NameRecord` (5.3, section 16 item 3).
@@ -404,6 +406,18 @@ These variants are used by `resolve_name`, `resolve_names` (per item) and `fetch
 Alternatives rejected: a single `status` field next to `record` (an optional field again); returning the proof as a new object (decision 51 considered that and chose to reuse the logs); a bare `retired`/`compromised` marker without logs (an unverifiable claim from an unauthenticated daemon, 1.4); keeping tombstones as `invalid` (a client cannot tell revocation from a malformed name and cannot verify it).
 
 Security: a hostile node can withhold a log (the client then holds an unverified answer, which it handles as above), send a log that does not verify (refused), or claim `retired` or `compromised` to deny service to a name (it cannot make the claim verify without the proof, so the client falls back to `unavailable`, which already is the answer for an unreachable node). What the node cannot do is make a client accept a superseded key's record: that needs the client to skip the check, which the MUST forbids; the exposure left is 10.8 (a node that is behind) and 10.6 (a record with no head claim signed by a superseded key, which no log-holding verifier would accept and a client without the entry cannot know).
+
+#### C6.3 As implemented (stage 2)
+
+Differences from the proposal above, and what the proposal left silent.
+
+- The shapes are as proposed: `resolved` gained `log`, and `retired`, `compromised` and `revoked` were added. All four are closed. `log` is 0 to 64 entries, `retired.log` 1 to 64, `compromised.logs` exactly two of 1 to 64.
+- A client whose evidence does not verify does not treat the answer as `unavailable`, as the proposal said. The proposal asked for a fall-back to `unavailable`, which makes a hostile node's lie look like a node that is down and invites a retry against the same node. The reference client returns a distinct error (`NameOutcomeError::InvalidEvidence`, with the outcome and the check that failed), and `00-wire.md` 12.5 says a client MUST report it distinctly and MUST NOT treat the name as absent. The proposal's other rule (the node cannot make the client accept) is kept.
+- The proposal was silent on a node that holds a rotated record without the log it needs. It answers `unavailable` (not `not_found`, not `resolved` with an empty log), with a reason that names the missing log.
+- The proposal was silent on the mesh. A retired name learned from the mesh is adopted into the local book and answered `retired`. A name that is compromised only in the mesh service's book stays `unavailable`, because `spine-mesh` exposes no accessor to the proof (and is not changed by this step).
+- The proposal was silent on `unchanged` for a name with a rotated record: it is sent only when `resolved` would have been.
+- The proposal's size estimate (40 KB per answer) stands; `compromised` is at most twice that.
+- Provisional answer to question 10 (the `log` always present, and the three outcomes with evidence): as recommended. Depends on the 40 KB per answer and the `resolve_names` bound: unchanged. The owner may still overturn it (E).
 
 ### C7. Objects: delete
 
@@ -527,7 +541,7 @@ Each has a recommended answer and what depends on it.
 7. Eleven codes or one code with `details` (C4). Recommended: eleven. Depends on: the owner's view of code-set size against client simplicity.
 8. Classification of the new commands (C7): `delete_resource` as `publish`/`irreversible`, `delete_knowledge` as `invoke`/`reversible`, and whether the first use of action `admin` is wanted instead. Recommended: as proposed. Depends on: staleness bounds per class (P8): `irreversible` needs current revocation data.
 9. The owner proof for `delete_resource` (C7.1) next to the grant. Recommended: both. Depends on: whether the node's grant should be allowed to delete any publisher's blob; if yes the proof can go.
-10. The `log` field in a resolve answer always present, and the three outcomes with evidence (C6). Recommended: as proposed. Depends on: the 40 KB per answer and the `resolve_names` bound.
+10. The `log` field in a resolve answer always present, and the three outcomes with evidence (C6). Recommended: as proposed. Depends on: the 40 KB per answer and the `resolve_names` bound. Provisionally answered 2026-11-24 as recommended, and implemented in stage 2 (C6.3); the one change is that evidence that does not verify is a distinct client error rather than `unavailable`. Still the owner's to overturn.
 11. The node key when no `[namespace]` is configured (C3.7). Recommended: `audit` and `required` demand a key file and refuse to start without one. Depends on: how the daemon derives or stores its key; unverified.
 12. Where revocation data comes from before a feed is fetched (D.2 stage 5, 6; P35). Recommended: a daemon timer that refreshes the node's local set, and a statement that an intermediate issuer's revocation (P19) is not seen until feeds exist. Depends on: Stage 6 of the plan; `required` is not usable for `irreversible` commands without it.
 13. A pure-Python Ed25519 in the reference (D.3). Recommended: yes. Depends on: the rule that the reference is dependency-free.

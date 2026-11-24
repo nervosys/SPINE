@@ -130,7 +130,7 @@ Success response: a JSON object with `status: "published"`, `name`, `stored: tru
 
 Ordering consequence: step 3 completes before step 4. If step 4 fails (for example `StalePublication`) and step 3 created the blob, the handler removes it again; content that was already stored stays.
 
-Client side (`spine-agent/src/resources.rs:21-44`): verifies the record under the key in the name (so it cannot send a rotated name's current-key record; `docs/spec/02-names.md` 10.11, remaining item 2), checks size and that the record's hash equals the hash of the data, sends the command, and fails if `error` is set. No client deadline is applied in this function.
+Client side (`spine-agent/src/resources.rs:21-44`): judges the record against the name's succession log (so a rotated name's current-key record is sent once the log is known: since 2026-11-24 `read_resource` and `fetch_resource` take it from the node's verified resolve answer, `docs/spec/00-wire.md` 12.5 and `docs/spec/02-names.md` decision 53; before, only from the caller), checks size and that the record's hash equals the hash of the data, sends the command, and fails if `error` is set. No client deadline is applied in this function.
 
 Who may publish: any client connected to the native origin. The handler performs no identity check beyond the record signature (`main.rs:630-659`, and `handle_session` applies only a rate limit, `main.rs:2521-2531`). The record's signer need not be the node's key. `docs/NATIVE_OPERATIONS.md` states that native origin clients share one trust boundary.
 
@@ -192,7 +192,7 @@ Errors are returned as `Response.error` text; there is no error code field. The 
 | Corrupt stored blob | `stored resource failed integrity check` (`resources.rs:79-82`) |
 | Offset past end | `offset beyond resource` (`resources.rs:84`) |
 
-A disconnected namespace is reported as `NameResolution::Unavailable`, distinct from `NotFound` (`spine-protocol/src/lib.rs:1199-1218`, `main.rs:500-503`). A confirmed miss is negative-cached for 30 seconds (`main.rs:495`, `spine-name/src/cache.rs:22`).
+A retired, compromised or revoked name has its own outcome with evidence (`Retired`, `Compromised`, `Revoked`; `docs/spec/00-wire.md` 12.5). A disconnected namespace is reported as `NameResolution::Unavailable`, distinct from `NotFound` (`spine-protocol/src/lib.rs:1199-1218`, `main.rs:500-503`). A confirmed miss is negative-cached for 30 seconds (`main.rs:495`, `spine-name/src/cache.rs:22`).
 
 ### 3.6 Resolution provenance (not content provenance)
 
