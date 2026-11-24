@@ -8,6 +8,10 @@ const DEFAULT_SPINE_TOML: &str = r#"# SPINE Server Configuration
 # See https://github.com/nervosys/SPINE for documentation
 
 [server]
+# Loopback only. Binding any other address (for example "0.0.0.0") is refused
+# at startup unless `mutual_tls = true` under [tls] (with TLS enabled and a
+# client CA), or `allow_unauthenticated_remote = true` here, which says the
+# network itself is trusted: every native client has full control of the node.
 host = "127.0.0.1"
 port = 8080
 ws_port_offset = 1
@@ -40,12 +44,14 @@ const DEFAULT_SPINE_TOML_TLS: &str = r#"# SPINE Server Configuration (TLS enable
 # See https://github.com/nervosys/SPINE for documentation
 
 [server]
+# Every interface. This is valid only because `mutual_tls = true` under [tls]
+# identifies each client by a certificate signed by `ca_path`; every native
+# client has full control of this node. Without mutual TLS, a host that is not
+# loopback is refused at startup unless `allow_unauthenticated_remote = true`
+# is set here, which says the network itself is trusted. For a node reached
+# only from this machine, use host = "127.0.0.1".
 host = "0.0.0.0"
 port = 8443
-# Every native client has full control of this node. Server-side TLS encrypts
-# the connection but does not identify the client. Prefer `mutual_tls = true`
-# under [tls] with a client CA, then remove this line.
-allow_unauthenticated_remote = true
 ws_port_offset = 1
 quic_port_offset = 2
 metrics_port = 9090
@@ -60,7 +66,9 @@ shutdown_timeout_secs = 30
 enabled = true
 cert_path = "certs/cert.pem"
 key_path = "certs/key.pem"
+# The CA that signs the client certificates this node accepts.
 ca_path = "certs/ca.pem"
+mutual_tls = true
 
 [cluster]
 port_offset = 1000
@@ -276,4 +284,30 @@ log = "0.4"
     eprintln!("  3. Check server health:   {}", "spine status".cyan());
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(text: &str) -> spine_core::SpineConfig {
+        toml::from_str(text).expect("the template is valid TOML for the daemon")
+    }
+
+    #[test]
+    fn the_plain_template_binds_loopback_and_validates_without_the_unauthenticated_flag() {
+        let config = parse(DEFAULT_SPINE_TOML);
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert!(!config.server.allow_unauthenticated_remote);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_tls_template_is_mutual_tls_and_does_not_set_the_unauthenticated_flag() {
+        let config = parse(DEFAULT_SPINE_TOML_TLS);
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert!(config.tls.enabled && config.tls.mutual_tls);
+        assert!(!config.server.allow_unauthenticated_remote);
+        config.validate().unwrap();
+    }
 }

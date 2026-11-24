@@ -86,6 +86,12 @@ spine deploy
 spine deploy -c custom.toml -p 9000 --host 0.0.0.0
 ```
 
+`--host 0.0.0.0` binds every interface. A host that is not loopback is refused
+at startup unless the configuration enables mutual TLS (`tls.mutual_tls = true`,
+with TLS and a client CA) or sets `server.allow_unauthenticated_remote = true`,
+which states that the network itself is trusted. Leave `--host` off, or use
+`127.0.0.1`, for a node that only this machine reaches.
+
 ## `spine benchmark [addr]`
 
 Performance benchmarks:

@@ -44,6 +44,9 @@ level = "info"      # trace, debug, info, warn, error
 Common settings can be overridden with environment variables:
 
 ```bash
+# 0.0.0.0 is not loopback: the daemon refuses it unless mutual TLS is on
+# (SPINE_TLS_MTLS=true with TLS and a client CA) or
+# server.allow_unauthenticated_remote is set. Use 127.0.0.1 for a local node.
 export SPINE_HOST=0.0.0.0
 export SPINE_PORT=9000
 export SPINE_TLS=true

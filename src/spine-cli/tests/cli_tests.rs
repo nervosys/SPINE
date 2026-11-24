@@ -628,10 +628,13 @@ enabled = false
 
     const SPINE_TOML_TLS: &str = r#"# SPINE Server Configuration (TLS enabled)
 [server]
+# Not loopback: valid only with mutual TLS (or allow_unauthenticated_remote).
 host = "0.0.0.0"
 port = 8443
 
 [tls]
 enabled = true
+ca_path = "certs/ca.pem"
+mutual_tls = true
 "#;
 }
