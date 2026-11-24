@@ -25,8 +25,10 @@
 //! [`invocation`] and [`scope`]. Choices the draft design left open are listed
 //! under "Provisional decisions" in `docs/spec/03-authority.md`.
 //!
-//! This crate is not wired into the node, the mesh, the SDK or the CLI, and it
-//! has had no external review.
+//! `spine-core` has a node-side gate built on this crate (`spine_core::authority`),
+//! not yet enforced because the wire has no carrier for a grant chain (see
+//! "Node enforcement" in `docs/spec/03-authority.md`). The mesh, the SDK and the
+//! CLI do not use it, and it has had no external review.
 
 pub mod attenuation;
 mod bytes;
@@ -64,5 +66,6 @@ pub use state::{
     RevocationView, Spent, UsageLedger, RATE_WINDOW_SECS,
 };
 pub use verification::{
-    verify, verify_encoded, Decision, Denial, RevocationBounds, VerifyContext, MAX_CLOCK_SKEW_SECS,
+    verify, verify_encoded, verify_encoded_with_invocation, Decision, Denial, RevocationBounds,
+    VerifyContext, MAX_CLOCK_SKEW_SECS,
 };

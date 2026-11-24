@@ -250,7 +250,7 @@ Anything that makes the node send traffic, sign, execute or store is not the act
 
 `AuthorityGate` holds the node's public key (the recipient), the trusted roots, the verification settings (skew, maximum invocation age, revocation staleness bounds), one usage ledger shared by all callers and one revocation set. `authorize` takes the encoded chain, the encoded invocation, the command about to run, the hash of the command body, the session value and the time. It refuses unless all of these hold, in this order:
 
-1. The eleven verification steps pass (`verify_encoded`) against this node's key, the session value, the trusted roots, the revocation set and the ledger.
+1. The eleven verification steps pass (`verify_encoded_with_invocation`, which returns the decoded invocation so the gate decodes it once) against this node's key, the session value, the trusted roots, the revocation set and the ledger.
 2. The invocation's `act` equals the command's action.
 3. The invocation's declared `effect` is the command's class or a higher one, under the order `read` < `reversible` < `irreversible`. An invoker may declare more than the command needs, never less.
 4. The invocation's `res` is exactly one resource, the command's node resource on this node. A wider resource, a deeper one, or an extra one is refused.
@@ -292,6 +292,7 @@ An unknown key in the section is refused.
 - **Receipt distribution.** A receipt can be signed; nothing returns it to the caller or stores it.
 - **`mode = "required"`.** Refused at startup.
 - **Per-argument resources.** The resource does not depend on the command's arguments: a grant cannot say which URLs, which tools or which names.
+- **Fixed: the invocation was decoded twice.** `verify_encoded` discarded the invocation it decoded and the gate decoded it again. `verify_encoded_with_invocation` returns it with the `Decision`, the gate uses it, and `verify_encoded` is a wrapper over it.
 
 ## Data cannot grant
 

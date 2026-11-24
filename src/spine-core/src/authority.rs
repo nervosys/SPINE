@@ -46,10 +46,10 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 use spine_authority::{
-    verify_encoded, Action, ChargeError, Decision, Denial, Effect, Grant, GrantId, GrantSpec,
-    Invocation, IssueError, LedgerConfig, Limits, MemoryLedger, PublicKey, Receipt, ReceiptError,
-    ResourceName, ResourcePattern, RevocationBounds, RevocationSet, VerifyContext, MAX_CHAIN_DEPTH,
-    MAX_CLOCK_SKEW_SECS,
+    verify_encoded_with_invocation, Action, ChargeError, Decision, Denial, Effect, Grant, GrantId,
+    GrantSpec, Invocation, IssueError, LedgerConfig, Limits, MemoryLedger, PublicKey, Receipt,
+    ReceiptError, ResourceName, ResourcePattern, RevocationBounds, RevocationSet, VerifyContext,
+    MAX_CHAIN_DEPTH, MAX_CLOCK_SKEW_SECS,
 };
 use spine_protocol::BrowserCommand;
 
@@ -554,7 +554,7 @@ impl AuthorityGate {
     ///
     /// In order:
     ///
-    /// 1. The eleven verification steps ([`verify_encoded`]) against this
+    /// 1. The eleven verification steps ([`verify_encoded_with_invocation`]) against this
     ///    node's key, `session`, the trusted roots, the revocation set and the
     ///    ledger.
     /// 2. The invocation's action equals the command's ([`classify`]).
@@ -597,13 +597,14 @@ impl AuthorityGate {
         ctx.max_invocation_age_secs = self.settings.max_invocation_age_secs;
         ctx.revocation_bounds = self.settings.revocation_bounds;
 
-        let decision = verify_encoded(chain_bytes, invocation_bytes, &ctx, &*revocations, &*ledger)
-            .map_err(|denial| Refusal::from(RefusalCause::Verification(denial)))?;
-
-        // `verify_encoded` decoded these bytes and accepted them, so this
-        // cannot fail; if it does, it is the invocation that is unreadable.
-        let invocation = Invocation::decode(invocation_bytes)
-            .map_err(|_| Refusal::from(RefusalCause::Verification(Denial::InvocationMalformed)))?;
+        let (decision, invocation) = verify_encoded_with_invocation(
+            chain_bytes,
+            invocation_bytes,
+            &ctx,
+            &*revocations,
+            &*ledger,
+        )
+        .map_err(|denial| Refusal::from(RefusalCause::Verification(denial)))?;
 
         if invocation.body.act != requirement.action {
             return Err(RefusalCause::ActionMismatch.into());

@@ -6,9 +6,9 @@ mod common;
 
 use common::*;
 use spine_authority::{
-    verify, verify_encoded, Action, Chain, Decision, Denial, Effect, Grant, GrantId, Invocation,
-    Limits, MemoryLedger, NoLedger, NoRevocationData, PublicKey, RevocationBounds, RevocationSet,
-    RevocationView, Spent, UsageLedger, VerifyContext,
+    verify, verify_encoded, verify_encoded_with_invocation, Action, Chain, Decision, Denial,
+    Effect, Grant, GrantId, Invocation, Limits, MemoryLedger, NoLedger, NoRevocationData,
+    PublicKey, RevocationBounds, RevocationSet, RevocationView, Spent, UsageLedger, VerifyContext,
 };
 
 /// A ledger that never saw a nonce and cannot say what was spent.
@@ -850,5 +850,25 @@ fn verify_encoded_agrees_with_verify_and_reports_decode_failures() {
     assert_eq!(
         verify_encoded(&chain_bytes, &huge, &c, &w.revocations(), &w.ledger()),
         Err(Denial::InvocationLimits)
+    );
+}
+
+#[test]
+fn verify_encoded_with_invocation_returns_the_decoded_invocation() {
+    let w = World::new();
+    let grants = w.grants();
+    let inv = w.invocation(&grants);
+    let roots = w.roots();
+    let c = ctx(&w, &roots);
+    let chain_bytes: Vec<Vec<u8>> = grants.iter().map(|g| g.encode().unwrap()).collect();
+    let inv_bytes = inv.encode().unwrap();
+
+    let (decision, returned) =
+        verify_encoded_with_invocation(&chain_bytes, &inv_bytes, &c, &w.revocations(), &w.ledger())
+            .unwrap();
+    assert_eq!(returned, Invocation::decode(&inv_bytes).unwrap());
+    assert_eq!(
+        Ok(decision),
+        verify_encoded(&chain_bytes, &inv_bytes, &c, &w.revocations(), &w.ledger())
     );
 }

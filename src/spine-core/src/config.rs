@@ -136,12 +136,7 @@ impl AuthorityConfig {
     pub fn trusted_root_keys(&self) -> anyhow::Result<Vec<[u8; 32]>> {
         let mut keys: Vec<[u8; 32]> = Vec::with_capacity(self.trusted_roots.len());
         for text in &self.trusted_roots {
-            let key = if text.bytes().all(|b| b.is_ascii_hexdigit()) {
-                parse_key_hex(text)
-            } else {
-                None
-            };
-            let key = key.ok_or_else(|| {
+            let key = parse_key_hex(text).ok_or_else(|| {
                 anyhow::anyhow!("authority.trusted_roots values must be 64 hex characters")
             })?;
             anyhow::ensure!(
@@ -499,14 +494,25 @@ impl NamespaceConfig {
     }
 }
 
-/// Decode a 32-byte key from 64 hex characters.
+/// Decode a 32-byte key from exactly 64 ASCII hex digits, either case.
+/// Anything else (a sign, whitespace, a prefix, non-ASCII text, another
+/// length) is `None`.
 fn parse_key_hex(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 {
+    fn nibble(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() != 64 {
         return None;
     }
     let mut out = [0u8; 32];
-    for (i, slot) in out.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    for (slot, pair) in out.iter_mut().zip(bytes.chunks_exact(2)) {
+        *slot = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Some(out)
 }
@@ -701,6 +707,39 @@ impl SpineConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_hex_is_exactly_64_ascii_hex_digits() {
+        let lower = "ab".repeat(32);
+        assert_eq!(parse_key_hex(&lower), Some([0xab; 32]));
+        assert_eq!(parse_key_hex(&lower.to_uppercase()), Some([0xab; 32]));
+        assert_eq!(parse_key_hex(&"aB".repeat(32)), Some([0xab; 32]));
+        // `from_str_radix` would take a sign: `+f` is 0x0f there.
+        assert_eq!(parse_key_hex(&"+f".repeat(32)), None);
+        assert_eq!(parse_key_hex(&"-0".repeat(32)), None);
+        assert_eq!(parse_key_hex(&lower[..63]), None);
+        assert_eq!(parse_key_hex(&format!("{lower}a")), None);
+        assert_eq!(parse_key_hex(""), None);
+        // 64 bytes, but not 64 ASCII characters: 31 pairs and one two-byte char.
+        let non_ascii = format!("{}é", "ab".repeat(31));
+        assert_eq!(non_ascii.len(), 64);
+        assert_eq!(parse_key_hex(&non_ascii), None);
+        assert_eq!(parse_key_hex(&format!(" {}", &lower[..63])), None);
+    }
+
+    #[test]
+    fn trusted_roots_use_the_same_key_parser() {
+        let config = AuthorityConfig {
+            trusted_roots: vec!["AB".repeat(32)],
+            ..AuthorityConfig::default()
+        };
+        assert_eq!(config.trusted_root_keys().unwrap(), vec![[0xab; 32]]);
+        let config = AuthorityConfig {
+            trusted_roots: vec!["+f".repeat(32)],
+            ..AuthorityConfig::default()
+        };
+        assert!(config.trusted_root_keys().is_err());
+    }
 
     #[test]
     fn invalid_explicit_configuration_is_refused_without_disclosing_contents() {

@@ -13,8 +13,11 @@ order and returns either a `Decision` or the first `Denial`.
 The crate is pure: no I/O, no tokio, no clock (time is a parameter), no
 randomness. Cryptography is Ed25519 (`verify_strict`) and SHA-256 only.
 Revocation and usage state come through the traits `RevocationView` and
-`UsageLedger`; the defaults (`NoRevocationData`, `NoLedger`) refuse. It is not
-wired into the node, mesh, SDK or CLI, and it has had no external review.
+`UsageLedger`; the defaults (`NoRevocationData`, `NoLedger`) refuse.
+`spine-core` has a node-side gate built on it (`spine_core::authority`), not yet
+enforced because the wire has no carrier for a grant chain (see "Node
+enforcement" in `docs/spec/03-authority.md`). The mesh, SDK and CLI do not use
+it, and it has had no external review.
 
 ## Encoding
 

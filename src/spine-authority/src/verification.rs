@@ -533,6 +533,21 @@ pub fn verify_encoded(
     revocations: &dyn RevocationView,
     ledger: &dyn UsageLedger,
 ) -> Result<Decision, Denial> {
+    verify_encoded_with_invocation(chain_bytes, invocation_bytes, ctx, revocations, ledger)
+        .map(|(decision, _)| decision)
+}
+
+/// [`verify_encoded`] that also hands back the [`Invocation`] it decoded, so a
+/// caller that needs the accepted invocation (to check what it asks for) does
+/// not decode the same bytes a second time. The decision and the denials are
+/// exactly those of [`verify_encoded`].
+pub fn verify_encoded_with_invocation(
+    chain_bytes: &[Vec<u8>],
+    invocation_bytes: &[u8],
+    ctx: &VerifyContext<'_>,
+    revocations: &dyn RevocationView,
+    ledger: &dyn UsageLedger,
+) -> Result<(Decision, Invocation), Denial> {
     if chain_bytes.is_empty() || chain_bytes.len() > MAX_CHAIN_DEPTH {
         return Err(Denial::ChainLimits);
     }
@@ -553,5 +568,6 @@ pub fn verify_encoded(
         }
         Err(_) => return Err(Denial::InvocationMalformed),
     };
-    verify(&Chain::new(grants), &invocation, ctx, revocations, ledger)
+    let decision = verify(&Chain::new(grants), &invocation, ctx, revocations, ledger)?;
+    Ok((decision, invocation))
 }
