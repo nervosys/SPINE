@@ -18,6 +18,10 @@ pub mod resources;
 pub use spine_compiler::Compiler;
 // Re-export WebSocket stream for CLI and external consumers
 pub use spine_transport::WebSocketClientStream;
+// The identity key type of `over_with_identity`, and the authority mode a
+// server reports, so a caller needs no direct dependency for either.
+pub use spine_protocol::hello::AuthorityMode;
+pub use spine_protocol::identify::SigningKey;
 
 /// A client of a SPINE daemon, speaking spine-wire v1.
 ///
@@ -48,6 +52,17 @@ impl AgentClient<TcpStream> {
                 .await
                 .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
         Self::over(stream).await
+    }
+
+    /// Like [`AgentClient::connect`], and the client then proves that it holds
+    /// `identity` with an `IDENTIFY` frame (see
+    /// [`AgentClient::over_with_identity`]).
+    pub async fn connect_with_identity(addr: &str, identity: &SigningKey) -> anyhow::Result<Self> {
+        let stream =
+            tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("native connection deadline exceeded"))??;
+        Self::over_with_identity(stream, identity).await
     }
 
     /// Connect with exponential backoff retry.
@@ -238,6 +253,47 @@ where
             conn,
             ping_counter: 0,
         })
+    }
+
+    /// Like [`AgentClient::over`], and the client then sends `IDENTIFY`,
+    /// proving that it holds `identity`'s key (`docs/spec/00-wire.md` 6.6).
+    /// The default, [`AgentClient::over`], is anonymous.
+    ///
+    /// The identity is recorded by the server and grants nothing: the daemon
+    /// answers an identified client exactly as it answers an anonymous one.
+    /// The proof covers this connection's handshake but not the byte stream,
+    /// so a relay between the client and the server is not detected. A server
+    /// that cannot verify the proof closes the connection with
+    /// `protocol_violation`, which the first later call reports.
+    pub async fn over_with_identity(stream: S, identity: &SigningKey) -> anyhow::Result<Self> {
+        let conn = native::client_connect_with_identity(stream, Some(identity)).await?;
+        Ok(Self {
+            conn,
+            ping_counter: 0,
+        })
+    }
+
+    /// The authority mode the server reported in `HELLO_ACK`: `Off` when the
+    /// node asks for no grant. Nothing in this client acts on it yet.
+    pub fn authority(&self) -> AuthorityMode {
+        self.conn.authority()
+    }
+
+    /// This connection's `binding`, the 32 bytes the server chose and sent in
+    /// `HELLO_ACK`. It grants nothing.
+    pub fn binding(&self) -> [u8; 32] {
+        self.conn.binding()
+    }
+
+    /// The server's clock (Unix seconds) at `HELLO_ACK`; not authenticated.
+    pub fn server_time(&self) -> u64 {
+        self.conn.server_time()
+    }
+
+    /// The public key this client proved with `IDENTIFY`, or `None` for an
+    /// anonymous client.
+    pub fn identity(&self) -> Option<[u8; 32]> {
+        self.conn.identity()
     }
 
     pub async fn capabilities(
@@ -754,6 +810,39 @@ mod tests {
 
         drop(client);
         tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_client_connects_anonymous_by_default_and_with_an_identity_on_request() {
+        for identified in [false, true] {
+            let (client_io, server_io) = duplex(64 * 1024);
+            let server = spawn_server(server_io, answer);
+            let key = SigningKey::from_bytes(&[0x55; 32]);
+            let mut client = tokio::time::timeout(LIMIT, async {
+                if identified {
+                    AgentClient::over_with_identity(client_io, &key).await
+                } else {
+                    AgentClient::over(client_io).await
+                }
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                client.identity(),
+                identified.then(|| key.verifying_key().to_bytes())
+            );
+            assert_eq!(client.authority(), AuthorityMode::Off);
+            assert_ne!(client.binding(), [0u8; 32]);
+            assert!(client.server_time() > 1_600_000_000);
+            let html = tokio::time::timeout(LIMIT, client.get_raw_html())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(html, "<p>hi</p>");
+            drop(client);
+            tokio::time::timeout(LIMIT, server).await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test]

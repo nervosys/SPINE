@@ -2012,3 +2012,205 @@ async fn rotated_name_publishes_and_reads_a_resource_through_the_agent_client() 
     .await
     .expect("rotated name agent client acceptance deadline exceeded");
 }
+
+// ---- client identity (docs/spec/00-wire.md 6.6) ----
+
+/// Runs `future` under a 30-second deadline.
+async fn within<T>(what: &str, future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(30), future)
+        .await
+        .unwrap_or_else(|_| panic!("{what}: no answer within 30 seconds"))
+}
+
+/// The body of the `RESPONSE` the daemon sends to `command` on `conn`.
+async fn answer_body(conn: &mut RawConnection, command: spine_protocol::BrowserCommand) -> Vec<u8> {
+    let body = spine_protocol::native::encode_command(&command).unwrap();
+    let id = within("request", conn.request(body)).await.unwrap();
+    let frame = next_frame(conn).await;
+    assert_eq!(frame.frame_type, spine_protocol::frame::FrameType::Response);
+    assert_eq!(frame.request_id, id);
+    frame.body
+}
+
+/// A stream on which the handshake was done by hand, so that a test can write
+/// frames the connection layer would refuse to send. Returns the transcript
+/// that an `IDENTIFY` signs.
+async fn handshaken_stream(port: u16) -> (TcpStream, spine_protocol::identify::Transcript) {
+    use spine_protocol::frame::{read_frame, write_frame, FrameType, PRE_HELLO_MAX_FRAME};
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let hello = spine_protocol::native::client_hello();
+    let hello_frame = hello.to_frame().unwrap();
+    within(
+        "write HELLO",
+        write_frame(&mut stream, &hello_frame, PRE_HELLO_MAX_FRAME, false),
+    )
+    .await
+    .unwrap();
+    let ack = within(
+        "read HELLO_ACK",
+        read_frame(&mut stream, PRE_HELLO_MAX_FRAME),
+    )
+    .await
+    .unwrap()
+    .expect("the daemon closed during the handshake");
+    assert_eq!(ack.frame_type, FrameType::HelloAck);
+    spine_protocol::hello::HelloAck::from_frame(&ack)
+        .unwrap()
+        .validate_against(&hello)
+        .unwrap();
+    let transcript = spine_protocol::identify::Transcript::of_bodies(&hello_frame.body, &ack.body);
+    (stream, transcript)
+}
+
+/// Writes `frames`.
+async fn write_frames(stream: &mut TcpStream, frames: &[spine_protocol::frame::Frame]) {
+    use spine_protocol::frame::{encode_frame, MAX_FRAME};
+    use tokio::io::AsyncWriteExt;
+    for frame in frames {
+        let bytes = encode_frame(frame, MAX_FRAME, false).unwrap();
+        within("write", stream.write_all(&bytes)).await.unwrap();
+    }
+}
+
+/// Writes `frames` and returns the code of the `CLOSE` that follows; other
+/// frames (answers to requests) are skipped.
+async fn close_code_after(
+    stream: &mut TcpStream,
+    frames: &[spine_protocol::frame::Frame],
+) -> String {
+    use spine_protocol::frame::{read_frame, FrameType, MAX_FRAME};
+    write_frames(stream, frames).await;
+    loop {
+        let frame = within("read", read_frame(stream, MAX_FRAME))
+            .await
+            .unwrap()
+            .expect("the stream ended without a CLOSE");
+        if frame.frame_type == FrameType::Close {
+            return spine_protocol::hello::Close::from_frame(&frame)
+                .unwrap()
+                .code;
+        }
+    }
+}
+
+/// An `IDENTIFY` is recorded and grants nothing: the daemon answers an
+/// identified connection exactly as it answers an anonymous one. A second
+/// `IDENTIFY`, one after a request, and a bad proof each end the connection
+/// with `CLOSE(protocol_violation)`.
+#[tokio::test]
+async fn an_identified_client_gets_the_answers_an_anonymous_one_gets() {
+    use spine_protocol::frame::{read_frame, Frame, FrameType, MAX_FRAME};
+    use spine_protocol::hello::AuthorityMode;
+    use spine_protocol::identify::{Identify, Transcript};
+    use spine_protocol::{BrowserCommand, CapabilityQuery, CapabilitySelector};
+
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(180), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = origin_port();
+        let mut config = spine_core::SpineConfig::default();
+        config.server.host = "127.0.0.1".into();
+        config.server.port = origin;
+        config.server.metrics_port = port();
+        config.server.idle_timeout_secs = 120;
+        std::fs::write(
+            dir.path().join("spine.toml"),
+            toml::to_string(&config).unwrap(),
+        )
+        .unwrap();
+        let mut node = launch(dir.path());
+        drop(connect(&mut node, dir.path(), origin).await);
+
+        let key = SigningKey::from_bytes(&[0x61; 32]);
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut anonymous = within(
+            "anonymous handshake",
+            spine_protocol::native::client_connect(stream),
+        )
+        .await
+        .unwrap();
+        let stream = TcpStream::connect(("127.0.0.1", origin)).await.unwrap();
+        let mut identified = within(
+            "identified handshake",
+            spine_protocol::native::client_connect_with_identity(stream, Some(&key)),
+        )
+        .await
+        .unwrap();
+
+        // What HELLO_ACK told each of them: authority off, a binding of its
+        // own, the server's clock.
+        assert_eq!(anonymous.identity(), None);
+        assert_eq!(identified.identity(), Some(key.verifying_key().to_bytes()));
+        for conn in [&anonymous, &identified] {
+            assert_eq!(conn.authority(), AuthorityMode::Off);
+            assert_ne!(conn.binding(), [0u8; 32]);
+            assert!(conn.server_time() > 1_600_000_000);
+        }
+        assert_ne!(anonymous.binding(), identified.binding());
+
+        // The same commands, the same answers, byte for byte: a successful
+        // one, two that fail and a refusal.
+        let commands = vec![
+            BrowserCommand::CapabilityQuery(CapabilityQuery {
+                selector: CapabilitySelector::All,
+            }),
+            BrowserCommand::GetUR,
+            BrowserCommand::Navigate {
+                url: "http://127.0.0.1/".to_string(),
+            },
+            BrowserCommand::NamespaceStatus,
+        ];
+        for command in commands {
+            let a = answer_body(&mut anonymous, command.clone()).await;
+            let b = answer_body(&mut identified, command.clone()).await;
+            assert_eq!(a, b, "the answers to {command:?} differ");
+        }
+
+        // A bad proof, a proof for another connection, a second proof and a
+        // proof after a request are each `protocol_violation`.
+        let request = |id: u64| Frame {
+            frame_type: FrameType::Request,
+            request_id: id,
+            body: spine_protocol::native::encode_command(&BrowserCommand::GetUR).unwrap(),
+        };
+
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let mut bad = Identify::sign(&key, &transcript);
+        bad.sig[0] ^= 1;
+        let code = close_code_after(&mut stream, &[bad.to_frame().unwrap()]).await;
+        assert_eq!(code, "protocol_violation");
+
+        let (mut stream, _transcript) = handshaken_stream(origin).await;
+        let other = Transcript::of_bodies(b"x", b"y");
+        let wrong_binding = Identify::sign(&key, &other).to_frame().unwrap();
+        let code = close_code_after(&mut stream, &[wrong_binding]).await;
+        assert_eq!(code, "protocol_violation");
+
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let good = Identify::sign(&key, &transcript).to_frame().unwrap();
+        let code = close_code_after(&mut stream, &[good.clone(), good]).await;
+        assert_eq!(code, "protocol_violation");
+
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let late = Identify::sign(&key, &transcript).to_frame().unwrap();
+        let code = close_code_after(&mut stream, &[request(1), late]).await;
+        assert_eq!(code, "protocol_violation");
+
+        // A good proof pipelined with a request is served, with the answer
+        // an anonymous connection gets.
+        let (mut stream, transcript) = handshaken_stream(origin).await;
+        let pipelined = Identify::sign(&key, &transcript).to_frame().unwrap();
+        write_frames(&mut stream, &[pipelined, request(1)]).await;
+        let answer = within("read", read_frame(&mut stream, MAX_FRAME))
+            .await
+            .unwrap()
+            .expect("the daemon closed the connection");
+        assert_eq!(answer.frame_type, FrameType::Response);
+        assert_eq!(
+            answer.body,
+            answer_body(&mut anonymous, BrowserCommand::GetUR).await
+        );
+    })
+    .await
+    .expect("identity acceptance deadline exceeded");
+}

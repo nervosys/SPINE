@@ -2378,7 +2378,17 @@ where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let deadline = std::time::Duration::from_secs(state.config.server.hello_timeout_secs);
-    match Connection::server_handshake(stream, &native::local_config(), deadline).await {
+    // HELLO_ACK reports what this node enforces. Only `off` can run today
+    // (`required` is refused at start-up and there is no `audit` in the
+    // config). The per-connection `binding` (32 bytes from the operating
+    // system's random source) and `time` (the system clock) are drawn by
+    // `negotiate`, once for every connection.
+    let mut local = native::local_config();
+    local.authority = match state.config.authority.mode {
+        config::AuthorityMode::Off => spine_protocol::hello::AuthorityMode::Off,
+        config::AuthorityMode::Required => spine_protocol::hello::AuthorityMode::Required,
+    };
+    match Connection::server_handshake(stream, &local, deadline).await {
         Ok(mut conn) => {
             // Admission refused after the handshake: the daemon is draining.
             if state
@@ -2410,6 +2420,21 @@ enum Outgoing {
 struct Job {
     request_id: u64,
     body: Vec<u8>,
+    /// The key the connection proved with `IDENTIFY`, if it did. It is read
+    /// for the log and for nothing else: an identity grants nothing, so an
+    /// identified connection and an anonymous one get the same answers
+    /// (`docs/spec/00-wire.md` 6.6; the acceptance test
+    /// `an_identified_client_gets_the_answers_an_anonymous_one_gets`).
+    identity: Option<[u8; 32]>,
+}
+
+/// An identity for the log: the key in hex, or `anonymous`. Never a metric
+/// label: keys are free to mint, so they would make the label set unbounded.
+fn identity_label(identity: Option<[u8; 32]>) -> String {
+    match identity {
+        Some(key) => key.iter().map(|byte| format!("{byte:02x}")).collect(),
+        None => "anonymous".to_string(),
+    }
 }
 
 /// Returns when the connection has been declared over (or the signal's owner
@@ -2565,6 +2590,8 @@ async fn write_responses<S>(
 ///   table until its `RESPONSE` is written, so the queue cannot be full here.
 /// - `STREAM_CANCEL` is delivered by the reader for an id in flight and
 ///   ignored: v1 defines it only for a stream, and no command streams.
+/// - `IDENTIFY` (already verified by the connection layer) is logged; the
+///   identity is attached to the jobs that follow and grants nothing.
 /// - `PONG` answers a `PING` this daemon never sends and is ignored.
 /// - A peer `CLOSE`, end of stream, or an i/o error ends the loop; a
 ///   violation or the idle deadline queues the `CLOSE` the reader wants first.
@@ -2596,6 +2623,7 @@ async fn read_requests<S>(
                     let job = Job {
                         request_id: frame.request_id,
                         body: frame.body,
+                        identity: reader.identity(),
                     };
                     if jobs.send(job).await.is_err() {
                         break;
@@ -2605,6 +2633,15 @@ async fn read_requests<S>(
                     debug!(
                         "Ignoring STREAM_CANCEL for request {}: nothing streams",
                         frame.request_id
+                    );
+                }
+                FrameType::Identify => {
+                    // The connection layer has verified the proof. The key is
+                    // recorded with the connection and logged; it grants
+                    // nothing.
+                    debug!(
+                        "Connection identified as {}",
+                        identity_label(reader.identity())
                     );
                 }
                 _ => {}
@@ -2755,7 +2792,10 @@ async fn answer_job(
         }
         command => {
             let req_span = span!(Level::INFO, "request", request_id = request_id);
-            debug!("Received request {request_id}");
+            debug!(
+                "Received request {request_id} from {}",
+                identity_label(job.identity)
+            );
 
             // Rate limit first: a refused command creates no session.
             if !state.check_rate_limit(&command_rate.id) {
