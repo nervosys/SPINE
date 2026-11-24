@@ -829,10 +829,27 @@ async fn detached_session_retention_recovers_capacity_and_does_not_resurrect() {
         let mut replacement = connect(&mut node, dir.path(), origin).await;
         assert_eq!(code_of(&replacement.get_raw_html().await.unwrap_err()), "no_page_loaded");
         drop(replacement);
-        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+        // Expiry, the watchdog tick and the next snapshot are three timers: wait
+        // for the empty snapshot instead of assuming how long they take together.
+        let mut expired = serde_json::Value::Null;
+        for _ in 0..200 {
+            if let Ok(bytes) = std::fs::read(&manifest) {
+                // A read can land between truncation and the write; retry it.
+                if let Ok(snapshot) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let empty = snapshot["sessions"].as_object().is_some_and(|sessions| sessions.is_empty());
+                    expired = snapshot;
+                    if empty {
+                        break;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         drop(node);
-        let expired: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
-        assert!(expired["sessions"].as_object().unwrap().is_empty());
+        assert!(
+            expired["sessions"].as_object().is_some_and(|sessions| sessions.is_empty()),
+            "the snapshot still lists a session after 20 s: {expired}"
+        );
         // A stale pre-migration file must never override the authoritative empty snapshot.
         std::fs::create_dir(dir.path().join("sessions")).unwrap();
         std::fs::write(dir.path().join("sessions").join(format!("{id}.json")), serde_json::to_vec(&legacy).unwrap()).unwrap();
