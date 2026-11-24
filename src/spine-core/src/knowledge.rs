@@ -42,6 +42,94 @@ pub fn admit_entry(held: usize, max_entries: usize, size: usize) -> Result<(), S
     Ok(())
 }
 
+/// What one stored entry costs the daemon-wide budget beyond the bytes of
+/// [`entry_bytes`]: the JSON field names, quotes, timestamp and separators the
+/// snapshot writes around every entry, rounded up. It keeps a million tiny
+/// entries from costing nothing.
+pub const KNOWLEDGE_ENTRY_OVERHEAD_BYTES: u64 = 128;
+
+/// Bytes of knowledge, summed over every session and the cluster buckets, the
+/// daemon holds at most.
+///
+/// Per session the bounds are 1024 entries of 64 KiB, 64 MiB; with the default
+/// `max_sessions` of 1000 (and detached sessions kept for 3600 s) that is
+/// about 1000 x 1024 x 64 KiB = 62.5 GiB of memory and of snapshot. The
+/// snapshot (`session_store::MAX_SNAPSHOT_BYTES`) is 64 MiB and holds the
+/// sessions as well as the knowledge: a save that would pass it fails, the
+/// previous snapshot stays, the daemon logs the error and reports
+/// persistence as failing, and a start-up that finds a larger file refuses
+/// to read it. This budget is half the snapshot bound, so the entries'
+/// counted bytes, the per-entry overhead above and the JSON escaping of
+/// typical text fit with room left for the sessions.
+pub const MAX_KNOWLEDGE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The charge of one entry of `size` bytes (as [`entry_bytes`] measures it).
+pub fn entry_cost(size: usize) -> u64 {
+    (size as u64).saturating_add(KNOWLEDGE_ENTRY_OVERHEAD_BYTES)
+}
+
+/// The daemon-wide byte budget for knowledge. Charges are reserved before an
+/// entry is stored and released when it is removed, so the total never passes
+/// the limit, however many threads reserve at once.
+#[derive(Debug)]
+pub struct KnowledgeBudget {
+    used: std::sync::atomic::AtomicU64,
+    limit: u64,
+}
+
+impl KnowledgeBudget {
+    /// An empty budget of `limit` bytes.
+    pub fn new(limit: u64) -> Self {
+        Self {
+            used: std::sync::atomic::AtomicU64::new(0),
+            limit,
+        }
+    }
+
+    /// Bytes charged now.
+    pub fn used(&self) -> u64 {
+        self.used.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Reserves `cost` bytes, or refuses with the reason when that would pass
+    /// the limit. Nothing is reserved on a refusal.
+    pub fn reserve(&self, cost: u64) -> Result<(), String> {
+        self.used
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |used| used.checked_add(cost).filter(|total| *total <= self.limit),
+            )
+            .map(|_| ())
+            .map_err(|_| {
+                format!(
+                    "the daemon may hold at most {} bytes of knowledge",
+                    self.limit
+                )
+            })
+    }
+
+    /// Charges `cost` bytes without a limit check, for state already held
+    /// (loaded from a snapshot): later reservations are refused until enough
+    /// is released.
+    pub fn charge(&self, cost: u64) {
+        let _ = self.used.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |used| Some(used.saturating_add(cost)),
+        );
+    }
+
+    /// Returns `cost` bytes, never below zero.
+    pub fn release(&self, cost: u64) {
+        let _ = self.used.fetch_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |used| Some(used.saturating_sub(cost)),
+        );
+    }
+}
+
 /// The number of results a query returns for a requested `limit`.
 pub fn query_limit(limit: usize) -> usize {
     limit.min(MAX_KNOWLEDGE_QUERY_RESULTS)
@@ -74,6 +162,80 @@ mod tests {
         assert!(admit_entry(9, 3, MAX_KNOWLEDGE_ENTRY_BYTES + 1)
             .unwrap_err()
             .contains("bytes"));
+    }
+
+    #[test]
+    fn the_budget_refuses_past_its_limit_and_release_restores_it() {
+        let budget = KnowledgeBudget::new(100);
+        assert!(budget.reserve(60).is_ok());
+        assert!(budget.reserve(40).is_ok());
+        assert_eq!(budget.used(), 100);
+        let reason = budget.reserve(1).unwrap_err();
+        assert!(reason.contains("at most 100 bytes"), "{reason}");
+        // A refusal reserves nothing.
+        assert_eq!(budget.used(), 100);
+        budget.release(60);
+        assert_eq!(budget.used(), 40);
+        assert!(budget.reserve(60).is_ok());
+        budget.release(100);
+        assert_eq!(budget.used(), 0);
+        // Release never goes below zero; a huge reservation does not wrap.
+        budget.release(5);
+        assert_eq!(budget.used(), 0);
+        assert!(budget.reserve(u64::MAX).is_err());
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn loaded_state_over_the_limit_blocks_reservations_until_released() {
+        let budget = KnowledgeBudget::new(100);
+        budget.charge(150);
+        assert_eq!(budget.used(), 150);
+        assert!(budget.reserve(1).is_err());
+        budget.release(100);
+        assert!(budget.reserve(50).is_ok());
+        assert_eq!(budget.used(), 100);
+    }
+
+    #[test]
+    fn concurrent_reservations_never_pass_the_limit() {
+        let budget = std::sync::Arc::new(KnowledgeBudget::new(1000));
+        let granted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let budget = budget.clone();
+                let granted = granted.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..500 {
+                        if budget.reserve(7).is_ok() {
+                            granted.fetch_add(7, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        assert!(budget.used() <= 1000);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        // 1000 / 7 = 142 reservations fit; every one that did was counted.
+        assert_eq!(
+            budget.used(),
+            granted.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert_eq!(budget.used(), 142 * 7);
+        // Releasing exactly what was granted restores an empty budget.
+        for _ in 0..142 {
+            budget.release(7);
+        }
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn an_entry_costs_its_bytes_plus_the_overhead() {
+        assert_eq!(entry_cost(0), KNOWLEDGE_ENTRY_OVERHEAD_BYTES);
+        assert_eq!(entry_cost(10), 10 + KNOWLEDGE_ENTRY_OVERHEAD_BYTES);
+        assert!(MAX_KNOWLEDGE_BYTES <= crate::session_store::MAX_SNAPSHOT_BYTES / 2);
     }
 
     #[test]

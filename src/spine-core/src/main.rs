@@ -147,6 +147,8 @@ struct BrowserState {
     session_gate: std::sync::Mutex<std::collections::HashSet<String>>,
     snapshot_gate: Mutex<()>,
     knowledge_base: DashMap<String, Vec<KnowledgeEntry>>,
+    /// Bytes held in `knowledge_base`, over every session and bucket.
+    knowledge_budget: spine_core::knowledge::KnowledgeBudget,
     #[cfg(feature = "research")]
     proposals: DashMap<Uuid, KnowledgeProposal>,
     #[cfg(feature = "research")]
@@ -188,7 +190,31 @@ struct BrowserState {
     namespace_counters: Arc<namespace::NamespaceCounters>,
 }
 
+impl KnowledgeEntry {
+    /// What the entry is charged against the daemon-wide knowledge budget.
+    fn cost(&self) -> u64 {
+        spine_core::knowledge::entry_cost(spine_core::knowledge::entry_bytes(
+            &self.key,
+            &self.value,
+            &self.tags,
+        ))
+    }
+}
+
 impl BrowserState {
+    /// Appends `entry` to the knowledge of `bucket` (a session id or a
+    /// cluster bucket), holding it to the per-session entry cap, the entry
+    /// size and the daemon-wide byte budget. The reason is the refusal.
+    fn append_knowledge(&self, bucket: &str, entry: KnowledgeEntry) -> Result<(), String> {
+        let size = spine_core::knowledge::entry_bytes(&entry.key, &entry.value, &entry.tags);
+        let mut held = self.knowledge_base.entry(bucket.to_string()).or_default();
+        spine_core::knowledge::admit_entry(held.len(), MAX_KNOWLEDGE_ENTRIES_PER_SESSION, size)?;
+        self.knowledge_budget
+            .reserve(spine_core::knowledge::entry_cost(size))?;
+        held.push(entry);
+        Ok(())
+    }
+
     fn create_session(self: &Arc<Self>) -> Option<SessionLease> {
         let mut active = self.session_gate.lock().unwrap();
         if self.sessions.len() >= self.config.server.max_sessions {
@@ -231,7 +257,10 @@ impl BrowserState {
             .collect();
         for id in &ids {
             self.sessions.remove(id);
-            self.knowledge_base.remove(id);
+            if let Some((_, entries)) = self.knowledge_base.remove(id) {
+                self.knowledge_budget
+                    .release(entries.iter().map(KnowledgeEntry::cost).sum());
+            }
             self.rate_limits.remove(id);
         }
         ids
@@ -365,7 +394,12 @@ impl BrowserState {
         for (id, session) in snapshot.sessions {
             self.sessions.insert(id, session);
         }
+        // Only what is kept after the drops above is charged. A snapshot an
+        // older daemon wrote past the budget loads whole; new entries are
+        // refused until enough is released.
         for (id, knowledge) in snapshot.knowledge {
+            self.knowledge_budget
+                .charge(knowledge.iter().map(KnowledgeEntry::cost).sum());
             self.knowledge_base.insert(id, knowledge);
         }
         Ok(())
@@ -1133,6 +1167,7 @@ async fn handle_command(
             let declares = |cap: &str| bin.capabilities.iter().any(|c| c == cap);
             let mut navigations = 0usize;
             let mut stores = 0usize;
+            let mut store_cost = 0u64;
             for action in &result.actions {
                 let needs = match action {
                     spine_wasm::WasmAction::Navigate(_) => {
@@ -1140,8 +1175,11 @@ async fn handle_command(
                         Some("network")
                     }
                     spine_wasm::WasmAction::Search(_) => Some("search"),
-                    spine_wasm::WasmAction::StoreKnowledge { .. } => {
+                    spine_wasm::WasmAction::StoreKnowledge { key, value, tags } => {
                         stores += 1;
+                        store_cost = store_cost.saturating_add(spine_core::knowledge::entry_cost(
+                            spine_core::knowledge::entry_bytes(key, value, tags),
+                        ));
                         Some("storage")
                     }
                     spine_wasm::WasmAction::QueryKnowledge { .. }
@@ -1193,6 +1231,16 @@ async fn handle_command(
                     ),
                 ));
             }
+
+            // The daemon-wide byte budget, reserved for every store now so a
+            // refusal leaves no partial effect. Each stored entry keeps its
+            // share; one the session is gone for is released below.
+            state
+                .knowledge_budget
+                .reserve(store_cost)
+                .map_err(|reason| {
+                    fail(ERR_EXECUTION_FAILED, format!("execution failed: {reason}"))
+                })?;
 
             // Store binary in session for reactivity
             if let Some(mut session) = state.sessions.get_mut(session_id) {
@@ -1289,6 +1337,13 @@ async fn handle_command(
                                     tags.clone(),
                                 );
                             }
+                        } else {
+                            // Reserved with the others; nothing was stored.
+                            state
+                                .knowledge_budget
+                                .release(spine_core::knowledge::entry_cost(
+                                    spine_core::knowledge::entry_bytes(key, value, tags),
+                                ));
                         }
                     }
                     spine_wasm::WasmAction::QueryKnowledge {
@@ -1324,7 +1379,6 @@ async fn handle_command(
         BrowserCommand::StoreKnowledge { key, value, tags } => {
             // The same count `execute_binary` holds a session to, and a bound
             // on one entry (the frame limit is the only other).
-            let size = spine_core::knowledge::entry_bytes(&key, &value, &tags);
             let entry = KnowledgeEntry {
                 key: key.clone(),
                 value: value.clone(),
@@ -1334,24 +1388,14 @@ async fn handle_command(
                     .unwrap_or_default()
                     .as_nanos() as u64,
             };
-            {
-                let mut held = state
-                    .knowledge_base
-                    .entry(session_id.to_string())
-                    .or_default();
-                spine_core::knowledge::admit_entry(
-                    held.len(),
-                    MAX_KNOWLEDGE_ENTRIES_PER_SESSION,
-                    size,
-                )
+            state
+                .append_knowledge(session_id, entry)
                 .map_err(|reason| {
                     fail(
                         ERR_EXECUTION_FAILED,
                         format!("store_knowledge failed: {reason}"),
                     )
                 })?;
-                held.push(entry);
-            }
 
             // Broadcast to cluster
             #[cfg(feature = "research")]
@@ -1617,6 +1661,9 @@ async fn main() -> Result<()> {
         session_gate: Default::default(),
         snapshot_gate: Mutex::new(()),
         knowledge_base: DashMap::new(),
+        knowledge_budget: spine_core::knowledge::KnowledgeBudget::new(
+            spine_core::knowledge::MAX_KNOWLEDGE_BYTES,
+        ),
         #[cfg(feature = "research")]
         proposals: DashMap::new(),
         #[cfg(feature = "research")]
@@ -1871,11 +1918,12 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     };
-                    cluster_state
-                        .knowledge_base
-                        .entry("cluster_shared".to_string())
-                        .or_default()
-                        .push(entry);
+                    // Held to the per-session entry cap and the byte budget
+                    // like any session's knowledge; a peer cannot grow it
+                    // without bound.
+                    if let Err(reason) = cluster_state.append_knowledge("cluster_shared", entry) {
+                        warn!("Dropping synced knowledge: {reason}");
+                    }
                 }
                 spine_cluster::ClusterEvent::SwarmSearchRequested {
                     query,
@@ -2014,11 +2062,10 @@ async fn main() -> Result<()> {
                             .unwrap_or_default()
                             .as_nanos() as u64,
                     };
-                    cluster_state
-                        .knowledge_base
-                        .entry("cluster_consensus".to_string())
-                        .or_default()
-                        .push(entry);
+                    if let Err(reason) = cluster_state.append_knowledge("cluster_consensus", entry)
+                    {
+                        warn!("Dropping committed knowledge: {reason}");
+                    }
                     cluster_state.proposals.remove(&proposal_id);
                 }
                 spine_cluster::ClusterEvent::SwarmPlanProposed { plan, origin_node } => {
