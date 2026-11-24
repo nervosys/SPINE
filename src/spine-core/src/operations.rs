@@ -34,6 +34,13 @@ pub struct Dependencies {
     pub namespace_peers: usize,
     /// Seeds or DNS seeds are configured.
     pub seeds_configured: bool,
+    /// Seeds that answered the bootstrap at join. With `seeds_failed`, the real
+    /// signal for `namespace_seeds_unreachable`: while both are zero (no seed
+    /// was dialed, or the caller does not know) the warning is inferred from
+    /// `seeds_configured` and the peer count instead.
+    pub seeds_reached: u64,
+    /// Seeds that did not answer the bootstrap at join.
+    pub seeds_failed: u64,
 }
 
 /// Capacity-only readiness: no dependency is considered.
@@ -57,8 +64,12 @@ pub fn readiness(
 /// A failing persistence backend or an unreadable resource store makes the node
 /// unready. A namespace node with no peers does not: a first node of a mesh and
 /// a deliberately solitary node have none by design, so that is a warning
-/// (`namespace_seeds_unreachable` when seeds are configured and none answered,
-/// else `namespace_no_peers`).
+/// (`namespace_seeds_unreachable` when seeds were dialed and none answered, else
+/// `namespace_no_peers`). When the bootstrap outcome is known
+/// (`Dependencies::seeds_reached` or `seeds_failed` is above zero) it decides:
+/// no seed answered is `namespace_seeds_unreachable` whether or not peers have
+/// since arrived, and an answering seed with no peers is `namespace_no_peers`.
+/// Without it, configured seeds and no peers is `namespace_seeds_unreachable`.
 pub fn readiness_with(
     draining: bool,
     sessions: usize,
@@ -83,12 +94,20 @@ pub fn readiness_with(
     if deps.storage_unavailable {
         reasons.push("storage_unavailable");
     }
-    if deps.namespace_enabled && deps.namespace_peers == 0 {
-        warnings.push(if deps.seeds_configured {
-            "namespace_seeds_unreachable"
-        } else {
-            "namespace_no_peers"
-        });
+    if deps.namespace_enabled {
+        if deps.seeds_reached > 0 {
+            if deps.namespace_peers == 0 {
+                warnings.push("namespace_no_peers");
+            }
+        } else if deps.seeds_failed > 0 {
+            warnings.push("namespace_seeds_unreachable");
+        } else if deps.namespace_peers == 0 {
+            warnings.push(if deps.seeds_configured {
+                "namespace_seeds_unreachable"
+            } else {
+                "namespace_no_peers"
+            });
+        }
     }
     Readiness {
         ready: reasons.is_empty(),
@@ -111,6 +130,25 @@ pub struct CacheCounts {
     pub negative_hits: u64,
     pub misses: u64,
     pub evictions: u64,
+}
+
+/// What the namespace tasks have done since start: owner renewal outcomes and
+/// the bootstrap at join (the daemon's `NamespaceCounters`, read).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NamespaceCounts {
+    /// Records renewed by the owner renewal task and persisted.
+    pub renewals_renewed: u64,
+    /// Renewal passes that failed to plan, and renewed records that could not
+    /// be persisted.
+    pub renewals_failed: u64,
+    /// Renewed records saved locally that could not be published to the mesh.
+    pub renewals_publish_failed: u64,
+    /// Rotated names renewal declined to sign (the node key is superseded).
+    pub renewals_skipped_rotated: u64,
+    /// Seeds that answered the bootstrap at join.
+    pub seeds_reached: u64,
+    /// Seeds that did not answer the bootstrap at join.
+    pub seeds_failed: u64,
 }
 
 /// What the mesh resolver reports; present only when the namespace is enabled.
@@ -137,6 +175,7 @@ pub struct MetricsSnapshot {
     pub resource_limit_bytes: u64,
     pub records_held: usize,
     pub cache: CacheCounts,
+    pub activity: NamespaceCounts,
     pub mesh: Option<MeshSnapshot>,
 }
 
@@ -365,6 +404,18 @@ pub fn render_metrics(m: &MetricsSnapshot) -> String {
         "Local name cache evictions.",
         m.cache.evictions,
     );
+    counter_family(
+        out,
+        "namespace_owner_renewals_total",
+        "Owner renewal outcomes: records renewed and persisted, renewal failures, renewed records the mesh publication of which failed, and rotated names skipped.",
+        "outcome",
+        &[
+            ("renewed", m.activity.renewals_renewed),
+            ("failed", m.activity.renewals_failed),
+            ("publish_failed", m.activity.renewals_publish_failed),
+            ("skipped_rotated", m.activity.renewals_skipped_rotated),
+        ],
+    );
     gauge(
         out,
         "namespace_enabled",
@@ -487,6 +538,16 @@ pub fn render_metrics(m: &MetricsSnapshot) -> String {
         }
         counter_family(
             out,
+            "namespace_seeds_total",
+            "Seeds dialed at join by outcome.",
+            "outcome",
+            &[
+                ("reached", m.activity.seeds_reached),
+                ("failed", m.activity.seeds_failed),
+            ],
+        );
+        counter_family(
+            out,
             "namespace_records_refused_total",
             "Records refused for succession reasons.",
             "reason",
@@ -570,6 +631,14 @@ mod tests {
                 negative_hits: 2,
                 misses: 3,
                 evictions: 0,
+            },
+            activity: NamespaceCounts {
+                renewals_renewed: 6,
+                renewals_failed: 1,
+                renewals_publish_failed: 2,
+                renewals_skipped_rotated: 3,
+                seeds_reached: 1,
+                seeds_failed: 4,
             },
             mesh,
         }
@@ -658,6 +727,11 @@ mod tests {
             "spine_namespace_records_refused_total{reason=\"need_log\"} 2\n",
             "spine_namespace_records_refused_total{reason=\"succession\"} 3\n",
             "spine_namespace_log_fetches_total{outcome=\"adopted\"} 1\n",
+            "# TYPE spine_namespace_owner_renewals_total counter\nspine_namespace_owner_renewals_total{outcome=\"renewed\"} 6\n",
+            "spine_namespace_owner_renewals_total{outcome=\"publish_failed\"} 2\n",
+            "spine_namespace_owner_renewals_total{outcome=\"skipped_rotated\"} 3\n",
+            "# TYPE spine_namespace_seeds_total counter\nspine_namespace_seeds_total{outcome=\"reached\"} 1\n",
+            "spine_namespace_seeds_total{outcome=\"failed\"} 4\n",
             "# TYPE spine_namespace_log_store_failures_total counter\nspine_namespace_log_store_failures_total 4\n",
             "# TYPE spine_namespace_log_rows_dropped_total counter\nspine_namespace_log_rows_dropped_total 5\n",
         ] {
@@ -666,6 +740,8 @@ mod tests {
         let solo = render_metrics(&snapshot(None));
         assert!(solo.contains("spine_namespace_enabled 0\n"));
         assert!(!solo.contains("spine_namespace_peers"));
+        assert!(!solo.contains("spine_namespace_seeds_total"));
+        assert!(solo.contains("spine_namespace_owner_renewals_total{outcome=\"failed\"} 1\n"));
         // The process-wide registry already exports this gauge.
         assert!(!text.contains("spine_sessions_active"));
     }
@@ -753,6 +829,45 @@ mod tests {
         assert!(joined.ready && joined.warnings.is_empty());
         let disabled = readiness_with(false, 0, 8, conns(0, 4), Dependencies::default());
         assert!(disabled.ready && disabled.warnings.is_empty());
+    }
+
+    fn with_seeds(reached: u64, failed: u64, peers: usize, configured: bool) -> Readiness {
+        readiness_with(
+            false,
+            0,
+            8,
+            conns(0, 4),
+            Dependencies {
+                namespace_enabled: true,
+                namespace_peers: peers,
+                seeds_configured: configured,
+                seeds_reached: reached,
+                seeds_failed: failed,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn the_bootstrap_outcome_decides_the_seed_warning_when_it_is_known() {
+        // No seed answered: unreachable, even once a peer has found the node.
+        for peers in [0, 3] {
+            let r = with_seeds(0, 2, peers, true);
+            assert!(r.ready);
+            assert_eq!(r.warnings, ["namespace_seeds_unreachable"]);
+        }
+        // A seed answered but the node knows no peer: not the seeds' fault.
+        let r = with_seeds(1, 1, 0, true);
+        assert!(r.ready);
+        assert_eq!(r.warnings, ["namespace_no_peers"]);
+        // A seed answered and there are peers: nothing to say.
+        assert!(with_seeds(1, 0, 2, true).warnings.is_empty());
+        // Nothing dialed: the old inference from the peer count stands.
+        assert_eq!(
+            with_seeds(0, 0, 0, true).warnings,
+            ["namespace_seeds_unreachable"]
+        );
+        assert!(with_seeds(0, 0, 1, true).warnings.is_empty());
     }
 
     #[test]

@@ -799,6 +799,7 @@ mod tests {
             resource_limit_bytes: 0,
             records_held: 0,
             cache: crate::operations::CacheCounts::default(),
+            activity: crate::operations::NamespaceCounts::default(),
             mesh: None,
         });
         assert!(metrics.contains("spine_outbound_calls_succeeded_total 1\n"));

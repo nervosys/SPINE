@@ -184,6 +184,8 @@ struct BrowserState {
     /// it holds and cannot look anything up. That is a supported configuration,
     /// not a failure — a node with no seeds has nothing to route through.
     mesh_names: Option<Arc<spine_mesh::naming_mesh::MeshNameResolver>>,
+    /// Owner renewal outcomes and the bootstrap at join, counted.
+    namespace_counters: Arc<namespace::NamespaceCounters>,
 }
 
 impl BrowserState {
@@ -1412,6 +1414,8 @@ async fn dependencies(state: &Arc<BrowserState>) -> spine_core::operations::Depe
         namespace_peers,
         seeds_configured: !state.config.namespace.seeds.is_empty()
             || !state.config.namespace.dns_seeds.is_empty(),
+        seeds_reached: state.namespace_counters.snapshot().seeds_reached,
+        seeds_failed: state.namespace_counters.snapshot().seeds_failed,
     }
 }
 
@@ -1451,6 +1455,7 @@ async fn metrics_snapshot(state: &Arc<BrowserState>) -> spine_core::operations::
             misses: cache.misses,
             evictions: cache.evictions,
         },
+        activity: state.namespace_counters.snapshot(),
         mesh,
     }
 }
@@ -1510,12 +1515,14 @@ async fn main() -> Result<()> {
                 name_backend.clone(),
             )))
         };
+    let namespace_counters = Arc::new(namespace::NamespaceCounters::default());
     let mesh_names = if config.namespace.enabled {
         match namespace::join_with_application(
             &config.namespace,
             &config.server.host,
             application,
             mesh_log_store,
+            namespace_counters.clone(),
         )
         .await
         {
@@ -1549,7 +1556,12 @@ async fn main() -> Result<()> {
             }
         }
     }
-    namespace::spawn_owner_renewal(names.clone(), mesh_names.clone(), &config.namespace)?;
+    namespace::spawn_owner_renewal(
+        names.clone(),
+        mesh_names.clone(),
+        &config.namespace,
+        namespace_counters.clone(),
+    )?;
     let state = Arc::new(BrowserState {
         // A blob named by a record this node currently publishes is never
         // evicted, including after the record is renewed.
@@ -1602,6 +1614,7 @@ async fn main() -> Result<()> {
         config: config.clone(),
         names,
         mesh_names,
+        namespace_counters,
     });
 
     state.load_sessions().context("load retained sessions")?;

@@ -31,6 +31,7 @@
 
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +40,7 @@ use spine_mesh::identity::SigningIdentity;
 use spine_mesh::logbook_store::{LogBookRows, LogBookStore, LogStoreError};
 use spine_mesh::mesh::{MeshConfig, MeshNode};
 use spine_mesh::mesh_tcp::{serve_node_with, EncryptionConfig, Security, TcpNameTransport};
-use spine_mesh::naming_mesh::{MaintenancePolicy, MeshNameResolver};
+use spine_mesh::naming_mesh::{BootstrapReport, MaintenancePolicy, MeshNameResolver};
 use tracing::{info, warn};
 
 use crate::config::NamespaceConfig;
@@ -141,6 +142,50 @@ impl LogBookStore for BackendLogBookStore {
     }
 }
 
+/// What the namespace tasks did, for `/metrics` and `/ready`: the outcomes the
+/// logs already reported, as counters. Created once where the daemon state is
+/// built and shared by the join and the owner renewal task; they only count
+/// from process start.
+#[derive(Debug, Default)]
+pub struct NamespaceCounters {
+    /// Records re-signed and persisted by owner renewal.
+    pub renewals_renewed: AtomicU64,
+    /// Renewal passes that could not plan, and renewed records that could not
+    /// be persisted.
+    pub renewals_failed: AtomicU64,
+    /// Renewed records saved locally whose publication to the mesh failed
+    /// (also counted in `renewals_renewed`).
+    pub renewals_publish_failed: AtomicU64,
+    /// Rotated names renewal declined to sign because the node key is only the
+    /// name's superseded inception key, once per name per pass.
+    pub renewals_skipped_rotated: AtomicU64,
+    /// Seeds that answered the bootstrap at join.
+    pub seeds_reached: AtomicU64,
+    /// Seeds that did not answer the bootstrap at join.
+    pub seeds_failed: AtomicU64,
+}
+
+impl NamespaceCounters {
+    pub fn snapshot(&self) -> spine_core::operations::NamespaceCounts {
+        spine_core::operations::NamespaceCounts {
+            renewals_renewed: self.renewals_renewed.load(Ordering::Relaxed),
+            renewals_failed: self.renewals_failed.load(Ordering::Relaxed),
+            renewals_publish_failed: self.renewals_publish_failed.load(Ordering::Relaxed),
+            renewals_skipped_rotated: self.renewals_skipped_rotated.load(Ordering::Relaxed),
+            seeds_reached: self.seeds_reached.load(Ordering::Relaxed),
+            seeds_failed: self.seeds_failed.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Record what one bootstrap achieved.
+    fn record_bootstrap(&self, report: &BootstrapReport) {
+        self.seeds_reached
+            .fetch_add(report.reached.len() as u64, Ordering::Relaxed);
+        self.seeds_failed
+            .fetch_add(report.failed.len() as u64, Ordering::Relaxed);
+    }
+}
+
 /// Bring this node onto the mesh: identity, listener, then seeds.
 ///
 /// Returns the resolver even when no seed answered — see the module docs on why
@@ -149,11 +194,14 @@ impl LogBookStore for BackendLogBookStore {
 /// With `log_store` the mesh service's succession log book is restored from it
 /// before the listener starts and kept in it afterwards; without it the book is
 /// in memory, as it always was. A store that cannot be read is an error.
+///
+/// The seeds that answered and those that did not are added to `counters`.
 pub async fn join_with_application(
     cfg: &NamespaceConfig,
     host: &str,
     application: Option<Arc<dyn spine_mesh::naming_mesh::MeshApplication>>,
     log_store: Option<Arc<dyn LogBookStore>>,
+    counters: Arc<NamespaceCounters>,
 ) -> Result<Arc<MeshNameResolver>> {
     let seed = load_or_create_key(&cfg.key_path)?;
     let identity = SigningIdentity::from_seed("spine-core", seed);
@@ -212,6 +260,7 @@ pub async fn join_with_application(
             .map_err(|e| anyhow::anyhow!("namespace seed key: {e}"))?;
     }
     let bootstrap = resolver.bootstrap(&seeds).await;
+    counters.record_bootstrap(&bootstrap);
 
     if bootstrap.is_connected() {
         info!(
@@ -409,10 +458,66 @@ pub fn owned_renewals(
     Ok(plan.renewed)
 }
 
+/// One pass of owner renewal: plan, persist what was renewed (up to `budget`
+/// records), publish it to the mesh when there is one. Every outcome is logged
+/// and counted in `counters`.
+async fn renew_pass(
+    names: &spine_name::LocalResolver,
+    mesh: Option<&MeshNameResolver>,
+    signing: &ed25519_dalek::SigningKey,
+    window: u64,
+    budget: usize,
+    counters: &NamespaceCounters,
+) {
+    match plan_owned_renewals(names, signing, names.now(), window) {
+        Ok(plan) => {
+            // Other names still renew; a rotated one is reported every
+            // pass until its owner publishes a record signed by its
+            // current key.
+            for name in &plan.rotated {
+                counters
+                    .renewals_skipped_rotated
+                    .fetch_add(1, Ordering::Relaxed);
+                warn!(error = %rotated_error(name), "owner renewal skipped a rotated name");
+            }
+            for record in plan.renewed.into_iter().take(budget) {
+                if let Err(error) = names.publish(record.clone()) {
+                    counters.renewals_failed.fetch_add(1, Ordering::Relaxed);
+                    warn!(%error, "owner renewal could not be persisted");
+                    continue;
+                }
+                counters.renewals_renewed.fetch_add(1, Ordering::Relaxed);
+                if let Some(mesh) = mesh {
+                    // A rotated name's record goes out with its log.
+                    let log = record
+                        .name
+                        .public_key()
+                        .and_then(|key| names.succession_log(key));
+                    let sent = match log {
+                        Some(log) => mesh.publish_with_log(record, log).await,
+                        None => mesh.publish(record).await,
+                    };
+                    if let Err(error) = sent {
+                        counters
+                            .renewals_publish_failed
+                            .fetch_add(1, Ordering::Relaxed);
+                        warn!(%error, "renewal saved locally but mesh publication failed");
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            counters.renewals_failed.fetch_add(1, Ordering::Relaxed);
+            warn!(%error, "owner renewal failed");
+        }
+    }
+}
+
 pub fn spawn_owner_renewal(
     names: Arc<spine_name::LocalResolver>,
     mesh: Option<Arc<MeshNameResolver>>,
     cfg: &NamespaceConfig,
+    counters: Arc<NamespaceCounters>,
 ) -> Result<()> {
     if !cfg.renew_owned_records {
         return Ok(());
@@ -426,37 +531,7 @@ pub fn spawn_owner_renewal(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             ticker.tick().await;
-            match plan_owned_renewals(&names, &signing, names.now(), window) {
-                Ok(plan) => {
-                    // Other names still renew; a rotated one is reported every
-                    // pass until its owner publishes a record signed by its
-                    // current key.
-                    for name in &plan.rotated {
-                        warn!(error = %rotated_error(name), "owner renewal skipped a rotated name");
-                    }
-                    for record in plan.renewed.into_iter().take(budget) {
-                        if let Err(error) = names.publish(record.clone()) {
-                            warn!(%error, "owner renewal could not be persisted");
-                            continue;
-                        }
-                        if let Some(mesh) = &mesh {
-                            // A rotated name's record goes out with its log.
-                            let log = record
-                                .name
-                                .public_key()
-                                .and_then(|key| names.succession_log(key));
-                            let sent = match log {
-                                Some(log) => mesh.publish_with_log(record, log).await,
-                                None => mesh.publish(record).await,
-                            };
-                            if let Err(error) = sent {
-                                warn!(%error, "renewal saved locally but mesh publication failed");
-                            }
-                        }
-                    }
-                }
-                Err(error) => warn!(%error, "owner renewal failed"),
-            }
+            renew_pass(&names, mesh.as_deref(), &signing, window, budget, &counters).await;
         }
     });
     Ok(())
@@ -623,6 +698,88 @@ mod tests {
             .get(MESH_SUCCESSIONS_NAMESPACE, &inception)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn a_bootstrap_adds_the_seeds_that_answered_and_those_that_did_not() {
+        let counters = NamespaceCounters::default();
+        counters.record_bootstrap(&BootstrapReport {
+            failed: vec![
+                ("a:1".into(), "refused".into()),
+                ("b:2".into(), "timeout".into()),
+            ],
+            ..Default::default()
+        });
+        let snapshot = counters.snapshot();
+        assert_eq!((snapshot.seeds_reached, snapshot.seeds_failed), (0, 2));
+        counters.record_bootstrap(&BootstrapReport::default());
+        let snapshot = counters.snapshot();
+        assert_eq!((snapshot.seeds_reached, snapshot.seeds_failed), (0, 2));
+    }
+
+    #[tokio::test]
+    async fn a_renewal_pass_counts_what_it_renewed_and_what_it_skipped() {
+        use spine_name::{NameRecord, SpineUri, SuccessionLog};
+        let inception = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let current = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let next = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let other = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let names = spine_name::LocalResolver::persistent(
+            || 200,
+            Arc::new(spine_storage::InMemoryBackend::new()),
+        )
+        .unwrap();
+        let counters = NamespaceCounters::default();
+
+        // A name of the node key that is due: renewed, with no mesh to tell.
+        let mut mine = NameRecord::new(SpineUri::did(other.verifying_key().to_bytes()), 1, 100)
+            .unwrap()
+            .with_ttl(50);
+        mine.sign(&other).unwrap();
+        names.publish(mine).unwrap();
+        renew_pass(&names, None, &other, 25, 8, &counters).await;
+        let snapshot = counters.snapshot();
+        assert_eq!(
+            (snapshot.renewals_renewed, snapshot.renewals_failed),
+            (1, 0)
+        );
+        assert_eq!(
+            (
+                snapshot.renewals_publish_failed,
+                snapshot.renewals_skipped_rotated
+            ),
+            (0, 0)
+        );
+
+        // A name of the node's inception key that has rotated away: skipped.
+        let mut rotated =
+            NameRecord::new(SpineUri::did(inception.verifying_key().to_bytes()), 1, 100)
+                .unwrap()
+                .with_ttl(50);
+        rotated.sign(&inception).unwrap();
+        names.publish(rotated).unwrap();
+        let log = SuccessionLog::default()
+            .rotated(
+                &inception.verifying_key().to_bytes(),
+                &inception,
+                &current.verifying_key().to_bytes(),
+                &next.verifying_key().to_bytes(),
+                150,
+            )
+            .unwrap();
+        names.offer_log(log.clone()).unwrap();
+        let state = log.verify(&inception.verifying_key().to_bytes()).unwrap();
+        let mut fresh =
+            NameRecord::new(SpineUri::did(inception.verifying_key().to_bytes()), 2, 160)
+                .unwrap()
+                .with_ttl(50);
+        fresh.sign_current(&current, &state).unwrap();
+        names.publish(fresh).unwrap();
+        renew_pass(&names, None, &inception, 25, 8, &counters).await;
+        let snapshot = counters.snapshot();
+        assert_eq!(snapshot.renewals_skipped_rotated, 1);
+        assert_eq!(snapshot.renewals_renewed, 1, "nothing was signed");
+        assert_eq!(snapshot.renewals_failed, 0);
     }
 
     #[test]
