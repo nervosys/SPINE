@@ -36,7 +36,8 @@ use crate::body::{Reply, WireError, ERR_INVALID_REQUEST, ERR_UNKNOWN_COMMAND};
 use crate::cbor::{self, CborError};
 use crate::connection::{Connection, ConnectionError};
 use crate::frame::{Frame, FrameType, VERSION};
-use crate::hello::{Hello, LocalConfig};
+use crate::hello::{AuthorityMode, Hello, LocalConfig};
+use crate::identify::SigningKey;
 use crate::{BrowserCommand, Message, COMMAND_NAMES};
 
 /// How long the daemon waits for `HELLO` and the SDK for `HELLO_ACK`, unless
@@ -127,7 +128,10 @@ impl RequestError {
 pub const DAEMON_MAX_INFLIGHT: u32 = 8;
 
 /// The server's limits for the daemon: version 1, the 16 MiB maximum frame,
-/// [`DAEMON_MAX_INFLIGHT`] requests in flight, no extensions.
+/// [`DAEMON_MAX_INFLIGHT`] requests in flight, no extensions, authority mode
+/// `off`. The `binding` and the `time` of every acknowledgement are left to
+/// [`crate::hello::negotiate`]: fresh random bytes and the system clock for
+/// each connection. A server whose node enforces authority sets `authority`.
 pub fn local_config() -> LocalConfig {
     LocalConfig {
         versions: vec![u64::from(VERSION)],
@@ -135,6 +139,9 @@ pub fn local_config() -> LocalConfig {
         max_inflight: DAEMON_MAX_INFLIGHT,
         extensions: Vec::new(),
         agent: None,
+        authority: AuthorityMode::Off,
+        binding: None,
+        time: None,
     }
 }
 
@@ -156,18 +163,51 @@ pub async fn client_connect<S>(stream: S) -> anyhow::Result<Connection<S>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    match Connection::client_handshake(stream, client_hello(), DEFAULT_HELLO_DEADLINE).await {
-        Ok(conn) => Ok(conn),
-        Err(ConnectionError::Closed(close)) => Err(anyhow::anyhow!(
-            "server closed the connection during the handshake: {}: {}",
-            close.code,
-            close.message
-        )),
-        Err(ConnectionError::Timeout) => Err(anyhow::anyhow!(
-            "handshake deadline exceeded (no HELLO_ACK)"
-        )),
-        Err(other) => Err(anyhow::anyhow!("handshake failed: {other}")),
+    client_connect_with_identity(stream, None).await
+}
+
+/// Like [`client_connect`]; with `Some(key)` the client then proves that it
+/// holds `key` by sending `IDENTIFY` right after it has read `HELLO_ACK`
+/// (`docs/spec/00-wire.md` 6.6). With `None` the client is anonymous. The
+/// identity grants nothing: a server in this repository answers an identified
+/// client exactly as it answers an anonymous one.
+pub async fn client_connect_with_identity<S>(
+    stream: S,
+    identity: Option<&SigningKey>,
+) -> anyhow::Result<Connection<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut conn =
+        match Connection::client_handshake(stream, client_hello(), DEFAULT_HELLO_DEADLINE).await {
+            Ok(conn) => conn,
+            Err(ConnectionError::Closed(close)) => {
+                return Err(anyhow::anyhow!(
+                    "server closed the connection during the handshake: {}: {}",
+                    close.code,
+                    close.message
+                ))
+            }
+            Err(ConnectionError::Timeout) => {
+                return Err(anyhow::anyhow!(
+                    "handshake deadline exceeded (no HELLO_ACK)"
+                ))
+            }
+            Err(other) => return Err(anyhow::anyhow!("handshake failed: {other}")),
+        };
+    if let Some(key) = identity {
+        match tokio::time::timeout(WRITE_DEADLINE, conn.identify(key)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(anyhow::anyhow!("sending IDENTIFY failed: {e}")),
+            Err(_) => {
+                conn.abandon();
+                return Err(anyhow::anyhow!(
+                    "sending IDENTIFY exceeded the write deadline"
+                ));
+            }
+        }
     }
+    Ok(conn)
 }
 
 /// Decodes `body` into a `T` and requires that `T` encodes back to exactly
@@ -694,6 +734,50 @@ mod tests {
         assert!(matches!(refused, NativeError::Remote { ref code, .. } if code == "rate_limit"));
         drop(conn);
         tokio::time::timeout(LONG, server).await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_identity_is_sent_only_when_a_key_is_given() {
+        let key = SigningKey::from_bytes(&[0x21; 32]);
+        for with_key in [false, true] {
+            let (c, s) = duplex(64 * 1024);
+            let server = tokio::spawn(async move {
+                let mut conn =
+                    Connection::server_handshake(s, &local_config(), DEFAULT_HELLO_DEADLINE)
+                        .await
+                        .unwrap();
+                let frame = conn.recv().await.unwrap().unwrap();
+                let identified = frame.frame_type == FrameType::Identify;
+                let identity = conn.identity();
+                let frame = if identified {
+                    conn.recv().await.unwrap().unwrap()
+                } else {
+                    frame
+                };
+                assert_eq!(frame.frame_type, FrameType::Request);
+                send_ok(&mut conn, frame.request_id, &json!(1))
+                    .await
+                    .unwrap();
+                (identified, identity)
+            });
+            let mut conn = tokio::time::timeout(
+                LONG,
+                client_connect_with_identity(c, with_key.then_some(&key)),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let reply: serde_json::Value =
+                tokio::time::timeout(LONG, call(&mut conn, &BrowserCommand::GetRawHTML))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(reply, json!(1));
+            let (identified, identity) = tokio::time::timeout(LONG, server).await.unwrap().unwrap();
+            assert_eq!(identified, with_key);
+            assert_eq!(identity, with_key.then(|| key.verifying_key().to_bytes()));
+            assert_eq!(conn.identity(), identity);
+        }
     }
 
     #[tokio::test]

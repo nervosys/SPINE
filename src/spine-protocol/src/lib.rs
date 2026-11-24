@@ -7,6 +7,7 @@ pub use spine_cbor as cbor;
 pub mod connection;
 pub mod frame;
 pub mod hello;
+pub mod identify;
 pub mod mcp;
 pub mod native;
 pub mod replay;

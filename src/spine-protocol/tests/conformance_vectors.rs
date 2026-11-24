@@ -15,7 +15,15 @@
 //! * `invalid_frames` and `incomplete_frames`: `decode_frame` fails with the
 //!   named `FrameError` variant and close code;
 //! * `handshakes`: `Hello::from_frame` and `hello::negotiate` give the
-//!   expected `HELLO_ACK` (byte for byte) or the expected `CLOSE` code.
+//!   expected `HELLO_ACK` (byte for byte) or the expected `CLOSE` code;
+//! * `hello_acks`: `HelloAck::from_frame` accepts or refuses each body as
+//!   listed;
+//! * `identify`: `Identify::from_frame` and `Identify::verify` accept the
+//!   proof (and give the listed signed message and signature) or refuse it
+//!   with the listed `CLOSE` code;
+//! * `ed25519_strict`: `verify_strict` gives the listed strict verdict;
+//! * `identify_sessions`: a server `Connection` that receives the listed
+//!   frames after its handshake ends as listed.
 //!
 //! Every check returns a message that names the vector; a vector of a kind
 //! this test does not understand fails with its name instead of panicking.
@@ -23,12 +31,16 @@
 //! matter.
 
 use std::path::Path;
+use std::time::Duration;
 
 use serde_json::Value;
 use spine_protocol::cbor;
+use spine_protocol::connection::Connection;
 use spine_protocol::frame::{self, Frame, FrameError, FrameType, MAX_FRAME, PRE_HELLO_MAX_FRAME};
-use spine_protocol::hello::{self, Close, Hello, HelloAck, LocalConfig};
+use spine_protocol::hello::{self, AuthorityMode, Close, Hello, HelloAck, LocalConfig};
+use spine_protocol::identify::{signed_message, Identify, SigningKey, Transcript};
 use spine_protocol::native;
+use tokio::io::AsyncWriteExt;
 
 const VECTORS: &str = "../../docs/spec/00-wire.vectors.json";
 
@@ -123,6 +135,7 @@ fn frame_type_named(name: &str) -> Result<FrameType, String> {
         "CLOSE" => FrameType::Close,
         "PING" => FrameType::Ping,
         "PONG" => FrameType::Pong,
+        "IDENTIFY" => FrameType::Identify,
         "REQUEST" => FrameType::Request,
         "RESPONSE" => FrameType::Response,
         "STREAM_START" => FrameType::StreamStart,
@@ -256,6 +269,14 @@ fn check_typed(kind: &str, frame: &Frame) -> Result<(), String> {
                 .to_frame()
                 .map_err(|e| format!("HelloAck::to_frame: {e}"))?;
             same_bytes("re-encoded HELLO_ACK body", &again.body, body)
+        }
+        "identify" => {
+            let identify =
+                Identify::from_frame(frame).map_err(|c| format!("Identify::from_frame: {c:?}"))?;
+            let again = identify
+                .to_frame()
+                .map_err(|e| format!("Identify::to_frame: {e}"))?;
+            same_bytes("re-encoded IDENTIFY body", &again.body, body)
         }
         "close" => {
             let close =
@@ -393,6 +414,9 @@ fn local_config(v: &Value) -> Result<LocalConfig, String> {
         max_inflight: uint32(local, "max_inflight")?,
         extensions: texts(local, "extensions")?,
         agent: opt_text(local, "agent")?,
+        authority: authority_named(text(local, "authority")?)?,
+        binding: Some(bytes32(local, "binding")?),
+        time: Some(uint(local, "time")?),
     })
 }
 
@@ -421,6 +445,15 @@ fn check_handshake(v: &Value) -> Result<(), String> {
             }
             if ack.agent != opt_text(want, "agent")? {
                 return Err(format!("agent {:?}", ack.agent));
+            }
+            if full_hex(&ack.binding) != text(want, "binding")? {
+                return Err(format!("binding {}", full_hex(&ack.binding)));
+            }
+            if ack.authority.as_str() != text(want, "authority")? {
+                return Err(format!("authority {:?}", ack.authority));
+            }
+            if ack.time != uint(want, "time")? {
+                return Err(format!("time {}", ack.time));
             }
             let ack_frame = ack
                 .to_frame()
@@ -454,6 +487,179 @@ fn check_handshake(v: &Value) -> Result<(), String> {
                 ));
             }
             Ok(())
+        }
+        (other, _) => Err(format!("unknown expected result {other:?}")),
+    }
+}
+
+fn full_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn bytes32(v: &Value, key: &str) -> Result<[u8; 32], String> {
+    let bytes = unhex(text(v, key)?)?;
+    <[u8; 32]>::try_from(bytes).map_err(|b| format!("field {key:?} has {} bytes, want 32", b.len()))
+}
+
+fn authority_named(name: &str) -> Result<AuthorityMode, String> {
+    match name {
+        "off" => Ok(AuthorityMode::Off),
+        "audit" => Ok(AuthorityMode::Audit),
+        "required" => Ok(AuthorityMode::Required),
+        other => Err(format!("unknown authority mode {other:?}")),
+    }
+}
+
+/// `HELLO_ACK` bodies: accepted ("ok", and re-encoded to the same bytes) or
+/// refused with the named `CLOSE` code.
+fn check_hello_ack(v: &Value) -> Result<(), String> {
+    let body = unhex(text(v, "body_hex")?)?;
+    let frame = Frame {
+        frame_type: FrameType::HelloAck,
+        request_id: 0,
+        body: body.clone(),
+    };
+    let want = text(v, "expect")?;
+    match (want, HelloAck::from_frame(&frame)) {
+        ("ok", Ok(ack)) => {
+            let again = ack
+                .to_frame()
+                .map_err(|e| format!("HelloAck::to_frame: {e}"))?;
+            same_bytes("re-encoded HELLO_ACK body", &again.body, &body)
+        }
+        ("ok", Err(close)) => Err(format!("refused with {}, want it accepted", close.code)),
+        (code, Ok(_)) => Err(format!("accepted, want {code}")),
+        (code, Err(close)) if close.code == code => Ok(()),
+        (code, Err(close)) => Err(format!("refused with {}, want {code}", close.code)),
+    }
+}
+
+/// What a server makes of an `IDENTIFY` body: the `CLOSE` code and reason of
+/// the refusal, or the identity and the decoded body. The deterministic-CBOR
+/// check comes first, as in the connection.
+fn judge_identify(
+    body: &[u8],
+    transcript: &Transcript,
+) -> Result<(Identify, [u8; 32]), (String, String)> {
+    if let Err(e) = cbor::check_deterministic(body) {
+        return Err(("malformed_frame".to_string(), format!("{e:?}")));
+    }
+    let frame = Frame {
+        frame_type: FrameType::Identify,
+        request_id: 0,
+        body: body.to_vec(),
+    };
+    let identify = Identify::from_frame(&frame).map_err(|close| (close.code, close.message))?;
+    let key = identify
+        .verify(transcript)
+        .map_err(|reason| ("protocol_violation".to_string(), reason))?;
+    Ok((identify, key))
+}
+
+fn check_identify(v: &Value) -> Result<(), String> {
+    let hello_body = unhex(text(v, "hello_body")?)?;
+    let ack_body = unhex(text(v, "ack_body")?)?;
+    let body = unhex(text(v, "body_hex")?)?;
+    let transcript = Transcript::of_bodies(&hello_body, &ack_body);
+    let want = text(v, "expect")?;
+    match (want, judge_identify(&body, &transcript)) {
+        ("valid", Ok((identify, key))) => {
+            if full_hex(&key) != text(v, "key")? {
+                return Err(format!("key {}", full_hex(&key)));
+            }
+            let message = signed_message(&transcript, &identify.channel, &identify.key);
+            same_bytes("signed message", &message, &unhex(text(v, "message")?)?)?;
+            same_bytes("signature", &identify.sig, &unhex(text(v, "signature")?)?)?;
+            // Signing again with the test seed gives the same body.
+            let signing = SigningKey::from_bytes(&bytes32(v, "seed")?);
+            let again = Identify::sign(&signing, &transcript)
+                .to_frame()
+                .map_err(|e| format!("Identify::to_frame: {e}"))?;
+            same_bytes("body signed by the seed", &again.body, &body)
+        }
+        ("valid", Err((code, reason))) => Err(format!("refused with {code} ({reason})")),
+        (code, Ok(_)) => Err(format!("accepted, want {code}")),
+        (code, Err((got, _))) if got == code => Ok(()),
+        (code, Err((got, reason))) => Err(format!("refused with {got} ({reason}), want {code}")),
+    }
+}
+
+/// `verify_strict` of the crate in use gives the strict verdict of the vector.
+/// The plain RFC 8032 verdict is the reference implementation's alone.
+fn check_ed25519_strict(v: &Value) -> Result<(), String> {
+    let public = bytes32(v, "public")?;
+    let message = unhex(text(v, "message")?)?;
+    let signature = <[u8; 64]>::try_from(unhex(text(v, "signature")?)?)
+        .map_err(|b| format!("signature has {} bytes, want 64", b.len()))?;
+    let want = get(v, "strict")?
+        .as_bool()
+        .ok_or_else(|| "field \"strict\" is not a boolean".to_string())?;
+    let got = ed25519_dalek::VerifyingKey::from_bytes(&public)
+        .ok()
+        .is_some_and(|key| {
+            key.verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&signature))
+                .is_ok()
+        });
+    if got == want {
+        Ok(())
+    } else {
+        Err(format!("verify_strict gave {got}, want {want}"))
+    }
+}
+
+/// Runs the server side of one `identify_sessions` vector: the handshake,
+/// then the listed frames, then the end of the stream.
+async fn run_session(v: &Value) -> Result<(), String> {
+    let hello_frame = unhex(text(v, "hello_frame")?)?;
+    let local = local_config(v)?;
+    let expect = get(v, "expect")?;
+    let (mut peer, ours) = tokio::io::duplex(1 << 20);
+    peer.write_all(&hello_frame)
+        .await
+        .map_err(|e| format!("writing HELLO: {e}"))?;
+    let mut conn = Connection::server_handshake(ours, &local, Duration::from_secs(10))
+        .await
+        .map_err(|e| format!("handshake: {e}"))?;
+    for frame in list(v, "frames")? {
+        let hex = frame
+            .as_str()
+            .ok_or_else(|| "a frame is not a string".to_string())?;
+        peer.write_all(&unhex(hex)?)
+            .await
+            .map_err(|e| format!("writing a frame: {e}"))?;
+    }
+    peer.shutdown()
+        .await
+        .map_err(|e| format!("shutting down the write side: {e}"))?;
+    let ended = loop {
+        match conn.recv().await {
+            Ok(Some(_)) => {}
+            Ok(None) => break Ok(()),
+            Err(e) => break Err(e.close_code().map(|code| code.as_str())),
+        }
+    };
+    match (text(expect, "result")?, ended) {
+        ("ok", Ok(())) => {
+            let got = conn.identity().map(|key| full_hex(&key));
+            let want = opt_text(expect, "identity")?;
+            if got == want {
+                Ok(())
+            } else {
+                Err(format!("identity {got:?}, want {want:?}"))
+            }
+        }
+        ("ok", Err(code)) => Err(format!("closed with {code:?}, want every frame accepted")),
+        ("close", Ok(())) => Err(format!(
+            "every frame was accepted, want close {}",
+            text(expect, "code")?
+        )),
+        ("close", Err(code)) => {
+            let want = text(expect, "code")?;
+            if code == Some(want) {
+                Ok(())
+            } else {
+                Err(format!("closed with {code:?}, want {want:?}"))
+            }
         }
         (other, _) => Err(format!("unknown expected result {other:?}")),
     }
@@ -518,6 +724,7 @@ fn valid_frames_decode_re_encode_and_read_as_their_type() {
         "CLOSE",
         "PING",
         "PONG",
+        "IDENTIFY",
         "REQUEST",
         "RESPONSE",
         "STREAM_START",
@@ -540,4 +747,49 @@ fn invalid_frames_are_rejected_with_the_named_error_and_close_code() {
 #[test]
 fn handshakes_negotiate_as_listed() {
     run_section(&load(), "handshakes", 30, check_handshake);
+}
+
+#[test]
+fn hello_acks_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "hello_acks", 25, check_hello_ack);
+}
+
+#[test]
+fn identify_proofs_are_accepted_or_refused_as_listed() {
+    run_section(&load(), "identify", 25, check_identify);
+}
+
+#[test]
+fn strict_verification_gives_the_listed_verdicts() {
+    run_section(&load(), "ed25519_strict", 6, check_ed25519_strict);
+}
+
+#[tokio::test]
+async fn identify_sessions_end_as_listed() {
+    let root = load();
+    let vectors = root
+        .get("identify_sessions")
+        .and_then(Value::as_array)
+        .expect("section \"identify_sessions\" is missing from the vector file");
+    assert!(
+        vectors.len() >= 15,
+        "section \"identify_sessions\" has {} vectors, expected at least 15",
+        vectors.len()
+    );
+    let mut failures = Vec::new();
+    for v in vectors {
+        let name = v.get("name").and_then(Value::as_str).unwrap_or("<unnamed>");
+        match tokio::time::timeout(Duration::from_secs(30), run_session(v)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => failures.push(format!("  identify_sessions/{name}: {message}")),
+            Err(_) => failures.push(format!("  identify_sessions/{name}: no end within 30 s")),
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} identify_sessions vectors failed:\n{}",
+        failures.len(),
+        vectors.len(),
+        failures.join("\n")
+    );
 }

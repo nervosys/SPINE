@@ -9,13 +9,73 @@
     "{\"$float\": \"nan\"|\"inf\"|\"-inf\"} is a float JSON cannot write. {\"$map\": [[key, value], ...]} is a map whose keys are not all text.",
     "valid_bodies: deterministic CBOR items a decoder must accept. 'hex' is the exact encoding; 'value' describes it.",
     "invalid_bodies: items a decoder must reject. 'reason' is the Rust cbor::CborError variant name, which is also the rule broken (C.5).",
-    "valid_frames: whole frames. 'type', 'request_id', 'flags' and 'body' (or 'body_hex') describe 'hex'. 'typed' names the body type that decodes it: command, reply, ping, pong, stream, hello, hello_ack, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
+    "valid_frames: whole frames. 'type', 'request_id', 'flags' and 'body' (or 'body_hex') describe 'hex'. 'typed' names the body type that decodes it: command, reply, ping, pong, stream, hello, hello_ack, identify, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
     "A frame with flags 1 has the body u32 uncompressed_len, then a zstd frame. These vectors store the body in a raw-block zstd frame (valid zstd, not smaller). A receiver must decode them to 'body_hex'; they are not byte-for-byte what a compressing sender would emit, so re-encoding is not part of the check.",
     "invalid_frames: whole frames (or the prefix needed to decide) that a receiver using 'max_frame' as the maximum in force must reject with 'error' (the Rust frame::FrameError variant) and 'close_code' (C.7 wire text). 'build' re-derives 'hex'. incomplete_frames: valid prefixes; 'needed' is the least number of further bytes (FrameError::NeedMore).",
     "The order of the stateless frame checks is: length, version, type, flags, request id, then the body (specification section 7.2).",
-    "handshakes: 'hello_frame' is a whole HELLO frame, 'local' the server configuration, 'expect' the outcome of validating the HELLO and negotiating: an 'ack' (with the whole 'ack_frame') or a 'close' with its code and 'supported'. CLOSE 'message' text is not specified and not part of a vector.",
+    "handshakes: 'hello_frame' is a whole HELLO frame, 'local' the server configuration (with the per-connection 'binding' as hex, 'authority' and 'time', which a real server draws fresh and a vector fixes), 'expect' the outcome of validating the HELLO and negotiating: an 'ack' (with the whole 'ack_frame') or a 'close' with its code and 'supported'. CLOSE 'message' text is not specified and not part of a vector.",
+    "hello_acks: HELLO_ACK bodies ('body_hex', described by 'body') that a client accepts ('expect' ok) or refuses with the CLOSE code in 'expect' (section 6.3).",
+    "identify: an IDENTIFY body ('body_hex') judged against the connection whose HELLO and HELLO_ACK bodies are 'hello_body' and 'ack_body'. 'expect' is 'valid' or the CLOSE code. A valid vector also gives the test 'seed' (Ed25519 signatures are deterministic), the proven 'key', the signed 'message' M (section 6.6) and the 'signature'.",
+    "identify_sessions: 'hello_frame' and 'local' make a handshake; the server then receives the 'frames' (hex) in order. 'expect' is {result: ok, identity: hex or null} when all are accepted and the stream then ends, or {result: close, code} at the first one refused.",
+    "ed25519_strict: 'public', 'message' and 'signature' (hex) with the verdict of plain RFC 8032 verification ('plain') and of verify_strict ('strict'); a conforming server uses the strict one (section 6.6).",
     "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
-    "Not covered: connection state (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression."
+    "Not covered: connection state other than the IDENTIFY window (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression."
+  ],
+  "ed25519_strict": [
+    {
+      "message": "7370696e652d776972652073747269637420766572696669636174696f6e",
+      "name": "valid",
+      "note": "an ordinary signature is accepted by both",
+      "plain": true,
+      "public": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "signature": "4e82a2eb90be68b2045686bf330bd7874f862c87437133f8c83d904f070dabfe60c57ca0d011abd186e37cb77eba3ee4ceb8cd599e51de3d478076e614074000",
+      "strict": true
+    },
+    {
+      "message": "7370696e652d776972652073747269637420766572696669636174696f6e21",
+      "name": "wrong_message",
+      "note": "refused by both",
+      "plain": false,
+      "public": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "signature": "4e82a2eb90be68b2045686bf330bd7874f862c87437133f8c83d904f070dabfe60c57ca0d011abd186e37cb77eba3ee4ceb8cd599e51de3d478076e614074000",
+      "strict": false
+    },
+    {
+      "message": "7370696e652d776972652073747269637420766572696669636174696f6e",
+      "name": "bit_flip_in_s",
+      "note": "refused by both",
+      "plain": false,
+      "public": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "signature": "4e82a2eb90be68b2045686bf330bd7874f862c87437133f8c83d904f070dabfe60c57ca0d011abd187e37cb77eba3ee4ceb8cd599e51de3d478076e614074000",
+      "strict": false
+    },
+    {
+      "message": "7370696e652d776972652073747269637420766572696669636174696f6e",
+      "name": "s_plus_group_order",
+      "note": "S is not below the group order: refused by both",
+      "plain": false,
+      "public": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "signature": "4e82a2eb90be68b2045686bf330bd7874f862c87437133f8c83d904f070dabfe4d9972fdea74bd295d80745a5db41df9ceb8cd599e51de3d478076e614074010",
+      "strict": false
+    },
+    {
+      "message": "7370696e652d776972652073747269637420766572696669636174696f6e",
+      "name": "small_order_key_identity",
+      "note": "R = identity, S = 0 and the identity point as key: RFC 8032 verification accepts, verify_strict refuses a small-order key",
+      "plain": true,
+      "public": "0100000000000000000000000000000000000000000000000000000000000000",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "strict": false
+    },
+    {
+      "message": "7370696e652d776972652073747269637420766572696669636174696f6e",
+      "name": "small_order_r",
+      "note": "a real key with R = identity and S = h*a: RFC 8032 verification accepts, verify_strict refuses a small-order R",
+      "plain": true,
+      "public": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000008712090a3df08842e0b7a7a9bdf761ccf8ab1e44b0bee5f9d0030894e7d82e0e",
+      "strict": false
+    }
   ],
   "format": "spine-wire-vectors",
   "handshakes": [
@@ -23,12 +83,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -46,9 +109,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -59,12 +125,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 2
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e02696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0269617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000340101000000000000000000a36876657273696f6e7383010203696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -84,9 +153,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1,
           2
@@ -98,12 +170,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 5
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e05696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0569617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000340101000000000000000000a36876657273696f6e7383010205696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -123,9 +198,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           5,
           1,
@@ -138,12 +216,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 2
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e02696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0269617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000340101000000000000000000a36876657273696f6e7383020709696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -163,9 +244,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1,
           2,
@@ -199,9 +283,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1,
           2
@@ -232,9 +319,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -246,12 +336,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "0000003b0101000000000000000000a36876657273696f6e7382011bffffffffffffffff696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -272,9 +365,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -306,9 +402,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           4,
           2,
@@ -322,12 +421,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 65536,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a000100006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a000100006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a000100006a657874656e73696f6e7380",
@@ -345,9 +447,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -358,12 +463,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 1024,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003c0102000000000000000000a46776657273696f6e01696d61785f6672616d651904006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "0000007e0102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651904006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000300101000000000000000000a36876657273696f6e738101696d61785f6672616d651904006a657874656e73696f6e7380",
@@ -381,9 +489,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -394,12 +505,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 65536,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a000100006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a000100006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -417,9 +531,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 65536,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -430,12 +547,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 1024,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003c0102000000000000000000a46776657273696f6e01696d61785f6672616d651904006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "0000007e0102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651904006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000300101000000000000000000a36876657273696f6e738101696d61785f6672616d651910006a657874656e73696f6e7380",
@@ -453,9 +573,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 100,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -467,12 +590,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -490,9 +616,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 4294967295,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -503,12 +632,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 4096,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003c0102000000000000000000a46776657273696f6e01696d61785f6672616d651910006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "0000007e0102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000300101000000000000000000a36876657273696f6e738101696d61785f6672616d651910006a657874656e73696f6e7380",
@@ -526,9 +658,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 4096,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -539,12 +674,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 8,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -562,9 +700,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 8,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -575,12 +716,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -598,9 +742,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 0,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -611,12 +758,15 @@
       "expect": {
         "ack": {
           "agent": "spined/0",
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000004d0102000000000000000000a5656167656e74687370696e65642f306776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "0000008f0102000000000000000000a86474696d651a6553f100656167656e74687370696e65642f306762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000410101000000000000000000a4656167656e7468636c69656e742f316876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -635,9 +785,12 @@
       },
       "local": {
         "agent": "spined/0",
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -648,12 +801,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000410101000000000000000000a4656167656e7468636c69656e742f316876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -672,9 +828,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -685,12 +844,185 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "audit",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000820102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479656175646974696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "result": "ack"
+      },
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "authority": "audit",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "authority_audit_reported",
+      "note": "the server reports its authority mode in HELLO_ACK (section 6.3)"
+    },
+    {
+      "expect": {
+        "ack": {
+          "agent": null,
+          "authority": "required",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+          "extensions": [],
+          "max_frame": 16777216,
+          "max_inflight": 1,
+          "time": 1700000000,
+          "version": 1
+        },
+        "ack_frame": "000000850102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479687265717569726564696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "result": "ack"
+      },
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "authority": "required",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "authority_required_reported"
+    },
+    {
+      "expect": {
+        "ack": {
+          "agent": null,
+          "authority": "off",
+          "binding": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+          "extensions": [],
+          "max_frame": 16777216,
+          "max_inflight": 1,
+          "time": 0,
+          "version": 1
+        },
+        "ack_frame": "0000007c0102000000000000000000a76474696d65006762696e64696e675820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "result": "ack"
+      },
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "time": 0,
+        "versions": [
+          1
+        ]
+      },
+      "name": "binding_and_time_are_the_servers",
+      "note": "the client's HELLO has no say in the binding or the time (section 6.3)"
+    },
+    {
+      "expect": {
+        "ack": {
+          "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+          "extensions": [],
+          "max_frame": 16777216,
+          "max_inflight": 1,
+          "time": 18446744073709551615,
+          "version": 1
+        },
+        "ack_frame": "000000840102000000000000000000a76474696d651bffffffffffffffff6762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "result": "ack"
+      },
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "hello_spec": {
+        "body": {
+          "extensions": [],
+          "max_frame": 16777216,
+          "versions": [
+            1
+          ]
+        },
+        "flags": 0,
+        "request_id": 0,
+        "type": "HELLO"
+      },
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "time": 18446744073709551615,
+        "versions": [
+          1
+        ]
+      },
+      "name": "time_u64_max"
+    },
+    {
+      "expect": {
+        "ack": {
+          "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+          "extensions": [],
+          "max_frame": 16777216,
+          "max_inflight": 1,
+          "time": 1700000000,
+          "version": 1
+        },
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000ba0101000000000000000000a4656167656e74788061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -709,9 +1041,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -722,12 +1057,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000ba0101000000000000000000a4656167656e747880c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a96876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -746,9 +1084,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -760,12 +1101,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
@@ -783,6 +1127,8 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [
           "x/a/1",
           "x/b/1",
@@ -790,6 +1136,7 @@
         ],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -800,12 +1147,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000440101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738365782f612f3165782f622f3165782f632f31",
@@ -827,9 +1177,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -840,6 +1193,8 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [
             "x/a/1",
             "x/b/1",
@@ -847,9 +1202,10 @@
           ],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "000000500102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e738365782f612f3165782f622f3165782f632f316c6d61785f696e666c6967687401",
+        "ack_frame": "000000920102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e738365782f612f3165782f622f3165782f632f316c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000440101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738365782f612f3165782f622f3165782f632f31",
@@ -871,6 +1227,8 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [
           "x/a/1",
           "x/b/1",
@@ -878,6 +1236,7 @@
         ],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -888,6 +1247,8 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [
             "x/c/1",
             "x/a/1",
@@ -895,9 +1256,10 @@
           ],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "000000500102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e738365782f632f3165782f612f3165782f622f316c6d61785f696e666c6967687401",
+        "ack_frame": "000000920102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e738365782f632f3165782f612f3165782f622f316c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "0000004a0101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738465782f632f3165782f7a2f3165782f612f3165782f622f31",
@@ -920,6 +1282,8 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [
           "x/a/1",
           "x/b/1",
@@ -927,6 +1291,7 @@
         ],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -938,15 +1303,18 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [
             "x/b/1",
             "x/a/1"
           ],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000004a0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e738265782f622f3165782f612f316c6d61785f696e666c6967687401",
+        "ack_frame": "0000008c0102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e738265782f622f3165782f612f316c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "0000003e0101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738265782f622f3165782f612f31",
@@ -967,12 +1335,15 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [
           "x/a/1",
           "x/b/1"
         ],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -984,14 +1355,17 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
           ],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "000000c00102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e7381788061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616c6d61785f696e666c6967687401",
+        "ack_frame": "000001020102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e7381788061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000b40101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738178806161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
@@ -1011,11 +1385,14 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [
           "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         ],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1026,12 +1403,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "000000380101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738165582f412f31",
@@ -1051,11 +1431,14 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [
           "x/a/1"
         ],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1066,12 +1449,15 @@
       "expect": {
         "ack": {
           "agent": null,
+          "authority": "off",
+          "binding": "4242424242424242424242424242424242424242424242424242424242424242",
           "extensions": [],
           "max_frame": 16777216,
           "max_inflight": 1,
+          "time": 1700000000,
           "version": 1
         },
-        "ack_frame": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+        "ack_frame": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
         "result": "ack"
       },
       "hello_frame": "0000004c0101000000000000000000a56876657273696f6e7381016961615f667574757265a1616b8101696d61785f6672616d651a01000000697a7a5f667574757265016a657874656e73696f6e7380",
@@ -1095,9 +1481,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1123,9 +1512,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1155,9 +1547,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1187,9 +1582,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1218,9 +1616,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1249,9 +1650,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1280,9 +1684,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1311,9 +1718,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1342,9 +1752,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1373,9 +1786,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1407,9 +1823,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1440,9 +1859,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1473,9 +1895,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1505,9 +1930,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1537,9 +1965,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1569,9 +2000,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1599,9 +2033,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1627,9 +2064,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1658,9 +2098,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1691,9 +2134,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1718,9 +2164,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1743,9 +2192,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1768,9 +2220,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1793,9 +2248,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1818,9 +2276,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1843,9 +2304,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1868,9 +2332,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1893,9 +2360,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1918,9 +2388,12 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
@@ -1943,15 +2416,1592 @@
       },
       "local": {
         "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "versions": [
           1
         ]
       },
       "name": "invalid_frame_type_is_ping",
       "note": "a frame other than HELLO where HELLO is required: protocol_violation (section 7.3)"
+    }
+  ],
+  "hello_acks": [
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_off"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "audit",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479656175646974696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_audit",
+      "note": "all three texts are valid on the wire (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "required",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479687265717569726564696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_required"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 0,
+        "version": 1
+      },
+      "body_hex": "a86474696d6500656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_time_zero"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": {
+          "$int": "18446744073709551615"
+        },
+        "version": 1
+      },
+      "body_hex": "a86474696d651bffffffffffffffff656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_time_u64_max"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582000000000000000000000000000000000000000000000000000000000000000006776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_binding_all_zero",
+      "note": "a client cannot tell a random binding from a constant one"
+    },
+    {
+      "body": {
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "ok",
+      "name": "valid_without_agent"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a76474696d651a6553f100656167656e74657372762f316776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_missing_binding",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a76474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e01696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_missing_authority",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "version": 1
+      },
+      "body_hex": "a7656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_missing_time",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": ""
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67406776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_binding_empty",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "00000000000000000000000000000000000000000000000000000000000000"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67581f000000000000000000000000000000000000000000000000000000000000006776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_binding_31_bytes",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "000000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e6758210000000000000000000000000000000000000000000000000000000000000000006776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_binding_33_bytes",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67782062626262626262626262626262626262626262626262626262626262626262626776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_binding_is_text",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67982000000000000000000000000000000000000000000000000000000000000000006776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_binding_is_32_ints",
+      "note": "a byte string is never an array of integers (section 5 rule 7)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": null,
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67f66776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_binding_is_null",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "maybe",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479656d61796265696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_maybe",
+      "note": "the three texts are lower case and exact (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "Off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479634f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_capitalised",
+      "note": "the three texts are lower case and exact (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "REQUIRED",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479685245515549524544696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_upper_case",
+      "note": "the three texts are lower case and exact (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f7269747960696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_empty",
+      "note": "the three texts are lower case and exact (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "audit ",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f7269747966617564697420696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_padded",
+      "note": "the three texts are lower case and exact (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": 0,
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f7269747900696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_is_int",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": null,
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1700000000,
+        "version": 1
+      },
+      "body_hex": "a86474696d651a6553f100656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479f6696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_authority_is_null",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": "1700000000",
+        "version": 1
+      },
+      "body_hex": "a86474696d656a31373030303030303030656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_time_is_text",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": -1,
+        "version": 1
+      },
+      "body_hex": "a86474696d6520656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_time_negative",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": 1.5,
+        "version": 1
+      },
+      "body_hex": "a86474696d65f93e00656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_time_is_float",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    },
+    {
+      "body": {
+        "agent": "srv/1",
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 4096,
+        "max_inflight": 8,
+        "time": null,
+        "version": 1
+      },
+      "body_hex": "a86474696d65f6656167656e74657372762f316762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651910006a657874656e73696f6e738165782f612f316c6d61785f696e666c6967687408",
+      "expect": "protocol_violation",
+      "name": "invalid_time_is_null",
+      "note": "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    }
+  ],
+  "identify": [
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "valid",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "message": "7370696e652d776972652d6964656e746966792d763100921b86b5cc93e222dc72687ae6396ca33b2aa3ef30259f105b98fc0e83646c67a05caff70c310933a0da64936bd32d15ea0ab1d3578cafd9e0bf8fd97d16828e00d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "name": "valid_empty_channel",
+      "note": "the body is 118 bytes and the frame 133 (section 6.6); the signature is deterministic",
+      "seed": "1111111111111111111111111111111111111111111111111111111111111111",
+      "signature": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582043434343434343434343434343434343434343434343434343434343434343436776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "d5de67b8c26ee9b03281a7884c089f5edcfbc32080d218e45b43e5b7082e5281f5e7e4ac61111eb0312fd61574e9426cca8d9e1ec180317adf13943c990a9a03"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840d5de67b8c26ee9b03281a7884c089f5edcfbc32080d218e45b43e5b7082e5281f5e7e4ac61111eb0312fd61574e9426cca8d9e1ec180317adf13943c990a9a03676368616e6e656c40",
+      "expect": "valid",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "message": "7370696e652d776972652d6964656e746966792d763100921b86b5cc93e222dc72687ae6396ca33b2aa3ef30259f105b98fc0e83646c677ba59f1df343c985b290e8f0c39dbb086e37ea8f41ec92165a30d17d14c6cf0400d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "name": "valid_over_another_acknowledgement",
+      "note": "the same key over an acknowledgement with another binding signs another message",
+      "seed": "1111111111111111111111111111111111111111111111111111111111111111",
+      "signature": "d5de67b8c26ee9b03281a7884c089f5edcfbc32080d218e45b43e5b7082e5281f5e7e4ac61111eb0312fd61574e9426cca8d9e1ec180317adf13943c990a9a03"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "d5de67b8c26ee9b03281a7884c089f5edcfbc32080d218e45b43e5b7082e5281f5e7e4ac61111eb0312fd61574e9426cca8d9e1ec180317adf13943c990a9a03"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840d5de67b8c26ee9b03281a7884c089f5edcfbc32080d218e45b43e5b7082e5281f5e7e4ac61111eb0312fd61574e9426cca8d9e1ec180317adf13943c990a9a03676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_wrong_binding",
+      "note": "signed over an acknowledgement with another binding: M differs (section 6.6)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "fc1c53a07ec6e39adfbf3a4eee1ce685097cc9536d4036257aedaca784181f2384885c7e60d45785a320dc7474403402502d9084c8997ba0cd3d0a5476b8f00a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840fc1c53a07ec6e39adfbf3a4eee1ce685097cc9536d4036257aedaca784181f2384885c7e60d45785a320dc7474403402502d9084c8997ba0cd3d0a5476b8f00a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_wrong_hello",
+      "note": "signed over another HELLO body"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f7bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f7bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_signature_bit_flip"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820204040e364c10f2bec9c1fe500a1cd4c247c89d650a01ed7e82caba867877c21637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_other_key_with_this_signature",
+      "note": "the signature covers the key (section 6.6)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "58e49811711df85ab65c7a1f6500842b71c503f7aedaab0d22b9ea370efdd7627803a40eec9d2fda2b13213725e6f1c682054b4df67d81c386f5b8baa5b6bb03"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873763736967584058e49811711df85ab65c7a1f6500842b71c503f7aedaab0d22b9ea370efdd7627803a40eec9d2fda2b13213725e6f1c682054b4df67d81c386f5b8baa5b6bb03676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_signature_by_another_key"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": "01"
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "519140b7b9a2f2ab5b0530743423c764a2d842e620c46da6013a54a7b119794bd3dfcdd32fe36286638faab48a93f811ab2386ff0ade410d00729630d3e08a0d"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840519140b7b9a2f2ab5b0530743423c764a2d842e620c46da6013a54a7b119794bd3dfcdd32fe36286638faab48a93f811ab2386ff0ade410d00729630d3e08a0d676368616e6e656c4101",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_channel_1_bytes_correctly_signed",
+      "note": "a server refuses a non-empty channel even when the signature covers it (section 6.6)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "63539db946a6e8fddd6f44c6119b6410d4ff134d96668cab06cfbc9ea89acdebc48cbc287f9b618a04ffa1e948de61ca489a4425f664ded8ce258c8616566001"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873763736967584063539db946a6e8fddd6f44c6119b6410d4ff134d96668cab06cfbc9ea89acdebc48cbc287f9b618a04ffa1e948de61ca489a4425f664ded8ce258c8616566001676368616e6e656c58200102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_channel_32_bytes_correctly_signed",
+      "note": "a server refuses a non-empty channel even when the signature covers it (section 6.6)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c97787"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b6579581fd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c97787637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_key_31_bytes"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873700"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795821d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873700637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_key_33_bytes"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca4893"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873763736967583ff6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca4893676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_sig_63_bytes"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a00"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675841f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a00676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_sig_65_bytes"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b657978206b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_key_is_text"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": "",
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c60",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_channel_is_text"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c98200000000000000000000000000000000000000000000000000000000000000000",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_channel_is_32_ints",
+      "note": "a byte string is never an array of integers (section 5 rule 7)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": [
+          208,
+          74,
+          178,
+          50,
+          116,
+          43,
+          180,
+          171,
+          58,
+          19,
+          104,
+          189,
+          70,
+          21,
+          228,
+          230,
+          208,
+          34,
+          74,
+          183,
+          26,
+          1,
+          107,
+          175,
+          133,
+          32,
+          163,
+          50,
+          201,
+          119,
+          135,
+          55
+        ],
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b6579982018d0184a18b218321874182b18b418ab183a13186818bd18461518e418e618d01822184a18b7181a01186b18af1885182018a3183218c9187718871837637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_key_is_32_ints"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a2637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_missing_key"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        }
+      },
+      "body_hex": "a2636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_missing_sig"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a2636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_missing_channel"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "extra": 1,
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a4636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a65657874726101676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_unknown_key",
+      "note": "IDENTIFY is a closed struct (section 5 rule 8)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": [
+        {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        },
+        {
+          "$bytes": ""
+        }
+      ],
+      "body_hex": "835820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c97787375840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_body_is_array"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": null,
+      "body_hex": "f6",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_body_is_null"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {},
+      "body_hex": "a0",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_body_is_empty_map"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": null,
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656cf6",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_null_channel"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body_hex": "a3637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737676368616e6e656c40",
+      "expect": "malformed_frame",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_keys_not_sorted",
+      "note": "a body that is not deterministic CBOR is malformed_frame whatever its type (section 7.2)"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c4000",
+      "expect": "malformed_frame",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_trailing_byte"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+        },
+        "sig": {
+          "$bytes": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
+      "body_hex": "a3636b65795820010000000000000000000000000000000000000000000000000000000000000063736967584001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_small_order_key",
+      "note": "the identity point as key with R = identity and S = 0 verifies under plain RFC 8032 and is refused by verify_strict"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "01000000000000000000000000000000000000000000000000000000000000007daab70f53e7261adf9863a5b47d2c457c0f188e8b41362f3a2c1a590df02e01"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873763736967584001000000000000000000000000000000000000000000000000000000000000007daab70f53e7261adf9863a5b47d2c457c0f188e8b41362f3a2c1a590df02e01676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_small_order_r",
+      "note": "R is the identity point and S = h*a: plain verification accepts it, verify_strict refuses a small-order R"
+    },
+    {
+      "ack_body": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb6342064083896635da55216fa98f6181b0aefacb88a49c13efc18667c882d98eb1ca48931a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb6342064083896635da55216fa98f6181b0aefacb88a49c13efc18667c882d98eb1ca48931a676368616e6e656c40",
+      "expect": "protocol_violation",
+      "hello_body": "a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "name": "invalid_non_canonical_s",
+      "note": "S + L: S is not below the group order"
+    }
+  ],
+  "identify_sessions": [
+    {
+      "expect": {
+        "identity": null,
+        "result": "ok"
+      },
+      "frames": [
+        "000000120110000000000000000001666765745f7572"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "no_identify_is_anonymous",
+      "note": "a client that sends no IDENTIFY is anonymous"
+    },
+    {
+      "expect": {
+        "identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "result": "ok"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_alone"
+    },
+    {
+      "expect": {
+        "identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "result": "ok"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40",
+        "000000120110000000000000000001666765745f7572"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_then_request"
+    },
+    {
+      "expect": {
+        "identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "result": "ok"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40",
+        "000000120110000000000000000001666765745f7572",
+        "000000120110000000000000000002666765745f7572",
+        "000000120110000000000000000003666765745f7572"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_pipelined_with_three_requests"
+    },
+    {
+      "expect": {
+        "identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "result": "ok"
+      },
+      "frames": [
+        "0000000c010400000000000000000501",
+        "0000000c010500000000000000000602",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40",
+        "000000120110000000000000000001666765745f7572"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "ping_and_pong_do_not_close_the_window",
+      "note": "a PING or PONG does not close the window (section 6.6)"
+    },
+    {
+      "expect": {
+        "identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+        "result": "ok"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40",
+        "0000000c010400000000000000000501",
+        "000000120110000000000000000001666765745f7572"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_then_ping_then_request"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "second_identify",
+      "note": "an IDENTIFY is accepted at most once"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000120110000000000000000001666765745f7572",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_after_request"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000120110000000000000000001666765745f7572",
+        "0000000c010400000000000000000501",
+        "0000000c010500000000000000000602",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_after_request_ping_and_pong"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "0000000c0123000000000000000063a0",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_after_stream_cancel",
+      "note": "a STREAM_CANCEL for an id that is not in flight is ignored but closes the window"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "0000000f0180000000000000000000830001f6",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840ddeae340c9a7bfce76d01c104fcaf309df6fee54d1fe29780f58cb2e302c79c22e78d021cd4ceef976fd349ef1f32735c86ea93010c0deff033437654220a802676368616e6e656c40"
+      ],
+      "hello_frame": "000000380101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e738165782f612f31",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [
+          "x/a/1"
+        ],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_after_ext",
+      "note": "an EXT frame closes the window"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000120110000000000000000001666765745f7572",
+        "000000120110000000000000000002666765745f7572",
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840d5e879703f4561537627b5906e4188275f966704fa5898ac22a7a5922dff521bbde2479e8525d69d99b1d82a7fdd374c8908086c3ca36b393166f3dc7a9d1b07676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 1,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_after_a_request_refused_as_overloaded",
+      "note": "a request that arrives at max_inflight is answered overloaded and still closes the window"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873763736967584000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "bad_signature"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873763736967584023f7b32ae2163ae3a7c9cd81bcdeb063557254898998cd61531c6c85b531e0122515873a2e6cdfee1ed7429af7fcd92db4e639f203961b39f905b1f6c72b7f00676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "proof_for_another_binding"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000820106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c97787376373696758403286ff49ff1c9c868905cf3a23198a008a9b0257907cd9c746b137966c15bab15801edc6756c4cfb3d90a4afbf8c8f6cc2df067d712254b320566dc6cc0a9f01676368616e6e656c4101"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "non_empty_channel"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000810106000000000000000005a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840dca11bb0ece2e97d2edaa869e65f9827b522e85f3346ae1de61b4be8a78fca5a2cb8a694c1c16d02d694ea6b74843523b6cf6c241939c8c69b3a53aace80210d676368616e6e656c40"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_with_nonzero_request_id",
+      "note": "IDENTIFY carries request id 0: a frame-level protocol_violation (section 3)"
+    },
+    {
+      "expect": {
+        "code": "malformed_frame",
+        "result": "close"
+      },
+      "frames": [
+        "0000000d0106000000000000000000a000"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "identify_body_not_deterministic",
+      "note": "a body that is not deterministic CBOR is malformed_frame (section 7.2)"
+    },
+    {
+      "expect": {
+        "code": "protocol_violation",
+        "result": "close"
+      },
+      "frames": [
+        "000000100111000000000000000001a1626f6b01"
+      ],
+      "hello_frame": "000000320101000000000000000000a36876657273696f6e738101696d61785f6672616d651a010000006a657874656e73696f6e7380",
+      "local": {
+        "agent": null,
+        "authority": "off",
+        "binding": "4242424242424242424242424242424242424242424242424242424242424242",
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 4,
+        "time": 1700000000,
+        "versions": [
+          1
+        ]
+      },
+      "name": "response_from_the_client_is_a_violation",
+      "note": "direction rule of section 8.2, as before"
     }
   ],
   "incomplete_frames": [
@@ -2758,14 +4808,14 @@
         "flags": 0,
         "length": null,
         "request_id": 1,
-        "type": 6,
+        "type": 7,
         "version": 1
       },
       "close_code": "unknown_frame_type",
       "error": "UnknownFrameType",
-      "hex": "0000000c010600000000000000000100",
+      "hex": "0000000c010700000000000000000100",
       "max_frame": 16777216,
-      "name": "type_0x06"
+      "name": "type_0x07"
     },
     {
       "build": {
@@ -3070,6 +5120,40 @@
       "hex": "0000000c010300000000000000000100",
       "max_frame": 16777216,
       "name": "close_with_nonzero_id"
+    },
+    {
+      "build": {
+        "body_hex": "00",
+        "cut": null,
+        "flags": 0,
+        "length": null,
+        "request_id": 1,
+        "type": 6,
+        "version": 1
+      },
+      "close_code": "protocol_violation",
+      "error": "BadRequestId",
+      "hex": "0000000c010600000000000000000100",
+      "max_frame": 16777216,
+      "name": "identify_with_nonzero_id"
+    },
+    {
+      "build": {
+        "body_hex": "00",
+        "cut": null,
+        "flags": 0,
+        "length": null,
+        "request_id": {
+          "$int": "18446744073709551615"
+        },
+        "type": 6,
+        "version": 1
+      },
+      "close_code": "protocol_violation",
+      "error": "BadRequestId",
+      "hex": "0000000c010600ffffffffffffffff00",
+      "max_frame": 16777216,
+      "name": "identify_with_max_id"
     },
     {
       "build": {
@@ -7057,14 +9141,19 @@
     },
     {
       "body": {
+        "authority": "off",
+        "binding": {
+          "$bytes": "4242424242424242424242424242424242424242424242424242424242424242"
+        },
         "extensions": [],
         "max_frame": 16777216,
         "max_inflight": 1,
+        "time": 1700000000,
         "version": 1
       },
-      "body_hex": "a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+      "body_hex": "a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
       "flags": 0,
-      "hex": "0000003e0102000000000000000000a46776657273696f6e01696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
+      "hex": "000000800102000000000000000000a76474696d651a6553f1006762696e64696e67582042424242424242424242424242424242424242424242424242424242424242426776657273696f6e0169617574686f72697479636f6666696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687401",
       "name": "hello_ack_minimal",
       "request_id": 0,
       "type": "HELLO_ACK",
@@ -7074,23 +9163,71 @@
     {
       "body": {
         "agent": "spined/0",
+        "authority": "required",
+        "binding": {
+          "$bytes": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+        },
         "extensions": [
           "b/two/1",
           "a/one/1"
         ],
         "max_frame": 65536,
         "max_inflight": 8,
+        "time": 1700000123,
         "version": 1
       },
-      "body_hex": "a5656167656e74687370696e65642f306776657273696f6e01696d61785f6672616d651a000100006a657874656e73696f6e738267622f74776f2f3167612f6f6e652f316c6d61785f696e666c6967687408",
+      "body_hex": "a86474696d651a6553f17b656167656e74687370696e65642f306762696e64696e675820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6776657273696f6e0169617574686f72697479687265717569726564696d61785f6672616d651a000100006a657874656e73696f6e738267622f74776f2f3167612f6f6e652f316c6d61785f696e666c6967687408",
       "flags": 0,
-      "hex": "0000005d0102000000000000000000a5656167656e74687370696e65642f306776657273696f6e01696d61785f6672616d651a000100006a657874656e73696f6e738267622f74776f2f3167612f6f6e652f316c6d61785f696e666c6967687408",
+      "hex": "000000a40102000000000000000000a86474696d651a6553f17b656167656e74687370696e65642f306762696e64696e675820000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f6776657273696f6e0169617574686f72697479687265717569726564696d61785f6672616d651a000100006a657874656e73696f6e738267622f74776f2f3167612f6f6e652f316c6d61785f696e666c6967687408",
       "name": "hello_ack_extensions_and_agent",
       "note": "the order of extensions fixes the extension index (sections 6.4 and 11)",
       "request_id": 0,
       "type": "HELLO_ACK",
       "type_code": 2,
       "typed": "hello_ack"
+    },
+    {
+      "body": {
+        "authority": "audit",
+        "binding": {
+          "$bytes": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "extensions": [],
+        "max_frame": 16777216,
+        "max_inflight": 8,
+        "time": 0,
+        "version": 1
+      },
+      "body_hex": "a76474696d65006762696e64696e675820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa6776657273696f6e0169617574686f72697479656175646974696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "flags": 0,
+      "hex": "0000007e0102000000000000000000a76474696d65006762696e64696e675820aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa6776657273696f6e0169617574686f72697479656175646974696d61785f6672616d651a010000006a657874656e73696f6e73806c6d61785f696e666c6967687408",
+      "name": "hello_ack_authority_audit",
+      "request_id": 0,
+      "type": "HELLO_ACK",
+      "type_code": 2,
+      "typed": "hello_ack"
+    },
+    {
+      "body": {
+        "channel": {
+          "$bytes": ""
+        },
+        "key": {
+          "$bytes": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+        },
+        "sig": {
+          "$bytes": "f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a"
+        }
+      },
+      "body_hex": "a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "flags": 0,
+      "hex": "000000810106000000000000000000a3636b65795820d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737637369675840f6bcf1e8773aefe43b7140da5b71e4d335fdd013b78c4216f133fb63420640839c923f7d3bbe5c51b9c4890dd000ed73a49c13efc18667c882d98eb1ca48930a676368616e6e656c40",
+      "name": "identify_empty_channel",
+      "note": "a 118-byte body and a 133-byte frame (section 6.6)",
+      "request_id": 0,
+      "type": "IDENTIFY",
+      "type_code": 6,
+      "typed": "identify"
     },
     {
       "body": {

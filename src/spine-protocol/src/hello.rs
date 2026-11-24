@@ -18,9 +18,16 @@
 //!
 //! `HELLO` and `HELLO_ACK` are open: unknown keys are ignored (C.5 rule 9).
 //! `CLOSE` is closed: an unknown key is a schema error (C.5 rule 8).
+//!
+//! `HELLO_ACK` carries three keys every peer must send and require
+//! (`docs/spec/00-wire.md` 6.3): `binding`, a per-connection random value the
+//! server chooses (6.6), `authority`, the node's [`AuthorityMode`], and
+//! `time`, the server's clock.
 
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 use crate::cbor::{self, CborError};
@@ -117,7 +124,7 @@ impl Close {
 }
 
 /// Checks the frame type and decodes the body.
-fn decode_body<T: serde::de::DeserializeOwned>(
+pub(crate) fn decode_body<T: serde::de::DeserializeOwned>(
     frame: &Frame,
     expected: FrameType,
 ) -> Result<T, Close> {
@@ -275,11 +282,50 @@ pub struct HelloAck {
         skip_serializing_if = "Option::is_none"
     )]
     pub agent: Option<String>,
+    /// A value the server chose for this connection from a cryptographic
+    /// random source (6.6). Exactly 32 bytes.
+    #[serde(with = "crate::wirefmt::byte_array")]
+    pub binding: [u8; 32],
+    /// The node's authority mode (6.3).
+    pub authority: AuthorityMode,
+    /// The server's clock when it built the acknowledgement, Unix seconds.
+    /// Not authenticated (6.6).
+    pub time: u64,
+}
+
+/// The node's authority mode, as `HELLO_ACK.authority` reports it
+/// (`docs/spec/00-wire.md` 6.3). The wire has three values; a daemon reports
+/// the modes it implements.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuthorityMode {
+    /// No grant is asked for. The default.
+    #[default]
+    Off,
+    /// Reserved on the wire for a mode that records what `required` would
+    /// refuse; no peer in this repository sends it yet.
+    Audit,
+    /// Every command needs authority.
+    Required,
+}
+
+impl AuthorityMode {
+    /// The text this mode has on the wire.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AuthorityMode::Off => "off",
+            AuthorityMode::Audit => "audit",
+            AuthorityMode::Required => "required",
+        }
+    }
 }
 
 impl HelloAck {
     /// Checks the bounds that hold without knowing the `HELLO`: `max_frame`
-    /// in range, `max_inflight` at least 1, no duplicate extension.
+    /// in range, `max_inflight` at least 1, no duplicate extension. A missing
+    /// or mistyped `binding`, `authority` or `time`, a `binding` that is not
+    /// 32 bytes and an unknown `authority` text are refused when the body is
+    /// decoded ([`HelloAck::from_frame`]), before this runs.
     pub fn validate(&self) -> Result<(), Close> {
         check_max_frame(self.max_frame)?;
         if self.max_inflight < 1 {
@@ -355,6 +401,15 @@ pub struct LocalConfig {
     pub extensions: Vec<String>,
     /// Informational software name and version for the `HELLO_ACK`.
     pub agent: Option<String>,
+    /// The mode reported in `HELLO_ACK.authority`.
+    pub authority: AuthorityMode,
+    /// The `binding` to send. `None`: [`negotiate`] draws 32 bytes from the
+    /// operating system's random source for every call. Set it only in tests
+    /// and vectors, never in a server.
+    pub binding: Option<[u8; 32]>,
+    /// The `time` to send. `None`: the system clock. Injectable for tests and
+    /// vectors.
+    pub time: Option<u64>,
 }
 
 impl Default for LocalConfig {
@@ -367,8 +422,27 @@ impl Default for LocalConfig {
             max_inflight: 1,
             extensions: Vec::new(),
             agent: None,
+            authority: AuthorityMode::Off,
+            binding: None,
+            time: None,
         }
     }
+}
+
+/// 32 bytes from the operating system's random source. Panics only if that
+/// source fails, which `rand` treats as unrecoverable.
+fn fresh_binding() -> [u8; 32] {
+    let mut value = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut value);
+    value
+}
+
+/// The system clock in Unix seconds; 0 when it is before the epoch.
+pub(crate) fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Server side of C.6: validates `hello` and builds the `HELLO_ACK`.
@@ -380,6 +454,10 @@ impl Default for LocalConfig {
 /// in the order the client offered them: C.10 says the position in
 /// `HELLO_ACK.extensions` is the index but does not say whose order builds
 /// it, so v1 here follows the client's.
+///
+/// The acknowledgement also gets its per-connection values: `binding` is the
+/// one in `local` or, when `local` has none, fresh random bytes; `time` is the
+/// one in `local` or the system clock; `authority` is copied.
 pub fn negotiate(hello: &Hello, local: &LocalConfig) -> Result<HelloAck, Close> {
     hello.validate()?;
     let version = match hello
@@ -413,6 +491,9 @@ pub fn negotiate(hello: &Hello, local: &LocalConfig) -> Result<HelloAck, Close> 
         max_inflight: local.max_inflight.max(1),
         extensions,
         agent: local.agent.clone(),
+        binding: local.binding.unwrap_or_else(fresh_binding),
+        authority: local.authority,
+        time: local.time.unwrap_or_else(unix_now),
     })
 }
 
@@ -478,7 +559,42 @@ mod tests {
             max_inflight: 4,
             extensions: extensions.iter().map(|s| s.to_string()).collect(),
             agent: Some("test/1".to_string()),
+            authority: AuthorityMode::Off,
+            binding: Some([0x42; 32]),
+            time: Some(1_700_000_000),
         }
+    }
+
+    /// CBOR byte string of 32 copies of `fill`.
+    fn bytes32(fill: u8) -> Vec<u8> {
+        let mut out = vec![0x58, 0x20];
+        out.extend_from_slice(&[fill; 32]);
+        out
+    }
+
+    /// The entries of a valid `HELLO_ACK` body with `max_frame` 4096.
+    fn ack_entries() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("version", vec![0x01]),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("max_inflight", vec![0x01]),
+            ("extensions", vec![0x80]),
+            ("binding", bytes32(0x07)),
+            ("authority", text("off")),
+            ("time", vec![0x1a, 0x65, 0x53, 0xf1, 0x00]),
+        ]
+    }
+
+    /// `ack_entries` with the entry `key` replaced by `value`.
+    fn ack_entries_with(key: &str, value: Vec<u8>) -> Vec<(&'static str, Vec<u8>)> {
+        ack_entries()
+            .into_iter()
+            .map(|(k, v)| if k == key { (k, value.clone()) } else { (k, v) })
+            .collect()
+    }
+
+    fn ack_error(entries: &[(&str, Vec<u8>)]) -> Close {
+        HelloAck::from_frame(&frame_of(FrameType::HelloAck, map_sorted(entries))).unwrap_err()
     }
 
     #[test]
@@ -504,6 +620,9 @@ mod tests {
             max_inflight: 8,
             extensions: vec!["a/b/1".to_string()],
             agent: Some("srv".to_string()),
+            binding: [9; 32],
+            authority: AuthorityMode::Audit,
+            time: 1,
         };
         let frame = ack.to_frame().unwrap();
         assert_eq!(frame.frame_type, FrameType::HelloAck);
@@ -629,16 +748,137 @@ mod tests {
 
     #[test]
     fn unknown_hello_ack_key_is_ignored() {
-        let body = map_sorted(&[
-            ("version", vec![0x01]),
-            ("max_frame", vec![0x19, 0x10, 0x00]),
-            ("max_inflight", vec![0x01]),
-            ("extensions", vec![0x80]),
-            ("future", vec![0x01]),
-        ]);
+        let mut entries = ack_entries();
+        entries.push(("future", vec![0x01]));
+        let body = map_sorted(&entries);
         let got = HelloAck::from_frame(&frame_of(FrameType::HelloAck, body)).unwrap();
         assert_eq!(got.version, 1);
         assert_eq!(got.max_frame, 4096);
+        assert_eq!(got.binding, [0x07; 32]);
+        assert_eq!(got.authority, AuthorityMode::Off);
+        assert_eq!(got.time, 1_700_000_000);
+    }
+
+    #[test]
+    fn hello_ack_encodes_keys_in_deterministic_order() {
+        let ack = HelloAck {
+            version: 1,
+            max_frame: 4096,
+            max_inflight: 1,
+            extensions: Vec::new(),
+            agent: Some("a".to_string()),
+            binding: [0x07; 32],
+            authority: AuthorityMode::Off,
+            time: 1_700_000_000,
+        };
+        let body = cbor::to_vec(&ack).unwrap();
+        // time, agent, binding, version, authority, max_frame, extensions,
+        // max_inflight: ascending by the bytes of the encoded key.
+        let mut want = vec![0xa8];
+        for (key, value) in [
+            ("time", vec![0x1a, 0x65, 0x53, 0xf1, 0x00]),
+            ("agent", text("a")),
+            ("binding", bytes32(0x07)),
+            ("version", vec![0x01]),
+            ("authority", text("off")),
+            ("max_frame", vec![0x19, 0x10, 0x00]),
+            ("extensions", vec![0x80]),
+            ("max_inflight", vec![0x01]),
+        ] {
+            want.extend(text(key));
+            want.extend(value);
+        }
+        assert_eq!(body, want);
+        assert_eq!(
+            HelloAck::from_frame(&frame_of(FrameType::HelloAck, body)).unwrap(),
+            ack
+        );
+    }
+
+    #[test]
+    fn hello_ack_refuses_a_missing_binding_authority_or_time() {
+        for key in ["binding", "authority", "time"] {
+            let entries: Vec<_> = ack_entries()
+                .into_iter()
+                .filter(|(k, _)| *k != key)
+                .collect();
+            let err = ack_error(&entries);
+            assert_eq!(
+                err.close_code(),
+                Some(CloseCode::ProtocolViolation),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn hello_ack_refuses_a_bad_binding() {
+        let mut thirty_one = vec![0x58, 0x1f];
+        thirty_one.extend_from_slice(&[7; 31]);
+        let mut thirty_three = vec![0x58, 0x21];
+        thirty_three.extend_from_slice(&[7; 33]);
+        let mut array = vec![0x98, 0x20];
+        array.extend_from_slice(&[0x07; 32]);
+        for bad in [
+            vec![0x40],
+            thirty_one,
+            thirty_three,
+            text("not bytes"),
+            array,
+            vec![0xf6],
+        ] {
+            let err = ack_error(&ack_entries_with("binding", bad));
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        }
+    }
+
+    #[test]
+    fn hello_ack_refuses_a_bad_authority_or_time() {
+        for bad in [text("maybe"), text("Off"), text(""), vec![0x01], vec![0xf6]] {
+            let err = ack_error(&ack_entries_with("authority", bad));
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        }
+        for bad in [text("0"), vec![0x20], vec![0xf9, 0x3c, 0x00], vec![0xf6]] {
+            let err = ack_error(&ack_entries_with("time", bad));
+            assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        }
+        for mode in ["off", "audit", "required"] {
+            let body = map_sorted(&ack_entries_with("authority", text(mode)));
+            let got = HelloAck::from_frame(&frame_of(FrameType::HelloAck, body)).unwrap();
+            assert_eq!(got.authority.as_str(), mode);
+        }
+        // The largest u64 is a valid time.
+        let max = vec![0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+        let body = map_sorted(&ack_entries_with("time", max));
+        assert_eq!(
+            HelloAck::from_frame(&frame_of(FrameType::HelloAck, body))
+                .unwrap()
+                .time,
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn negotiate_reports_the_injected_per_connection_values() {
+        let mut l = local(&[1], 4096, &[]);
+        l.authority = AuthorityMode::Required;
+        let ack = negotiate(&hello(&[1], 4096, &[]), &l).unwrap();
+        assert_eq!(ack.binding, [0x42; 32]);
+        assert_eq!(ack.time, 1_700_000_000);
+        assert_eq!(ack.authority, AuthorityMode::Required);
+    }
+
+    #[test]
+    fn negotiate_draws_a_fresh_binding_and_reads_the_clock() {
+        let mut l = local(&[1], 4096, &[]);
+        l.binding = None;
+        l.time = None;
+        let a = negotiate(&hello(&[1], 4096, &[]), &l).unwrap();
+        let b = negotiate(&hello(&[1], 4096, &[]), &l).unwrap();
+        assert_ne!(a.binding, b.binding);
+        assert_ne!(a.binding, [0u8; 32]);
+        // After 2020-09-13 and not absurdly far in the future.
+        assert!(a.time > 1_600_000_000 && a.time < 32_000_000_000);
     }
 
     #[test]
@@ -669,12 +909,7 @@ mod tests {
             ("max_frame", vec![0x19, 0x10, 0x00]),
             ("extensions", vec![0x80]),
         ]);
-        let ack_body = map_sorted(&[
-            ("version", vec![0x01]),
-            ("max_frame", vec![0x19, 0x10, 0x00]),
-            ("max_inflight", vec![0x01]),
-            ("extensions", vec![0x80]),
-        ]);
+        let ack_body = map_sorted(&ack_entries());
         let close_body = map_sorted(&[("code", text("timeout")), ("message", text("x"))]);
         // An integer key and a byte-string key (h'78'), each with a value.
         for (key, value) in [(vec![0x00], vec![0x01]), (vec![0x41, 0x78], vec![0x01])] {
@@ -767,6 +1002,9 @@ mod tests {
             max_inflight: 1,
             extensions: extensions.iter().map(|s| s.to_string()).collect(),
             agent: None,
+            binding: [3; 32],
+            authority: AuthorityMode::Off,
+            time: 0,
         }
     }
 

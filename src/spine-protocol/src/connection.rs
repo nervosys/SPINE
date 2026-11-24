@@ -17,9 +17,15 @@
 //!   compressed bodies, the stateless request-id rules), answered with the
 //!   `CLOSE` code [`FrameError::close_code`] names;
 //! - every body is one deterministic CBOR item (`malformed_frame`);
-//! - direction: a client may send `REQUEST`, `STREAM_CANCEL`, `PING`, `PONG`,
-//!   `EXT` and `CLOSE`; a server may send `RESPONSE`, `STREAM_*`, `PING`,
-//!   `PONG`, `EXT` and `CLOSE`; a second `HELLO` or `HELLO_ACK` is never valid;
+//! - direction: a client may send `IDENTIFY` (once), `REQUEST`,
+//!   `STREAM_CANCEL`, `PING`, `PONG`, `EXT` and `CLOSE`; a server may send
+//!   `RESPONSE`, `STREAM_*`, `PING`, `PONG`, `EXT` and `CLOSE`; a second
+//!   `HELLO` or `HELLO_ACK` is never valid;
+//! - `IDENTIFY` (`docs/spec/00-wire.md` 6.6): a server accepts at most one,
+//!   before any `REQUEST`, `STREAM_CANCEL` or `EXT` (a `PING` or `PONG` does
+//!   not close that window), and only if its signature verifies for this
+//!   connection's handshake; a failure is `protocol_violation`. The key it
+//!   proves is [`Connection::identity`];
 //! - request ids: a client id must not be in flight already; a `RESPONSE` or
 //!   `STREAM_*` frame must name an in-flight request and follow the C.9 order
 //!   (`STREAM_START`, tokens, `STREAM_END`, or one `RESPONSE`); an id is
@@ -51,7 +57,8 @@ use crate::frame::{
     encode_frame, read_frame, write_frame, CloseCode, Frame, FrameError, FrameType,
     PRE_HELLO_MAX_FRAME, VERSION,
 };
-use crate::hello::{negotiate, Close, Hello, HelloAck, LocalConfig};
+use crate::hello::{negotiate, AuthorityMode, Close, Hello, HelloAck, LocalConfig};
+use crate::identify::{Identify, SigningKey, Transcript};
 
 /// `RESPONSE.err.code` for a request refused because the server is at
 /// `max_inflight` (C.7).
@@ -144,7 +151,12 @@ enum Verdict {
 /// What a successfully written frame does to the in-flight table.
 enum Transition {
     None,
+    /// A request: tracked, and it closes a client's `IDENTIFY` window.
     Track,
+    /// The client's `IDENTIFY`: it closes the window.
+    Identify,
+    /// `STREAM_CANCEL` or `EXT`: closes a client's `IDENTIFY` window.
+    CloseWindow,
     Stream,
     Release,
     Finish,
@@ -302,9 +314,31 @@ struct Tracker {
     extensions: Vec<String>,
     in_flight: HashMap<u64, Exchange>,
     overloaded: u64,
+    /// This connection's `HELLO_ACK.binding`.
+    binding: [u8; 32],
+    /// `HELLO_ACK.authority`.
+    authority: AuthorityMode,
+    /// `HELLO_ACK.time`.
+    server_time: u64,
+    /// The hashes of the two handshake bodies that `IDENTIFY` signs.
+    transcript: Transcript,
+    /// The key an accepted `IDENTIFY` proved (a server), or the key this
+    /// client sent one for.
+    identity: Option<[u8; 32]>,
+    /// True until the first `REQUEST`, `STREAM_CANCEL`, `EXT` or `IDENTIFY`
+    /// has been received (a server) or sent (a client).
+    identify_open: bool,
 }
 
 impl Tracker {
+    /// Closes the `IDENTIFY` window of a client; a server closes its own in
+    /// [`Tracker::check_incoming`], where the frames it counts arrive.
+    fn close_window(&mut self) {
+        if self.role == Role::Client {
+            self.identify_open = false;
+        }
+    }
+
     /// Checks an `EXT` body against the accepted extensions.
     fn check_ext(&self, body: &[u8]) -> Result<(), String> {
         match ext_index(body) {
@@ -325,7 +359,18 @@ impl Tracker {
         match (self.role, frame.frame_type) {
             (_, FrameType::Ping) | (_, FrameType::Pong) => Ok(Transition::None),
             (_, FrameType::Close) => Ok(Transition::Finish),
-            (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Transition::None),
+            (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Transition::CloseWindow),
+            (Role::Client, FrameType::Identify) => {
+                if self.identify_open {
+                    Ok(Transition::Identify)
+                } else {
+                    Err(
+                        "IDENTIFY is only valid once, right after HELLO_ACK and before \
+                         any request"
+                            .to_string(),
+                    )
+                }
+            }
             (Role::Client, FrameType::Request) => {
                 if state.is_some() {
                     Err(format!("request id {id} is already in flight"))
@@ -333,7 +378,7 @@ impl Tracker {
                     Ok(Transition::Track)
                 }
             }
-            (Role::Client, FrameType::StreamCancel) => Ok(Transition::None),
+            (Role::Client, FrameType::StreamCancel) => Ok(Transition::CloseWindow),
             (Role::Server, FrameType::Response) => match state {
                 Some(Exchange::Pending) => Ok(Transition::Release),
                 Some(Exchange::Streaming) => {
@@ -370,7 +415,9 @@ impl Tracker {
             Transition::None | Transition::Finish => {}
             Transition::Track => {
                 self.in_flight.insert(id, Exchange::Pending);
+                self.close_window();
             }
+            Transition::Identify | Transition::CloseWindow => self.close_window(),
             Transition::Stream => {
                 self.in_flight.insert(id, Exchange::Streaming);
             }
@@ -386,7 +433,30 @@ impl Tracker {
     fn check_incoming(&mut self, frame: &Frame) -> Result<Verdict, String> {
         let id = frame.request_id;
         let state = self.in_flight.get(&id).copied();
+        // The window for `IDENTIFY` closes with the first of these frames,
+        // whatever becomes of it. `PING` and `PONG` never reach this function.
+        if self.role == Role::Server
+            && matches!(
+                frame.frame_type,
+                FrameType::Request | FrameType::StreamCancel | FrameType::Ext
+            )
+        {
+            self.identify_open = false;
+        }
         match (self.role, frame.frame_type) {
+            (Role::Server, FrameType::Identify) => {
+                if !self.identify_open {
+                    return Err("IDENTIFY is only valid once, right after HELLO_ACK and \
+                                before any request"
+                        .to_string());
+                }
+                // At most once, whatever the outcome: a failure ends the
+                // connection anyway.
+                self.identify_open = false;
+                let identify = Identify::from_frame(frame).map_err(|close| close.message)?;
+                self.identity = Some(identify.verify(&self.transcript)?);
+                Ok(Verdict::Deliver)
+            }
             (_, FrameType::Ext) => self.check_ext(&frame.body).map(|_| Verdict::Deliver),
             (Role::Server, FrameType::Request) => {
                 if state.is_some() {
@@ -514,8 +584,9 @@ pub struct Connection<S> {
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
-    /// Builds the established connection from the acknowledgement.
-    fn established(stream: S, role: Role, ack: &HelloAck) -> Connection<S> {
+    /// Builds the established connection from the acknowledgement and the
+    /// hashes of the two handshake bodies.
+    fn established(stream: S, role: Role, ack: &HelloAck, transcript: Transcript) -> Connection<S> {
         Connection {
             stream,
             version: ack.version,
@@ -527,6 +598,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
                 extensions: ack.extensions.clone(),
                 in_flight: HashMap::new(),
                 overloaded: 0,
+                binding: ack.binding,
+                authority: ack.authority,
+                server_time: ack.time,
+                transcript,
+                identity: None,
+                identify_open: true,
             },
             next_id: 1,
             finished: false,
@@ -601,7 +678,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             );
             return Err(reject(&mut stream, close).await);
         }
-        Ok(Connection::established(stream, Role::Client, &ack))
+        let transcript = Transcript::of_bodies(&hello_frame.body, &reply.body);
+        Ok(Connection::established(
+            stream,
+            Role::Client,
+            &ack,
+            transcript,
+        ))
     }
 
     /// Server side of C.6: reads the first frame under the pre-`HELLO` limit
@@ -662,7 +745,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
             Ok(Err(e)) => return Err(map_frame_error(e)),
             Ok(Ok(())) => {}
         }
-        Ok(Connection::established(stream, Role::Server, &ack))
+        let transcript = Transcript::of_bodies(&first.body, &ack_frame.body);
+        Ok(Connection::established(
+            stream,
+            Role::Server,
+            &ack,
+            transcript,
+        ))
     }
 
     /// Which end this is.
@@ -693,6 +782,55 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Connection<S> {
     /// The number of requests currently in flight, as this side tracks them.
     pub fn in_flight_len(&self) -> usize {
         self.tracker.in_flight.len()
+    }
+
+    /// This connection's `binding`: the value the server chose and put in
+    /// `HELLO_ACK` (`docs/spec/00-wire.md` 6.6). Both ends hold the same one.
+    /// It is not a secret from anyone who can read the stream and grants
+    /// nothing.
+    pub fn binding(&self) -> [u8; 32] {
+        self.tracker.binding
+    }
+
+    /// The authority mode the server reported in `HELLO_ACK`.
+    pub fn authority(&self) -> AuthorityMode {
+        self.tracker.authority
+    }
+
+    /// The server's clock (Unix seconds) when it built `HELLO_ACK`. Not
+    /// authenticated.
+    pub fn server_time(&self) -> u64 {
+        self.tracker.server_time
+    }
+
+    /// The hashes of the two handshake bodies that `IDENTIFY` signs.
+    pub fn transcript(&self) -> Transcript {
+        self.tracker.transcript
+    }
+
+    /// The key this connection is identified as: on a server, the key an
+    /// accepted `IDENTIFY` proved; on a client, the key it sent one for. An
+    /// identity grants nothing.
+    pub fn identity(&self) -> Option<[u8; 32]> {
+        self.tracker.identity
+    }
+
+    /// Client only: proves possession of `signing`'s key with an `IDENTIFY`
+    /// frame. Call it right after the handshake, before the first request,
+    /// stream cancel or extension frame, and at most once; otherwise it is
+    /// [`ConnectionError::Usage`] and nothing is sent. The server verifies the
+    /// proof before it processes any later frame and answers a failure with
+    /// `CLOSE(protocol_violation)`; there is no answer frame on success.
+    pub async fn identify(&mut self, signing: &SigningKey) -> Result<(), ConnectionError> {
+        if self.tracker.role != Role::Client {
+            return Err(ConnectionError::Usage(
+                "only a client sends IDENTIFY".to_string(),
+            ));
+        }
+        let body = Identify::sign(signing, &self.tracker.transcript);
+        self.send(body.to_frame()?).await?;
+        self.tracker.identity = Some(body.key);
+        Ok(())
     }
 
     /// How many received requests this (server) side has answered with
@@ -1091,6 +1229,17 @@ impl<S: AsyncRead + Unpin> ConnectionReader<S> {
         self.shared.lock().max_inflight
     }
 
+    /// This connection's `binding` (see [`Connection::binding`]).
+    pub fn binding(&self) -> [u8; 32] {
+        self.shared.lock().binding
+    }
+
+    /// The key an accepted `IDENTIFY` proved, once the reader has returned
+    /// it. It grants nothing.
+    pub fn identity(&self) -> Option<[u8; 32]> {
+        self.shared.lock().identity
+    }
+
     /// The number of requests currently in flight, as the shared table has them.
     pub fn in_flight_len(&self) -> usize {
         self.shared.lock().in_flight.len()
@@ -1341,6 +1490,9 @@ mod tests {
             max_inflight,
             extensions: extensions.iter().map(|s| s.to_string()).collect(),
             agent: None,
+            authority: AuthorityMode::Off,
+            binding: Some([0x42; 32]),
+            time: Some(1_700_000_000),
         }
     }
 
@@ -1351,6 +1503,9 @@ mod tests {
             max_inflight,
             extensions: extensions.iter().map(|s| s.to_string()).collect(),
             agent: None,
+            binding: [0x42; 32],
+            authority: AuthorityMode::Off,
+            time: 1_700_000_000,
         }
     }
 
@@ -1921,6 +2076,309 @@ mod tests {
         let got = conn.recv().await.unwrap().unwrap();
         assert_eq!(got.frame_type, FrameType::Request);
         assert_eq!(got.request_id, 1);
+    }
+
+    // ---- IDENTIFY and the per-connection values of HELLO_ACK ----
+
+    fn test_key() -> SigningKey {
+        SigningKey::from_bytes(&[0x33; 32])
+    }
+
+    /// Like `server_pair`, also returning the transcript of the handshake,
+    /// which a raw client needs to sign an `IDENTIFY`.
+    async fn identify_pair(
+        local: LocalConfig,
+        hello: Hello,
+    ) -> (Connection<DuplexStream>, DuplexStream, Transcript) {
+        let (mut peer, ours) = duplex(65_536);
+        let hello_frame = hello.to_frame().unwrap();
+        write_frame(&mut peer, &hello_frame, PRE_HELLO_MAX_FRAME, false)
+            .await
+            .unwrap();
+        let conn = Connection::server_handshake(ours, &local, LONG)
+            .await
+            .unwrap();
+        let ack = read_frame(&mut peer, MAX_FRAME).await.unwrap().unwrap();
+        assert_eq!(ack.frame_type, FrameType::HelloAck);
+        let transcript = Transcript::of_bodies(&hello_frame.body, &ack.body);
+        (conn, peer, transcript)
+    }
+
+    /// The bytes of a good `IDENTIFY` frame for `transcript`.
+    fn identify_bytes(transcript: &Transcript) -> Vec<u8> {
+        let frame = Identify::sign(&test_key(), transcript).to_frame().unwrap();
+        encode_frame(&frame, MAX_FRAME, false).unwrap()
+    }
+
+    #[tokio::test]
+    async fn both_ends_hold_the_same_binding_authority_and_time() {
+        let mut local = local_cfg(1, &[]);
+        local.binding = None;
+        local.time = None;
+        local.authority = AuthorityMode::Required;
+        let (c, s) = connected(local, hello_of(&[])).await;
+        assert_eq!(c.binding(), s.binding());
+        assert_ne!(c.binding(), [0u8; 32]);
+        assert_eq!(c.authority(), AuthorityMode::Required);
+        assert_eq!(s.authority(), AuthorityMode::Required);
+        assert_eq!(c.server_time(), s.server_time());
+        assert!(c.server_time() > 1_600_000_000);
+        assert_eq!(c.transcript(), s.transcript());
+        assert_eq!(c.identity(), None);
+        assert_eq!(s.identity(), None);
+        // A second connection gets its own value.
+        let mut local = local_cfg(1, &[]);
+        local.binding = None;
+        let (c2, _s2) = connected(local, hello_of(&[])).await;
+        assert_ne!(c.binding(), c2.binding());
+    }
+
+    #[tokio::test]
+    async fn an_identified_client_is_known_to_the_server_and_a_request_may_follow_at_once() {
+        let (mut c, mut s) = connected(local_cfg(2, &[]), hello_of(&[])).await;
+        let key = test_key();
+        c.identify(&key).await.unwrap();
+        assert_eq!(c.identity(), Some(key.verifying_key().to_bytes()));
+        // Pipelined: the request is written before the server has read the
+        // IDENTIFY.
+        let id = c.request(NULL.to_vec()).await.unwrap();
+        let first = recv_one(&mut s).await;
+        assert_eq!(first.frame_type, FrameType::Identify);
+        assert_eq!(first.request_id, 0);
+        assert_eq!(s.identity(), Some(key.verifying_key().to_bytes()));
+        let second = recv_one(&mut s).await;
+        assert_eq!(
+            (second.frame_type, second.request_id),
+            (FrameType::Request, id)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ping_does_not_close_the_identify_window() {
+        let (mut conn, mut peer, t) = identify_pair(local_cfg(1, &[]), hello_of(&[])).await;
+        peer.write_all(&enc(FrameType::Ping, 5, &[0x01]))
+            .await
+            .unwrap();
+        peer.write_all(&enc(FrameType::Pong, 6, &[0x02]))
+            .await
+            .unwrap();
+        peer.write_all(&identify_bytes(&t)).await.unwrap();
+        // The PONG is delivered; the PING is answered inside recv.
+        assert_eq!(recv_one(&mut conn).await.frame_type, FrameType::Pong);
+        assert_eq!(recv_one(&mut conn).await.frame_type, FrameType::Identify);
+        assert_eq!(conn.identity(), Some(test_key().verifying_key().to_bytes()));
+        let pong = read_frame(&mut peer, MAX_FRAME).await.unwrap().unwrap();
+        assert_eq!((pong.frame_type, pong.request_id), (FrameType::Pong, 5));
+    }
+
+    /// Writes `frames` to a server that has finished its handshake and checks
+    /// that it ends the connection with `protocol_violation`.
+    async fn assert_identify_refused(name: &str, frames: Vec<Vec<u8>>) {
+        let (mut conn, mut peer, _t) =
+            identify_pair(local_cfg(2, &[EXT_A]), hello_of(&[EXT_A])).await;
+        for f in &frames {
+            peer.write_all(f).await.unwrap();
+        }
+        let err = loop {
+            let result = tokio::time::timeout(LONG, conn.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{name}: recv hung"));
+            match result {
+                Ok(Some(_)) => continue,
+                Ok(None) => panic!("{name}: stream ended without an error"),
+                Err(e) => break e,
+            }
+        };
+        assert_eq!(
+            err.close_code(),
+            Some(CloseCode::ProtocolViolation),
+            "{name}: {err:?}"
+        );
+        expect_close(&mut peer, CloseCode::ProtocolViolation).await;
+        assert!(conn.is_finished(), "{name}");
+    }
+
+    /// The handshake transcript of the `assert_identify_refused` server, for
+    /// building frames before it exists: both sides are deterministic here
+    /// because `local_cfg` fixes the binding and the time.
+    async fn refused_transcript() -> Transcript {
+        let (_conn, _peer, t) = identify_pair(local_cfg(2, &[EXT_A]), hello_of(&[EXT_A])).await;
+        t
+    }
+
+    #[tokio::test]
+    async fn the_server_refuses_a_second_identify_and_one_after_other_frames() {
+        let t = refused_transcript().await;
+        let good = identify_bytes(&t);
+        let ext = enc(FrameType::Ext, 0, &[0x83, 0x00, 0x00, 0xf6]);
+        let cancel = enc(FrameType::StreamCancel, 99, &[0xa0]);
+        let request = enc(FrameType::Request, 1, &NULL);
+        let cases: Vec<(&str, Vec<Vec<u8>>)> = vec![
+            ("second IDENTIFY", vec![good.clone(), good.clone()]),
+            ("after a REQUEST", vec![request, good.clone()]),
+            ("after a STREAM_CANCEL", vec![cancel, good.clone()]),
+            ("after an EXT", vec![ext, good]),
+        ];
+        for (name, frames) in cases {
+            assert_identify_refused(name, frames).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_server_refuses_a_bad_proof() {
+        let t = refused_transcript().await;
+        let key = test_key();
+        let encode = |identify: &Identify| {
+            encode_frame(&identify.to_frame().unwrap(), MAX_FRAME, false).unwrap()
+        };
+        let good = Identify::sign(&key, &t);
+
+        let mut bad_sig = good.clone();
+        bad_sig.sig[0] ^= 1;
+
+        // A proof made for another connection (another binding).
+        let other = Transcript::of_bodies(b"hello", b"another acknowledgement");
+        let wrong_binding = Identify::sign(&key, &other);
+
+        // A non-empty channel, correctly signed over that channel.
+        let mut channel = good.clone();
+        channel.channel = vec![7; 32];
+        let message = crate::identify::signed_message(&t, &channel.channel, &channel.key);
+        channel.sig = ed25519_dalek::Signer::sign(&key, &message).to_bytes();
+
+        // The identity point as a key: a small-order key, refused by strict
+        // verification.
+        let mut weak = good.clone();
+        weak.key = [0; 32];
+        weak.key[0] = 1;
+        weak.sig = [0; 64];
+        weak.sig[0] = 1;
+
+        let mut other_key = good.clone();
+        other_key.key = SigningKey::from_bytes(&[0x34; 32])
+            .verifying_key()
+            .to_bytes();
+
+        // Wrong lengths, an extra key, a body that is not a map.
+        let mut short_key = vec![0xa3, 0x63, b'k', b'e', b'y', 0x58, 31];
+        short_key.extend([1u8; 31]);
+        short_key.extend([0x63, b's', b'i', b'g', 0x58, 64]);
+        short_key.extend([2u8; 64]);
+        short_key.extend([0x67, b'c', b'h', b'a', b'n', b'n', b'e', b'l', 0x40]);
+        let mut extra = vec![0xa4, 0x63, b'k', b'e', b'y', 0x58, 32];
+        extra.extend([1u8; 32]);
+        extra.extend([0x63, b's', b'i', b'g', 0x58, 64]);
+        extra.extend([2u8; 64]);
+        extra.extend([0x65, b'e', b'x', b't', b'r', b'a', 0x01]);
+        extra.extend([0x67, b'c', b'h', b'a', b'n', b'n', b'e', b'l', 0x40]);
+
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("bad signature", encode(&bad_sig)),
+            ("wrong binding", encode(&wrong_binding)),
+            ("non-empty channel", encode(&channel)),
+            ("small-order key", encode(&weak)),
+            ("another key", encode(&other_key)),
+            ("31-byte key", enc(FrameType::Identify, 0, &short_key)),
+            ("extra key", enc(FrameType::Identify, 0, &extra)),
+            ("not a map", enc(FrameType::Identify, 0, &NULL)),
+            (
+                "nonzero request id",
+                raw(1, 0x06, 0, 5, &good.to_frame().unwrap().body),
+            ),
+        ];
+        for (name, bytes) in cases {
+            assert_identify_refused(name, vec![bytes]).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_client_refuses_to_send_identify_twice_or_late() {
+        let key = test_key();
+        let (mut c, _s) = connected(local_cfg(1, &[EXT_A]), hello_of(&[EXT_A])).await;
+        c.identify(&key).await.unwrap();
+        assert!(matches!(
+            c.identify(&key).await,
+            Err(ConnectionError::Usage(_))
+        ));
+
+        let (mut c, _s) = connected(local_cfg(1, &[EXT_A]), hello_of(&[EXT_A])).await;
+        c.request(NULL.to_vec()).await.unwrap();
+        assert!(matches!(
+            c.identify(&key).await,
+            Err(ConnectionError::Usage(_))
+        ));
+        assert_eq!(c.identity(), None);
+
+        let (mut c, _s) = connected(local_cfg(1, &[EXT_A]), hello_of(&[EXT_A])).await;
+        c.send(fr(FrameType::StreamCancel, 3, &[0xa0]))
+            .await
+            .unwrap();
+        assert!(matches!(
+            c.identify(&key).await,
+            Err(ConnectionError::Usage(_))
+        ));
+
+        let (mut c, _s) = connected(local_cfg(1, &[EXT_A]), hello_of(&[EXT_A])).await;
+        c.send(fr(FrameType::Ext, 0, &[0x83, 0x00, 0x00, 0xf6]))
+            .await
+            .unwrap();
+        assert!(matches!(
+            c.identify(&key).await,
+            Err(ConnectionError::Usage(_))
+        ));
+
+        // A PING does not close the window.
+        let (mut c, _s) = connected(local_cfg(1, &[EXT_A]), hello_of(&[EXT_A])).await;
+        c.send(fr(FrameType::Ping, 1, &[0x01])).await.unwrap();
+        c.identify(&key).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn identify_goes_from_the_client_only() {
+        let (c, mut s) = connected(local_cfg(1, &[]), hello_of(&[])).await;
+        assert!(matches!(
+            s.identify(&test_key()).await,
+            Err(ConnectionError::Usage(_))
+        ));
+        assert!(matches!(
+            s.send(fr(FrameType::Identify, 0, &NULL)).await,
+            Err(ConnectionError::Usage(_))
+        ));
+        drop(c);
+
+        // A server's IDENTIFY is a violation at the client.
+        let (mut conn, mut peer) = client_pair(hello_of(&[]), ack_of(1, &[])).await;
+        peer.write_all(&enc(FrameType::Identify, 0, &NULL))
+            .await
+            .unwrap();
+        let err = tokio::time::timeout(LONG, conn.recv())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
+        expect_close(&mut peer, CloseCode::ProtocolViolation).await;
+    }
+
+    #[tokio::test]
+    async fn the_reader_half_reports_the_identity() {
+        let (conn, mut peer, t) = identify_pair(local_cfg(1, &[]), hello_of(&[])).await;
+        let (mut reader, _writer) = conn.split();
+        assert_eq!(reader.binding(), [0x42; 32]);
+        assert_eq!(reader.identity(), None);
+        peer.write_all(&identify_bytes(&t)).await.unwrap();
+        let frame = delivered(read_one(&mut reader).await);
+        assert_eq!(frame.frame_type, FrameType::Identify);
+        assert_eq!(
+            reader.identity(),
+            Some(test_key().verifying_key().to_bytes())
+        );
+        // A second one ends the connection.
+        peer.write_all(&identify_bytes(&t)).await.unwrap();
+        let err = tokio::time::timeout(LONG, reader.recv_timeout(LONG))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(err.close_code(), Some(CloseCode::ProtocolViolation));
     }
 
     /// Runs a scripted server against a client that has one request (id 1)

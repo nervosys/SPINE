@@ -69,6 +69,9 @@ pub enum FrameType {
     Ping = 0x04,
     /// Answer to a `PING`.
     Pong = 0x05,
+    /// The client's proof that it holds a key, sent at most once, right after
+    /// `HELLO_ACK` (`docs/spec/00-wire.md` 6.6).
+    Identify = 0x06,
     /// A command from the client.
     Request = 0x10,
     /// The server's answer to a request.
@@ -102,6 +105,7 @@ impl TryFrom<u8> for FrameType {
             0x03 => Ok(FrameType::Close),
             0x04 => Ok(FrameType::Ping),
             0x05 => Ok(FrameType::Pong),
+            0x06 => Ok(FrameType::Identify),
             0x10 => Ok(FrameType::Request),
             0x11 => Ok(FrameType::Response),
             0x20 => Ok(FrameType::StreamStart),
@@ -258,7 +262,9 @@ pub struct Frame {
 /// Request-id rules that hold for a type whatever the connection state.
 fn check_request_id(frame_type: FrameType, request_id: u64) -> Result<(), FrameError> {
     let ok = match frame_type {
-        FrameType::Hello | FrameType::HelloAck | FrameType::Close => request_id == 0,
+        FrameType::Hello | FrameType::HelloAck | FrameType::Close | FrameType::Identify => {
+            request_id == 0
+        }
         FrameType::Request | FrameType::Ping => request_id != 0,
         _ => true,
     };
@@ -695,6 +701,7 @@ mod tests {
             (0x03, FrameType::Close),
             (0x04, FrameType::Ping),
             (0x05, FrameType::Pong),
+            (0x06, FrameType::Identify),
             (0x10, FrameType::Request),
             (0x11, FrameType::Response),
             (0x20, FrameType::StreamStart),
@@ -786,7 +793,7 @@ mod tests {
 
     #[test]
     fn unknown_and_zero_types_are_rejected() {
-        for t in [0x00u8, 0x06, 0x0f, 0x12, 0x24, 0x7f, 0x81, 0xff] {
+        for t in [0x00u8, 0x07, 0x0f, 0x12, 0x24, 0x7f, 0x81, 0xff] {
             let bytes = raw(1, t, 0, 1, &[0xf6]);
             let err = decode_frame(&bytes, MAX_FRAME).unwrap_err();
             assert!(matches!(err, FrameError::UnknownFrameType(x) if x == t));
@@ -820,6 +827,7 @@ mod tests {
             (FrameType::Hello, 1u64),
             (FrameType::HelloAck, 1),
             (FrameType::Close, 9),
+            (FrameType::Identify, 1),
             (FrameType::Request, 0),
             (FrameType::Ping, 0),
         ];
@@ -837,6 +845,7 @@ mod tests {
             (FrameType::Hello, 0u64),
             (FrameType::HelloAck, 0),
             (FrameType::Close, 0),
+            (FrameType::Identify, 0),
             (FrameType::Request, 1),
             (FrameType::Ping, u64::MAX),
             (FrameType::Pong, 7),

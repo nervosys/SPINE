@@ -29,6 +29,11 @@ ciborium = "0.2"
 spine-cbor = { path = "../spine-cbor", version = "2.0.2" }
 uuid = { version = "1", features = ["v4", "serde"] }
 rustls.workspace = true
+# Session identity (docs/spec/00-wire.md 6.6): the per-connection binding value,
+# the SHA-256 of the handshake bodies and the Ed25519 proof of IDENTIFY.
+rand.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
 
 # QUIC transport (optional, for fallback/0-RTT connections)
 quinn = { version = "0.11", optional = true }

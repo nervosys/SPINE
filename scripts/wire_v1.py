@@ -6,7 +6,10 @@ code, and since the reconciliation of the specification with the implementation
 the two agree. Section numbers in the code comments below ("C.5 rule 2") use the
 labels of the earlier document; Appendix D of the specification maps them to the
 current sections. It shares nothing with `src/spine-protocol` and uses
-only the Python standard library (3.8 or later). It is the "second
+only the Python standard library (3.8 or later) and the pure-Python RFC 8032
+Ed25519 of `scripts/names_v1.py` (signing, verification, and the strict
+verification of `verify_strict`: S below the group order, a small-order key or
+R refused), which checks itself against the RFC's test vectors. It is the "second
 implementation" of requirement R14: the vectors in
 `docs/spec/00-wire.vectors.json` are produced by it, and
 `src/spine-protocol/tests/conformance_vectors.rs` checks the Rust crate
@@ -22,7 +25,9 @@ Usage:
 What it covers: the deterministic-CBOR encoder and strict validator (C.5
 rules 1 to 6, each rejection with a named reason), the frame encoder and
 decoder (C.1, C.3, C.4, the request-id rules that hold whatever the
-connection state, the close codes of C.7), HELLO, HELLO_ACK and CLOSE bodies
+connection state, the close codes of C.7), HELLO, HELLO_ACK (with `binding`,
+`authority` and `time`) and CLOSE bodies, the IDENTIFY body and its signed
+message (section 6.6), a model of the server's IDENTIFY state rules,
 and `negotiate` (C.6, C.10), and builders for REQUEST and RESPONSE bodies
 (C.5 rule 7, D).
 
@@ -36,16 +41,22 @@ What it does not cover:
   compressed blocks is reported as "opaque" and its length is not checked.
 * Connection state: id uniqueness among in-flight requests, direction,
   "HELLO first", a second HELLO, extension indexes, timeouts, max_inflight.
-  Those need a stream of frames, not one frame, and have no vectors here.
+  Those need a stream of frames, not one frame, and have no vectors here,
+  except the IDENTIFY window (`identify_sessions`).
 * Semantics of commands (what `navigate` does). Only the wire shape.
 
 A "note" on a vector explains the rule it exercises and cites the section of
 the specification that states it.
 """
 
+import hashlib
 import json
+import os
 import struct
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import names_v1  # noqa: E402  (the pure-Python RFC 8032 Ed25519 of the name reference)
 
 # ---------------------------------------------------------------------------
 # Constants (C.1, C.3, C.6, C.7, D)
@@ -63,6 +74,12 @@ MAX_EXTENSION_ID_LEN = 128
 U64_MAX = 2**64 - 1
 U32_MAX = 2**32 - 1
 JSON_SAFE_INT = 2**53
+AUTHORITY_MODES = ["off", "audit", "required"]
+IDENTIFY_DOMAIN = b"spine-wire-identify-v1\x00"
+# The fixed test key of every IDENTIFY vector (Ed25519 signatures are deterministic).
+IDENTIFY_SEED = bytes([0x11]) * 32
+DEFAULT_BINDING = bytes([0x42]) * 32
+DEFAULT_TIME = 1700000000
 
 FRAME_TYPES = {
     "HELLO": 0x01,
@@ -70,6 +87,7 @@ FRAME_TYPES = {
     "CLOSE": 0x03,
     "PING": 0x04,
     "PONG": 0x05,
+    "IDENTIFY": 0x06,
     "REQUEST": 0x10,
     "RESPONSE": 0x11,
     "STREAM_START": 0x20,
@@ -616,7 +634,7 @@ def check_request_id(ftype, request_id):
     connection state (as implemented): HELLO, HELLO_ACK and CLOSE carry 0;
     REQUEST and PING carry a nonzero id. Other types are not checked here."""
     ok = True
-    if ftype in (0x01, 0x02, 0x03):
+    if ftype in (0x01, 0x02, 0x03, 0x06):
         ok = request_id == 0
     elif ftype in (0x10, 0x04):
         ok = request_id != 0
@@ -744,12 +762,16 @@ def hello_body(versions, max_frame, extensions, agent=None, **unknown):
     return body
 
 
-def hello_ack_body(version, max_frame, max_inflight, extensions, agent=None):
+def hello_ack_body(version, max_frame, max_inflight, extensions, agent=None,
+                   binding=DEFAULT_BINDING, authority="off", time=DEFAULT_TIME):
     body = {
         "version": version,
         "max_frame": max_frame,
         "max_inflight": max_inflight,
         "extensions": list(extensions),
+        "binding": bytes(binding),
+        "authority": authority,
+        "time": time,
     }
     if agent is not None:
         body["agent"] = agent
@@ -837,6 +859,10 @@ def parse_hello_ack(frame_type_code, body):
     max_frame = _need(value, "max_frame", lambda v: _is_uint(v, U32_MAX), "an unsigned 32-bit integer")
     max_inflight = _need(value, "max_inflight", lambda v: _is_uint(v, U32_MAX), "an unsigned 32-bit integer")
     extensions = _need(value, "extensions", _is_text_list, "an array of text")
+    binding = _need(value, "binding", lambda v: isinstance(v, bytes) and len(v) == 32, "32 bytes")
+    authority = _need(value, "authority", lambda v: isinstance(v, str) and v in AUTHORITY_MODES,
+                      "one of off, audit, required")
+    time = _need(value, "time", _is_uint, "an unsigned integer")
     agent = _optional_text(value, "agent")
     _check_max_frame(max_frame)
     if max_inflight < 1:
@@ -848,6 +874,9 @@ def parse_hello_ack(frame_type_code, body):
         "max_inflight": max_inflight,
         "extensions": extensions,
         "agent": agent,
+        "binding": binding.hex(),
+        "authority": authority,
+        "time": time,
     }
 
 
@@ -867,7 +896,9 @@ def parse_close(frame_type_code, body):
 
 def negotiate(hello, local):
     """C.6 server side. `hello` is parse_hello's result; `local` a dict with
-    versions, max_frame, max_inflight, extensions, agent (None for no agent).
+    versions, max_frame, max_inflight, extensions, agent (None for no agent),
+    binding (64 hex characters), authority and time: the per-connection values
+    of section 6.3, which a real server draws fresh and a vector fixes.
 
     Version: the highest one offered that the server supports; none means
     CLOSE unsupported_version with `supported` (sorted, without duplicates).
@@ -890,6 +921,9 @@ def negotiate(hello, local):
         "max_inflight": max(local["max_inflight"], 1),
         "extensions": [e for e in hello["extensions"] if e in local["extensions"]],
         "agent": local["agent"],
+        "binding": local["binding"],
+        "authority": local["authority"],
+        "time": local["time"],
     }
 
 
@@ -1007,16 +1041,24 @@ CONVENTIONS = [
     "valid_bodies: deterministic CBOR items a decoder must accept. 'hex' is the exact encoding; 'value' describes it.",
     "invalid_bodies: items a decoder must reject. 'reason' is the Rust cbor::CborError variant name, which is also the rule broken (C.5).",
     "valid_frames: whole frames. 'type', 'request_id', 'flags' and 'body' (or 'body_hex') describe 'hex'. 'typed' names the body type that decodes it: "
-    "command, reply, ping, pong, stream, hello, hello_ack, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
+    "command, reply, ping, pong, stream, hello, hello_ack, identify, close, ext, or none (decode and re-encode of the typed value is not offered, e.g. a result with byte strings).",
     "A frame with flags 1 has the body u32 uncompressed_len, then a zstd frame. These vectors store the body in a raw-block zstd frame (valid zstd, not smaller). "
     "A receiver must decode them to 'body_hex'; they are not byte-for-byte what a compressing sender would emit, so re-encoding is not part of the check.",
     "invalid_frames: whole frames (or the prefix needed to decide) that a receiver using 'max_frame' as the maximum in force must reject with 'error' (the Rust frame::FrameError variant) and 'close_code' (C.7 wire text). "
     "'build' re-derives 'hex'. incomplete_frames: valid prefixes; 'needed' is the least number of further bytes (FrameError::NeedMore).",
     "The order of the stateless frame checks is: length, version, type, flags, request id, then the body (specification section 7.2).",
-    "handshakes: 'hello_frame' is a whole HELLO frame, 'local' the server configuration, 'expect' the outcome of validating the HELLO and negotiating: "
+    "handshakes: 'hello_frame' is a whole HELLO frame, 'local' the server configuration (with the per-connection 'binding' as hex, 'authority' and 'time', "
+    "which a real server draws fresh and a vector fixes), 'expect' the outcome of validating the HELLO and negotiating: "
     "an 'ack' (with the whole 'ack_frame') or a 'close' with its code and 'supported'. CLOSE 'message' text is not specified and not part of a vector.",
+    "hello_acks: HELLO_ACK bodies ('body_hex', described by 'body') that a client accepts ('expect' ok) or refuses with the CLOSE code in 'expect' (section 6.3).",
+    "identify: an IDENTIFY body ('body_hex') judged against the connection whose HELLO and HELLO_ACK bodies are 'hello_body' and 'ack_body'. 'expect' is 'valid' "
+    "or the CLOSE code. A valid vector also gives the test 'seed' (Ed25519 signatures are deterministic), the proven 'key', the signed 'message' M (section 6.6) and the 'signature'.",
+    "identify_sessions: 'hello_frame' and 'local' make a handshake; the server then receives the 'frames' (hex) in order. 'expect' is "
+    "{result: ok, identity: hex or null} when all are accepted and the stream then ends, or {result: close, code} at the first one refused.",
+    "ed25519_strict: 'public', 'message' and 'signature' (hex) with the verdict of plain RFC 8032 verification ('plain') and of verify_strict ('strict'); "
+    "a conforming server uses the strict one (section 6.6).",
     "A vector with a 'note' explains the rule it exercises and cites the section of docs/spec/00-wire.md that states it.",
-    "Not covered: connection state (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression.",
+    "Not covered: connection state other than the IDENTIFY window (id reuse, direction, HELLO first, extension index, timeouts, max_inflight) and real zstd compression.",
 ]
 
 # Cross-check sources. Each must be reproduced byte for byte.
@@ -1325,7 +1367,7 @@ def make_invalid_frames():
     for ver in (0, 2, 255):
         add("version_%d" % ver, _frame_build(version=ver))
     # Unknown frame type (C.7 row 4).
-    for t in (0x00, 0x06, 0x0F, 0x12, 0x1F, 0x24, 0x7F, 0x81, 0xFF):
+    for t in (0x00, 0x07, 0x0F, 0x12, 0x1F, 0x24, 0x7F, 0x81, 0xFF):
         add("type_0x%02x" % t, _frame_build(ftype=t))
     # Reserved flag bits (C.7 row 3).
     for bit in range(1, 8):
@@ -1333,8 +1375,9 @@ def make_invalid_frames():
     add("flags_all_set", _frame_build(flags=0xFF))
     add("flags_compressed_and_reserved", _frame_build(flags=0x03, body_hex=_compressed(1)))
     # Request-id rules that need no connection state, as implemented.
-    for t, name in ((0x01, "hello"), (0x02, "hello_ack"), (0x03, "close")):
+    for t, name in ((0x01, "hello"), (0x02, "hello_ack"), (0x03, "close"), (0x06, "identify")):
         add("%s_with_nonzero_id" % name, _frame_build(ftype=t, request_id=1))
+    add("identify_with_max_id", _frame_build(ftype=0x06, request_id=U64_MAX))
     add("hello_with_max_id", _frame_build(ftype=0x01, request_id=U64_MAX))
     add("request_with_id_zero", _frame_build(ftype=0x10, request_id=0))
     add("ping_with_id_zero", _frame_build(ftype=0x04, request_id=0))
@@ -1410,8 +1453,15 @@ def make_valid_frames():
     add("hello_min_max_frame_no_extensions", "HELLO", 0, hello_body([1], 1024, []), "hello")
     add("hello_ack_minimal", "HELLO_ACK", 0, hello_ack_body(1, 16777216, 1, []), "hello_ack")
     add("hello_ack_extensions_and_agent", "HELLO_ACK", 0,
-        hello_ack_body(1, 65536, 8, ["b/two/1", "a/one/1"], "spined/0"), "hello_ack",
+        hello_ack_body(1, 65536, 8, ["b/two/1", "a/one/1"], "spined/0", bytes(range(32)), "required", 1700000123),
+        "hello_ack",
         note="the order of extensions fixes the extension index (sections 6.4 and 11)")
+    add("hello_ack_authority_audit", "HELLO_ACK", 0,
+        hello_ack_body(1, 16777216, 8, [], None, bytes([0xAA]) * 32, "audit", 0), "hello_ack")
+    identify_hello = encode(hello_body([1], 16777216, []))
+    identify_ack = encode(hello_ack_body(1, 16777216, 8, []))
+    add("identify_empty_channel", "IDENTIFY", 0, make_identify_body(IDENTIFY_SEED, identify_hello, identify_ack),
+        "identify", note="a 118-byte body and a 133-byte frame (section 6.6)")
     add("close_without_supported", "CLOSE", 0, close_body("malformed_frame", "body is not deterministic CBOR"), "close")
     add("close_with_supported", "CLOSE", 0, close_body("unsupported_version", "no offered version is supported", [1, 2]), "close")
     add("close_shutting_down_empty_message", "CLOSE", 0, close_body("shutting_down", ""), "close")
@@ -1502,9 +1552,72 @@ def make_valid_frames():
     return out
 
 
-def _local(versions, max_frame=MAX_FRAME, max_inflight=1, extensions=(), agent=None):
+def _local(versions, max_frame=MAX_FRAME, max_inflight=1, extensions=(), agent=None,
+           binding=DEFAULT_BINDING, authority="off", time=DEFAULT_TIME):
     return {"versions": list(versions), "max_frame": max_frame, "max_inflight": max_inflight,
-            "extensions": list(extensions), "agent": agent}
+            "extensions": list(extensions), "agent": agent,
+            "binding": bytes(binding).hex(), "authority": authority, "time": time}
+
+
+ACK_FIELDS = ("version", "max_frame", "max_inflight", "extensions", "agent", "binding", "authority", "time")
+
+
+def _ack_body_of(ack):
+    """The HELLO_ACK body for a negotiate() result."""
+    return hello_ack_body(ack["version"], ack["max_frame"], ack["max_inflight"], ack["extensions"], ack["agent"],
+                          bytes.fromhex(ack["binding"]), ack["authority"], ack["time"])
+
+
+def make_hello_acks():
+    out = []
+    base = hello_ack_body(1, 4096, 8, ["x/a/1"], "srv/1")
+
+    def add(name, body_value, expect, note=None):
+        body = encode(body_value)
+        v = {"name": name, "body": to_desc(body_value), "body_hex": body.hex(), "expect": expect}
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    def without(key):
+        body = dict(base)
+        del body[key]
+        return body
+
+    def with_(**changes):
+        body = dict(base)
+        body.update(changes)
+        return body
+
+    add("valid_off", base, "ok")
+    add("valid_audit", with_(authority="audit"), "ok", note="all three texts are valid on the wire (section 6.3)")
+    add("valid_required", with_(authority="required"), "ok")
+    add("valid_time_zero", with_(time=0), "ok")
+    add("valid_time_u64_max", with_(time=U64_MAX), "ok")
+    add("valid_binding_all_zero", with_(binding=bytes(32)), "ok",
+        note="a client cannot tell a random binding from a constant one")
+    add("valid_without_agent", {k: v for k, v in base.items() if k != "agent"}, "ok")
+    schema = "a HELLO_ACK that is deterministic CBOR but misses or mistypes a required key is protocol_violation (section 6.3)"
+    for key in ("binding", "authority", "time"):
+        add("invalid_missing_%s" % key, without(key), "protocol_violation", note=schema)
+    add("invalid_binding_empty", with_(binding=b""), "protocol_violation", note=schema)
+    add("invalid_binding_31_bytes", with_(binding=bytes(31)), "protocol_violation", note=schema)
+    add("invalid_binding_33_bytes", with_(binding=bytes(33)), "protocol_violation", note=schema)
+    add("invalid_binding_is_text", with_(binding="b" * 32), "protocol_violation", note=schema)
+    add("invalid_binding_is_32_ints", with_(binding=[0] * 32), "protocol_violation",
+        note="a byte string is never an array of integers (section 5 rule 7)")
+    add("invalid_binding_is_null", with_(binding=None), "protocol_violation", note=schema)
+    for name, mode in (("maybe", "maybe"), ("capitalised", "Off"), ("upper_case", "REQUIRED"),
+                       ("empty", ""), ("padded", "audit ")):
+        add("invalid_authority_%s" % name, with_(authority=mode), "protocol_violation",
+            note="the three texts are lower case and exact (section 6.3)")
+    add("invalid_authority_is_int", with_(authority=0), "protocol_violation", note=schema)
+    add("invalid_authority_is_null", with_(authority=None), "protocol_violation", note=schema)
+    add("invalid_time_is_text", with_(time="1700000000"), "protocol_violation", note=schema)
+    add("invalid_time_negative", with_(time=-1), "protocol_violation", note=schema)
+    add("invalid_time_is_float", with_(time=1.5), "protocol_violation", note=schema)
+    add("invalid_time_is_null", with_(time=None), "protocol_violation", note=schema)
+    return out
 
 
 def make_handshakes():
@@ -1518,10 +1631,8 @@ def make_handshakes():
         try:
             hello = parse_hello(data["type"], data["body"])
             ack = negotiate(hello, local)
-            body = hello_ack_body(ack["version"], ack["max_frame"], ack["max_inflight"], ack["extensions"], ack["agent"])
-            ack_frame = encode_frame("HELLO_ACK", 0, encode(body))
-            v["expect"] = {"result": "ack", "ack": {k: ack[k] for k in ("version", "max_frame", "max_inflight", "extensions", "agent")},
-                           "ack_frame": ack_frame.hex()}
+            ack_frame = encode_frame("HELLO_ACK", 0, encode(_ack_body_of(ack)))
+            v["expect"] = {"result": "ack", "ack": {k: ack[k] for k in ACK_FIELDS}, "ack_frame": ack_frame.hex()}
         except CloseReject as e:
             v["expect"] = {"result": "close", "code": e.code, "supported": e.supported}
         if note:
@@ -1558,6 +1669,13 @@ def make_handshakes():
     add("max_inflight_zero_becomes_one", hello(), _local([1], max_inflight=0))
     add("agent_in_ack_from_server", hello(agent="client/1"), _local([1], agent="spined/0"))
     add("agent_in_hello_only", hello(agent="client/1"))
+    # The per-connection values of section 6.3.
+    add("authority_audit_reported", hello(), _local([1], authority="audit"),
+        note="the server reports its authority mode in HELLO_ACK (section 6.3)")
+    add("authority_required_reported", hello(), _local([1], authority="required"))
+    add("binding_and_time_are_the_servers", hello(), _local([1], binding=bytes(range(32)), time=0),
+        note="the client's HELLO has no say in the binding or the time (section 6.3)")
+    add("time_u64_max", hello(), _local([1], time=U64_MAX))
     add("agent_128_bytes", hello(agent="a" * 128))
     add("agent_128_bytes_multibyte", hello(agent="é" * 64), note="the agent limit counts UTF-8 bytes (section 6.2)")
     # Extensions: subset and order.
@@ -1622,6 +1740,313 @@ def make_handshakes():
     return out
 
 
+
+# ---------------------------------------------------------------------------
+# IDENTIFY (section 6.6)
+# ---------------------------------------------------------------------------
+
+
+def sha256(data):
+    return hashlib.sha256(bytes(data)).digest()
+
+
+def identify_message(hello_body_bytes, ack_body_bytes, channel, key):
+    """The signed message M of section 6.6:
+    "spine-wire-identify-v1" 00 || SHA-256(H) || SHA-256(A) || u8(len(channel)) || channel || key,
+    H the body bytes of the HELLO frame and A those of the HELLO_ACK frame, exactly as sent."""
+    if len(channel) > 255:
+        raise ValueError("a channel is at most 255 bytes")
+    return (IDENTIFY_DOMAIN + sha256(hello_body_bytes) + sha256(ack_body_bytes)
+            + bytes([len(channel)]) + bytes(channel) + bytes(key))
+
+
+def identify_body(key, sig, channel=b"", **extra):
+    body = {"key": key, "sig": sig, "channel": channel}
+    body.update(extra)
+    return body
+
+
+def make_identify_body(seed, hello_body_bytes, ack_body_bytes, channel=b""):
+    """A valid IDENTIFY body signed by `seed` (Ed25519 signatures are deterministic)."""
+    key = names_v1.ed25519_public(seed)
+    sig = names_v1.ed25519_sign(seed, identify_message(hello_body_bytes, ack_body_bytes, channel, key))
+    return identify_body(key, sig, channel)
+
+
+def parse_identify_body(body):
+    """The shape rules of 6.6: a closed map {key: bytes 32, sig: bytes 64, channel: bytes}.
+    A CBOR failure is malformed_frame, a shape failure protocol_violation (section 7.3)."""
+    try:
+        value = decode(body)
+    except Reject as e:
+        raise CloseReject("malformed_frame", "body is not deterministic CBOR: %s" % e)
+    if not isinstance(value, dict):
+        raise CloseReject("protocol_violation", "IDENTIFY body is not a map with text keys")
+    extra = set(value) - {"key", "sig", "channel"}
+    if extra:
+        raise CloseReject("protocol_violation", "unknown key %r in IDENTIFY" % sorted(extra)[0])
+    key = _need(value, "key", lambda v: isinstance(v, bytes) and len(v) == 32, "32 bytes")
+    sig = _need(value, "sig", lambda v: isinstance(v, bytes) and len(v) == 64, "64 bytes")
+    channel = _need(value, "channel", lambda v: isinstance(v, bytes), "bytes")
+    return {"key": key, "sig": sig, "channel": channel}
+
+
+def verify_identify(hello_body_bytes, ack_body_bytes, body):
+    """What a server does with an IDENTIFY body: the shape, an empty channel,
+    strict Ed25519 verification of M. Returns the proven key."""
+    fields = parse_identify_body(body)
+    if fields["channel"] != b"":
+        raise CloseReject("protocol_violation", "IDENTIFY channel must be empty")
+    message = identify_message(hello_body_bytes, ack_body_bytes, fields["channel"], fields["key"])
+    if not names_v1.ed25519_verify(fields["key"], message, fields["sig"], strict=True):
+        raise CloseReject("protocol_violation", "IDENTIFY signature does not verify")
+    return fields["key"]
+
+
+def make_identify():
+    """Vectors for the body, the signed message and the proof."""
+    out = []
+    hello_b = encode(hello_body([1], MAX_FRAME, []))
+    ack_b = encode(hello_ack_body(1, MAX_FRAME, 8, []))
+    other_ack_b = encode(hello_ack_body(1, MAX_FRAME, 8, [], binding=bytes([0x43]) * 32))
+    other_hello_b = encode(hello_body([1], 65536, []))
+    seed = IDENTIFY_SEED
+    other_seed = bytes([0x12]) * 32
+    key = names_v1.ed25519_public(seed)
+    good = make_identify_body(seed, hello_b, ack_b)
+
+    def add(name, body_value, expect, note=None, ack=None, body_bytes=None):
+        h, a = hello_b, ack or ack_b
+        body = body_bytes if body_bytes is not None else encode(body_value)
+        v = {"name": name, "hello_body": h.hex(), "ack_body": a.hex(), "body_hex": body.hex(), "expect": expect}
+        if body_bytes is None:
+            v["body"] = to_desc(body_value)
+        if expect == "valid":
+            fields = parse_identify_body(body)
+            v["seed"] = seed.hex()
+            v["key"] = fields["key"].hex()
+            v["message"] = identify_message(h, a, fields["channel"], fields["key"]).hex()
+            v["signature"] = fields["sig"].hex()
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    add("valid_empty_channel", good, "valid",
+        note="the body is 118 bytes and the frame 133 (section 6.6); the signature is deterministic")
+    add("valid_over_another_acknowledgement", make_identify_body(seed, hello_b, other_ack_b), "valid", ack=other_ack_b,
+        note="the same key over an acknowledgement with another binding signs another message")
+    # A proof made for another connection, or by another key.
+    add("invalid_wrong_binding", make_identify_body(seed, hello_b, other_ack_b), "protocol_violation",
+        note="signed over an acknowledgement with another binding: M differs (section 6.6)")
+    add("invalid_wrong_hello", make_identify_body(seed, other_hello_b, ack_b), "protocol_violation",
+        note="signed over another HELLO body")
+    sig_flip = bytearray(good["sig"])
+    sig_flip[0] ^= 1
+    add("invalid_signature_bit_flip", identify_body(key, bytes(sig_flip)), "protocol_violation")
+    add("invalid_other_key_with_this_signature", identify_body(names_v1.ed25519_public(other_seed), good["sig"]),
+        "protocol_violation", note="the signature covers the key (section 6.6)")
+    add("invalid_signature_by_another_key",
+        identify_body(key, make_identify_body(other_seed, hello_b, ack_b)["sig"]), "protocol_violation")
+    # The channel is empty in this revision.
+    for n in (1, 32):
+        channel = bytes(range(1, n + 1))
+        add("invalid_channel_%d_bytes_correctly_signed" % n, make_identify_body(seed, hello_b, ack_b, channel),
+            "protocol_violation",
+            note="a server refuses a non-empty channel even when the signature covers it (section 6.6)")
+    # Lengths and types.
+    add("invalid_key_31_bytes", identify_body(key[:31], good["sig"]), "protocol_violation")
+    add("invalid_key_33_bytes", identify_body(key + b"\x00", good["sig"]), "protocol_violation")
+    add("invalid_sig_63_bytes", identify_body(key, good["sig"][:63]), "protocol_violation")
+    add("invalid_sig_65_bytes", identify_body(key, good["sig"] + b"\x00"), "protocol_violation")
+    add("invalid_key_is_text", identify_body("k" * 32, good["sig"]), "protocol_violation")
+    add("invalid_channel_is_text", identify_body(key, good["sig"], ""), "protocol_violation")
+    add("invalid_channel_is_32_ints", identify_body(key, good["sig"], [0] * 32), "protocol_violation",
+        note="a byte string is never an array of integers (section 5 rule 7)")
+    add("invalid_key_is_32_ints", identify_body(list(key), good["sig"]), "protocol_violation")
+    for missing in ("key", "sig", "channel"):
+        body = dict(good)
+        del body[missing]
+        add("invalid_missing_%s" % missing, body, "protocol_violation")
+    add("invalid_unknown_key", identify_body(key, good["sig"], b"", extra=1), "protocol_violation",
+        note="IDENTIFY is a closed struct (section 5 rule 8)")
+    add("invalid_body_is_array", [key, good["sig"], b""], "protocol_violation")
+    add("invalid_body_is_null", None, "protocol_violation")
+    add("invalid_body_is_empty_map", {}, "protocol_violation")
+    add("invalid_null_channel", identify_body(key, good["sig"], None), "protocol_violation")
+    # Not deterministic CBOR: malformed_frame.
+    unsorted = (b"\xa3" + encode("sig") + encode(good["sig"]) + encode("key") + encode(key)
+                + encode("channel") + encode(b""))
+    add("invalid_keys_not_sorted", None, "malformed_frame", body_bytes=unsorted,
+        note="a body that is not deterministic CBOR is malformed_frame whatever its type (section 7.2)")
+    add("invalid_trailing_byte", None, "malformed_frame", body_bytes=encode(good) + b"\x00")
+    # Strict verification: a small-order key, a small-order R and a non-canonical S.
+    identity_point = bytes([1]) + bytes(31)
+    add("invalid_small_order_key", identify_body(identity_point, identity_point + bytes(32)), "protocol_violation",
+        note="the identity point as key with R = identity and S = 0 verifies under plain RFC 8032 and is refused by verify_strict")
+    a_scalar = names_v1._expand(seed)[0]
+    message = identify_message(hello_b, ack_b, b"", key)
+    h = names_v1._sha512_modq(identity_point + key + message)
+    s = (h * a_scalar) % names_v1._Q
+    add("invalid_small_order_r", identify_body(key, identity_point + int.to_bytes(s, 32, "little")),
+        "protocol_violation",
+        note="R is the identity point and S = h*a: plain verification accepts it, verify_strict refuses a small-order R")
+    s_plus_l = int.from_bytes(good["sig"][32:], "little") + names_v1._Q
+    add("invalid_non_canonical_s", identify_body(key, good["sig"][:32] + int.to_bytes(s_plus_l, 32, "little")),
+        "protocol_violation", note="S + L: S is not below the group order")
+    return out
+
+
+def make_ed25519_strict():
+    """Verification verdicts, strict and plain, over the same inputs."""
+    out = []
+    seed = IDENTIFY_SEED
+    public = names_v1.ed25519_public(seed)
+    msg = b"spine-wire strict verification"
+    sig = names_v1.ed25519_sign(seed, msg)
+    identity_point = bytes([1]) + bytes(31)
+    a_scalar = names_v1._expand(seed)[0]
+
+    def add(name, public_key, message, signature, note):
+        out.append({
+            "name": name,
+            "public": public_key.hex(),
+            "message": message.hex(),
+            "signature": signature.hex(),
+            "plain": names_v1.ed25519_verify(public_key, message, signature, strict=False),
+            "strict": names_v1.ed25519_verify(public_key, message, signature, strict=True),
+            "note": note,
+        })
+
+    add("valid", public, msg, sig, "an ordinary signature is accepted by both")
+    add("wrong_message", public, msg + b"!", sig, "refused by both")
+    bad = bytearray(sig)
+    bad[40] ^= 1
+    add("bit_flip_in_s", public, msg, bytes(bad), "refused by both")
+    s_plus_l = int.from_bytes(sig[32:], "little") + names_v1._Q
+    add("s_plus_group_order", public, msg, sig[:32] + int.to_bytes(s_plus_l, 32, "little"),
+        "S is not below the group order: refused by both")
+    add("small_order_key_identity", identity_point, msg, identity_point + bytes(32),
+        "R = identity, S = 0 and the identity point as key: RFC 8032 verification accepts, verify_strict refuses a small-order key")
+    h = names_v1._sha512_modq(identity_point + public + msg)
+    s = (h * a_scalar) % names_v1._Q
+    add("small_order_r", public, msg, identity_point + int.to_bytes(s, 32, "little"),
+        "a real key with R = identity and S = h*a: RFC 8032 verification accepts, verify_strict refuses a small-order R")
+    return out
+
+
+def _session_hello(extensions=()):
+    return {"type": "HELLO", "request_id": 0, "flags": 0,
+            "body": to_desc(hello_body([1], MAX_FRAME, list(extensions)))}
+
+
+def run_session(v):
+    """The server side of a connection after its handshake: what the state
+    rules of sections 6.6 and 8 do with the frames of `v`, in order. Returns
+    {"result": "ok", "identity": hex or None} when all are accepted, or
+    {"result": "close", "code": ...} at the first that is refused."""
+    decoded, _ = decode_frame(bytes.fromhex(v["hello_frame"]), PRE_HELLO_MAX_FRAME)
+    hello = parse_hello(decoded["type"], decoded["body"])
+    ack = negotiate(hello, v["local"])
+    ack_b = encode(_ack_body_of(ack))
+    violation = {"result": "close", "code": "protocol_violation"}
+    window, identity, in_flight = True, None, set()
+    for frame_hex in v["frames"]:
+        try:
+            frame, _ = decode_frame(bytes.fromhex(frame_hex), ack["max_frame"])
+        except FrameReject as e:
+            return {"result": "close", "code": e.close_code}
+        try:
+            validate(frame["body"])
+        except Reject:
+            return {"result": "close", "code": "malformed_frame"}
+        t = TYPE_NAMES[frame["type"]]
+        if t in ("PING", "PONG"):
+            if not _is_uint(decode(frame["body"])):
+                return violation
+            continue
+        if t == "IDENTIFY":
+            if not window:
+                return violation
+            window = False
+            try:
+                identity = verify_identify(decoded["body"], ack_b, frame["body"])
+            except CloseReject as e:
+                return {"result": "close", "code": e.code}
+            continue
+        if t in ("REQUEST", "STREAM_CANCEL", "EXT"):
+            window = False
+        if t == "REQUEST":
+            if frame["request_id"] in in_flight:
+                return violation
+            if len(in_flight) < ack["max_inflight"]:
+                in_flight.add(frame["request_id"])
+        elif t == "EXT":
+            value = decode(frame["body"])
+            if not (isinstance(value, list) and len(value) == 3 and _is_uint(value[0])
+                    and value[0] < len(ack["extensions"])):
+                return violation
+        elif t != "STREAM_CANCEL":
+            return violation
+    return {"result": "ok", "identity": identity.hex() if identity is not None else None}
+
+
+def make_identify_sessions():
+    out = []
+    seed = IDENTIFY_SEED
+
+    def add(name, frames_for, local=None, extensions=(), note=None):
+        local = local or _local([1], max_inflight=4, extensions=extensions)
+        hello_frame = frame_from_spec(_session_hello(extensions))
+        decoded, _ = decode_frame(hello_frame, PRE_HELLO_MAX_FRAME)
+        ack = negotiate(parse_hello(decoded["type"], decoded["body"]), local)
+        frames = frames_for(decoded["body"], encode(_ack_body_of(ack)))
+        v = {"name": name, "hello_frame": hello_frame.hex(), "local": local, "frames": [f.hex() for f in frames]}
+        v["expect"] = run_session(v)
+        if note:
+            v["note"] = note
+        out.append(v)
+
+    def ident(h, a, channel=b""):
+        return encode_frame("IDENTIFY", 0, encode(make_identify_body(seed, h, a, channel)))
+
+    other_ack = encode(hello_ack_body(1, MAX_FRAME, 4, [], binding=bytes([0x43]) * 32))
+    req = lambda i: encode_frame("REQUEST", i, encode(command("get_ur")))
+    ping = encode_frame("PING", 5, encode(1))
+    pong = encode_frame("PONG", 6, encode(2))
+    cancel = encode_frame("STREAM_CANCEL", 99, encode({}))
+    ext = encode_frame("EXT", 0, encode([0, 1, None]))
+
+    add("no_identify_is_anonymous", lambda h, a: [req(1)], note="a client that sends no IDENTIFY is anonymous")
+    add("identify_alone", lambda h, a: [ident(h, a)])
+    add("identify_then_request", lambda h, a: [ident(h, a), req(1)])
+    add("identify_pipelined_with_three_requests", lambda h, a: [ident(h, a), req(1), req(2), req(3)])
+    add("ping_and_pong_do_not_close_the_window", lambda h, a: [ping, pong, ident(h, a), req(1)],
+        note="a PING or PONG does not close the window (section 6.6)")
+    add("identify_then_ping_then_request", lambda h, a: [ident(h, a), ping, req(1)])
+    add("second_identify", lambda h, a: [ident(h, a), ident(h, a)], note="an IDENTIFY is accepted at most once")
+    add("identify_after_request", lambda h, a: [req(1), ident(h, a)])
+    add("identify_after_request_ping_and_pong", lambda h, a: [req(1), ping, pong, ident(h, a)])
+    add("identify_after_stream_cancel", lambda h, a: [cancel, ident(h, a)],
+        note="a STREAM_CANCEL for an id that is not in flight is ignored but closes the window")
+    add("identify_after_ext", lambda h, a: [ext, ident(h, a)], extensions=["x/a/1"],
+        note="an EXT frame closes the window")
+    add("identify_after_a_request_refused_as_overloaded", lambda h, a: [req(1), req(2), ident(h, a)],
+        local=_local([1], max_inflight=1),
+        note="a request that arrives at max_inflight is answered overloaded and still closes the window")
+    add("bad_signature", lambda h, a: [encode_frame("IDENTIFY", 0, encode(
+        dict(make_identify_body(seed, h, a), sig=bytes(64))))])
+    add("proof_for_another_binding", lambda h, a: [ident(h, other_ack)])
+    add("non_empty_channel", lambda h, a: [ident(h, a, b"\x01")])
+    add("identify_with_nonzero_request_id",
+        lambda h, a: [raw_frame(1, 0x06, 0, 5, encode(make_identify_body(seed, h, a)))],
+        note="IDENTIFY carries request id 0: a frame-level protocol_violation (section 3)")
+    add("identify_body_not_deterministic", lambda h, a: [raw_frame(1, 0x06, 0, 0, b"\xa0\x00")],
+        note="a body that is not deterministic CBOR is malformed_frame (section 7.2)")
+    add("response_from_the_client_is_a_violation",
+        lambda h, a: [raw_frame(1, 0x11, 0, 1, encode({"ok": 1}))], note="direction rule of section 8.2, as before")
+    return out
+
+
 def build_document():
     doc = {
         "format": "spine-wire-vectors",
@@ -1633,6 +2058,10 @@ def build_document():
         "invalid_frames": make_invalid_frames(),
         "incomplete_frames": make_incomplete_frames(),
         "handshakes": make_handshakes(),
+        "hello_acks": make_hello_acks(),
+        "identify": make_identify(),
+        "identify_sessions": make_identify_sessions(),
+        "ed25519_strict": make_ed25519_strict(),
     }
     return doc
 
@@ -1673,6 +2102,8 @@ def _typed_check(v, frame):
         parse_hello(code, body)
     elif typed == "hello_ack":
         parse_hello_ack(code, body)
+    elif typed == "identify":
+        parse_identify_body(body)
     elif typed == "close":
         parse_close(code, body)
     elif typed == "command":
@@ -1772,11 +2203,63 @@ def check_handshake(v):
         return "negotiated, expected a close with %s" % expect["code"]
     if ack != expect["ack"]:
         return "ack %s, expected %s" % (ack, expect["ack"])
-    body = hello_ack_body(ack["version"], ack["max_frame"], ack["max_inflight"], ack["extensions"], ack["agent"])
+    body = _ack_body_of(ack)
     if encode_frame("HELLO_ACK", 0, encode(body)).hex() != expect["ack_frame"]:
         return "ack_frame differs"
     parse_hello_ack(FRAME_TYPES["HELLO_ACK"], encode(body))
     return None
+
+
+def check_hello_ack(v):
+    body = bytes.fromhex(v["body_hex"])
+    if encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    try:
+        parse_hello_ack(FRAME_TYPES["HELLO_ACK"], body)
+    except CloseReject as e:
+        return None if e.code == v["expect"] else "closed with %s, expected %s" % (e.code, v["expect"])
+    return None if v["expect"] == "ok" else "accepted, expected %s" % v["expect"]
+
+
+def check_identify(v):
+    hello_b, ack_b, body = (bytes.fromhex(v[k]) for k in ("hello_body", "ack_body", "body_hex"))
+    parse_hello(FRAME_TYPES["HELLO"], hello_b)
+    parse_hello_ack(FRAME_TYPES["HELLO_ACK"], ack_b)
+    if "body" in v and encode(from_desc(v["body"])) != body:
+        return "the description gives %s, not body_hex" % encode(from_desc(v["body"])).hex()[:80]
+    expect = v["expect"]
+    try:
+        key = verify_identify(hello_b, ack_b, body)
+    except CloseReject as e:
+        return None if e.code == expect else "closed with %s, expected %s" % (e.code, expect)
+    if expect != "valid":
+        return "accepted, expected %s" % expect
+    fields = parse_identify_body(body)
+    seed = bytes.fromhex(v["seed"])
+    message = identify_message(hello_b, ack_b, fields["channel"], key)
+    if key.hex() != v["key"] or names_v1.ed25519_public(seed) != key:
+        return "key differs from the key of the seed"
+    if message.hex() != v["message"]:
+        return "message M is %s, not the stored one" % message.hex()[:80]
+    if names_v1.ed25519_sign(seed, message).hex() != v["signature"] or fields["sig"].hex() != v["signature"]:
+        return "signature differs from the deterministic signature of M"
+    if encode(make_identify_body(seed, hello_b, ack_b, fields["channel"])) != body:
+        return "body differs from the body signed by the seed"
+    return None
+
+
+def check_ed25519_strict(v):
+    public, message, signature = (bytes.fromhex(v[k]) for k in ("public", "message", "signature"))
+    plain = names_v1.ed25519_verify(public, message, signature, strict=False)
+    strict = names_v1.ed25519_verify(public, message, signature, strict=True)
+    if (plain, strict) != (v["plain"], v["strict"]):
+        return "verdicts plain=%s strict=%s, expected plain=%s strict=%s" % (plain, strict, v["plain"], v["strict"])
+    return None
+
+
+def check_identify_session(v):
+    result = run_session(v)
+    return None if result == v["expect"] else "result %s, expected %s" % (result, v["expect"])
 
 
 CHECKS = [
@@ -1786,6 +2269,10 @@ CHECKS = [
     ("invalid_frames", check_invalid_frame, 40),
     ("incomplete_frames", check_incomplete_frame, 4),
     ("handshakes", check_handshake, 30),
+    ("hello_acks", check_hello_ack, 25),
+    ("identify", check_identify, 25),
+    ("identify_sessions", check_identify_session, 15),
+    ("ed25519_strict", check_ed25519_strict, 6),
 ]
 
 
@@ -1843,6 +2330,8 @@ def render(doc):
 
 
 def main(argv):
+    if len(argv) >= 2 and argv[1] in ("generate", "check"):
+        names_v1.rfc8032_self_check()
     if len(argv) >= 2 and argv[1] == "generate":
         doc = build_document()
         problems = cross_checks(doc)
