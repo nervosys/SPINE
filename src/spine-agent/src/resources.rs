@@ -1,7 +1,10 @@
 //! Resolution followed by bounded transfer and end-to-end content validation.
 use crate::AgentClient;
 use anyhow::{ensure, Context, Result};
-use spine_name::{resource_id, verify_resource, NameRecord};
+use spine_name::{
+    authorise_record, log_within_bounds, publication_value, resource_id, verify_resource,
+    NameError, NameRecord, SuccessionLog, SUCCESSION_META_KEY,
+};
 use spine_protocol::{
     resource::{ResourceChunk, MAX_RESOURCE_BYTES, MAX_RESOURCE_CHUNK},
     BrowserCommand, NameResolution,
@@ -66,6 +69,62 @@ fn check_assembled(hash: &[u8; 32], content_type: &str, data: &[u8]) -> Result<(
     verify_resource(hash, content_type, data).context("resource integrity check failed")
 }
 
+/// Judge a record that comes with no succession log.
+///
+/// A record without a `spine.succession` head claim is checked exactly as
+/// before, by [`NameRecord::verify`] under the key in the name. A record that
+/// carries a head claim is never accepted here: it can only be judged with the
+/// name's log, so the answer is [`NameError::NeedSuccessionLog`] (or another
+/// refusal for a malformed claim), never a bare bad signature.
+pub fn authorise_without_log(record: &NameRecord) -> Result<(), NameError> {
+    if record.meta.contains_key(SUCCESSION_META_KEY) {
+        authorise_record(record, None)
+    } else {
+        record.verify()
+    }
+}
+
+/// Judge a record against the succession log of its name: the log is replayed
+/// from the key in the name, and the record must be signed by the key that
+/// log makes current and carry the head claim of its state
+/// ([`spine_name::authorise_record`]). A log that is over the size bounds or
+/// does not verify is refused, as is a record signed by a superseded key.
+///
+/// An empty log judges the record as the inception key's, so an unrotated name
+/// may be sent with an empty log.
+pub fn authorise_with_log(record: &NameRecord, log: &SuccessionLog) -> Result<(), NameError> {
+    let key = record
+        .name
+        .public_key()
+        .ok_or_else(|| NameError::NotSignable(record.name.to_string()))?;
+    if !log_within_bounds(log) {
+        return Err(NameError::InvalidSuccessionLog(
+            "over the size bounds".to_string(),
+        ));
+    }
+    let state = log
+        .verify(key)
+        .map_err(|e| NameError::InvalidSuccessionLog(e.to_string()))?;
+    authorise_record(record, Some(&state))
+}
+
+/// Judge a record with the caller's log if there is one, else without.
+fn authorise(record: &NameRecord, log: Option<&SuccessionLog>) -> Result<(), NameError> {
+    match log {
+        Some(log) => authorise_with_log(record, log),
+        None => authorise_without_log(record),
+    }
+}
+
+/// A refused binding as an error. The need-log refusal is passed through as it
+/// is, so its message says what to do; the others keep the context they had.
+fn binding_error(error: NameError) -> anyhow::Error {
+    match error {
+        NameError::NeedSuccessionLog { .. } => anyhow::Error::new(error),
+        other => anyhow::Error::new(other).context("resource binding signature"),
+    }
+}
+
 #[derive(Debug)]
 pub struct RetrievedResource {
     pub record: NameRecord,
@@ -74,13 +133,45 @@ pub struct RetrievedResource {
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
+    /// Publish a resource and its binding record. The record is judged under the
+    /// key in the name; a record of a rotated name (one that carries a
+    /// `spine.succession` head claim) is refused with
+    /// [`NameError::NeedSuccessionLog`]: use [`Self::publish_resource_with_log`].
     pub async fn publish_resource(
         &mut self,
         record: &NameRecord,
         content_type: &str,
         data: Vec<u8>,
     ) -> Result<serde_json::Value> {
-        record.verify()?;
+        authorise_without_log(record)?;
+        let value = serde_json::to_value(record)?;
+        self.send_resource(record, value, content_type, data).await
+    }
+
+    /// [`Self::publish_resource`] for a name with a succession log. The record
+    /// is judged against `log` ([`authorise_with_log`]), so a current-key
+    /// record of a rotated name is accepted and a superseded-key record is
+    /// refused, and the log travels beside the record
+    /// ([`spine_name::publication_value`]) for the daemon to judge it too.
+    pub async fn publish_resource_with_log(
+        &mut self,
+        record: &NameRecord,
+        log: &SuccessionLog,
+        content_type: &str,
+        data: Vec<u8>,
+    ) -> Result<serde_json::Value> {
+        authorise_with_log(record, log)?;
+        let value = publication_value(record, log)?;
+        self.send_resource(record, value, content_type, data).await
+    }
+
+    async fn send_resource(
+        &mut self,
+        record: &NameRecord,
+        value: serde_json::Value,
+        content_type: &str,
+        data: Vec<u8>,
+    ) -> Result<serde_json::Value> {
         ensure!(data.len() <= MAX_RESOURCE_BYTES, "resource exceeds 8 MiB");
         ensure!(
             record.content_hash == Some(resource_id(content_type, &data)?),
@@ -89,7 +180,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         // A refusal is a `NativeError::Remote` with the daemon's code
         // (`record_expired`, `publish_failed`, ...).
         self.send_request(BrowserCommand::PublishResource {
-            record: serde_json::to_value(record)?,
+            record: value,
             content_type: content_type.into(),
             data,
         })
@@ -98,8 +189,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
 
     /// Retrieve from an already connected origin, including a TLS-connected
     /// client. A signed record fixes the expected content across every chunk.
+    ///
+    /// The record is judged under the key in the name; one that carries a
+    /// succession head claim is refused with [`NameError::NeedSuccessionLog`]
+    /// (use [`Self::read_resource_with_log`]).
     pub async fn read_resource(&mut self, record: NameRecord) -> Result<RetrievedResource> {
-        record.verify().context("resource binding signature")?;
+        self.read_resource_with_log(record, None).await
+    }
+
+    /// [`Self::read_resource`] with the name's succession log, if the caller
+    /// has one (`None` is `read_resource`). The daemon's resolution carries no
+    /// log, so a client that resolved a rotated name must be given it.
+    pub async fn read_resource_with_log(
+        &mut self,
+        record: NameRecord,
+        log: Option<&SuccessionLog>,
+    ) -> Result<RetrievedResource> {
+        authorise(&record, log).map_err(binding_error)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
@@ -186,6 +292,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
         name: &str,
         policy: FetchPolicy,
     ) -> Result<RetrievedResource> {
+        self.fetch_resource_with_log(name, policy, None).await
+    }
+
+    /// `fetch_resource_with` with the name's succession log, if the caller has
+    /// one. The resolution answer carries no log, so without one a rotated
+    /// name's record is refused with [`NameError::NeedSuccessionLog`]
+    /// before any origin is dialled.
+    pub async fn fetch_resource_with_log(
+        &mut self,
+        name: &str,
+        policy: FetchPolicy,
+        log: Option<&SuccessionLog>,
+    ) -> Result<RetrievedResource> {
         let resolution = self
             .resolve_name(name, None)
             .await
@@ -194,7 +313,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
             anyhow::bail!("resource did not resolve: {resolution:?}");
         };
         let record: NameRecord = serde_json::from_value(record)?;
-        record.verify().context("resource binding signature")?;
+        authorise(&record, log).map_err(binding_error)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
@@ -239,10 +358,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> AgentClient<S> {
                 )
                 .await;
                 match origin {
-                    Ok(Ok(mut origin)) => match origin.read_resource(record.clone()).await {
-                        Ok(resource) => return Ok(resource),
-                        Err(error) => failures.push(error.to_string()),
-                    },
+                    Ok(Ok(mut origin)) => {
+                        match origin.read_resource_with_log(record.clone(), log).await {
+                            Ok(resource) => return Ok(resource),
+                            Err(error) => failures.push(error.to_string()),
+                        }
+                    }
                     Ok(Err(_)) => failures.push("origin connection failed".into()),
                     Err(_) => failures.push("origin connection timed out".into()),
                 }
@@ -270,6 +391,63 @@ mod tests {
             err.downcast_ref::<spine_name::NameError>(),
             Some(&spine_name::NameError::InvalidContentType)
         );
+    }
+
+    /// An unsigned record of an arbitrary name that claims log position 3. The
+    /// claim is judged before the signature, so no key is needed.
+    fn record_claiming_a_rotation() -> NameRecord {
+        let mut record =
+            NameRecord::new(spine_name::SpineUri::did([7; 32]), 1, 1_700_000_000).unwrap();
+        let claim = spine_name::HeadClaim {
+            index: 3,
+            head: [9; 32],
+        };
+        record
+            .meta
+            .insert(SUCCESSION_META_KEY.to_string(), claim.to_meta_value());
+        record
+    }
+
+    #[test]
+    fn a_head_claim_without_a_log_asks_for_the_log() {
+        let record = record_claiming_a_rotation();
+        assert_eq!(
+            authorise_without_log(&record),
+            Err(NameError::NeedSuccessionLog {
+                name: record.name.to_string(),
+                claimed: 3,
+                held: 0,
+            })
+        );
+        // Through the client's error path the message says what is missing.
+        let error = binding_error(authorise_without_log(&record).unwrap_err());
+        assert!(error.to_string().contains("succession"), "{error}");
+        assert!(matches!(
+            error.downcast_ref::<NameError>(),
+            Some(NameError::NeedSuccessionLog { .. })
+        ));
+    }
+
+    #[test]
+    fn a_record_without_a_claim_is_judged_as_before() {
+        // Unsigned: refused exactly as `verify` refuses it, not as a missing log.
+        let record = NameRecord::new(spine_name::SpineUri::did([7; 32]), 1, 1_700_000_000).unwrap();
+        assert_eq!(authorise_without_log(&record), record.verify());
+        assert!(!matches!(
+            authorise_without_log(&record),
+            Err(NameError::NeedSuccessionLog { .. })
+        ));
+    }
+
+    #[test]
+    fn a_log_that_is_not_the_names_is_refused() {
+        let record = record_claiming_a_rotation();
+        // An empty log is the inception state: the claim of position 3 is then
+        // still a missing entry, not an acceptance.
+        assert!(matches!(
+            authorise_with_log(&record, &SuccessionLog::default()),
+            Err(NameError::NeedSuccessionLog { .. })
+        ));
     }
 
     fn restricted(s: &str) -> bool {

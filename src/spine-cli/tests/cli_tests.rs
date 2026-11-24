@@ -137,6 +137,21 @@ fn key_file_public(path: &std::path::Path) -> [u8; 32] {
         .to_bytes()
 }
 
+/// `upload` and `fetch` take `--log` (parsed offline: both connect to a daemon
+/// before they read anything, so only the help text can be run here).
+#[test]
+fn name_upload_and_fetch_take_a_succession_log() {
+    for command in ["upload", "fetch"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_spine"))
+            .args(["name", command, "--help"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{command} --help");
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("--log <LOG>"), "{command}: {help}");
+    }
+}
+
 fn read_log_file(path: &std::path::Path) -> spine_name::SuccessionLog {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }

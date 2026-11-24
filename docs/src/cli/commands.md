@@ -171,10 +171,17 @@ spine name retire --log log2.json --key k2.key --reveal-key k3.key \
 - A node that holds the log refuses every record signed by an older key, and
   refuses everything for a retired name. A node that has seen two different
   logs for one name treats the name as compromised and refuses all of it.
-- Not yet connected: the daemon does not read the log that `publish --log`
-  sends, so it refuses a rotated name's record; and a node that renews its own
-  names (`renew_owned_records`) skips a rotated name and logs a warning, since
-  it holds only the first key. See `docs/spec/02-names.md` section 10.11.
+- `upload <record> <resource> --log <file>` publishes a rotated name's
+  resource: the record is checked against the log and the log is sent with it.
+  `fetch <name> --output <file> --log <file>` does the same for a read. The
+  daemon's answer to a resolve carries no log, so `fetch` without `--log`
+  refuses a rotated name's record ("needs its succession log") instead of
+  trusting it; and `upload` without `--log` refuses a record that carries a
+  succession claim. A name that never rotated needs no `--log`. The same
+  refusal applies to the gateway's resource routes, which hold no log.
+- A node renews a rotated name of its own (`renew_owned_records`) only when
+  its one key is the name's current key; otherwise it skips the name and logs a
+  warning. See `docs/spec/02-names.md` section 10.11.
 
 ## `spine task --addr <addr> --peer <id> --peer-key <hex> <action>`
 

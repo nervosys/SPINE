@@ -96,9 +96,9 @@ pub async fn upload_resource(
     record
         .validate(unix_now())
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-    record
-        .verify()
-        .map_err(|_| err(StatusCode::BAD_REQUEST, "invalid resource signature"))?;
+    // The gateway holds no succession log, so a record that claims a rotation is
+    // refused with the need-log error; any other record is checked as always.
+    spine_agent::resources::authorise_without_log(&record).map_err(upload_refusal)?;
     if req.data.len() > spine_protocol::resource::MAX_RESOURCE_BYTES {
         return Err(err(StatusCode::BAD_REQUEST, "resource is too large"));
     }
@@ -119,6 +119,15 @@ pub async fn upload_resource(
     .await
     .map_err(upstream)?;
     Ok((StatusCode::CREATED, Json(value)))
+}
+
+/// A refused upload record as a `400`. A record of a rotated name says that a
+/// succession log is needed; any other refusal stays the opaque signature one.
+fn upload_refusal(error: spine_name::NameError) -> (StatusCode, Json<ErrorResponse>) {
+    match error {
+        spine_name::NameError::NeedSuccessionLog { .. } => err(StatusCode::BAD_REQUEST, error),
+        _ => err(StatusCode::BAD_REQUEST, "invalid resource signature"),
+    }
 }
 
 /// Resolve and read from the configured origin only. Untrusted endpoint
@@ -142,7 +151,9 @@ pub async fn download_resource(
             };
             let record: spine_name::NameRecord = serde_json::from_value(record)?;
             record.validate(unix_now())?;
-            record.verify()?;
+            // No log here either: a record that claims a rotation is refused
+            // (the need-log error), not mistaken for a bad signature.
+            spine_agent::resources::authorise_without_log(&record)?;
             if validator.is_some() && record.content_hash == validator {
                 return Ok(StatusCode::NOT_MODIFIED.into_response());
             }
@@ -595,6 +606,40 @@ mod tests {
         pool.put(1);
         pool.put(2);
         assert_eq!(pool.take(), Some(2));
+    }
+
+    /// A rotated name's record needs its log, which the gateway does not hold:
+    /// the upload says so rather than reporting a bad signature. A bad
+    /// signature stays opaque.
+    #[test]
+    fn an_upload_of_a_rotated_record_says_a_log_is_needed() {
+        let (status, Json(body)) = upload_refusal(spine_name::NameError::NeedSuccessionLog {
+            name: "spine://did:x/".into(),
+            claimed: 1,
+            held: 0,
+        });
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.error.contains("succession"), "{}", body.error);
+        let (status, Json(body)) = upload_refusal(spine_name::NameError::BadSignature);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body.error, "invalid resource signature");
+    }
+
+    /// The same rule the downloads and uploads apply: a claim without a log is
+    /// never accepted.
+    #[test]
+    fn a_record_with_a_head_claim_is_refused_without_a_log() {
+        let mut record =
+            spine_name::NameRecord::new(spine_name::SpineUri::did([7; 32]), 1, 1_700_000_000)
+                .unwrap();
+        record.meta.insert(
+            spine_name::SUCCESSION_META_KEY.to_string(),
+            format!("1:{}", "ab".repeat(32)),
+        );
+        assert!(matches!(
+            spine_agent::resources::authorise_without_log(&record),
+            Err(spine_name::NameError::NeedSuccessionLog { .. })
+        ));
     }
 
     #[test]

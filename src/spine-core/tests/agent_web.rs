@@ -1715,3 +1715,103 @@ async fn rotated_name_publishes_a_resource_with_its_log() {
     .await
     .expect("rotated name resource acceptance deadline exceeded");
 }
+
+fn is_need_log(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<spine_name::NameError>(),
+        Some(spine_name::NameError::NeedSuccessionLog { .. })
+    )
+}
+
+/// The agent client's own check of a record, with no daemon: an unrotated
+/// name is judged as before with or without a log, a current-key record of a
+/// rotated name needs its log, and a superseded key is refused even with it.
+#[test]
+fn agent_client_judges_records_with_and_without_the_log() {
+    use spine_agent::resources::{authorise_with_log, authorise_without_log};
+    use spine_name::NameError;
+    let now = unix_now();
+
+    let plain_key = SigningKey::from_bytes(&[151; 32]);
+    let mut plain = NameRecord::new(SpineUri::did(plain_key.verifying_key().to_bytes()), 1, now)
+        .unwrap()
+        .with_endpoint(Endpoint::new("tcp", "127.0.0.1:9440"));
+    plain.sign(&plain_key).unwrap();
+    authorise_without_log(&plain).unwrap();
+    authorise_with_log(&plain, &SuccessionLog::default()).unwrap();
+
+    let rotated = RotatedName::new(153, now);
+    let current = rotated.by_current_key(2, now);
+    authorise_with_log(&current, &rotated.log).unwrap();
+    assert!(matches!(
+        authorise_without_log(&current),
+        Err(NameError::NeedSuccessionLog { .. })
+    ));
+    let stale = rotated.by_superseded_key(3, now);
+    assert!(matches!(
+        authorise_with_log(&stale, &rotated.log),
+        Err(NameError::SupersededKey(_))
+    ));
+}
+
+/// A rotated name's resource through the agent client alone: no raw calls. The
+/// client refuses the current-key record until it is given the log, publishes
+/// it with the log, refuses the superseded key, and reads the bytes back.
+#[tokio::test]
+async fn rotated_name_publishes_and_reads_a_resource_through_the_agent_client() {
+    let _isolated = PROCESS_TEST.lock().await;
+    tokio::time::timeout(std::time::Duration::from_secs(240), async {
+        let dir = tempfile::tempdir().unwrap();
+        let origin_port = origin_port();
+        let mut node = start(dir.path(), origin_port, port(), &[]);
+        let mut client = connect(&mut node, dir.path(), origin_port).await;
+
+        let now = unix_now();
+        let rotated = RotatedName::new(161, now);
+        let bytes = b"bytes of a rotated name, by the agent client".to_vec();
+        let id = resource_id("text/plain", &bytes).unwrap();
+        let state = rotated
+            .log
+            .verify(&rotated.inception.verifying_key().to_bytes())
+            .unwrap();
+        let mut record = rotated.unsigned(2, now).with_content_hash(id);
+        record.sign_current(&rotated.current, &state).unwrap();
+
+        let error = client
+            .publish_resource(&record, "text/plain", bytes.clone())
+            .await
+            .unwrap_err();
+        assert!(is_need_log(&error), "{error:#}");
+
+        let mut stale = rotated.unsigned(9, now).with_content_hash(id);
+        stale.sign(&rotated.inception).unwrap();
+        let error = client
+            .publish_resource_with_log(&stale, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<spine_name::NameError>(),
+                Some(spine_name::NameError::SupersededKey(_))
+            ),
+            "{error:#}"
+        );
+
+        let report = client
+            .publish_resource_with_log(&record, &rotated.log, "text/plain", bytes.clone())
+            .await
+            .unwrap();
+        assert_eq!(report["stored"], true);
+
+        let error = client.read_resource(record.clone()).await.unwrap_err();
+        assert!(is_need_log(&error), "{error:#}");
+        let read = client
+            .read_resource_with_log(record.clone(), Some(&rotated.log))
+            .await
+            .unwrap();
+        assert_eq!(read.data, bytes);
+        assert_eq!(read.content_type, "text/plain");
+    })
+    .await
+    .expect("rotated name agent client acceptance deadline exceeded");
+}

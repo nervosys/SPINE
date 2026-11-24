@@ -139,6 +139,10 @@ pub enum NameAction {
         resource: PathBuf,
         #[arg(long, default_value = "application/octet-stream")]
         content_type: String,
+        /// Succession log of a rotated name, sent with the record. Without it a
+        /// record that claims a rotation is refused.
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
     Fetch {
         name: String,
@@ -147,6 +151,10 @@ pub enum NameAction {
         /// Permit loopback and private-network origins from the signed record.
         #[arg(long)]
         allow_private: bool,
+        /// Succession log of a rotated name. The daemon's answer carries no log,
+        /// so without it a record that claims a rotation is refused.
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
 }
 
@@ -166,7 +174,7 @@ fn read_record(path: &Path, state: Option<&SuccessionState>) -> Result<NameRecor
     record.validate(now()?)?;
     match state {
         Some(state) => authorise_record(&record, Some(state))?,
-        None => record.verify()?,
+        None => spine_agent::resources::authorise_without_log(&record)?,
     }
     Ok(record)
 }
@@ -474,25 +482,38 @@ pub async fn run(addr: String, action: NameAction) -> Result<()> {
             record,
             resource,
             content_type,
+            log,
         } => {
-            client
-                .publish_resource(
-                    &read_record(&record, None)?,
-                    &content_type,
-                    std::fs::read(resource)?,
-                )
-                .await?
+            let logged = read_optional_log(log.as_deref())?;
+            let record = read_record(&record, logged.as_ref().map(|(_, state)| state))?;
+            let data = std::fs::read(resource)?;
+            match &logged {
+                Some((log, _)) => {
+                    client
+                        .publish_resource_with_log(&record, log, &content_type, data)
+                        .await?
+                }
+                None => {
+                    client
+                        .publish_resource(&record, &content_type, data)
+                        .await?
+                }
+            }
         }
         NameAction::Fetch {
             name,
             output,
             allow_private,
+            log,
         } => {
             ensure!(!output.exists(), "output already exists");
+            let logged = read_optional_log(log.as_deref())?;
             let policy = spine_agent::resources::FetchPolicy {
                 allow_private_destinations: allow_private,
             };
-            let resource = client.fetch_resource_with(&name, policy).await?;
+            let resource = client
+                .fetch_resource_with_log(&name, policy, logged.as_ref().map(|(log, _)| log))
+                .await?;
             create_file(&output, &resource.data, false)?;
             serde_json::json!({"name":name,"bytes":resource.data.len(),"content_type":resource.content_type})
         }
