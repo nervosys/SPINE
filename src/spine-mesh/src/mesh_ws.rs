@@ -30,6 +30,7 @@ use spine_transport::websocket::{
 };
 
 use crate::mesh::MeshEnvelope;
+use crate::mesh_tcp::{attach, attach_secure};
 use crate::mesh_tcp::{
     attach_bounded, attach_secure_bounded, client_handshake, pin_if_absent, server_handshake,
     ConnectionLimits, Inbound, PinBook, ReplyPath, Security, INBOUND_QUEUE,
