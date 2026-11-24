@@ -170,8 +170,14 @@ mod tests {
     }
 
     fn bytes_item(len: usize, fill: u8) -> Vec<u8> {
-        let mut out = vec![0x58, u8::try_from(len).unwrap()];
-        out.resize(2 + len, fill);
+        // Shortest-form head, as deterministic CBOR requires: one byte below 24.
+        let len_byte = u8::try_from(len).unwrap();
+        let mut out = if len < 24 {
+            vec![0x40 | len_byte]
+        } else {
+            vec![0x58, len_byte]
+        };
+        out.resize(out.len() + len, fill);
         out
     }
 
